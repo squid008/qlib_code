@@ -470,6 +470,8 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
         model = _load_model_object(load_from, req.model)
         if model is None:
             raise ValueError("未找到可复用的模型权重（task %s）" % load_from)
+        # 方案B：校验特征顺序一致性，防止因子库顺序变化导致静默错位
+        _verify_reuse_feature_order(_dataset_feature_names(dataset), load_from)
 
     _report(40, "开始训练与预测...")
     exp_name = "backtest_web"
@@ -579,6 +581,8 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
         if load_from:
             model = _load_model_object(load_from, req.model, seg_no=seg_no)
             if model is not None:
+                # 方案B：校验特征顺序一致性，防止因子库顺序变化导致静默错位
+                _verify_reuse_feature_order(_dataset_feature_names(dataset), load_from, seg_no=seg_no)
                 reuse_model = True
         if model is None:
             model = init_instance_by_config(_model_config(req.model, req))
@@ -1090,6 +1094,73 @@ def _save_model_object(model, dir_path):
             pickle.dump(model, f)
     except Exception:
         pass
+
+
+def _read_train_feature_names(task_id: str, seg_no=None) -> Optional[list]:
+    """读取某次回测训练时的特征名顺序（从 model_artifacts.json 的 feature_names 字段）。
+
+    这是模型训练时实际喂给模型的特征顺序（位置对应 Column_N）。
+    用于复用模型时校验当前回测的特征顺序是否一致，防止静默错位。
+    """
+    import glob
+    import json
+    try:
+        from ..config import WORK_DIR
+        artifacts_root = os.path.join(WORK_DIR, "artifacts")
+    except Exception:
+        artifacts_root = os.path.join(os.path.abspath("."), "artifacts")
+    dirs = glob.glob(os.path.join(artifacts_root, "*_" + task_id))
+    if not dirs:
+        dirs = glob.glob(os.path.join(artifacts_root, task_id))
+    if not dirs:
+        return None
+    base = dirs[-1]
+    candidates = []
+    if seg_no is not None:
+        candidates.append(os.path.join(base, "segment_%s" % seg_no, "model_artifacts.json"))
+    candidates.append(os.path.join(base, "model_artifacts.json"))
+    for cp in candidates:
+        if os.path.exists(cp):
+            try:
+                with open(cp, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                if d.get("feature_names"):
+                    return d["feature_names"]
+            except Exception:
+                continue
+    return None
+
+
+def _dataset_feature_names(dataset) -> Optional[list]:
+    """从 dataset 的 handler 拿当前实际喂给模型的特征名顺序。"""
+    try:
+        handler = getattr(dataset, "handler", None)
+        if handler is not None and hasattr(handler, "get_cols"):
+            cols = handler.get_cols("feature")
+            if cols:
+                return [str(c) for c in cols]
+    except Exception:
+        pass
+    return None
+
+
+def _verify_reuse_feature_order(current_names: Optional[list], load_from: str, seg_no=None) -> None:
+    """复用模型前校验特征顺序一致性。
+
+    若被复用回测能读到训练时的 feature_names，且与当前特征顺序不一致，
+    则抛出明确错误（而不是静默错位预测）。读不到训练特征名时跳过（不阻断）。
+    """
+    train_names = _read_train_feature_names(load_from, seg_no)
+    if not train_names or not current_names:
+        return  # 无训练特征名或当前无特征名，无法校验，跳过
+    if train_names != current_names:
+        raise ValueError(
+            "复用模型失败：当前回测的特征集/特征选择与模型训练时不匹配（特征顺序不一致）。\n"
+            "模型训练时特征（%d 个）：%s\n当前回测特征（%d 个）：%s\n"
+            "请确认使用相同的特征集（feature）和相同的特征选择（selected_features）。"
+            % (len(train_names), ",".join(map(str, train_names[:10])),
+               len(current_names), ",".join(map(str, current_names[:10])))
+        )
 
 
 def _load_model_object(task_id: str, model_name: str, seg_no=None):
