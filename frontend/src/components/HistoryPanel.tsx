@@ -25,6 +25,9 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(false)
   const [viewImg, setViewImg] = useState<{ taskId: string; name: string; url: string } | null>(null)
+  // 待删除确认（页面内弹窗，兼容内置浏览器不弹 window.confirm）
+  const [confirmDel, setConfirmDel] = useState<Row | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   // 扫描 artifacts 目录下的所有回测产物
   const load = async () => {
@@ -65,17 +68,23 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
     }
   }
 
-  // 删除该次回测的产物目录（需二次确认）
-  const handleDelete = async (row: Row) => {
-    if (!window.confirm(`确定删除回测「${row.item.dir_name}」吗？\n将删除该目录下的参数/结果/模型等全部文件，无法恢复。`)) {
-      return
-    }
+  // 删除该次回测的产物目录（先打开确认弹窗）
+  const handleDelete = (row: Row) => {
+    setConfirmDel(row)
+  }
+
+  // 确认后真正执行删除
+  const confirmDelete = async () => {
+    if (!confirmDel) return
+    setDeleting(true)
     try {
-      await deleteBacktest(row.item.task_id)
-      // 删除成功后刷新列表
+      await deleteBacktest(confirmDel.item.task_id)
+      setConfirmDel(null)
       await load()
     } catch {
-      window.alert('删除失败，请检查后端是否正常运行。')
+      setConfirmDel(null)
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -231,6 +240,37 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
               </button>
             </div>
             <img src={viewImg.url} alt={viewImg.name} className="w-full rounded" />
+          </div>
+        </div>
+      )}
+
+      {/* 删除确认弹窗（页面内，兼容内置浏览器） */}
+      {confirmDel && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-6">
+          <div className="bg-white dark:bg-slate-800 rounded-xl p-5 max-w-md w-full">
+            <h3 className="font-semibold mb-3">确认删除</h3>
+            <p className="text-sm text-slate-500 mb-1">
+              确定删除回测「<span className="font-mono">{confirmDel.item.dir_name}</span>」吗？
+            </p>
+            <p className="text-sm text-red-500 mb-5">
+              将删除该目录下的参数 / 结果 / 模型等全部文件，无法恢复。
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmDel(null)}
+                disabled={deleting}
+                className="px-3 py-1.5 rounded text-sm border text-slate-600 hover:bg-slate-50 dark:text-slate-300 disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="px-3 py-1.5 rounded text-sm bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleting ? '删除中...' : '确认删除'}
+              </button>
+            </div>
           </div>
         </div>
       )}
