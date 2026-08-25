@@ -17,7 +17,7 @@
 
 - 弹出黑色命令行窗口，看到 `Uvicorn running on http://0.0.0.0:8001` 即启动成功。
 - **注意**：这个窗口**不要关闭**，关闭它后端就停了。
-- 若提示找不到 `python`，说明没在 qlib 环境运行，需先 `conda activate qlib` 或用 qlib 环境的完整 python 路径（见文件内注释）。
+- 脚本已内置 qlib 环境的 python 路径（`D:\miniconda3\envs\qlib\python.exe`），双击即可直接运行，无需手动 `conda activate`。若你的 qlib 环境不在该路径，请修改脚本里的 `set "PYTHON=..."` 一行。
 
 ### 2. 启动前端
 
