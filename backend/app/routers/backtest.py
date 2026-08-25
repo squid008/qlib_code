@@ -307,3 +307,28 @@ def cancel_backtest(task_id: str):
     if not ok:
         raise HTTPException(status_code=400, detail=f"任务 {task_id} 无法停止（不存在或已结束）")
     return {"status": "cancelling", "task_id": task_id}
+
+
+@router.delete("/backtest/{task_id}", summary="删除某个回测的产物目录")
+def delete_backtest(task_id: str):
+    """删除 artifacts 下对应的回测产物目录（含参数/结果/图片/模型等）。
+
+    仅删除磁盘上的产物目录，不影响内存中的任务状态；若目录不存在则返回 404。
+    """
+    import os
+    import shutil
+
+    base = _find_artifact_dir(task_id)
+    if base is None:
+        raise HTTPException(status_code=404, detail=f"任务 {task_id} 没有产物目录")
+    if not os.path.isdir(base):
+        raise HTTPException(status_code=404, detail=f"任务 {task_id} 产物目录不存在")
+
+    # 防误删：只允许删除 artifacts 目录下的子目录
+    artifacts_root = os.path.abspath(os.path.join(config.WORK_DIR, "artifacts"))
+    target = os.path.abspath(base)
+    if os.path.dirname(target) != artifacts_root:
+        raise HTTPException(status_code=400, detail="拒绝删除非产物目录")
+
+    shutil.rmtree(target, ignore_errors=True)
+    return {"status": "deleted", "task_id": task_id, "dir": os.path.basename(base)}

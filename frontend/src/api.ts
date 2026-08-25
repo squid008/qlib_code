@@ -82,6 +82,11 @@ export async function cancelBacktest(taskId: string): Promise<{ status: string }
   return data
 }
 
+export async function deleteBacktest(taskId: string): Promise<{ status: string }> {
+  const { data } = await http.delete<{ status: string }>(`/backtest/${taskId}`)
+  return data
+}
+
 export async function getBacktestResult(taskId: string): Promise<BacktestResult> {
   const { data } = await http.get<BacktestResult>(`/backtest/${taskId}/result`)
   return data

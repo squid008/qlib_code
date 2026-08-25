@@ -3,6 +3,7 @@ import {
   listBacktestsHistory,
   getBacktestSnapshot,
   getBacktestImageUrl,
+  deleteBacktest,
   type BacktestSnapshot,
   type HistoryItem,
 } from '../api'
@@ -61,6 +62,20 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
   const handleUse = (row: Row) => {
     if (row.snapshot?.params) {
       onUseParams(row.snapshot.params, row.item.task_id)
+    }
+  }
+
+  // 删除该次回测的产物目录（需二次确认）
+  const handleDelete = async (row: Row) => {
+    if (!window.confirm(`确定删除回测「${row.item.dir_name}」吗？\n将删除该目录下的参数/结果/模型等全部文件，无法恢复。`)) {
+      return
+    }
+    try {
+      await deleteBacktest(row.item.task_id)
+      // 删除成功后刷新列表
+      await load()
+    } catch {
+      window.alert('删除失败，请检查后端是否正常运行。')
     }
   }
 
@@ -164,6 +179,13 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
                           className="px-2 py-0.5 rounded text-xs bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           复用参数
+                        </button>
+                        <button
+                          onClick={() => handleDelete(row)}
+                          className="px-2 py-0.5 rounded text-xs bg-red-600 text-white hover:bg-red-700"
+                          title="删除该回测的产物目录（含参数/结果/模型，不可恢复）"
+                        >
+                          删除
                         </button>
                         {navImg && (
                           <button
