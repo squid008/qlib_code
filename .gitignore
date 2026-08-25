@@ -22,3 +22,6 @@ backend/workdir/
 # 临时/测试文件
 test1.py
 *.pkl
+
+# 本地专用文档（不上传到 GitHub）
+md/upload.md
