@@ -32,6 +32,27 @@ export async function listBacktests(): Promise<Record<string, BacktestTask>> {
   return data
 }
 
+// 历史回测（从 artifacts 目录扫描，跨重启/跨版本可见）
+export interface HistoryItem {
+  task_id: string
+  dir_name: string
+  has_params: boolean
+  has_result: boolean
+  has_meta: boolean
+  images: Record<string, string>
+  segments: string[]
+  meta_summary?: {
+    model?: string
+    universe?: string
+    start_year?: string
+    end_year?: string
+  }
+}
+export async function listBacktestsHistory(): Promise<{ items: HistoryItem[] }> {
+  const { data } = await http.get<{ items: HistoryItem[] }>('/backtests/history')
+  return data
+}
+
 export async function getBacktestArtifacts(taskId: string): Promise<ModelArtifacts> {
   const { data } = await http.get<ModelArtifacts>(`/backtest/${taskId}/artifacts`)
   return data

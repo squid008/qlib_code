@@ -184,6 +184,115 @@ def list_backtests():
     return manager.list()
 
 
+@router.get("/backtests/history", summary="从 artifacts 目录扫描所有回测产物（跨重启/跨版本）")
+def list_backtests_history():
+    """扫描 backend/workdir/artifacts/ 下所有子目录，作为历史回测列表返回。
+
+    用途：与 /api/backtests（内存任务）互补。后者只包含本进程内存中跑过的任务，
+    重启后端或换版本后清空；本接口直接从磁盘目录扫描，能看到旧版本/历史回测/复制目录。
+
+    每条记录：
+      - task_id: 优先从 params.json 中读（最权威），否则从目录名末尾解析
+      - dir_name: 目录名（人类可读，含日期/模型/股票池/年份/ID）
+      - has_params: 是否有 params.json（决定"复用参数/复用回测"是否可用）
+      - has_result: 是否有 result.json（决定"查看"按钮是否可用）
+      - has_meta: 是否有 meta.json
+      - images: 存在的图片文件
+      - segments: 滚动段子目录列表
+      - meta: 摘要（股票池/资金/起止日期等，从目录名/meta.json 提取）
+    """
+    import os
+    import json
+    import glob
+    import re
+
+    artifacts_dir = os.path.join(config.WORK_DIR, "artifacts")
+    if not os.path.isdir(artifacts_dir):
+        return {"items": []}
+
+    items = []
+    # 目录命名规则：{ts}_{model}_{universe}_{start_y}_{end_y}_{task_id}（最后一段是 task_id）
+    # 但用户可能复制/改名，所以优先读 params.json 里的 task_id 字段
+    for name in sorted(os.listdir(artifacts_dir), reverse=True):
+        full = os.path.join(artifacts_dir, name)
+        if not os.path.isdir(full):
+            continue
+
+        # 决定 task_id：优先从 params.json 读；否则用目录名最后一段
+        params_file = os.path.join(full, "params.json")
+        result_file = os.path.join(full, "result.json")
+        meta_file = os.path.join(full, "meta.json")
+
+        task_id = None
+        params = None
+        if os.path.exists(params_file):
+            try:
+                with open(params_file, "r", encoding="utf-8") as f:
+                    params = json.load(f)
+                # params 字典里没显式 task_id；可从 meta.json 读，或目录名末尾
+            except Exception:
+                params = None
+        if os.path.exists(meta_file):
+            try:
+                with open(meta_file, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                # meta 里通常没有 task_id，跳过
+            except Exception:
+                meta = None
+        else:
+            meta = None
+
+        # 从目录名末尾解析 task_id（命名规则最后一段）
+        parts = name.rsplit("_", 1)
+        if len(parts) == 2 and re.match(r"^[0-9a-f]{12,}$", parts[1]):
+            task_id = parts[1]
+        else:
+            # 目录名不规范（如用户复制改名），用目录名本身作为标识
+            task_id = name
+
+        # 图片与段目录
+        images = {}
+        for img in ("nav_curve.png", "params_snapshot.png", "summary.png"):
+            if os.path.exists(os.path.join(full, img)):
+                images[img] = img
+        segments = sorted(
+            os.path.basename(d) for d in glob.glob(os.path.join(full, "segment_*"))
+        )
+
+        # 从目录名解析股票池/资金/起止（用于表格展示）
+        # 命名：{ts}_{model}_{universe}_{start_y}_{end_y}_{task_id}
+        meta_summary = {}
+        segs = name.split("_")
+        # 段数：{ts(2段日期+时间)} {model} {universe} {start_y} {end_y} {task_id} → 至少 6 段
+        if len(segs) >= 6:
+            meta_summary = {
+                "model": segs[1],
+                "universe": segs[2],
+                "start_year": segs[3],
+                "end_year": segs[4],
+            }
+        elif meta and isinstance(meta, dict):
+            meta_summary = {
+                "model": meta.get("模型"),
+                "universe": meta.get("股票池"),
+                "start_year": (meta.get("起始日期") or "")[:4],
+                "end_year": (meta.get("结束日期") or "")[:4],
+            }
+
+        items.append({
+            "task_id": task_id,
+            "dir_name": name,
+            "has_params": os.path.exists(params_file),
+            "has_result": os.path.exists(result_file),
+            "has_meta": os.path.exists(meta_file),
+            "images": images,
+            "segments": segments,
+            "meta_summary": meta_summary,
+        })
+
+    return {"items": items}
+
+
 @router.post("/backtest/{task_id}/cancel", summary="停止回测任务")
 def cancel_backtest(task_id: str):
     manager = get_task_manager(config.WORK_DIR)

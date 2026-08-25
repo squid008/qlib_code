@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import {
-  listBacktests,
+  listBacktestsHistory,
   getBacktestSnapshot,
   getBacktestImageUrl,
   type BacktestSnapshot,
+  type HistoryItem,
 } from '../api'
-import type { BacktestTask, BacktestRequest } from '../types'
+import type { BacktestRequest } from '../types'
 
 interface Props {
   onUseParams: (params: BacktestRequest, taskId: string) => void
@@ -14,9 +15,9 @@ interface Props {
 }
 
 interface Row {
-  taskId: string
-  task: BacktestTask
+  item: HistoryItem
   snapshot?: BacktestSnapshot
+  loading: boolean
 }
 
 export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResult }: Props) {
@@ -24,27 +25,28 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
   const [loading, setLoading] = useState(false)
   const [viewImg, setViewImg] = useState<{ taskId: string; name: string; url: string } | null>(null)
 
+  // 扫描 artifacts 目录下的所有回测产物
   const load = async () => {
     setLoading(true)
     try {
-      const tasks = await listBacktests()
-      const taskIds = Object.keys(tasks).filter(
-        (id) => tasks[id].status === 'success',
-      )
-      // 倒序（最新在前）
-      const sorted = taskIds.sort((a, b) => (a < b ? 1 : -1))
-      const list: Row[] = []
-      // 只展示最近 20 个，避免太多请求
-      for (const id of sorted.slice(0, 20)) {
-        let snapshot: BacktestSnapshot | undefined
-        try {
-          snapshot = await getBacktestSnapshot(id)
-        } catch {
-          snapshot = undefined
-        }
-        list.push({ taskId: id, task: tasks[id], snapshot })
-      }
+      const { items } = await listBacktestsHistory()
+      // 倒序已在后端按目录名字典序倒序（最新在前）
+      const list: Row[] = items.map((it) => ({ item: it, loading: true }))
       setRows(list)
+      // 并发拉每个条目的 snapshot（拿 params 用于复用）
+      await Promise.all(
+        list.map(async (r) => {
+          try {
+            const snap = await getBacktestSnapshot(r.item.task_id)
+            r.snapshot = snap
+            r.loading = false
+          } catch {
+            r.loading = false
+          }
+        }),
+      )
+      // 触发刷新
+      setRows([...list])
     } catch {
       setRows([])
     } finally {
@@ -58,7 +60,7 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
 
   const handleUse = (row: Row) => {
     if (row.snapshot?.params) {
-      onUseParams(row.snapshot.params, row.taskId)
+      onUseParams(row.snapshot.params, row.item.task_id)
     }
   }
 
@@ -86,62 +88,88 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
                 <th className="py-2 pr-3">模型</th>
                 <th className="py-2 pr-3">区间</th>
                 <th className="py-2 pr-3 text-right">资金(万)</th>
-                <th className="py-2 pr-3 text-right">年化</th>
                 <th className="py-2 pr-3">操作</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => {
                 const p = row.snapshot?.params
-                const navImg = row.snapshot?.images?.nav_curve
-                  ? getBacktestImageUrl(row.taskId, 'nav_curve.png')
+                const ms = row.item.meta_summary || {}
+                const navImg = row.item.images?.['nav_curve.png']
+                  ? getBacktestImageUrl(row.item.task_id, 'nav_curve.png')
                   : null
+                // 复制/未跑完的目录（无 result.json）：查看置灰
+                const canView = row.item.has_result
+                // 复用参数/复用回测：有 params.json 即可
+                const canReuseParams = row.item.has_params
                 return (
-                  <tr key={row.taskId} className="border-b border-slate-100 dark:border-slate-700">
-                    <td className="py-2 pr-3 font-mono text-xs" title={row.taskId}>
-                      {row.snapshot?.dir_name || row.taskId}
+                  <tr
+                    key={row.item.dir_name}
+                    className="border-b border-slate-100 dark:border-slate-700"
+                  >
+                    <td
+                      className="py-2 pr-3 font-mono text-xs"
+                      title={row.item.task_id}
+                    >
+                      {row.item.dir_name}
+                      {!row.item.has_result && (
+                        <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-100 text-amber-700">
+                          未完成
+                        </span>
+                      )}
                     </td>
-                    <td className="py-2 pr-3">{p?.model || '-'}</td>
+                    <td className="py-2 pr-3">{ms.model || p?.model || '-'}</td>
                     <td className="py-2 pr-3">
-                      {p ? `${p.start_date} ~ ${p.end_date}` : '-'}
+                      {ms.start_year && ms.end_year
+                        ? `${ms.start_year} ~ ${ms.end_year}`
+                        : p
+                          ? `${p.start_date} ~ ${p.end_date}`
+                          : '-'}
                     </td>
                     <td className="py-2 pr-3 text-right">
                       {p ? ((p.initial_capital || 0) / 10000).toLocaleString() : '-'}
                     </td>
-                    <td className="py-2 pr-3 text-right">
-                      {row.task.result?.annualized_return !== null &&
-                      row.task.result?.annualized_return !== undefined
-                        ? `${(row.task.result.annualized_return * 100).toFixed(2)}%`
-                        : '-'}
-                    </td>
                     <td className="py-2 pr-3 whitespace-nowrap">
                       <div className="flex gap-1">
                         <button
-                          onClick={() => onViewResult(row.taskId)}
-                          className="px-2 py-0.5 rounded text-xs border border-slate-300 text-slate-600 hover:bg-slate-50 dark:text-slate-300"
-                          title="查看该次回测的曲线/调仓/训练产物"
+                          onClick={() => onViewResult(row.item.task_id)}
+                          disabled={!canView}
+                          className="px-2 py-0.5 rounded text-xs border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed dark:text-slate-300"
+                          title={
+                            canView
+                              ? '查看该次回测的曲线/调仓/训练产物'
+                              : '该目录无 result.json（可能是复制的空目录或未跑完），无法查看'
+                          }
                         >
                           查看
                         </button>
                         <button
-                          onClick={() => onReuseBacktest(row.snapshot?.params!, row.taskId)}
-                          disabled={!row.snapshot?.params}
-                          className="px-2 py-0.5 rounded text-xs bg-green-600 text-white hover:bg-green-700 disabled:opacity-40"
-                          title="直接用该次回测的参数和模型权重开始回测（复用模型，不重新训练）"
+                          onClick={() => onReuseBacktest(row.snapshot?.params!, row.item.task_id)}
+                          disabled={!canReuseParams}
+                          className="px-2 py-0.5 rounded text-xs bg-green-600 text-white hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={
+                            canReuseParams
+                              ? '直接用该次回测的参数和模型权重开始回测（复用模型，不重新训练）'
+                              : '该目录无 params.json，无法复用'
+                          }
                         >
                           复用回测
                         </button>
                         <button
                           onClick={() => handleUse(row)}
-                          disabled={!row.snapshot?.params}
-                          className="px-2 py-0.5 rounded text-xs bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
+                          disabled={!canReuseParams}
+                          className="px-2 py-0.5 rounded text-xs bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           复用参数
                         </button>
                         {navImg && (
                           <button
                             onClick={() =>
-                              setViewImg({ taskId: row.taskId, name: 'nav_curve.png', url: navImg })
+                              setViewImg({
+                                taskId: row.item.task_id,
+                                name: 'nav_curve.png',
+                                url: navImg,
+                              })
                             }
                             className="px-2 py-0.5 rounded text-xs border text-blue-600 hover:bg-blue-50"
                           >
