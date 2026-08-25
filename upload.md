@@ -56,21 +56,7 @@ git reset --hard HEAD~1
 
 ---
 
-## 四、网络/代理注意事项
-
-- 如果 `git push` 报 `Connection was reset` / `SSL/TLS connection failed`，是因为 GitHub 连接被网络重置。
-- 本机网络配置一般是 `127.0.0.1:7897`，给 git 配上代理即可：
-
-```powershell
-git config --global 网络代理 http://127.0.0.1:7897
-git config --global 网络代理 http://127.0.0.1:7897
-```
-
-- 之后 `git push` 重试即可。
-
----
-
-## 五、首次在新电脑拉取代码
+## 四、首次在新电脑拉取代码
 
 ```powershell
 git clone https://github.com/dev/qlib_code.git
