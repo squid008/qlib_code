@@ -227,8 +227,10 @@ export default function App() {
   // 打开某个历史回测的结果（调仓记录/曲线/训练产物）
   const handleViewResult = async (taskId: string) => {
     setError('')
-    // 切换查看历史回测：清空实时任务，确保展示 viewResult
+    // 切换查看历史回测：清空实时任务与旧结果，避免残留上一次查看的曲线
     setTask(null)
+    setViewResult(null)
+    setViewArtifacts(null)
 
     // 先尝试读回测结果（result.json / 内存任务）
     let loadedResult = false
@@ -845,7 +847,7 @@ export default function App() {
                 </>
               ) : (
                 <div className="bg-white dark:bg-slate-800 rounded-xl shadow p-6 text-sm text-slate-400">
-                  该回测没有结果数据（可能 result.json 已删除或未跑完），仅展示下方模型产物。
+                  无回测记录
                 </div>
               )}
               {a && <ModelArtifactsPanel artifacts={a} />}
