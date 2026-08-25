@@ -674,9 +674,18 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                 import pandas as pd
                 try:
                     merged_pl = pd.concat(all_test_pred_label)
-                    merged_groups = _compute_layers(merged_pl)
+                    # 汇总也叠加基准线：用合并后全测试区间计算基准累计收益
+                    merged_bench = None
+                    if benchmark:
+                        try:
+                            b_start = merged_pl.index.get_level_values("datetime").min()
+                            b_end = merged_pl.index.get_level_values("datetime").max()
+                            merged_bench = _compute_benchmark_returns(benchmark, b_start, b_end)
+                        except Exception:
+                            merged_bench = None
+                    merged_groups = _compute_layers(merged_pl, benchmark_ret=merged_bench)
                     if merged_groups:
-                        merged_layers = {"segment": "汇总", "groups": merged_groups}
+                        merged_layers = {"segment": "汇总", "groups": merged_groups, "benchmark": benchmark}
                 except Exception:
                     merged_layers = None
             result.layer_returns = {"segments": layer_segments, "merged": merged_layers}
