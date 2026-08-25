@@ -1,0 +1,24 @@
+# 依赖与构建产物
+node_modules/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+
+# 数据（A股行情，体积大，不纳入版本库）
+data/
+qlib_bin.tar.gz
+
+# 回测运行产物 / 实验记录
+mlruns/
+backend/mlruns/
+backend/workdir/
+**/mlflow.db
+*.db
+
+# 日志
+*.log
+
+# 临时/测试文件
+test1.py
+*.pkl

@@ -1,0 +1,18 @@
+# 后端依赖
+# 注意：pyqlib / lightgbm / xgboost 等已随 qlib 环境安装，此处列出的为核心 Web 依赖。
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.0
+pydantic-settings>=2.0
+numpy
+pandas
+pyarrow
+
+# 回测模型（qlib 环境已装，如缺失可取消注释）
+lightgbm>=3.0
+
+# ---- 可选：接入 rqalpha h5 数据时需要的依赖 ----
+# h5py
+# tables
+# rqalpha
+# rqdatac
