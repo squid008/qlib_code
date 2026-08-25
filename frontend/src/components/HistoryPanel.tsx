@@ -98,8 +98,9 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
                 const navImg = row.item.images?.['nav_curve.png']
                   ? getBacktestImageUrl(row.item.task_id, 'nav_curve.png')
                   : null
-                // 复制/未跑完的目录（无 result.json）：查看置灰
-                const canView = row.item.has_result
+                // 只要能查看一样东西（结果或模型产物），"查看"就保持可用；
+                // 只有 result.json 和模型产物都没有时才置灰
+                const canView = row.item.has_result || row.item.has_artifacts
                 // 复用参数/复用回测：有 params.json 即可
                 const canReuseParams = row.item.has_params
                 return (
@@ -137,8 +138,10 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
                           className="px-2 py-0.5 rounded text-xs border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed dark:text-slate-300"
                           title={
                             canView
-                              ? '查看该次回测的曲线/调仓/训练产物'
-                              : '该目录无 result.json（可能是复制的空目录或未跑完），无法查看'
+                              ? row.item.has_result
+                                ? '查看该次回测的曲线/调仓/训练产物'
+                                : '该目录无回测结果，但有模型产物，可查看训练产物（权重/特征）'
+                              : '该目录既无回测结果也无模型产物（可能是复制的空目录），无法查看'
                           }
                         >
                           查看

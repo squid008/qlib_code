@@ -39,6 +39,7 @@ export interface HistoryItem {
   has_params: boolean
   has_result: boolean
   has_meta: boolean
+  has_artifacts: boolean
   images: Record<string, string>
   segments: string[]
   meta_summary?: {

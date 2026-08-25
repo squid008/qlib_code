@@ -279,12 +279,19 @@ def list_backtests_history():
                 "end_year": (meta.get("结束日期") or "")[:4],
             }
 
+        # 是否有模型产物（权重/特征重要性等）。single 在根目录；滚动在各 segment_*/ 下
+        has_artifacts = os.path.exists(os.path.join(full, "model_artifacts.json")) or any(
+            os.path.exists(os.path.join(full, sd, "model_artifacts.json"))
+            for sd in segments
+        )
+
         items.append({
             "task_id": task_id,
             "dir_name": name,
             "has_params": os.path.exists(params_file),
             "has_result": os.path.exists(result_file),
             "has_meta": os.path.exists(meta_file),
+            "has_artifacts": has_artifacts,
             "images": images,
             "segments": segments,
             "meta_summary": meta_summary,

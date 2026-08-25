@@ -229,30 +229,42 @@ export default function App() {
     setError('')
     // 切换查看历史回测：清空实时任务，确保展示 viewResult
     setTask(null)
+
+    // 先尝试读回测结果（result.json / 内存任务）
+    let loadedResult = false
     try {
       const t = await getBacktestTask(taskId)
-      setViewResult(t)
-      try {
-        const a = await getBacktestArtifacts(taskId)
-        setViewArtifacts(a)
-      } catch {
-        setViewArtifacts(null)
+      if (t?.result) {
+        setViewResult(t)
+        loadedResult = true
       }
     } catch {
-      // 后端内存任务已丢失时，尝试读持久化结果
+      // 内存任务丢失，忽略，下面尝试读持久化 result.json
+    }
+    if (!loadedResult) {
       try {
         const data = await getBacktestResult(taskId)
-        const t = { task_id: taskId, status: 'success', progress: 100, result: data } as BacktestTask
-        setViewResult(t)
-        try {
-          const a = await getBacktestArtifacts(taskId)
-          setViewArtifacts(a)
-        } catch {
-          setViewArtifacts(null)
+        if (data) {
+          const t = { task_id: taskId, status: 'success', progress: 100, result: data } as BacktestTask
+          setViewResult(t)
+          loadedResult = true
         }
-      } catch (e) {
-        setError('无法加载历史回测结果')
+      } catch {
+        // result.json 不存在：可能是只有模型产物的目录，保留现有/清空结果
       }
+    }
+
+    // 单独尝试读模型产物（权重/特征等），不依赖 result.json
+    try {
+      const a = await getBacktestArtifacts(taskId)
+      setViewArtifacts(a)
+    } catch {
+      setViewArtifacts(null)
+    }
+
+    // 两者都没有才提示
+    if (!loadedResult && !viewArtifacts) {
+      setError('该回测既无结果也无模型产物，无法查看')
     }
     // 滚动到收益曲线区块（而非页面底部）
     try {
@@ -817,17 +829,25 @@ export default function App() {
           </section>
         )}
 
-        {/* 结果：实时任务成功 或 历史查看 */}
-        {((task?.result && task.status === 'success') || viewResult?.result) && (() => {
+        {/* 结果：实时任务成功 或 历史查看（有 result 或仅有模型产物都渲染） */}
+        {(((task?.result && task.status === 'success') || viewResult?.result) ||
+          viewArtifacts) && (() => {
           const r = (task?.status === 'success' ? task.result : viewResult?.result) || null
           const a = (task?.status === 'success' ? artifacts : viewArtifacts) || null
-          if (!r) return null
           return (
             <>
-              <MetricCards result={r} />
-              <NavChart nav={r.nav} />
-              <LayerChart data={r.layer_returns} />
-              <ICChart data={r.ic_analysis} />
+              {r ? (
+                <>
+                  <MetricCards result={r} />
+                  <NavChart nav={r.nav} />
+                  <LayerChart data={r.layer_returns} />
+                  <ICChart data={r.ic_analysis} />
+                </>
+              ) : (
+                <div className="bg-white dark:bg-slate-800 rounded-xl shadow p-6 text-sm text-slate-400">
+                  该回测没有结果数据（可能 result.json 已删除或未跑完），仅展示下方模型产物。
+                </div>
+              )}
               {a && <ModelArtifactsPanel artifacts={a} />}
               {/* 历史回测（复现模式）放在训练产物与调仓记录之间 */}
               <HistoryPanel
@@ -835,13 +855,13 @@ export default function App() {
                 onReuseBacktest={handleReuseBacktest}
                 onViewResult={handleViewResult}
               />
-              {r.trades && r.trades.length > 0 && <TradeLog trades={r.trades} />}
+              {r?.trades && r.trades.length > 0 && <TradeLog trades={r.trades} />}
             </>
           )
         })()}
 
-        {/* 没有结果时，历史回测仍显示（用于直接复用参数） */}
-        {(!((task?.result && task.status === 'success') || viewResult?.result)) && (
+        {/* 既无结果也无模型产物时，历史回测仍显示（用于直接复用参数） */}
+        {(!((task?.result && task.status === 'success') || viewResult?.result) && !viewArtifacts) && (
           <HistoryPanel
             onUseParams={handleUseParams}
             onReuseBacktest={handleReuseBacktest}
