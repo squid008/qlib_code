@@ -481,7 +481,8 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                     ic_train_list.append({"segment": seg_label, **analysis["ic_train"]})
                 if analysis.get("ic_test"):
                     ic_test_list.append({"segment": seg_label, **analysis["ic_test"]})
-                tpl = _get_pred_label(model, dataset, instruments, "test", label_horizon=req.label_horizon)
+                # 复用 _compute_analysis 已算好的 test 预测+label，避免重复 predict
+                tpl = analysis.get("test_pl")
                 if tpl is not None and len(tpl):
                     all_test_pred_label.append(tpl)
 

@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.engine.analysis import _compute_layers, _compute_ic
+from app.engine.analysis import _compute_layers, _compute_ic, _compute_analysis
 
 
 def _make_pred_label(n_instruments=10, dates=None, seed=42):
@@ -69,3 +69,27 @@ class TestComputeIc:
     def test_none_on_empty(self):
         assert _compute_ic(None) is None
         assert _compute_ic(pd.DataFrame()) is None
+
+
+class TestComputeAnalysisReturnsTestPl:
+    """验证 _compute_analysis 返回 test_pl，供调用方复用以避免重复 predict。"""
+
+    def test_returns_test_pl(self, monkeypatch):
+        pl = _make_pred_label()
+        calls = []
+
+        def fake_get_pred_label(model, dataset, instruments, segment, label_horizon=2):
+            calls.append(segment)
+            return pl
+
+        monkeypatch.setattr("app.engine.analysis._get_pred_label", fake_get_pred_label)
+        monkeypatch.setattr("app.engine.analysis._compute_benchmark_returns", lambda *a, **k: {})
+
+        result = _compute_analysis(None, None, ["SH000001"], "段1")
+        # test 和 train 各调用一次 _get_pred_label
+        assert set(calls) == {"test", "train"}
+        # test_pl 被返回（调用方可直接复用，无需再 predict 一次）
+        assert result["test_pl"] is pl
+        assert result["layers"] is not None
+        assert result["ic_train"] is not None
+        assert result["ic_test"] is not None

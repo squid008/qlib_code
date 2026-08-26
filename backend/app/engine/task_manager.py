@@ -22,6 +22,11 @@ from typing import Dict, Optional
 from ..models.backtest import BacktestRequest, BacktestTask, BacktestResult
 
 
+# 最大并发回测任务数（避免多个 LightGBM/XGBoost 任务同时占满 CPU 互抢，
+# 导致单任务变慢。超过则排队执行。可用环境变量 QLIB_MAX_CONCURRENT 覆盖）
+MAX_CONCURRENT_TASKS = int(os.environ.get("QLIB_MAX_CONCURRENT", "2"))
+
+
 class TaskCancelledError(Exception):
     """任务被用户取消。"""
 
@@ -36,6 +41,8 @@ class TaskManager:
         self._cancel_flags: set = set()
         self._lock = threading.Lock()
         self._work_dir = work_dir
+        # 限制并发回测数量，避免多任务同时训练占满 CPU
+        self._sem = threading.BoundedSemaphore(MAX_CONCURRENT_TASKS)
 
     def cancel(self, task_id: str) -> bool:
         """请求取消任务。返回是否成功标记（任务存在且未结束）。"""
@@ -73,6 +80,22 @@ class TaskManager:
         task = self._get(task_id)
         if task is None:
             return
+        # 限制并发：超过 MAX_CONCURRENT_TASKS 的任务在此等待（保持 pending 排队状态）
+        self._update(task_id, status="pending", message=f"排队中（并发回测上限 {MAX_CONCURRENT_TASKS}）", progress=1.0)
+        self._sem.acquire()
+        try:
+            task = self._get(task_id)
+            if task is None:
+                return
+            if self.is_cancelled(task_id):
+                self._update(task_id, status="cancelled", progress=100.0, message="已停止")
+                return
+            self._execute(task_id, req)
+        finally:
+            self._sem.release()
+
+    def _execute(self, task_id: str, req: BacktestRequest):
+        """真正执行回测（已获得并发许可）。"""
         self._update(task_id, status="running", message="开始执行", progress=2.0)
 
         # 注入进度回调（每次汇报进度时检查是否被取消）

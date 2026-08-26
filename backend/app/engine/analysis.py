@@ -170,7 +170,8 @@ def _compute_analysis(model, dataset, instruments, seg_label: str, benchmark: Op
     benchmark: 基准指数代码（如 SH000300），用于在分层图上叠加基准累计收益线。
     label_horizon: 预测周期（天），分层/IC 用未来 N 日收益，与训练 label 口径一致。
     返回 dict:
-      { "layers": {segment, groups}, "ic_train": {...}, "ic_test": {...} }
+      { "layers": {segment, groups}, "ic_train": {...}, "ic_test": {...}, "test_pl": DataFrame|None }
+    test_pl 是测试段的预测+label（调用方可复用于汇总合成，避免重复 predict）。
     失败项为 None。
     """
     test_pl = _get_pred_label(model, dataset, instruments, "test", label_horizon=label_horizon)
@@ -195,4 +196,4 @@ def _compute_analysis(model, dataset, instruments, seg_label: str, benchmark: Op
     ic_train = _compute_ic(train_pl)
     ic_test = _compute_ic(test_pl)
 
-    return {"layers": layers, "ic_train": ic_train, "ic_test": ic_test}
+    return {"layers": layers, "ic_train": ic_train, "ic_test": ic_test, "test_pl": test_pl}

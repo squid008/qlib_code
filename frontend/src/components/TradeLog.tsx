@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { TradeRecord } from '../types'
 
 interface Props {
@@ -30,6 +30,9 @@ export default function TradeLog({ trades }: Props) {
   const [filter, setFilter] = useState<'all' | 'buy' | 'sell'>('all')
   const [keyword, setKeyword] = useState('')
   const [month, setMonth] = useState<string>('') // 'YYYY-MM'，空=全部月份
+  // 分页：大回测可能有数千笔调仓，分页避免一次性渲染过多 DOM 卡顿
+  const [page, setPage] = useState(1)
+  const PAGE_SIZE = 200
 
   // 按月份分组
   const months = useMemo(() => {
@@ -41,6 +44,11 @@ export default function TradeLog({ trades }: Props) {
     return Array.from(map.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
   }, [trades])
 
+  // 筛选变化时回到第一页
+  useEffect(() => {
+    setPage(1)
+  }, [filter, keyword, month])
+
   // 应用筛选 + 月份过滤
   const filtered = useMemo(() => {
     return trades.filter((t) => {
@@ -51,6 +59,14 @@ export default function TradeLog({ trades }: Props) {
       return true
     })
   }, [trades, filter, keyword, month])
+
+  // 分页切片
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const safePage = Math.min(page, totalPages)
+  const pageItems = useMemo(
+    () => filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [filtered, safePage]
+  )
 
   const buyCount = trades.filter((t) => t.direction === 1).length
   const sellCount = trades.filter((t) => t.direction === -1).length
@@ -167,7 +183,7 @@ export default function TradeLog({ trades }: Props) {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((t, i) => (
+              {pageItems.map((t, i) => (
                 <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
                   <td className="py-2 pr-3 whitespace-nowrap">{t.date}</td>
                   <td className="py-2 pr-3 font-mono">{t.instrument}</td>
@@ -187,6 +203,31 @@ export default function TradeLog({ trades }: Props) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* 分页控件 */}
+      {filtered.length > PAGE_SIZE && (
+        <div className="flex flex-wrap items-center justify-between gap-2 mt-4 pt-3 border-t border-slate-100 dark:border-slate-700">
+          <span className="text-xs text-slate-400">
+            共 {filtered.length} 笔 · 第 {safePage}/{totalPages} 页
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={safePage <= 1}
+              className="border rounded px-3 py-1 text-sm disabled:opacity-40"
+            >
+              ◀ 上一页
+            </button>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={safePage >= totalPages}
+              className="border rounded px-3 py-1 text-sm disabled:opacity-40"
+            >
+              下一页 ▶
+            </button>
+          </div>
         </div>
       )}
     </section>
