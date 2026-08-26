@@ -10,6 +10,7 @@ export interface BacktestRequest {
   topk: number
   n_days_hold: number
   label_horizon: number
+  layer_rebalance: number
   n_days_learn: number
   data_source: string
   data_source_provider_uri?: string | null

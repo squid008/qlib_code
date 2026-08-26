@@ -11,7 +11,28 @@ function fmtRatio(v: number | null | undefined, digits = 2) {
   return v.toFixed(digits)
 }
 
+// 从 nav 计算"超额最大回撤"：超额曲线（value/benchmark）从峰值回撤的最大幅度（负值）
+function calcExcessMaxDrawdown(nav?: BacktestResult['nav']): number | null {
+  if (!nav || nav.length === 0) return null
+  let peak = -Infinity
+  let maxDd = 0
+  for (const n of nav) {
+    if (typeof n.value !== 'number' || typeof n.benchmark !== 'number' || n.benchmark <= 0) {
+      continue
+    }
+    const excess = n.value / n.benchmark
+    if (excess > peak) peak = excess
+    if (peak > 0) {
+      const dd = (excess - peak) / peak
+      if (dd < maxDd) maxDd = dd
+    }
+  }
+  return maxDd < 0 ? maxDd : null
+}
+
 export default function MetricCards({ result }: { result: BacktestResult }) {
+  const excessMaxDd = calcExcessMaxDrawdown(result.nav)
+
   const cards = [
     { label: '年化收益', value: fmt(result.annualized_return) },
     { label: '超额收益', value: fmt(result.annualized_excess_return) },
@@ -20,6 +41,7 @@ export default function MetricCards({ result }: { result: BacktestResult }) {
     { label: '胜率', value: fmt(result.win_rate) },
     { label: '基准收益', value: fmt(result.benchmark_return) },
     { label: '累计收益', value: fmt(result.total_return) },
+    { label: '超额最大回撤', value: fmt(excessMaxDd) },
   ]
 
   return (

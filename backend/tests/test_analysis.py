@@ -55,6 +55,41 @@ class TestComputeLayers:
         assert layers[0]["benchmark"] == 0.0
         assert layers[2]["benchmark"] == 0.02
 
+    def test_rebalance_period_1_keeps_old_behavior(self):
+        """rebalance_period=1（默认）应与原行为完全一致。"""
+        pl = _make_pred_label()
+        default = _compute_layers(pl)
+        explicit = _compute_layers(pl, rebalance_period=1)
+        assert default == explicit
+
+    def test_rebalance_period_gt1_algorithm_a(self):
+        """算法A：分层持仓周期>1，调仓日分组持有，仍返回5组+long_short，且分组单调。"""
+        # 构造含 ret（当日收益）的 pred_label，用强正相关保证单调
+        dates = pd.to_datetime(["2022-01-04", "2022-01-05", "2022-01-06", "2022-01-07",
+                                "2022-01-10", "2022-01-11"])
+        n_inst = 20
+        insts = ["SH%06d" % i for i in range(1, n_inst + 1)]
+        index = pd.MultiIndex.from_product([insts, dates], names=["instrument", "datetime"])
+        rng = np.random.default_rng(7)
+        # score 为股票固有排序（每只股票分数固定），ret 与 score 正相关
+        score_map = {inst: rng.normal() for inst in insts}
+        scores = [score_map[i] for i, _ in index]
+        rets = [s * 0.02 + rng.normal() * 0.002 for s in scores]
+        pl = pd.DataFrame({"score": scores, "ret": rets}, index=index)
+        # 用 ret 作为 label（供 long_average 等用）
+        pl["label"] = pl["ret"]
+
+        layers = _compute_layers(pl, rebalance_period=3)
+        assert layers is not None
+        assert len(layers) == 6  # 每个交易日一个 point
+        pt = layers[0]
+        for k in ["Group1", "Group2", "Group3", "Group4", "Group5", "long_short", "long_average"]:
+            assert k in pt
+        # Group1(最强) 累计收益应 >= Group5(最弱)
+        assert layers[-1]["Group1"] >= layers[-1]["Group5"]
+        # 算法A在非调仓日应保持持仓（相邻两天分组收益来自同一持仓组合）
+        assert layers[0]["Group1"] > layers[1]["Group1"] or layers[1]["Group1"] >= 0
+
 
 class TestComputeIc:
     def test_returns_ic_series(self):

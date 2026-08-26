@@ -59,6 +59,7 @@ export default function App() {
     topk: 50,
     n_days_hold: 10,
     label_horizon: 2,
+    layer_rebalance: 1,
     n_days_learn: 20,
     data_source: 'qlib',
     feature: 'Alpha158',
@@ -537,6 +538,19 @@ export default function App() {
                 className="mt-1 w-full border rounded px-2 py-1"
                 value={form.label_horizon}
                 onChange={(e) => update('label_horizon', Number(e.target.value))}
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm text-slate-500">
+                分层持仓周期(天)
+                <span className="block text-[10px] text-slate-400">1=每日重排；&gt;1=调仓日分组持有（评估实盘）</span>
+              </span>
+              <input
+                type="number"
+                min={1}
+                className="mt-1 w-full border rounded px-2 py-1"
+                value={form.layer_rebalance}
+                onChange={(e) => update('layer_rebalance', Number(e.target.value))}
               />
             </label>
           </div>

@@ -163,8 +163,13 @@ export default function ICChart({ data }: { data?: ICAnalysis | null }) {
               <LineChart data={points} margin={{ top: 15, right: 20, bottom: 5, left: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                {/* 固定 Y 轴 domain：训练集/测试集 IC 在同一尺度下可直观对比 */}
-                <YAxis tick={{ fontSize: 12 }} domain={[-0.5, 0.5]} />
+                {/* 固定 Y 轴 domain [-1, 1]（IC 理论上下界），训练集/测试集同尺度对比。
+                   训练集 IC 可能 > 0.5（过拟合），扩到 [-1,1] 才能容纳同时不自动缩放。 */}
+                <YAxis
+                  tick={{ fontSize: 12 }}
+                  domain={[-1, 1]}
+                  allowDataOverflow={true}
+                />
                 <Tooltip />
                 <Legend />
                 <ReferenceLine y={0} stroke="#94a3b8" />

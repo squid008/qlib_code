@@ -375,7 +375,8 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
         _report(68, "计算分层回测与 IC 分析...")
         _check_cancel()
         analysis = _compute_analysis(model, dataset, instruments, "段1", benchmark=benchmark,
-                                     label_horizon=req.label_horizon)
+                                     label_horizon=req.label_horizon,
+                                     rebalance_period=getattr(req, "layer_rebalance", None) or 1)
 
         _report(75, "执行回测(PortAnaRecord)...")
         _check_cancel()  # 回测前检查
@@ -488,7 +489,8 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             _check_cancel()
             seg_label = "段%d" % seg_no
             analysis = _compute_analysis(model, dataset, instruments, seg_label, benchmark=benchmark,
-                                         label_horizon=req.label_horizon)
+                                         label_horizon=req.label_horizon,
+                                         rebalance_period=getattr(req, "layer_rebalance", None) or 1)
             if analysis:
                 layers = analysis.get("layers")
                 if layers:

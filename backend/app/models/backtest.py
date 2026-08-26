@@ -24,6 +24,7 @@ class BacktestRequest(BaseModel):
     topk: int = Field(50, description="TopK 选股数量")
     n_days_hold: int = Field(10, description="持仓周期（天）：每 N 个交易日调仓一次，1=每日调仓")
     label_horizon: int = Field(2, description="预测周期（天）：模型预测未来 N 个交易日的收益（label），与分层/IC 的收益口径一致")
+    layer_rebalance: int = Field(1, description="分层持仓周期（天，算法A）：1=每日重排分层（因子诊断）；>1=调仓日分组并持有到下一调仓日（评估实盘，建议与 n_days_hold 对齐）")
     # n_days_learn 已废弃：训练窗口实际由 train_win/train_unit 控制（见 _gen_rolling_segments）
     n_days_learn: Optional[int] = Field(None, description="[废弃] 训练窗口天数，请用 train_win/train_unit")
     # 数据源
