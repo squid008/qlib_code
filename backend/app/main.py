@@ -10,11 +10,16 @@ from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from . import config
+from .logger import get_logger
 from .routers import backtest, data, factors
+
+logger = get_logger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -48,6 +53,20 @@ def create_app() -> FastAPI:
     @app.get("/health", summary="健康检查")
     def health():
         return {"status": "ok"}
+
+    # 参数校验错误：返回友好信息，不暴露堆栈
+    @app.exception_handler(RequestValidationError)
+    async def validation_exc_handler(request: Request, exc: RequestValidationError):
+        logger.warning("参数校验失败 %s %s: %s", request.method, request.url.path, exc.errors())
+        return JSONResponse(status_code=422, content={"detail": "请求参数校验失败，请检查输入"})
+
+    # 兜底：未捕获异常记录到服务端日志，前端只收到友好信息（不暴露堆栈）
+    @app.exception_handler(Exception)
+    async def unhandled_exc_handler(request: Request, exc: Exception):
+        import traceback
+        logger.error("未捕获异常 %s %s: %s\n%s",
+                     request.method, request.url.path, exc, traceback.format_exc())
+        return JSONResponse(status_code=500, content={"detail": f"服务内部错误: {exc}"})
 
     return app
 

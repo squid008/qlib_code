@@ -19,12 +19,15 @@ import uuid
 from datetime import datetime
 from typing import Dict, Optional
 
+from ..logger import get_logger
 from ..models.backtest import BacktestRequest, BacktestTask, BacktestResult
 
 
 # 最大并发回测任务数（避免多个 LightGBM/XGBoost 任务同时占满 CPU 互抢，
 # 导致单任务变慢。超过则排队执行。可用环境变量 QLIB_MAX_CONCURRENT 覆盖）
 MAX_CONCURRENT_TASKS = int(os.environ.get("QLIB_MAX_CONCURRENT", "2"))
+
+logger = get_logger(__name__)
 
 
 class TaskCancelledError(Exception):
@@ -118,12 +121,14 @@ class TaskManager:
         except TaskCancelledError:
             self._update(task_id, status="cancelled", progress=100.0, message="已停止", result=None)
         except Exception as e:
+            # 堆栈只打到服务端日志；前端只显示友好错误信息，避免暴露内部堆栈
             import traceback
+            logger.error("回测任务 %s 失败: %s\n%s", task_id, e, traceback.format_exc())
             self._update(
                 task_id,
                 status="failed",
                 progress=100.0,
-                message=f"失败: {e}\n{traceback.format_exc()}",
+                message=f"失败: {e}",
             )
         finally:
             with self._lock:

@@ -11,8 +11,11 @@
 import os
 from typing import Any, Dict, List, Optional
 
+from ..logger import get_logger
 from ..models.backtest import BacktestRequest, BacktestResult
 from .context import get_artifact_dir
+
+logger = get_logger(__name__)
 
 
 def _extract_model_artifacts(model, dataset, req: BacktestRequest, seg_label: str = "") -> dict:
@@ -194,8 +197,8 @@ def _save_model_artifacts(recorder, artifacts: dict):
     # 保存到 mlflow artifact
     try:
         recorder.save_objects(**{"model_artifacts.json": artifacts}, artifact_path="model_artifacts")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("保存模型交付物到 mlflow 失败: %s", e)
 
     art_dir = get_artifact_dir()
     if not art_dir:
@@ -217,8 +220,8 @@ def _save_model_artifacts(recorder, artifacts: dict):
         if artifacts.get("model_file"):
             with open(os.path.join(sub, "model.txt"), "w", encoding="utf-8") as f:
                 f.write(artifacts["model_file"])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("保存模型交付物到本地失败: %s", e)
 
 
 def _save_model_object(model, dir_path):
@@ -229,8 +232,8 @@ def _save_model_object(model, dir_path):
     try:
         with open(os.path.join(dir_path, "model.pkl"), "wb") as f:
             pickle.dump(model, f)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("保存模型对象(pkl)失败: %s", e)
 
 
 def _read_train_feature_names(task_id: str, seg_no=None) -> Optional[list]:
@@ -360,8 +363,8 @@ def _save_result_json(dir_path: str, result: BacktestResult):
         data = _sanitize_json(data)
         with open(os.path.join(dir_path, "result.json"), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2, default=str)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("保存回测结果 result.json 失败: %s", e)
 
 
 def _save_backtest_params(dir_path: str, req: BacktestRequest):
@@ -398,5 +401,5 @@ def _save_backtest_params(dir_path: str, req: BacktestRequest):
         }
         with open(os.path.join(dir_path, "meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2, default=str)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("保存回测参数快照(params/meta)失败: %s", e)
