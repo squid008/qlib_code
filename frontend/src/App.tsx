@@ -405,11 +405,11 @@ export default function App() {
               <span className="text-sm text-slate-500">数据源</span>
               <select
                 className="mt-1 w-full border rounded px-2 py-1"
-                value={form.data_source}
-                onChange={(e) => update('data_source', e.target.value)}
+                value="qlib"
+                disabled
+                title="当前仅支持 Qlib 数据源"
               >
                 <option value="qlib">Qlib</option>
-                <option value="rqalpha">rqalpha(预留)</option>
               </select>
             </label>
 

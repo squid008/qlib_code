@@ -22,8 +22,9 @@ class BacktestRequest(BaseModel):
         None, description="模型超参（LightGBM/XGBoost 等）。未填的键使用 Qlib 默认值。例：{num_leaves: 210, max_depth: 8, min_child_samples: 20, learning_rate: 0.0421}"
     )
     topk: int = Field(50, description="TopK 选股数量")
-    n_days_hold: int = Field(10, description="持仓周期（天）")
-    n_days_learn: int = Field(20, description="训练窗口（天）")
+    n_days_hold: int = Field(10, description="持仓周期（天）：每 N 个交易日调仓一次，1=每日调仓")
+    # n_days_learn 已废弃：训练窗口实际由 train_win/train_unit 控制（见 _gen_rolling_segments）
+    n_days_learn: Optional[int] = Field(None, description="[废弃] 训练窗口天数，请用 train_win/train_unit")
     # 数据源
     data_source: str = Field("qlib", description="数据源：qlib / rqalpha")
     data_source_provider_uri: Optional[str] = Field(
@@ -38,7 +39,8 @@ class BacktestRequest(BaseModel):
             "将来因子库扩展后，这里可传入任意目录中的因子名。"
         ),
     )
-    bins: int = Field(5, description="Alpha158 的横截面分桶数")
+    # bins 保留用于兼容，但分层回测当前固定为 5 组（见 _compute_layers）
+    bins: int = Field(5, description="[保留] 分层组数，当前固定为 5 组")
     # 交易成本与成交设置
     deal_price: str = Field("close", description="成交价基准：close / open / vwap")
     open_cost: float = Field(0.0005, description="买入手续费（如 0.0005 = 0.05%）")
