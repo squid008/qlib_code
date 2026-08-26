@@ -222,20 +222,18 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
             "class": "SimulatorExecutor",
             "module_path": "qlib.backtest.executor",
             "kwargs": {
-                # 持仓周期：每 n_days_hold 个交易日调仓一次。
-                # qlib 的 time_per_step 支持 "Nday"（如 "10day"），策略只在每个 step 边界调仓。
-                # n_days_hold=1 时退化为每日调仓。
-                "time_per_step": "%dday" % max(1, req.n_days_hold),
+                # 每天一个时间步；调仓频率由自定义策略 PeriodicTopKStrategy 内部控制
+                "time_per_step": "day",
                 "generate_portfolio_metrics": True,
             },
         },
         "strategy": {
-            "class": "TopkDropoutStrategy",
-            "module_path": "qlib.contrib.strategy.signal_strategy",
+            "class": "PeriodicTopKStrategy",
+            "module_path": "app.engine.periodic_strategy",
             "kwargs": {
                 "signal": "<PRED>",
                 "topk": req.topk,
-                "n_drop": 1,
+                "n_days_hold": req.n_days_hold,
                 "only_tradable": False,
             },
         },
