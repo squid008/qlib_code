@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.engine.qlib_engine import _compute_layers, _compute_ic
+from app.engine.analysis import _compute_layers, _compute_ic
 
 
 def _make_pred_label(n_instruments=10, dates=None, seed=42):

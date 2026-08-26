@@ -31,7 +31,7 @@ def _aggregate_from_nav(all_nav: list, seg_results: list) -> BacktestResult:
     dd = (df["value"] / running_max - 1).min()
     result.max_drawdown = float(dd)
     # 日收益（用于夏普/胜率）
-    ret = df["value"].pct_change().dropna()
+    ret = df["value"].pct_change(fill_method=None).dropna()
     if len(ret) > 0 and ret.std() and ret.std() > 0:
         result.sharpe = float(ret.mean() / ret.std() * (252 ** 0.5))
     result.win_rate = float((ret > 0).mean()) if len(ret) else None

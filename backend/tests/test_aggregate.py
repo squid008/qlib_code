@@ -2,7 +2,7 @@
 """净值汇总指标计算的单元测试。"""
 import pytest
 
-from app.engine.qlib_engine import _aggregate_from_nav
+from app.engine.metrics import _aggregate_from_nav
 
 
 class TestAggregateFromNav:
