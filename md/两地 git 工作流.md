@@ -71,24 +71,7 @@ git pull              # 拉取另一地最新代码，避免冲突
 
 ---
 
-## 四、环境配置（两地都需要，一次性配好）
-
-### 1. git 身份（提交者是谁）
-
-```bash
-git config --global user.name "dev"
-git config --global user.email "dev@local"
-```
-
-### 2. 凭据（记住 token，不用每次输）
-
-```bash
-git config --global credential.helper manager   # Windows 用系统凭据存储记住
-```
-
----
-
-## 五、常见问题
+## 四、常见问题
 
 | 问题 | 解决 |
 |---|---|
@@ -99,7 +82,7 @@ git config --global credential.helper manager   # Windows 用系统凭据存储�
 
 ---
 
-## 六、不要做的事
+## 五、不要做的事
 
 - ❌ **不要 `git init`**（会制造无共同祖先的独立仓库，合并很痛苦）
 - ❌ **不要 `git push --force`**（覆盖远程、丢历史），除非明确知道要覆盖
