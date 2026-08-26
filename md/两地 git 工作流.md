@@ -1,6 +1,6 @@
 # 两地 Git 工作流（家 + 公司协作）
 
-本项目的代码托管在 GitHub（`https://github.com/dev/qlib_code`），开发环境有**两地**：家 和 公司。
+本项目的代码托管在 GitHub（`https://github.com/squid008/qlib_code`），开发环境有**两地**：家 和 公司。
 本说明用于两地开发者统一认识 git 协作方式，避免出现"无共同祖先导致合并困难"的问题。
 
 ---
@@ -15,7 +15,7 @@
 
 ## 远程仓库
 
-- 地址：`https://github.com/dev/qlib_code.git`
+- 地址：`https://github.com/squid008/qlib_code.git`
 - 默认分支：`main`
 - 认证：HTTPS + 访问令牌（系统凭据存储自动保存）
 
@@ -27,7 +27,7 @@
 
 ```bash
 cd 想放项目的目录
-git clone https://github.com/dev/qlib_code.git
+git clone https://github.com/squid008/qlib_code.git
 cd qlib_code
 ```
 
