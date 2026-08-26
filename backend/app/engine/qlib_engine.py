@@ -25,6 +25,7 @@ from .context import (
     set_progress_callback,
     set_artifact_dir,
     set_cancel_check,
+    reset_progress,
     get_artifact_dir as _get_artifact_dir,
     check_cancel as _check_cancel,
     report as _report,
@@ -571,7 +572,8 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                             merged_bench = _compute_benchmark_returns(benchmark, b_start, b_end)
                         except Exception:
                             merged_bench = None
-                    merged_groups = _compute_layers(merged_pl, benchmark_ret=merged_bench)
+                    merged_groups = _compute_layers(merged_pl, benchmark_ret=merged_bench,
+                                                     rebalance_period=getattr(req, "layer_rebalance", None) or 1)
                     if merged_groups:
                         merged_layers = {"segment": "汇总", "groups": merged_groups, "benchmark": benchmark}
                 except Exception:

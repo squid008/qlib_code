@@ -110,6 +110,8 @@ class TaskManager:
                 raise TaskCancelledError(task_id)
 
         qlib_engine.set_progress_callback(cb)
+        # 重置本任务的最大进度记录，保证进度从新任务开始累计（不继承旧任务值）
+        qlib_engine.reset_progress()
         qlib_engine.set_artifact_dir(
             os.path.join(self._work_dir, "artifacts", task_id) if self._work_dir else None
         )

@@ -13,6 +13,7 @@ from app.engine.context import (
     get_artifact_dir,
     report,
     check_cancel,
+    reset_progress,
 )
 
 
@@ -43,6 +44,7 @@ class TestContextIsolation:
         set_artifact_dir("y")  # 复原，避免影响其他用例
 
     def test_progress_callback_isolation(self):
+        reset_progress()  # 保证主线程最大进度从 0 开始
         calls = []
         set_progress_callback(lambda p, m: calls.append((p, m)))
         report(50, "half")
@@ -52,6 +54,19 @@ class TestContextIsolation:
         # 无回调时 report 不抛错
         report(1, "noop")
         assert len(calls) == 2
+
+    def test_progress_never_goes_backward(self):
+        """进度单调：倒退的百分比被拦截，不触发回调（多段滚动各段公式区间不一致时防倒退）。"""
+        reset_progress()
+        calls = []
+        set_progress_callback(lambda p, m: calls.append((p, m)))
+        report(90, "段2训练")
+        report(85, "段2计算分层IC")  # 倒退 → 应被拦截
+        report(85, "段2分层IC再次上报")  # 等于当前最大值，仍被拦截（不重复）
+        report(92, "合成分层汇总")
+        assert calls == [(90, "段2训练"), (92, "合成分层汇总")]
+        set_progress_callback(None)
+        reset_progress()
 
     def test_cancel_check(self):
         """check_cancel 在设置取消检查且返回 True 时抛出 TaskCancelledError。"""

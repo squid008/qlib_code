@@ -16,6 +16,8 @@ import contextvars
 _progress_cb: contextvars.ContextVar = contextvars.ContextVar("_progress_cb", default=None)
 _artifact_dir: contextvars.ContextVar = contextvars.ContextVar("_artifact_dir", default=None)
 _cancel_check: contextvars.ContextVar = contextvars.ContextVar("_cancel_check", default=None)
+# 记录本任务已上报的最大进度，保证进度条单调递增（不倒退）
+_max_progress: contextvars.ContextVar = contextvars.ContextVar("_max_progress", default=0.0)
 
 
 def set_progress_callback(cb):
@@ -53,10 +55,20 @@ def check_cancel():
 
 
 def report(p, msg):
-    """上报进度。回调异常时静默忽略，不中断回测。"""
+    """上报进度。进度值保持单调递增（不倒退），回调异常时静默忽略，不中断回测。"""
     cb = _progress_cb.get()
-    if cb is not None:
-        try:
-            cb(p, msg)
-        except Exception:
-            pass
+    if cb is None:
+        return
+    try:
+        max_p = _max_progress.get()
+        if p < max_p:
+            return  # 进度倒退，忽略（避免多段滚动时各段公式区间导致的回调）
+        _max_progress.set(p)
+        cb(p, msg)
+    except Exception:
+        pass
+
+
+def reset_progress():
+    """任务开始时重置本任务的最大进度记录（使新任务从头累计，不继承旧值）。"""
+    _max_progress.set(0.0)
