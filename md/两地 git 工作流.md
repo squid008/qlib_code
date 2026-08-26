@@ -80,19 +80,7 @@ git config --global user.name "dev"
 git config --global user.email "dev@local"
 ```
 
-### 2. 代理（如果访问 GitHub 慢/失败）
-
-如果你在用 网络配置 等代理，且是**规则模式**（不是全局），Git 需要显式指定网络配置。
-以 网络配置 默认端口 7897 为例：
-
-```bash
-git config --global 网络代理 http://127.0.0.1:7897
-git config --global 网络代理 http://127.0.0.1:7897
-```
-
-> 端口取决于你的网络配置（网络配置 常见 7890/7897；网络配置 常见 10809）。可用 `git config --global --get 网络代理` 查看当前配置。
-
-### 3. 凭据（记住 token，不用每次输）
+### 2. 凭据（记住 token，不用每次输）
 
 ```bash
 git config --global credential.helper manager   # Windows 用系统凭据存储记住
@@ -105,7 +93,7 @@ git config --global credential.helper manager   # Windows 用系统凭据存储�
 | 问题 | 解决 |
 |---|---|
 | `git push` 提示 rejected / non-fast-forward | 先 `git pull` 合并远程新提交，再 push |
-| 无法访问 github.com | 检查代理配置（见上文"代理"），或 `git config --global --unset 网络代理` 走直连 |
+| 无法访问 github.com | 检查本地网络/是否有代理配置（可用 `git config --global --get 网络代理` 查看，`--unset` 可去掉） |
 | 提示输入用户名/密码 | 用 访问令牌 作为密码（不是登录密码） |
 | 不确定改了什么 | `git status`、`git diff` 查看 |
 
