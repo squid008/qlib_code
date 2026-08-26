@@ -9,7 +9,6 @@ import {
   Legend,
   ResponsiveContainer,
   ReferenceLine,
-  ReferenceArea,
 } from 'recharts'
 import type { ICAnalysis, ICSegment } from '../types'
 
@@ -147,6 +146,13 @@ export default function ICChart({ data }: { data?: ICAnalysis | null }) {
 
       <SegmentTabs segments={options} active={effective} onChange={setActive} />
 
+      {/* 训练集 IC 是样本内指标，存在过拟合虚高，需提示用户勿高估模型真实预测力 */}
+      {tab === 'train' && (
+        <p className="text-xs mb-3 text-amber-600 dark:text-amber-400">
+          ⚠ 训练集 IC 为样本内指标，通常显著高于样本外（过拟合虚高），不代表真实预测力，请以测试集 IC 为准。
+        </p>
+      )}
+
       {!seg || points.length === 0 ? (
         <p className="text-slate-400 text-sm">该分段暂无 IC 数据</p>
       ) : (
@@ -157,7 +163,8 @@ export default function ICChart({ data }: { data?: ICAnalysis | null }) {
               <LineChart data={points} margin={{ top: 15, right: 20, bottom: 5, left: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} />
+                {/* 固定 Y 轴 domain：训练集/测试集 IC 在同一尺度下可直观对比 */}
+                <YAxis tick={{ fontSize: 12 }} domain={[-0.5, 0.5]} />
                 <Tooltip />
                 <Legend />
                 <ReferenceLine y={0} stroke="#94a3b8" />

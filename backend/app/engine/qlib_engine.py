@@ -160,13 +160,29 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
     if req.instruments:
         instruments = [str(i).upper() for i in req.instruments]
     else:
+        # 用 start_time 过滤：cn_data 是抽样数据，all.txt 里混有大量"无行情/未收录"
+        # 的代码（如 SH600001/SH600002 等老八股）。带 start_time 后 qlib 只返回该
+        # 日期前已上市且有效的股票，避免取到无数据股票导致训练集 Empty data。
+        inst_scope = D.instruments(market=req.universe)
         instruments = [
             str(i).upper()
-            for i in D.list_instruments(D.instruments(market=req.universe), as_list=True)
+            for i in D.list_instruments(inst_scope, start_time=req.start_date, as_list=True)
         ]
-    # 限制股票数量，避免首次运行过慢
+
+        # 兜底边界处理（防止某些 market 返回异常）：
+        # 排除北交所(BJ，2021-11 才开市，早期段无数据)与指数代码(SH000/SH88/SH89/SZ39)。
+        filtered = []
+        for i in instruments:
+            c = str(i)
+            if c.startswith("BJ"):
+                continue
+            if c.startswith(("SH000", "SH88", "SH89", "SZ39")):
+                continue
+            filtered.append(i)
+        instruments = filtered
+
     if len(instruments) > 300:
-        instruments = instruments[:300]
+        instruments = sorted(instruments)[:300]
 
     benchmark = _pick_benchmark(req.universe, instruments)
 

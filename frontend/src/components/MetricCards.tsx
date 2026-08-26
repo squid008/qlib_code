@@ -5,11 +5,17 @@ function fmt(v: number | null | undefined, suffix = '%', digits = 2) {
   return `${(v * 100).toFixed(digits)}${suffix}`
 }
 
+// 夏普比率是无量纲比率（非百分比），直接显示真实值，不做 ×100
+function fmtRatio(v: number | null | undefined, digits = 2) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '--'
+  return v.toFixed(digits)
+}
+
 export default function MetricCards({ result }: { result: BacktestResult }) {
   const cards = [
     { label: '年化收益', value: fmt(result.annualized_return) },
     { label: '超额收益', value: fmt(result.annualized_excess_return) },
-    { label: '夏普比率', value: fmt(result.sharpe, '', 2) },
+    { label: '夏普比率', value: fmtRatio(result.sharpe, 2) },
     { label: '最大回撤', value: fmt(result.max_drawdown) },
     { label: '胜率', value: fmt(result.win_rate) },
     { label: '基准收益', value: fmt(result.benchmark_return) },
