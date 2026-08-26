@@ -16,16 +16,15 @@ from typing import Dict, Optional
 from .base import DataSource
 from .qlib_source import QlibDataSource
 from .rqalpha_source import RQAlphaDataSource
+from .. import config
 
 
-# 默认 Qlib provider_uri，可通过环境变量覆盖
-DEFAULT_QLIB_URI = os.environ.get(
-    "QLIB_PROVIDER_URI",
-    os.path.expanduser(r"~/.qlib/qlib_data/cn_data"),
-)
-DEFAULT_RQALPHA_BUNDLE = os.environ.get(
-    "RQALPHA_BUNDLE_PATH", None
-)
+# 默认 Qlib provider_uri，可通过环境变量/全局配置覆盖
+DEFAULT_QLIB_URI = config.QLIB_PROVIDER_URI
+DEFAULT_RQALPHA_BUNDLE = config.RQALPHA_BUNDLE_PATH
+# rqalpha 财报/成分目录（默认由 RQAlphaDataSource 根据 bundle 自动推导）
+DEFAULT_RQALPHA_FINANCE_DIR = config.RQALPHA_FINANCE_DIR
+DEFAULT_RQALPHA_CONSTITUENTS_DIR = config.RQALPHA_CONSTITUENTS_DIR
 
 
 class DataSourceFactory:
@@ -37,9 +36,13 @@ class DataSourceFactory:
 
     def _build(self):
         self._registry["qlib"] = QlibDataSource(provider_uri=DEFAULT_QLIB_URI)
-        # rqalpha 预留：等实现接入后，把 lazy 初始化改为真正创建
-        if DEFAULT_RQALPHA_BUNDLE:
-            self._registry["rqalpha"] = RQAlphaDataSource(bundle_path=DEFAULT_RQALPHA_BUNDLE)
+        # rqalpha 数据源：bundle 目录存在则注册（可按需读取日线/分钟/财报/指数成分）
+        if DEFAULT_RQALPHA_BUNDLE and os.path.isdir(DEFAULT_RQALPHA_BUNDLE):
+            self._registry["rqalpha"] = RQAlphaDataSource(
+                bundle_path=DEFAULT_RQALPHA_BUNDLE,
+                finance_dir=DEFAULT_RQALPHA_FINANCE_DIR,
+                constituents_dir=DEFAULT_RQALPHA_CONSTITUENTS_DIR,
+            )
 
     def get(self, name: str = "qlib") -> DataSource:
         """获取数据源，默认 qlib。name 不存在时抛 KeyError。"""

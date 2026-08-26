@@ -17,7 +17,13 @@ if not _qlib_uri:
 QLIB_PROVIDER_URI = _qlib_uri
 
 # rqalpha h5 bundle 路径（预留，设置了则启用 rqalpha 数据源）
-RQALPHA_BUNDLE_PATH = os.environ.get("RQALPHA_BUNDLE_PATH", None)
+RQALPHA_BUNDLE_PATH = os.environ.get(
+    "RQALPHA_BUNDLE_PATH",
+    r"E:\rq\bundle" if os.path.isdir(r"E:\rq\bundle") else None,
+)
+# rqalpha 财报(pit)与指数成分目录（默认在 bundle 同级 finance/constituents 下）
+RQALPHA_FINANCE_DIR = os.environ.get("RQALPHA_FINANCE_DIR", None)
+RQALPHA_CONSTITUENTS_DIR = os.environ.get("RQALPHA_CONSTITUENTS_DIR", None)
 
 # 任务/回测临时目录
 WORK_DIR = os.environ.get("QLIB_WORK_DIR", os.path.join(os.path.dirname(__file__), "..", "workdir"))

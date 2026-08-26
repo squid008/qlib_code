@@ -69,8 +69,43 @@ from .artifacts import (
 from .charts import (
     _save_curve_snapshot,
 )
+from ..datasource.factory import get_data_source, list_data_sources
 
 warnings.filterwarnings("ignore")
+
+
+def _resolve_data_source(req: BacktestRequest):
+    """通过数据源工厂解析本次回测使用的数据源。
+
+    - 走 get_data_source() 统一抽象，而不是散落硬编码。
+    - 当前回测引擎依赖 qlib 数据目录格式（DatasetH / D.features / D.calendar），
+      因此仅 qlib 数据源可用于回测；rqalpha 数据源已接入数据查询 API，
+      但回测引擎尚未桥接，返回明确错误而非静默降级/误导。
+    - 返回 (data_source_obj, provider_uri)。provider_uri 优先用请求显式指定的，
+      否则用数据源自身的 provider_uri。
+    """
+    source_name = (getattr(req, "data_source", None) or "qlib").lower()
+    try:
+        ds = get_data_source(source_name)
+    except KeyError:
+        raise ValueError(
+            f"数据源 '{source_name}' 不存在或未启用。可用数据源：{list_data_source_names()}"
+        )
+
+    # 回测引擎当前仅支持 qlib 数据目录
+    if source_name != "qlib":
+        raise ValueError(
+            f"回测引擎当前仅支持 qlib 数据源（'{source_name}' 已接入数据查询 API，"
+            "但回测尚未桥接到该数据源）。请将 data_source 设为 qlib 后再回测。"
+        )
+
+    provider_uri = getattr(req, "data_source_provider_uri", None) or getattr(ds, "provider_uri", None)
+    return ds, provider_uri
+
+
+def list_data_source_names() -> list:
+    """返回当前可用数据源名称列表（供错误提示使用）。"""
+    return list(list_data_sources().keys())
 
 
 def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
@@ -81,7 +116,8 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
     from qlib.utils import init_instance_by_config
     from qlib.workflow import R
 
-    provider_uri = getattr(req, "data_source_provider_uri", None) or _default_qlib_uri()
+    # 通过数据源工厂解析数据源（抽象层打通；仅 qlib 可用于回测）
+    _, provider_uri = _resolve_data_source(req)
 
     # 校验日期格式，避免不完整/非法日期导致日期计算崩溃
     from datetime import datetime
@@ -99,11 +135,11 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
     # 设置模型产物保存目录（可读目录名 + task_id 后缀保证唯一，用于复现/查看训练结果）
     if task_id and work_dir:
         art_dir = _make_artifact_dir(work_dir, task_id, req)
-        _artifact_dir.set(art_dir)
+        set_artifact_dir(art_dir)
         # 保存完整回测参数快照（params.json + meta.json），供复现模式对照
         _save_backtest_params(art_dir, req)
     else:
-        _artifact_dir.set(None)
+        set_artifact_dir(None)
 
     # 解决 mlflow filesystem 后端进入维护模式的问题：
     # 1) 允许使用文件存储（作为兜底）
