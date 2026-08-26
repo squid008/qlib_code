@@ -301,17 +301,11 @@ def _compute_benchmark_returns(benchmark: str, start, end):
     import pandas as pd
     from qlib.data import D
 
-    try:
-        df = D.features(
-            [benchmark],
-            ["$close"],
-            start_time=start,
-            end_time=end,
-        )
+    def _calc(code):
+        df = D.features([code], ["$close"], start_time=start, end_time=end)
         if df is None or len(df) == 0:
-            return {}
+            return None
         close = df["$close"]
-        # D.features 返回 MultiIndex=[instrument, datetime]，按 datetime 层做日收益累加
         s = close.droplevel("instrument").sort_index()
         ret = s.pct_change().fillna(0.0)
         cum = ret.cumsum()
@@ -319,6 +313,17 @@ def _compute_benchmark_returns(benchmark: str, start, end):
         for dt, v in cum.items():
             result[pd.Timestamp(dt).strftime("%Y-%m-%d")] = round(float(v), 6)
         return result
+
+    try:
+        result = _calc(benchmark)
+        if result:
+            return result
+        # Fallback: 原始 benchmark 在该时间段无数据时，回退到 SH000300（沪深300）
+        if benchmark and benchmark != "SH000300":
+            result = _calc("SH000300")
+            if result:
+                return result
+        return {}
     except Exception:
         return {}
 
@@ -1339,7 +1344,11 @@ def _default_exp_uri(work_dir: Optional[str] = None) -> str:
 
 
 def _pick_benchmark(universe: str, instruments: List[str]) -> str:
-    """根据股票池选一个基准（示意：用指数代码或第一个成分）。"""
+    """根据股票池选一个基准。
+
+    已知股票池映射到对应指数；其他（all / 未识别）默认用 SH000300（沪深300，最通用的指数），
+    避免 fallback 到 instruments[0]（可能是无数据的小代码如北交所 BJ430017）。
+    """
     bench_map = {
         "csi300": "SH000300",
         "csi500": "SH000905",
@@ -1348,8 +1357,8 @@ def _pick_benchmark(universe: str, instruments: List[str]) -> str:
     }
     if universe in bench_map:
         return bench_map[universe]
-    # 回退：用第一个成分股做基准
-    return instruments[0] if instruments else "SH000300"
+    # 其他股票池（如 all）：用沪深300作为通用基准
+    return "SH000300"
 
 
 def _fallback_benchmark(benchmark: str, start_time: str, end_time: str,
