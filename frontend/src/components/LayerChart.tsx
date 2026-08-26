@@ -124,7 +124,15 @@ export default function LayerChart({ data }: { data?: LayerReturns | null }) {
           按预测分每日均分5组，累计收益；Top1 应&gt;Top5，多空稳定说明信号有效；点击图例可隐藏/显示曲线
         </span>
       </div>
-      <SegmentTabs segments={options} active={effective} onChange={setActive} />
+      <SegmentTabs
+        segments={options}
+        active={effective}
+        onChange={(label) => {
+          setActive(label)
+          // 切换分段时重置曲线显隐，避免基准等因历史点击而一直隐藏
+          setHidden({})
+        }}
+      />
 
       {groups.length === 0 ? (
         <p className="text-slate-400 text-sm">该分段暂无分层数据</p>
