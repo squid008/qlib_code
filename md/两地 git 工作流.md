@@ -17,7 +17,7 @@
 
 - 地址：`https://github.com/dev/qlib_code.git`
 - 默认分支：`main`
-- 认证：HTTPS + 访问令牌（Windows 系统凭据存储记住）
+- 认证：HTTPS + 访问令牌（系统凭据存储自动保存）
 
 ---
 
@@ -77,7 +77,7 @@ git pull              # 拉取另一地最新代码，避免冲突
 |---|---|
 | `git push` 提示 rejected / non-fast-forward | 先 `git pull` 合并远程新提交，再 push |
 | 无法访问 github.com | 检查本地网络/是否有代理配置（可用 `git config --global --get 网络代理` 查看，`--unset` 可去掉） |
-| 提示输入用户名/密码 | 用 访问令牌 作为密码（不是登录密码） |
+| 提示输入用户名/密码 | 使用 GitHub 的访问令牌作为密码（不是登录密码） |
 | 不确定改了什么 | `git status`、`git diff` 查看 |
 
 ---
@@ -86,5 +86,4 @@ git pull              # 拉取另一地最新代码，避免冲突
 
 - ❌ **不要 `git init`**（会制造无共同祖先的独立仓库，合并很痛苦）
 - ❌ **不要 `git push --force`**（覆盖远程、丢历史），除非明确知道要覆盖
-- ❌ **不要把 token 写进代码/配置文件**（会泄露），用系统凭据存储
 - ❌ **不要把 node_modules、data、workdir、日志** 提交（已在 .gitignore 排除）
