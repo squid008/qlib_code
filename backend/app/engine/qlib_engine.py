@@ -24,35 +24,40 @@ from ..models.backtest import BacktestRequest, BacktestResult
 
 warnings.filterwarnings("ignore")
 
-# 进度回调（由 task_manager 注入）
-_progress_cb: Optional[Any] = None
-_artifact_dir: Optional[str] = None
-# 取消检查（由 task_manager 注入，返回 True 表示任务被取消）
-_cancel_check: Optional[Any] = None
+# 任务上下文（进度/产物目录/取消检查）
+# 用 contextvars 而非模块级全局变量：每个线程有独立上下文，
+# 从而支持并行回测时各任务互不污染（避免 A 任务覆盖 B 任务的产物目录/取消标志）。
+import contextvars
+_progress_cb: contextvars.ContextVar = contextvars.ContextVar("_progress_cb", default=None)
+_artifact_dir: contextvars.ContextVar = contextvars.ContextVar("_artifact_dir", default=None)
+_cancel_check: contextvars.ContextVar = contextvars.ContextVar("_cancel_check", default=None)
 
 
 def set_progress_callback(cb):
-    global _progress_cb
-    _progress_cb = cb
+    _progress_cb.set(cb)
 
 
 def set_artifact_dir(path: Optional[str]):
     """设置当前任务的模型产物保存目录（按 task_id 组织）。"""
-    global _artifact_dir
-    _artifact_dir = path
+    _artifact_dir.set(path)
 
 
 def set_cancel_check(fn):
     """设置当前任务的取消检查函数（返回 True 表示任务被取消）。"""
-    global _cancel_check
-    _cancel_check = fn
+    _cancel_check.set(fn)
+
+
+def _get_artifact_dir() -> Optional[str]:
+    """获取当前任务的产物保存目录。"""
+    return _artifact_dir.get()
 
 
 def _check_cancel():
     """在关键检查点调用：若用户已点停止，抛 TaskCancelledError 让上层捕获并终止。"""
-    if _cancel_check is not None:
+    cancel_check = _cancel_check.get()
+    if cancel_check is not None:
         try:
-            if _cancel_check():
+            if cancel_check():
                 from .task_manager import TaskCancelledError
                 raise TaskCancelledError("cancelled by user")
         except Exception as e:
@@ -63,9 +68,10 @@ def _check_cancel():
 
 
 def _report(p, msg):
-    if _progress_cb is not None:
+    cb = _progress_cb.get()
+    if cb is not None:
         try:
-            _progress_cb(p, msg)
+            cb(p, msg)
         except Exception:
             pass
 
@@ -94,13 +100,13 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
         raise ValueError(f"结束日期({req.end_date})不能早于开始日期({req.start_date})")
 
     # 设置模型产物保存目录（可读目录名 + task_id 后缀保证唯一，用于复现/查看训练结果）
-    global _artifact_dir
     if task_id and work_dir:
-        _artifact_dir = _make_artifact_dir(work_dir, task_id, req)
+        art_dir = _make_artifact_dir(work_dir, task_id, req)
+        _artifact_dir.set(art_dir)
         # 保存完整回测参数快照（params.json + meta.json），供复现模式对照
-        _save_backtest_params(_artifact_dir, req)
+        _save_backtest_params(art_dir, req)
     else:
-        _artifact_dir = None
+        _artifact_dir.set(None)
 
     # 解决 mlflow filesystem 后端进入维护模式的问题：
     # 1) 允许使用文件存储（作为兜底）
@@ -150,9 +156,10 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
 
     # 生成净值曲线 + 参数快照图（存入 artifacts）
     _report(96, "生成回测曲线快照...")
-    if _artifact_dir:
-        _save_curve_snapshot(_artifact_dir, req, result)
-        _save_result_json(_artifact_dir, result)
+    art_dir = _get_artifact_dir()
+    if art_dir:
+        _save_curve_snapshot(art_dir, req, result)
+        _save_result_json(art_dir, result)
 
     _report(100, "完成")
     return result
@@ -493,7 +500,7 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
         recorder = R.get_recorder()
         # 保存模型可复现交付物（公式/权重/超参数/模型文件）及模型对象
         _save_model_artifacts(recorder, _extract_model_artifacts(model, dataset, req))
-        _save_model_object(model, _artifact_dir)
+        _save_model_object(model, _get_artifact_dir())
 
         _report(65, "生成预测信号...")
         _check_cancel()  # 预测前检查
@@ -604,8 +611,9 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             _save_model_artifacts(recorder, _extract_model_artifacts(
                 model, dataset, req, seg_label="seg%d" % seg_no))
             # 保存该段模型对象（供后续复用/对照）
-            if _artifact_dir:
-                _save_model_object(model, os.path.join(_artifact_dir, "segment_%s" % seg_no))
+            art_dir = _get_artifact_dir()
+            if art_dir:
+                _save_model_object(model, os.path.join(art_dir, "segment_%s" % seg_no))
             _check_cancel()  # 预测前检查
             sr = SignalRecord(model, dataset, recorder)
             sr.generate()
@@ -638,8 +646,9 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             end_account = _get_segment_end_account(par, recorder)
 
             # 为该段单独生成曲线+参数快照图（参数横排在下方）
-            if _artifact_dir:
-                seg_dir = os.path.join(_artifact_dir, "segment_%s" % seg_no)
+            art_dir = _get_artifact_dir()
+            if art_dir:
+                seg_dir = os.path.join(art_dir, "segment_%s" % seg_no)
                 os.makedirs(seg_dir, exist_ok=True)
                 _save_curve_snapshot(seg_dir, req, seg_result)
 
@@ -1066,16 +1075,16 @@ def _save_model_artifacts(recorder, artifacts: dict):
     except Exception:
         pass
 
-    global _artifact_dir
-    if not _artifact_dir:
+    art_dir = _get_artifact_dir()
+    if not art_dir:
         return
     try:
         # 确定保存子目录：滚动段(seg1/seg2/...)写入独立子目录，single 写入主目录
         seg = (artifacts.get("model_info") or {}).get("segment") or ""
         if seg:
-            sub = os.path.join(_artifact_dir, "segment_%s" % str(seg).replace("seg", ""))
+            sub = os.path.join(art_dir, "segment_%s" % str(seg).replace("seg", ""))
         else:
-            sub = _artifact_dir
+            sub = art_dir
         os.makedirs(sub, exist_ok=True)
 
         # 交付物 JSON
