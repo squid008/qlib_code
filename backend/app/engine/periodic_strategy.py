@@ -9,6 +9,8 @@
 
 用法：在 _build_port_config 的 strategy 配置里指定本类。
 """
+import copy
+
 from qlib.backtest.decision import Order, TradeDecisionWO
 from qlib.contrib.strategy.signal_strategy import BaseSignalStrategy
 from qlib.log import get_module_logger
@@ -62,7 +64,8 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
         if pred_score is None or len(pred_score) == 0:
             return TradeDecisionWO([], self)
 
-        current_temp = self.trade_position
+        # 用 deepcopy 模拟调仓（不应直接修改真实账户；最终订单由 executor 实际执行）
+        current_temp = copy.deepcopy(self.trade_position)
         cash = current_temp.get_cash()
         current_stock_list = current_temp.get_stock_list()
 
