@@ -71,18 +71,7 @@ git pull              # 拉取另一地最新代码，避免冲突
 
 ---
 
-## 四、常见问题
-
-| 问题 | 解决 |
-|---|---|
-| `git push` 提示 rejected / non-fast-forward | 先 `git pull` 合并远程新提交，再 push |
-| 无法访问 github.com | 检查本地网络/是否有代理配置（可用 `git config --global --get 网络代理` 查看，`--unset` 可去掉） |
-| 提示输入用户名/密码 | 使用 GitHub 的访问令牌作为密码（不是登录密码） |
-| 不确定改了什么 | `git status`、`git diff` 查看 |
-
----
-
-## 五、不要做的事
+## 四、不要做的事
 
 - ❌ **不要 `git init`**（会制造无共同祖先的独立仓库，合并很痛苦）
 - ❌ **不要 `git push --force`**（覆盖远程、丢历史），除非明确知道要覆盖
