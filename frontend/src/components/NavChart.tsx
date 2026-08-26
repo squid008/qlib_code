@@ -79,7 +79,7 @@ export default function NavChart({ nav }: { nav?: NavPoint[] | null }) {
     <section id="nav-chart" className="bg-white dark:bg-slate-800 rounded-xl shadow p-6">
       <h2 className="text-lg font-semibold mb-4">收益曲线</h2>
       <div className="h-72">
-        <ResponsiveContainer width="100%" height="100%">
+        <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 600, height: 288 }}>
           <LineChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="date" tick={{ fontSize: 12 }} />

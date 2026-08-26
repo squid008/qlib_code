@@ -62,7 +62,7 @@ function SegmentTabs({
   )
 }
 
-export default function LayerChart({ data }: { data?: LayerReturns | null }) {
+export default function LayerChart({ data, rebalance = 1 }: { data?: LayerReturns | null; rebalance?: number }) {
   const [active, setActive] = useState('')
   // 每条曲线的显隐状态（点击图例切换）
   const [hidden, setHidden] = useState<Record<string, boolean>>({})
@@ -106,7 +106,7 @@ export default function LayerChart({ data }: { data?: LayerReturns | null }) {
     return true
   }).map((k) => ({
     value: LINE_META[k].name,
-    type: 'line',
+    type: 'line' as const,
     id: k,
     color: LINE_META[k].color,
     inactive: hidden[k],
@@ -121,7 +121,9 @@ export default function LayerChart({ data }: { data?: LayerReturns | null }) {
       <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
         <h2 className="text-lg font-semibold">分层回测（5组）</h2>
         <span className="text-xs text-slate-400">
-          按预测分每日均分5组，累计收益；Top1 应&gt;Top5，多空稳定说明信号有效；点击图例可隐藏/显示曲线
+          {rebalance > 1
+            ? `按预测分每 ${rebalance} 个交易日调仓分组，累计收益；Top1 应大于 Top5，多空稳定说明信号有效；点击图例可隐藏/显示曲线`
+            : '按预测分每日均分5组，累计收益；Top1 应大于 Top5，多空稳定说明信号有效；点击图例可隐藏/显示曲线'}
         </span>
       </div>
       <SegmentTabs
@@ -138,7 +140,7 @@ export default function LayerChart({ data }: { data?: LayerReturns | null }) {
         <p className="text-slate-400 text-sm">该分段暂无分层数据</p>
       ) : (
         <div className="h-80">
-          <ResponsiveContainer width="100%" height="100%">
+          <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 600, height: 320 }}>
             <LineChart data={groups} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="date" tick={{ fontSize: 12 }} />

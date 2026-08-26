@@ -110,12 +110,12 @@ export default function ICChart({ data }: { data?: ICAnalysis | null }) {
       <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
         <h2 className="text-lg font-semibold">训练集 / 测试集 IC</h2>
         <span className="text-xs text-slate-400">
-          IC 为每日横截面 Pearson 相关；平均IC+ICIR 衡量信号稳定度，IR&gt;0.5 相对稳健
+          {'IC 为每日横截面 Pearson 相关；平均IC+ICIR 衡量信号稳定度，IR>0.5 相对稳健'}
         </span>
       </div>
 
-      {/* 训练/测试切换 */}
-      <div className="flex gap-2 mb-3">
+      {/* 训练/测试切换；注释固定在"训练集IC"按钮旁边，切换时布局不上下跳动，便于直接对比两者IC稳定性 */}
+      <div className="flex items-center flex-wrap gap-2 mb-3">
         <button
           onClick={() => {
             setTab('test')
@@ -142,16 +142,12 @@ export default function ICChart({ data }: { data?: ICAnalysis | null }) {
         >
           训练集 IC
         </button>
+        <span className="text-xs text-amber-600 dark:text-amber-400">
+          ⚠ 训练集 IC 为样本内指标，通常显著高于样本外（过拟合虚高），不代表真实预测力，请以测试集 IC 为准。
+        </span>
       </div>
 
       <SegmentTabs segments={options} active={effective} onChange={setActive} />
-
-      {/* 训练集 IC 是样本内指标，存在过拟合虚高，需提示用户勿高估模型真实预测力 */}
-      {tab === 'train' && (
-        <p className="text-xs mb-3 text-amber-600 dark:text-amber-400">
-          ⚠ 训练集 IC 为样本内指标，通常显著高于样本外（过拟合虚高），不代表真实预测力，请以测试集 IC 为准。
-        </p>
-      )}
 
       {!seg || points.length === 0 ? (
         <p className="text-slate-400 text-sm">该分段暂无 IC 数据</p>
@@ -159,7 +155,7 @@ export default function ICChart({ data }: { data?: ICAnalysis | null }) {
         <>
           <StatBadges seg={seg} />
           <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 600, height: 288 }}>
               <LineChart data={points} margin={{ top: 15, right: 20, bottom: 5, left: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="date" tick={{ fontSize: 12 }} />

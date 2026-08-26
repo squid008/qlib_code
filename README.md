@@ -108,11 +108,14 @@ npm run dev
 - 数据路径默认 `~/.qlib/qlib_data/cn_data`（当前用户主目录），可用环境变量 `QLIB_PROVIDER_URI` 覆盖
 - **注意**：Qlib 数据本身只有日线，不含分钟/财报/行业/指数成分
 
-### rqalpha h5 数据源（预留）
-- 目标：提供 **分钟线、财报、行业分类、指数成分** 等 Qlib 缺失的数据
-- 实现骨架在 `backend/app/datasource/rqalpha_source.py`，所有方法已定义好接口契约
-- **待接入**：在 `_ensure_store()` 中实现 h5 文件读取（可用 `h5py`/`pandas.read_hdf` 或 rqalpha 的 `BundleData`）
-- 接入后通过环境变量 `RQALPHA_BUNDLE_PATH` 指向 h5 目录即可启用
+### rqalpha h5 数据源（已实现）
+- 提供 **分钟线（1min）、财报、指数成分、日线** 等 Qlib 缺失的数据
+- 实现于 `backend/app/datasource/rqalpha_source.py`，通过 `h5py` 直接读取 rqalpha bundle 的 h5 文件
+- 启用条件：`RQALPHA_BUNDLE_PATH` 指向 bundle 目录（如 `E:\rq\bundle`），目录存在则自动注册
+- **依赖**：需安装 `h5py`（`pip install h5py`）
+- 依赖 `E:\rq\bundle` 存在 `h5/equities/`（分钟）、`finance/pit/`（财报）、`constituents/index/`（指数成分）等子目录
+
+> 注：行业分类（industry）能力目前未实现（capabilities 标记为 false）。
 
 ## 回测引擎说明
 

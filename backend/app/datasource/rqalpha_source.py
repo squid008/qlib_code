@@ -102,6 +102,13 @@ class RQAlphaDataSource(DataSource):
             return f"{digits}.XSHG"
         if code.startswith("BJ"):
             return f"{digits}.XSHG"
+        # 外部格式带 .SH/.SZ/.BJ 后缀 → 转成 bundle 格式（600000.SH → 600000.XSHG）
+        if code.endswith(".SH"):
+            return f"{digits}.XSHG"
+        if code.endswith(".SZ"):
+            return f"{digits}.XSHE"
+        if code.endswith(".BJ"):
+            return f"{digits}.XSHG"
         # 已是 bundle 格式（000001.XSHE / 600000.XSHG）
         if "." in code:
             return code

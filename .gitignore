@@ -21,7 +21,11 @@ backend/workdir/
 
 # 临时/测试文件
 test1.py
+test2.py
 *.pkl
+
+# TypeScript 编译缓存
+*.tsbuildinfo
 
 # 本地专用文档（不上传到 GitHub）
 md/upload.md

@@ -7,6 +7,7 @@ import {
   getBacktestResult,
   cancelBacktest,
   getFactorCatalog,
+  getBacktestSnapshot,
 } from './api'
 import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog } from './types'
 import MetricCards from './components/MetricCards'
@@ -174,12 +175,13 @@ export default function App() {
 
   // 复现模式：用历史回测的参数填充表单（万元资金换算），定位到开始回测按钮
   const handleUseParams = (params: BacktestRequest, taskId: string) => {
-    // 若历史任务带复用权重标识，一并带上
-    const withReuse: BacktestRequest = {
-      ...params,
-      load_model_task_id: taskId,
+    // 合并历史参数到当前表单：只覆盖"有定义"的字段，缺失字段保留表单值，避免 controlled→uncontrolled
+    const merged: BacktestRequest = { ...form }
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null) (merged as unknown as Record<string, unknown>)[k] = v
     }
-    setForm(withReuse)
+    merged.load_model_task_id = taskId // 复用权重
+    setForm(merged)
     setCapitalWan((params.initial_capital || 0) / 10000)
     setError('')
     // 同步特征勾选状态：历史选中了特征则带出，否则全量
@@ -203,18 +205,19 @@ export default function App() {
   // 直接复用历史回测参数 + 模型权重开始回测（不训练）
   const handleReuseBacktest = async (params: BacktestRequest, taskId: string) => {
     setError('')
-    // 填充表单便于展示
-    const withReuse: BacktestRequest = {
-      ...params,
-      load_model_task_id: taskId,
+    // 合并历史参数到当前表单：只覆盖"有定义"的字段
+    const merged: BacktestRequest = { ...form }
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null) (merged as unknown as Record<string, unknown>)[k] = v
     }
-    setForm(withReuse)
+    merged.load_model_task_id = taskId // 复用权重
+    setForm(merged)
     setCapitalWan((params.initial_capital || 0) / 10000)
     setTask(null)
     setArtifacts(null)
     setViewResult(null)
     setViewArtifacts(null)
-    await submitAndRun(withReuse, (params.initial_capital || 0))
+    await submitAndRun(merged, (params.initial_capital || 0))
     // 定位到结果/按钮位置
     try {
       const el = document.getElementById('nav-chart') || document.getElementById('start-backtest-btn')
@@ -256,6 +259,22 @@ export default function App() {
       } catch {
         // result.json 不存在：可能是只有模型产物的目录，保留现有/清空结果
       }
+    }
+
+    // 加载该回测的参数并填充表单（同步分层/IC等说明文案，不提交回测）。
+    // 只覆盖历史参数中"有定义"的字段，缺失字段保留表单现有值，避免 controlled→uncontrolled 告警。
+    try {
+      const snap = await getBacktestSnapshot(taskId)
+      if (snap?.params) {
+        const merged: BacktestRequest = { ...form }
+        for (const [k, v] of Object.entries(snap.params)) {
+          if (v !== undefined && v !== null) (merged as unknown as Record<string, unknown>)[k] = v
+        }
+        setForm(merged)
+        setCapitalWan((snap.params.initial_capital || 0) / 10000)
+      }
+    } catch {
+      // 无 params.json（旧任务），忽略，保持当前表单
     }
 
     // 单独尝试读模型产物（权重/特征等），不依赖 result.json
@@ -543,7 +562,7 @@ export default function App() {
             <label className="block">
               <span className="text-sm text-slate-500">
                 分层持仓周期(天)
-                <span className="block text-[10px] text-slate-400">1=每日重排；&gt;1=调仓日分组持有（评估实盘）</span>
+                <span className="block text-[10px] text-slate-400">{'1=每日重排；>1=调仓日分组持有（评估实盘）'}</span>
               </span>
               <input
                 type="number"
@@ -870,7 +889,7 @@ export default function App() {
                 <>
                   <MetricCards result={r} />
                   <NavChart nav={r.nav} />
-                  <LayerChart data={r.layer_returns} />
+                  <LayerChart data={r.layer_returns} rebalance={form.layer_rebalance} />
                   <ICChart data={r.ic_analysis} />
                 </>
               ) : (

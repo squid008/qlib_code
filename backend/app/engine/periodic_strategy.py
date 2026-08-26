@@ -83,7 +83,7 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
             ):
                 continue
             sell_amount = current_temp.get_stock_amount(code=code)
-            if sell_amount <= 0:
+            if not sell_amount or sell_amount <= 0:
                 continue
             order = Order(
                 stock_id=code,
@@ -111,13 +111,13 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
                 buy_price = self.trade_exchange.get_deal_price(
                     stock_id=code, start_time=trade_start_time, end_time=trade_end_time, direction=Order.BUY
                 )
-                if buy_price <= 0:
+                if not buy_price or buy_price <= 0:
                     continue
                 buy_amount = self.trade_exchange.round_amount_by_trade_unit(
                     value / buy_price,
                     self.trade_exchange.get_factor(stock_id=code, start_time=trade_start_time, end_time=trade_end_time),
                 )
-                if buy_amount <= 0:
+                if not buy_amount or buy_amount <= 0:
                     continue
                 buy_order_list.append(
                     Order(

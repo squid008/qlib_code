@@ -181,8 +181,8 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
             filtered.append(i)
         instruments = filtered
 
-    if len(instruments) > 300:
-        instruments = sorted(instruments)[:300]
+    # 不再限制股票数量：全 A 股票池直接用全部（覆盖 SH/SZ/BJ 三个市场），
+    # 避免抽样/截断导致只剩单一市场。性能问题由模型复杂度与机器性能决定。
 
     benchmark = _pick_benchmark(req.universe, instruments)
 
