@@ -9,6 +9,7 @@ export interface BacktestRequest {
   model_params?: Record<string, string | number | null> | null
   topk: number
   n_days_hold: number
+  label_horizon: number
   n_days_learn: number
   data_source: string
   data_source_provider_uri?: string | null

@@ -219,6 +219,8 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg)
     # 支持自定义特征子集：选中了特征则传给 handler 的 fields
     if req.selected_features:
         handler_kwargs["fields"] = list(req.selected_features)
+    # 预测周期：模型预测未来 N 日收益（label），与分层/IC 口径一致
+    handler_kwargs["label_horizon"] = getattr(req, "label_horizon", None) or 2
     return {
         "class": "DatasetH",
         "module_path": "qlib.data.dataset",
@@ -347,7 +349,8 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
         # 分层回测 + IC 分析（single 模式只有一段，段标签=段1）
         _report(68, "计算分层回测与 IC 分析...")
         _check_cancel()
-        analysis = _compute_analysis(model, dataset, instruments, "段1", benchmark=benchmark)
+        analysis = _compute_analysis(model, dataset, instruments, "段1", benchmark=benchmark,
+                                     label_horizon=req.label_horizon)
 
         _report(75, "执行回测(PortAnaRecord)...")
         _check_cancel()  # 回测前检查
@@ -459,7 +462,8 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             _report(25 + int(60 * (idx + 1) / total), "段%d/%d: 计算分层与IC..." % (seg_no, total))
             _check_cancel()
             seg_label = "段%d" % seg_no
-            analysis = _compute_analysis(model, dataset, instruments, seg_label, benchmark=benchmark)
+            analysis = _compute_analysis(model, dataset, instruments, seg_label, benchmark=benchmark,
+                                         label_horizon=req.label_horizon)
             if analysis:
                 layers = analysis.get("layers")
                 if layers:
@@ -468,7 +472,7 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                     ic_train_list.append({"segment": seg_label, **analysis["ic_train"]})
                 if analysis.get("ic_test"):
                     ic_test_list.append({"segment": seg_label, **analysis["ic_test"]})
-                tpl = _get_pred_label(model, dataset, instruments, "test")
+                tpl = _get_pred_label(model, dataset, instruments, "test", label_horizon=req.label_horizon)
                 if tpl is not None and len(tpl):
                     all_test_pred_label.append(tpl)
 

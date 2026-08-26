@@ -58,6 +58,7 @@ export default function App() {
     model_params: {},
     topk: 50,
     n_days_hold: 10,
+    label_horizon: 2,
     n_days_learn: 20,
     data_source: 'qlib',
     feature: 'Alpha158',
@@ -523,6 +524,19 @@ export default function App() {
                 className="mt-1 w-full border rounded px-2 py-1"
                 value={form.n_days_hold}
                 onChange={(e) => update('n_days_hold', Number(e.target.value))}
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm text-slate-500">
+                预测周期(天)
+                <span className="block text-[10px] text-slate-400">模型预测未来N日收益</span>
+              </span>
+              <input
+                type="number"
+                min={1}
+                className="mt-1 w-full border rounded px-2 py-1"
+                value={form.label_horizon}
+                onChange={(e) => update('label_horizon', Number(e.target.value))}
               />
             </label>
           </div>

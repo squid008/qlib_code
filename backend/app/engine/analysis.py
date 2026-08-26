@@ -9,14 +9,16 @@ from typing import Optional
 import pandas as pd
 
 
-def _get_pred_label(model, dataset, instruments, segment: str):
+def _get_pred_label(model, dataset, instruments, segment: str, label_horizon: int = 2):
     """获取某段（train/test）的预测分 + 未来收益 label，合并成一个 DataFrame。
 
+    label_horizon: 预测周期（天），label = 未来 N 个交易日的收益。
     返回 None 表示该段没有可用的预测或 label。返回 DataFrame columns=['score','label']，
     index 为 MultiIndex=[instrument, datetime]。
     """
     from qlib.data import D
 
+    n = max(1, int(label_horizon or 2))
     try:
         pred = model.predict(dataset, segment=segment)
     except Exception:
@@ -30,8 +32,9 @@ def _get_pred_label(model, dataset, instruments, segment: str):
     try:
         start = pred.index.get_level_values("datetime").min()
         end = pred.index.get_level_values("datetime").max()
+        label_expr = f"Ref($close, -{n + 1}) / Ref($close, -1) - 1"
         label_df = D.features(
-            instruments, ["Ref($close, -2) / Ref($close, -1) - 1"],
+            instruments, [label_expr],
             start_time=start, end_time=end,
         )
         label_df.columns = ["label"]
@@ -160,16 +163,18 @@ def _compute_ic(pred_label):
     }
 
 
-def _compute_analysis(model, dataset, instruments, seg_label: str, benchmark: Optional[str] = None):
+def _compute_analysis(model, dataset, instruments, seg_label: str, benchmark: Optional[str] = None,
+                      label_horizon: int = 2):
     """计算某段的分析数据：分层回测（test 段）+ 训练/测试集 IC 曲线。
 
     benchmark: 基准指数代码（如 SH000300），用于在分层图上叠加基准累计收益线。
+    label_horizon: 预测周期（天），分层/IC 用未来 N 日收益，与训练 label 口径一致。
     返回 dict:
       { "layers": {segment, groups}, "ic_train": {...}, "ic_test": {...} }
     失败项为 None。
     """
-    test_pl = _get_pred_label(model, dataset, instruments, "test")
-    train_pl = _get_pred_label(model, dataset, instruments, "train")
+    test_pl = _get_pred_label(model, dataset, instruments, "test", label_horizon=label_horizon)
+    train_pl = _get_pred_label(model, dataset, instruments, "train", label_horizon=label_horizon)
 
     # 基准累计收益（与分层同日期区间）
     benchmark_ret = None

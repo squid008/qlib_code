@@ -19,8 +19,9 @@ class SelectedAlpha158(Alpha158):
     特征名必须与 Alpha158DL.get_feature_config 生成的 names 一致。
     """
 
-    def __init__(self, fields: Optional[List[str]] = None, **kwargs):
+    def __init__(self, fields: Optional[List[str]] = None, label_horizon: Optional[int] = 2, **kwargs):
         self._selected = set(fields) if fields else None
+        self._label_horizon = max(1, int(label_horizon or 2))
         super().__init__(**kwargs)
 
     def get_feature_config(self):
@@ -36,13 +37,19 @@ class SelectedAlpha158(Alpha158):
             fields, names = ([f for f, _ in keep], [n for _, n in keep])
         return fields, names
 
+    def get_label_config(self):
+        # 预测周期：未来 N 个交易日的收益。N=label_horizon
+        n = self._label_horizon
+        return [f"Ref($close, -{n + 1})/Ref($close, -1) - 1"], ["LABEL0"]
+
 
 class SelectedAlpha360(Alpha360):
     """Alpha360 的子集版。Alpha360 的特征名为 CLOSE{i}/OPEN{i}/HIGH{i}/LOW{i}/
     VWAP{i}/VOLUME{i}（i=0..59）。通过 fields 指定要保留的特征名。"""
 
-    def __init__(self, fields: Optional[List[str]] = None, **kwargs):
+    def __init__(self, fields: Optional[List[str]] = None, label_horizon: Optional[int] = 2, **kwargs):
         self._selected = set(fields) if fields else None
+        self._label_horizon = max(1, int(label_horizon or 2))
         super().__init__(**kwargs)
 
     def get_feature_config(self):
@@ -51,3 +58,8 @@ class SelectedAlpha360(Alpha360):
             keep = [(f, n) for f, n in zip(fields, names) if n in self._selected]
             fields, names = ([f for f, _ in keep], [n for _, n in keep])
         return fields, names
+
+    def get_label_config(self):
+        # 预测周期：未来 N 个交易日的收益。N=label_horizon
+        n = self._label_horizon
+        return [f"Ref($close, -{n + 1})/Ref($close, -1) - 1"], ["LABEL0"]
