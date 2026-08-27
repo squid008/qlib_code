@@ -74,6 +74,30 @@ from ..datasource.factory import get_data_source, list_data_sources
 
 warnings.filterwarnings("ignore")
 
+# ---- qlib 全局初始化：进程内只执行一次（多线程并发时避免互相踩踏全局 C/D 状态）----
+import threading as _threading
+
+_qlib_init_lock = _threading.Lock()
+_qlib_initialized = False
+
+
+def _ensure_qlib_init(provider_uri):
+    """线程安全的 qlib.init：只在第一次调用时真正初始化，后续线程直接跳过。
+
+    背景：qlib.init() 会重置全局 C/D（config、数据模块）状态。若多个回测任务
+    线程并发调用 qlib.init()，会互相覆盖导致 `KeyError('dataset_cache')`、
+    `Please run qlib.init() first` 等错误。因此必须全局只 init 一次。
+    """
+    global _qlib_initialized
+    if _qlib_initialized:
+        return
+    import qlib
+    from qlib.constant import REG_CN
+    with _qlib_init_lock:
+        if not _qlib_initialized:
+            qlib.init(provider_uri=provider_uri, region=REG_CN)
+            _qlib_initialized = True
+
 
 def _resolve_data_source(req: BacktestRequest):
     """通过数据源工厂解析本次回测使用的数据源。
@@ -147,7 +171,8 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
     os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
     _report(3, "初始化 Qlib...")
-    qlib.init(provider_uri=provider_uri, region=REG_CN)
+    # 全局只 init 一次（多线程并发回测时避免重复初始化互相踩踏全局 C/D 状态）
+    _ensure_qlib_init(provider_uri)
 
     # 2) 使用 sqlite 作为实验追踪后端，避免 filesystem 维护模式限制
     _exp_uri = _default_exp_uri(work_dir)

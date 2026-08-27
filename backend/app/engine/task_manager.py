@@ -21,11 +21,24 @@ from typing import Dict, Optional
 
 from ..logger import get_logger
 from ..models.backtest import BacktestRequest, BacktestTask, BacktestResult
+from . import resource
 
 
-# 最大并发回测任务数（避免多个 LightGBM/XGBoost 任务同时占满 CPU 互抢，
-# 导致单任务变慢。超过则排队执行。可用环境变量 QLIB_MAX_CONCURRENT 覆盖）
-MAX_CONCURRENT_TASKS = int(os.environ.get("QLIB_MAX_CONCURRENT", "2"))
+# 最大并发回测任务数：
+#   - 优先读环境变量 QLIB_MAX_CONCURRENT（人工显式指定，如服务器上固定 4）
+#   - 未指定则按硬件自动检测（CPU 核数 + 可用内存）计算，家里小机 / 公司大机 / 服务器自适应
+#   - 避免多个 LightGBM/XGBoost 任务同时占满 CPU 互抢，或把内存吃爆 OOM
+def _default_concurrent() -> int:
+    env = os.environ.get("QLIB_MAX_CONCURRENT")
+    if env:
+        try:
+            return max(1, int(env))
+        except ValueError:
+            pass
+    return resource.max_concurrent()
+
+
+MAX_CONCURRENT_TASKS = _default_concurrent()
 
 logger = get_logger(__name__)
 
@@ -84,7 +97,9 @@ class TaskManager:
         if task is None:
             return
         # 限制并发：超过 MAX_CONCURRENT_TASKS 的任务在此等待（保持 pending 排队状态）
-        self._update(task_id, status="pending", message=f"排队中（并发回测上限 {MAX_CONCURRENT_TASKS}）", progress=1.0)
+        full = self.running_count() >= MAX_CONCURRENT_TASKS
+        hint = "（已达并发上限，排队等待）" if full else f"（并发上限 {MAX_CONCURRENT_TASKS}）"
+        self._update(task_id, status="pending", message=f"排队中{hint}", progress=1.0)
         self._sem.acquire()
         try:
             task = self._get(task_id)
@@ -100,6 +115,17 @@ class TaskManager:
     def _execute(self, task_id: str, req: BacktestRequest):
         """真正执行回测（已获得并发许可）。"""
         self._update(task_id, status="running", message="开始执行", progress=2.0)
+
+        # 应用 qlib 外挂补丁（monkey-patch，不改 qlib 内核）
+        try:
+            from .patches import patch_qlib_parallel, patch_cancel_callbacks
+            # 1) 多线程并行补丁：把全局 R 替换为线程本地版本，使多任务并发不冲突
+            patch_qlib_parallel(base_dir=self._work_dir if self._work_dir else None)
+            # 2) 训练中途可取消补丁：monkey-patch lightgbm/xgboost.train，注入每 N 轮取消检查
+            patch_cancel_callbacks()
+        except Exception:
+            # 补丁失败不阻塞回测（退回单任务可靠运行）
+            pass
 
         # 注入进度回调（每次汇报进度时检查是否被取消）
         from . import qlib_engine
@@ -159,6 +185,34 @@ class TaskManager:
     def list(self) -> Dict[str, BacktestTask]:
         with self._lock:
             return {k: v.model_copy(deep=True) for k, v in self._tasks.items()}
+
+    def running_count(self) -> int:
+        """当前正在运行（非 pending/非结束）的任务数。"""
+        with self._lock:
+            return sum(1 for t in self._tasks.values() if t.status in ("running", "cancelling"))
+
+    def queued_count(self) -> int:
+        """当前排队等待（pending）的任务数。"""
+        with self._lock:
+            return sum(1 for t in self._tasks.values() if t.status == "pending")
+
+    def concurrency_info(self) -> dict:
+        """返回并发能力信息（供前端提示：已达上限则无法再增加回测）。"""
+        return {
+            "max_concurrent": MAX_CONCURRENT_TASKS,
+            "running": self.running_count(),
+            "queued": self.queued_count(),
+            "available": max(0, MAX_CONCURRENT_TASKS - self.running_count()),
+            "resource": resource.resource_summary(),
+        }
+
+    def can_submit(self) -> bool:
+        """是否还能提交新回测（running 数未达到上限）。
+
+        注意：这里"还能提交"指的是不会立即排队等不到 CPU；即使达到上限，
+        新任务仍会进入 pending 排队，只是通过 available=0 提示用户已达并发上限。
+        """
+        return self.running_count() < MAX_CONCURRENT_TASKS
 
 
 # 全局单例

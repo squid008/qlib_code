@@ -162,6 +162,7 @@ export interface BacktestTask {
   progress: number
   message: string
   created_at: string
+  display_name?: string | null
   result?: BacktestResult | null
 }
 

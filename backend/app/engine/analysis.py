@@ -4,9 +4,30 @@
 包含：预测+label 提取、基准累计收益、分层（5组）、IC/RankIC/ICIR 计算。
 均为纯函数/轻依赖（仅 pandas / qlib.data），不依赖回测编排逻辑，便于单测。
 """
+import threading
 from typing import Optional
 
 import pandas as pd
+
+
+# 基准累计收益结果的进程内缓存（按 code+start+end），线程安全。
+class _BenchCache:
+    def __init__(self):
+        self._data: dict = {}
+        self._lock = threading.Lock()
+
+    def get(self, code: str, start, end):
+        key = (code, str(start), str(end))
+        with self._lock:
+            return self._data.get(key)
+
+    def put(self, code: str, start, end, result):
+        key = (code, str(start), str(end))
+        with self._lock:
+            self._data[key] = result
+
+
+_BENCH_CACHE = _BenchCache()
 
 
 def _get_pred_label(model, dataset, instruments, segment: str, label_horizon: int = 2):
@@ -36,10 +57,19 @@ def _get_pred_label(model, dataset, instruments, segment: str, label_horizon: in
         label_expr = f"Ref($close, -{n + 1}) / Ref($close, -1) - 1"
         # ret：当日收益（用于"分层持仓周期"算法A：调仓日分组后按日收益累加持有）
         ret_expr = "$close / Ref($close, 1) - 1"
-        feat_df = D.features(
-            instruments, [label_expr, ret_expr],
-            start_time=start, end_time=end,
+        # 用进程内共享缓存包裹 D.features：相同股票池/表达式/区间 复用，避免重复 I/O+计算
+        from .data_cache import SHARED_CACHE
+
+        feat_df = SHARED_CACHE.get_or_load(
+            instruments, [label_expr, ret_expr], start, end,
+            lambda: D.features(
+                instruments, [label_expr, ret_expr],
+                start_time=start, end_time=end,
+            ),
         )
+        if feat_df is None:
+            return None
+        feat_df = feat_df.copy()  # 只读共享缓存，副本后再改列名/join，避免污染缓存
         feat_df.columns = ["label", "ret"]
         feat_df.index.names = ["instrument", "datetime"]
         merged = pred.join(feat_df, how="inner")
@@ -58,6 +88,14 @@ def _compute_benchmark_returns(benchmark: str, start, end):
     from qlib.data import D
 
     def _calc(code):
+        # 基准累计收益结果缓存：相同 code+区间 复用，避免重复计算
+        from .data_cache import SHARED_CACHE
+
+        key_code = str(code).lower()
+        cached = _BENCH_CACHE.get(key_code, start, end)
+        if cached is not None:
+            return dict(cached)
+
         df = D.features([code], ["$close"], start_time=start, end_time=end)
         if df is None or len(df) == 0:
             return None
@@ -68,6 +106,7 @@ def _compute_benchmark_returns(benchmark: str, start, end):
         result = {}
         for dt, v in cum.items():
             result[pd.Timestamp(dt).strftime("%Y-%m-%d")] = round(float(v), 6)
+        _BENCH_CACHE.put(key_code, start, end, result)
         return result
 
     try:

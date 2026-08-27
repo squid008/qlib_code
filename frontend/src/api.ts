@@ -36,12 +36,14 @@ export async function listBacktests(): Promise<Record<string, BacktestTask>> {
 export interface HistoryItem {
   task_id: string
   dir_name: string
+  seq?: number | null
   has_params: boolean
   has_result: boolean
   has_meta: boolean
   has_artifacts: boolean
   images: Record<string, string>
   segments: string[]
+  is_task_running?: boolean
   meta_summary?: {
     model?: string
     universe?: string
@@ -89,6 +91,31 @@ export async function deleteBacktest(taskId: string): Promise<{ status: string }
 
 export async function getBacktestResult(taskId: string): Promise<BacktestResult> {
   const { data } = await http.get<BacktestResult>(`/backtest/${taskId}/result`)
+  return data
+}
+
+// ---------- 并发能力 ----------
+
+export interface ResourceSummary {
+  cpu_logical: number
+  memory_total_gb: number
+  memory_available_gb: number
+  task_mem_gb: number
+  max_concurrent: number
+  estimated_total_mem_for_max_gb: number
+  memory_headroom_ratio: number
+}
+
+export interface BacktestCapacity {
+  max_concurrent: number
+  running: number
+  queued: number
+  available: number
+  resource: ResourceSummary
+}
+
+export async function getBacktestCapacity(): Promise<BacktestCapacity> {
+  const { data } = await http.get<BacktestCapacity>('/backtest/capacity')
   return data
 }
 

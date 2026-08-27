@@ -148,10 +148,19 @@ def resolve_image_path(task_id: str, name: str) -> Optional[str]:
 
 
 def scan_history() -> dict:
-    """扫描 artifacts 目录下所有回测产物，作为历史回测列表返回（跨重启/跨版本）。"""
+    """扫描 artifacts 目录下所有回测产物，作为历史回测列表返回（跨重启/跨版本）。
+
+    同时附带 `is_task_running` 字段：从 task_manager 检查任务是否正在内存中运行，
+    前端据此判断能否删除（未运行 → 可删除；运行中 → 禁用）。
+    """
+    from ..engine.task_manager import get_task_manager  # 避免循环 import
+    from .. import config as _config
+
     root = artifacts_root()
     if not os.path.isdir(root):
         return {"items": []}
+
+    _manager = get_task_manager(_config.WORK_DIR)
 
     items = []
     for name in sorted(os.listdir(root), reverse=True):
@@ -214,9 +223,20 @@ def scan_history() -> dict:
             for sd in segments
         )
 
+        # 读取稳定序号（seq.json），没有则为 None（旧任务）
+        seq = None
+        seq_file = os.path.join(full, "seq.json")
+        if os.path.exists(seq_file):
+            try:
+                with open(seq_file, "r", encoding="utf-8") as f:
+                    seq = int(json.load(f).get("seq", 0))
+            except Exception:
+                seq = None
+
         items.append({
             "task_id": task_id,
             "dir_name": name,
+            "seq": seq,
             "has_params": os.path.exists(params_file),
             "has_result": os.path.exists(result_file),
             "has_meta": os.path.exists(meta_file),
@@ -224,8 +244,22 @@ def scan_history() -> dict:
             "images": images,
             "segments": segments,
             "meta_summary": meta_summary,
+            # 任务是否正在内存中运行（用于前端判断"能否删除"——运行中禁用删除）
+            "is_task_running": _is_task_running(_manager, task_id),
         })
     return {"items": items}
+
+
+def _is_task_running(manager, task_id: str) -> bool:
+    """判断任务是否正在内存里运行（running/pending/cancelling）。
+
+    这些状态的任务不能删除产物目录。已结束（success/failed/cancelled）
+    或不在内存的（重启后）则返回 False，可删除。
+    """
+    t = manager.get(task_id)
+    if t is None:
+        return False
+    return t.status in ("running", "pending", "cancelling")
 
 
 def delete_artifacts(task_id: str) -> Optional[str]:

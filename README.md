@@ -57,7 +57,7 @@ qlib_code/
 ## 快速启动
 
 ### 部署到新电脑
-完整的拷贝清单、环境搭建、数据部署步骤见 **`deploy.md`**（含 requirements_qlib.txt / qlib_env.yml 依赖清单）。
+完整的拷贝清单、环境搭建、数据部署步骤见下方 **[部署指南](#部署指南)**（含 requirements_qlib.txt / qlib_env.yml 依赖清单）。
 
 ### 1. 启动后端（FastAPI，端口 8001）
 
@@ -215,8 +215,14 @@ npm run dev
 
 **复用模型权重（不重新训练）**：点"复用参数"后提交回测，会直接加载之前训练好的模型权重（`model.pkl`），**跳过耗时训练**，直接预测+回测。Linear 为确定性模型，复用结果与原结果完全一致（已验证 total_return 一致到小数点）。
 
-### 停止回测
-任务状态旁有**"停止回测"**按钮（任务运行/排队时可点），点击后任务标记取消，进度回调检查取消标志后终止，状态变为 `cancelled`，"回测进行中"按钮自动复原。适用于滚动训练等长耗时任务（在段之间停止）。
+### 停止回测 / 取消
+任务状态区每张任务卡片有**"取消"**按钮（任务运行/排队时可点），并支持**"一键取消所有"**。点击后：
+- 任务标记为 `cancelling`，通过**协作式取消**在训练/预测/回测各阶段之间终止，最终状态变为 `cancelled`。
+- 通过 **qlib 外挂补丁**（见下文"qlib 外挂补丁"），**LightGBM/XGBoost 训练过程中也能响应取消**（每 10 轮检查一次），不必等整个训练块结束。
+- 前端会提示"正在等待当前训练/回测块结束"，训练块结束后会停止。
+- 取消请求已受理但训练块仍在运行时（如大数据量的模型训练），需等待该训练块结束（通常数十秒到数分钟）。
+
+> 说明：取消是**协作式**的（非强制杀进程），不会产生半写的模型文件。若想加快取消响应，可调小环境变量 `QLIB_CANCEL_CHECK_ITER`（默认 10）。
 
 ### 滚动段截图
 每个滚动段在 `segment_XX/` 下独立生成：
@@ -281,6 +287,79 @@ npm run dev
 - 滑点（冲击成本）建议 0.05%~0.1%
 - 成交量限制建议 0.1~0.3（单笔不超当日成交量的 10%~30%）
 
+## 多任务并行（阶段一）
+
+支持多个回测任务并发执行，**自动按硬件能力限制并发上限**，避免 CPU 满载互抢或内存吃爆 OOM。
+
+### 硬件自适应并发
+- 后端启动时自动检测 **CPU 核数 + 可用内存**，计算本机能安全并发多少个回测：
+  `并发上限 = min(CPU可承载数, 内存可容纳数)`（内存为主，默认留 30% 系统余量）
+- **家里小机 / 公司大机 / 服务器** 会自动得到不同的合理上限，无需改代码
+- 单任务内存默认按 `3.0 GB` 估算，可用 `QLIB_TASK_MEM_GB` 覆盖
+
+### 数据共享缓存（省内存）
+- 多个回测任务跑在**同一个 Python 进程（多线程）**，共享同一份 qlib 内存数据
+- 新增**进程内数据缓存** `DataCache`：相同（股票池, 特征, 区间）的 label/基准收益计算只做一次，后续任务直接复用，避免重复磁盘 I/O 和表达式计算
+- **不会**"一个任务复制一份数据"
+
+### 并发能力提示（前端）
+- 后端新增 `GET /api/backtest/capacity`：返回 `max_concurrent / running / queued / available` + 硬件资源摘要
+- 前端提交回测前检查：若已达并发上限（`available == 0`），**提示"已达并发上限，请等待"并拒绝提交**
+- 前端显示当前并发占用（`并发: 2/5`）
+
+### 并发上限配置
+| 配置 | 默认 | 说明 |
+|---|---|---|
+| `QLIB_MAX_CONCURRENT` | 自动检测 | 显式指定并发上限（如服务器固定 4） |
+| `QLIB_TASK_MEM_GB` | 3.0 | 单个回测任务的估算内存（GB） |
+| `QLIB_MEM_HEADROOM` | 0.3 | 系统保留内存比例（不用于回测，防 OOM） |
+
+## qlib 外挂补丁（不改 qlib 内核）
+
+本项目对 qlib 采用 **monkey-patch 外挂**方式扩展能力，**不修改 qlib 源码**，避免集成 233 个文件成"屎山"，也便于 qlib 升级。
+
+统一放在 `backend/app/engine/patches/`：
+
+```
+backend/app/engine/patches/
+├── __init__.py        # 统一入口（patch_qlib_parallel / patch_cancel_callbacks）
+├── qlib_parallel.py   # 多线程并行：把全局 R 替换为线程本地版本，多任务并发不冲突
+└── cancel_train.py    # 训练中途可取消：monkey-patch lightgbm/xgboost.train 注入每N轮取消检查
+```
+
+### 提供的补丁能力
+
+| 补丁 | 解决什么 | 实现方式 |
+|---|---|---|
+| **多线程并行** | qlib 的 `R`（Recorder）是进程级全局单例，多线程并发 `R.start()` 会互相覆盖 active_experiment | `patch_qlib_parallel`：每个线程懒创建独立的 `QlibRecorder(ExpManager)`，替换全局 R |
+| **训练中途可取消** | qlib 引擎 `model.fit` 训练块内无取消检查点，取消要等整个训练块结束 | `patch_cancel_callbacks`：patch `lgb.train` / `xgb.train`，注入"每 10 轮检查取消"的回调 |
+
+**为何不改 qlib 源码**：qlib 核心包 233 个 .py（约 5-6 万行），且顶层 import 所有子模块，无法只拷贝某模块单独用。改内核会导致升级困难（`pip install -U qlib` 会覆盖改动）、依赖暴增（pytorch/mosec/mlflow 等）、代码结构变乱。外挂补丁只在 **qlib 的稳定入口**（`R`、`lgb.train`、`xgb.train`）做 patch，风险低、可维护。
+
+### 可配置项
+- `QLIB_CANCEL_CHECK_ITER`：LightGBM/XGBoost 每多少轮检查一次取消（默认 10，越小取消响应越快）
+
+## 历史回测（复现/管理）
+
+### 序号
+- 每个回测分配**稳定序号**（`seq.json`），最早创建的回测序号=1，递增。
+- 删除某个回测后**序号不回收**（如删 3 后显示 1,2,4,5），只有**全部清空**后序号才重新从 1 开始。
+- 序号与目录名无关（存在各目录的 `seq.json`），**改文件夹名不影响序号**。
+
+### 批量删除
+- 标题区"批量删除"按钮开启**勾选模式**，每行出现勾选框（运行中的任务勾选框禁用）。
+- 勾选后表头"操作"旁出现"确定删除（N）"，点它弹确认框列出所有待删目录，确认后**批量删除**。
+
+### 分页
+- 历史回测每页显示 **20 条**，超过自动分页。
+- 页码导航支持**省略号**（页数多时中间省略）+ **输入框跳页**（输入页码回车或点"跳转"）。
+
+### 复用
+- **"复用参数"**：把该回测完整参数填入表单（含 `load_model_task_id` 复用权重），点"开始回测"提交。
+- **"复用回测"**：直接用该回测参数 + 复用模型权重**立即开始回测**（覆盖表单当前改动）。
+- 若在复用权重后**修改了股票池/特征**，提交时**自动改为新训练**（清掉 `load_model_task_id`）并提示，避免"特征不匹配"报错。
+- 提交成功后**清掉复用标记**，提示条消失；后续改参数不再提示，直到再次"复用参数"。
+
 ## 配置环境变量
 
 | 变量 | 说明 |
@@ -289,3 +368,145 @@ npm run dev
 | `RQALPHA_BUNDLE_PATH` | rqalpha h5 bundle 目录（预留） |
 | `QLIB_WORK_DIR` | 回测临时/实验工作目录 |
 | `CORS_ORIGINS` | 允许的前端来源（逗号分隔） |
+| `QLIB_MAX_CONCURRENT` | 显式并发回测上限（默认自动按硬件检测） |
+| `QLIB_TASK_MEM_GB` | 单个回测任务估算内存（GB，默认 3.0） |
+| `QLIB_MEM_HEADROOM` | 系统保留内存比例（默认 0.3） |
+| `QLIB_CANCEL_CHECK_ITER` | 训练中途取消检查频率（每多少轮，默认 10） |
+
+---
+
+## 部署指南
+
+把本平台从开发机拷贝到新电脑的完整步骤。按顺序操作。
+
+### 一、需要拷贝/准备的清单
+
+| 项 | 是否已准备好 | 说明 |
+|---|---|---|
+| `qlib_code` 整个文件夹 | ✅ | 项目本体（含后端/前端/脚本/依赖清单） |
+| `requirements_qlib.txt` | ✅ 已生成 | qlib 环境完整 pip 依赖（**主力安装清单**） |
+| `qlib_env.yml` | ✅ 已生成 | conda 环境清单（参考，conda 无法锁定 pip 包） |
+| `vs_BuildTools.exe` | ✅ | 编译 C 扩展需 MSVC 工具链 |
+| `qlib_bin.tar.gz` | ✅ | A股日线数据（需解压） |
+| `<你的qlib源码目录>` 源码 | ⚠️ 需确认 | **qlib 是源码安装的**（见下文第三步） |
+
+### 二、新电脑需要安装的软件
+
+1. **Anaconda / Miniconda**（Python 环境管理）
+2. **Node.js ≥ 18**（前端运行必需）
+3. **VS BuildTools**（编译 LightGBM 等 C 扩展，已有 vs_BuildTools.exe）
+
+> 验证：`conda --version`、`node -v`、`npm -v`
+
+### 三、搭建 Python 环境（重点）
+
+你的 qlib 是 **源码方式安装**（`pip install -e <qlib源码目录>`），不是 pip 的 pyqlib。
+`requirements_qlib.txt` 里有一行 `-e <qlib源码目录>`。
+
+**方式 A：源码方式（推荐）**
+1. 把 `<qlib源码目录>` 一起拷贝到新电脑
+2. 创建并激活环境：
+   ```bash
+   conda create -n qlib python=3.10 -y
+   conda activate qlib
+   ```
+3. 安装依赖：
+   ```bash
+   # 先去掉 requirements_qlib.txt 里的 "-e <qlib源码目录>" 这一行（路径不对）
+   pip install -r requirements_qlib.txt
+   # 再以源码方式安装 qlib（把路径改成新电脑实际的 qlib 源码位置）
+   pip install -e D:\你的qlib源码目录
+   ```
+
+**方式 B：pip 安装 pyqlib（更省事，但版本可能有差异）**
+```bash
+conda create -n qlib python=3.10 -y
+conda activate qlib
+# 去掉 requirements 里的 "-e <qlib源码目录>" 行后
+pip install -r requirements_qlib.txt
+pip install pyqlib
+```
+> 注意：pyqlib 的 API 和你现在的源码版可能有细微差异，若回测报错优先用方式 A。
+
+**关键依赖确认（requirements_qlib.txt 已含）**
+- lightgbm==4.7.0、matplotlib、scikit-learn、scipy、fastapi、uvicorn、pydantic
+
+### 四、部署数据
+
+1. 解压 `qlib_bin.tar.gz`，得到 `cn_data` 数据目录
+2. 数据路径通过 **环境变量** 或 **目录约定** 指定（不用改代码）：
+
+   **方法1（推荐）设环境变量：**
+   ```bash
+   set QLIB_PROVIDER_URI=D:\你的数据路径\cn_data
+   ```
+
+   **方法2：放到项目目录下**
+   把 `cn_data` 放到 `qlib_code\data\cn_data`（后端会自动识别）
+
+   **方法3：放到当前用户主目录**
+   `C:\Users\你的用户名\.qlib\qlib_data\cn_data`
+
+> 配置优先级：环境变量 > 项目内 data/cn_data > 主目录 .qlib
+
+### 五、启动前端
+
+```bash
+cd qlib_code\frontend
+npm install        # 首次安装依赖（如果没带 node_modules）
+npm run dev        # 启动，端口 5173
+```
+
+### 六、启动后端
+
+```bash
+cd qlib_code\backend
+# 用 qlib 环境的 python（按你机器实际路径）
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8001
+# 或直接双击 start_backend.bat
+```
+
+> 端口说明：后端用 **8001**（8000 可能被其他服务占用）；前端 Vite 代理已指向 8001。
+
+### 七、验证部署
+
+浏览器打开 `http://localhost:5173`，然后：
+1. 看"历史回测"是否为空（正常，新环境无历史）
+2. 选股票池 csi300、模型 Linear、起止日期（如 2022-2023）
+3. 起始资金填 100（万）
+4. 点"开始回测"，确认能跑通并出曲线、指标、调仓记录、训练产物
+
+### 八、常见问题
+
+| 问题 | 解决 |
+|---|---|
+| `import qlib` 报错 | qlib 未安装，见第三步 |
+| 后端启动报"数据路径不存在" | 确认 QLIB_PROVIDER_URI / data/cn_data 存在 |
+| 前端 `npm run dev` 报错 | 确认 Node.js ≥18，`npm install` |
+| 8001 端口被占用 | 改 `start_backend.bat` 端口，并改 `frontend/vite.config.ts` |
+| 回测结果全 0 / 无调仓 | 起始资金太小（<1万）买不起一手；或数据区间无数据 |
+| summary.png 中文乱码 | 需安装微软雅黑字体（Windows 自带） |
+
+### 附：如何重新导出依赖（在家更新后）
+```bash
+conda activate qlib
+pip freeze > requirements_qlib.txt        # 生成 pip 依赖
+conda env export --no-builds > qlib_env.yml  # 生成 conda 环境
+```
+
+---
+
+## md/ 文档说明
+
+`md/` 目录存放项目的辅助说明文档，按用途分类：
+
+| 文档 | 说明 |
+|---|---|
+| `md/deploy.md` | 部署指南（已整合进本文 README，此文件保留一份独立副本供直接查看） |
+| `md/start_stop.md` | 前后端启停脚本（`start_backend.bat` / `start_frontend.bat` / `stop_*.bat`）的使用说明 |
+| `md/数据源接入.md` | 数据源抽象层（Qlib 日线 / rqalpha h5 分钟/财报/行业/指数成分）如何接入与扩展 |
+| `md/因子库特征选择.md` | 内置因子库、特征集（Alpha158/Alpha360）、自定义特征选择的使用说明 |
+| `md/两地 git 工作流.md` | 家/公司两地协作的 Git 工作流约定 |
+| `md/upload.md` | 本地专用文档（已在 .gitignore 排除，不上传 GitHub） |
+
+> 提示：`md/upload.md` 被 `.gitignore` 排除，仅本地可见，不随仓库上传。

@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, HTTPException
 
 from ..engine.task_manager import get_task_manager
@@ -21,6 +23,16 @@ router = APIRouter(prefix="/api", tags=["backtest"])
 
 def _map_artifact_error(e: artifacts_service.ArtifactNotFoundError):
     return HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/backtest/capacity", summary="查询并发回测能力与资源摘要（前端超限提示）")
+def get_backtest_capacity():
+    """返回当前机器可支持的并发回测上限、运行/排队数、硬件资源摘要。
+
+    前端提交回测前可调用，若 available == 0 则提示"已达并发上限，请等待"。
+    """
+    manager = get_task_manager(config.WORK_DIR)
+    return manager.concurrency_info()
 
 
 @router.post("/backtest", response_model=TaskIdResponse, summary="提交回测任务")
@@ -36,6 +48,14 @@ def get_backtest(task_id: str):
     task = manager.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
+    # 附加可读名称（来自 artifacts 目录名），方便前端区分任务（如取消时识别）
+    if not task.display_name:
+        try:
+            adir = artifacts_service.find_artifact_dir(task_id)
+            if adir:
+                task.display_name = os.path.basename(adir)
+        except Exception:
+            pass
     return task
 
 
@@ -100,7 +120,17 @@ def cancel_backtest(task_id: str):
 
 @router.delete("/backtest/{task_id}", summary="删除某个回测的产物目录")
 def delete_backtest(task_id: str):
-    """删除 artifacts 下对应的回测产物目录（含参数/结果/图片/模型等）。"""
+    """删除 artifacts 下对应的回测产物目录（含参数/结果/图片/模型等）。
+
+    运行中的任务禁止删除（避免删除正在使用的产物目录导致回测异常）。
+    """
+    manager = get_task_manager(config.WORK_DIR)
+    task = manager.get(task_id)
+    if task is not None and task.status in ("running", "pending", "cancelling"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"任务 {task_id} 正在运行（{task.status}），请等待其完成、失败或取消后再删除",
+        )
     try:
         dir_name = artifacts_service.delete_artifacts(task_id)
     except artifacts_service.ArtifactNotFoundError as e:

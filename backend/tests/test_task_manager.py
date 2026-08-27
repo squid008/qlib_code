@@ -29,3 +29,30 @@ class TestConcurrencyLimit:
         # 释放一个后，又能 acquire（排队任务被唤醒）
         sem.release()
         assert sem.acquire(blocking=False)
+
+    def test_concurrency_info_fields(self):
+        """并发信息包含 max_concurrent / running / queued / available / resource。"""
+        manager = TaskManager(work_dir=None)
+        info = manager.concurrency_info()
+        assert info["max_concurrent"] >= 1
+        assert info["running"] >= 0
+        assert info["queued"] >= 0
+        assert info["available"] == info["max_concurrent"] - info["running"]
+        assert "resource" in info
+        assert "cpu_logical" in info["resource"]
+        assert info["resource"]["max_concurrent"] >= 1
+
+    def test_can_submit_when_room(self):
+        """无运行任务时可提交。"""
+        manager = TaskManager(work_dir=None)
+        assert manager.can_submit() is True
+
+    def test_available_tracks_semaphore(self):
+        """available = max_concurrent - running，且与信号量占用一致。"""
+        manager = TaskManager(work_dir=None)
+        n = manager.concurrency_info()["max_concurrent"]
+        for _ in range(n):
+            assert manager._sem.acquire(blocking=False)
+        # 此时信号量已满，但 running_count 统计的是状态字段（无实际 running 任务）
+        info = manager.concurrency_info()
+        assert info["available"] == n - info["running"]

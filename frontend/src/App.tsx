@@ -8,7 +8,10 @@ import {
   cancelBacktest,
   getFactorCatalog,
   getBacktestSnapshot,
+  getBacktestCapacity,
+  listBacktests,
 } from './api'
+import type { BacktestCapacity } from './api'
 import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog } from './types'
 import MetricCards from './components/MetricCards'
 import NavChart from './components/NavChart'
@@ -94,6 +97,35 @@ export default function App() {
   const [viewArtifacts, setViewArtifacts] = useState<ModelArtifacts | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [capacity, setCapacity] = useState<BacktestCapacity | null>(null)
+  // 触发历史回测面板刷新：递增该 key 即可让 HistoryPanel 自动 load（用于"任务取消/完成后自动更新"）
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0)
+  const [tasks, setTasks] = useState<BacktestTask[]>([])  // 所有活跃任务（支持多任务并行显示与取消）
+  const tasksRef = useRef<BacktestTask[]>([])  // 用于轮询闭包读取最新 tasks（避免闭包陷阱）
+  tasksRef.current = tasks
+  // 用户主动"刷新"清除的已完成/失败/已停止任务 ID 集合：轮询拉取后端任务时过滤掉，避免再次出现
+  // 持久化到 localStorage，刷新页面后仍生效（避免"刷新页面+复用回测"又把已清除的任务拉回来）
+  const LOCAL_STORAGE_KEY = 'cleared_backtest_task_ids'
+  const [clearedTaskIds, setClearedTaskIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(LOCAL_STORAGE_KEY)
+      if (!raw) return new Set()
+      const arr = JSON.parse(raw) as string[]
+      return new Set(Array.isArray(arr) ? arr : [])
+    } catch {
+      return new Set()
+    }
+  })
+  const clearedTaskIdsRef = useRef<Set<string>>(clearedTaskIds)
+  clearedTaskIdsRef.current = clearedTaskIds
+  // 每次变更时同步写入 localStorage
+  const persistCleared = (next: Set<string>) => {
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(Array.from(next)))
+    } catch {
+      // 忽略存储异常（隐私模式/配额满等）
+    }
+  }
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // 因子库目录与特征勾选
@@ -104,6 +136,39 @@ export default function App() {
   // 加载数据源能力信息
   useEffect(() => {
     listDataSources().then(setDataSources).catch(() => {})
+  }, [])
+
+  // 加载并发回测能力信息（并发上限 / 运行数 / 硬件资源）
+  useEffect(() => {
+    getBacktestCapacity().then(async (cap) => {
+      setCapacity(cap)
+      // 如果 capacity 显示有运行中的任务，但本地 tasks 为空（页面刷新后），）
+      // 从后端拉取所有任务，把正在运行/排队/取消中的任务加到本地 tasks，
+      // 这样用户能看到"那些被隐藏的、还在跑的任务"（尤其是刷新页面后）
+      if (cap && cap.running > 0) {
+        try {
+          const all = await listBacktests()
+          const active = Object.values(all).filter(
+            (t) =>
+              t.status === 'running' ||
+              t.status === 'pending' ||
+              t.status === 'cancelling',
+          )
+          if (active.length > 0) {
+            setTasks((prev) => {
+              // 合并：保留本会话已有的，加上后端拉到的活跃任务（去重）
+              const ids = new Set(prev.map((t) => t.task_id))
+              const merged = [...prev, ...active.filter((t) => !ids.has(t.task_id))]
+              tasksRef.current = merged
+              return merged
+            })
+            // 有活跃任务时启动轮询，持续刷新进度 / 状态（含 cancelling），否则刷新页面后看不到更新
+            startPolling()
+          }
+        } catch {}
+      }
+    }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // 加载因子目录（Alpha158 默认）
@@ -205,12 +270,13 @@ export default function App() {
   // 直接复用历史回测参数 + 模型权重开始回测（不训练）
   const handleReuseBacktest = async (params: BacktestRequest, taskId: string) => {
     setError('')
-    // 合并历史参数到当前表单：只覆盖"有定义"的字段
-    const merged: BacktestRequest = { ...form }
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null) (merged as unknown as Record<string, unknown>)[k] = v
+    // 完全用历史任务的参数覆盖当前表单（用户在表单上改的参数全部丢弃），
+    // 这样"复用回测"等同于"用历史参数去跑"，不会被表单残留改动影响。
+    // 保留 load_model_task_id（复用模型权重，不重新训练）。
+    const merged: BacktestRequest = {
+      ...params,
+      load_model_task_id: taskId,
     }
-    merged.load_model_task_id = taskId // 复用权重
     setForm(merged)
     setCapitalWan((params.initial_capital || 0) / 10000)
     setTask(null)
@@ -300,56 +366,139 @@ export default function App() {
     }
   }
 
-  // 停止回测
-  const stopBacktest = async () => {
-    if (!task) return
-    try {
-      await cancelBacktest(task.task_id)
-      setError('正在停止回测...')
-    } catch {
-      setError('停止回测失败')
-    }
-  }
-
-  // 提交回测并轮询进度（可复用于"开始回测"和"复用回测"）
-  const submitAndRun = async (payload: BacktestRequest, capitalYuan: number) => {
-    setLoading(true)
-    try {
-      const body: BacktestRequest = {
-        ...payload,
-        initial_capital: capitalYuan,
-      }
-      const { task_id } = await submitBacktest(body)
-      pollRef.current && clearInterval(pollRef.current)
-      pollRef.current = setInterval(async () => {
+  // 启动全局任务轮询（只启动一次）：逐个刷新 tasksRef 里的活跃任务进度 + 刷新 capacity。
+  // 供提交任务、以及"页面刷新后恢复正在运行的任务"时调用。
+  const startPolling = () => {
+    if (pollRef.current) return
+    pollRef.current = setInterval(async () => {
+      const curr = tasksRef.current
+      if (curr.length === 0) return
+      try {
+        const updated = await Promise.all(
+          curr.map(async (t) => {
+            if (t.status === 'success' || t.status === 'failed' || t.status === 'cancelled') {
+              return t
+            }
+            try {
+              return await getBacktestTask(t.task_id)
+            } catch {
+              return t
+            }
+          }),
+        )
+        setTasks(updated)
         try {
-          const t = await getBacktestTask(task_id)
-          setTask(t)
-          if (t.status === 'success' || t.status === 'failed' || t.status === 'cancelled') {
-            if (pollRef.current) {
-              clearInterval(pollRef.current)
-              pollRef.current = null
+          const cap = await getBacktestCapacity()
+          setCapacity(cap)
+        } catch {}
+        for (let i = 0; i < updated.length; i++) {
+          const was = curr[i]
+          const now = updated[i]
+          const wasDone = was && (was.status === 'success' || was.status === 'failed' || was.status === 'cancelled')
+          const isDone = now.status === 'success' || now.status === 'failed' || now.status === 'cancelled'
+          if (!wasDone && isDone && now.status === 'success') {
+            try {
+              const a = await getBacktestArtifacts(now.task_id)
+              setArtifacts(a)
+            } catch {
+              setArtifacts(null)
             }
-            if (t.status === 'failed') setError(t.message)
-            if (t.status === 'cancelled') setError('回测已停止')
-            if (t.status === 'success') {
-              // 加载模型交付物（公式/权重/超参数/模型文件）
-              try {
-                const a = await getBacktestArtifacts(task_id)
-                setArtifacts(a)
-              } catch {
-                setArtifacts(null)
-              }
-            }
+            setTask(now)
+            break
           }
-        } catch (e) {
+          // 任何任务从运行中变成已结束（success/failed/cancelled），让 HistoryPanel 刷新（is_task_running 等）
+          if (!wasDone && isDone) {
+            setHistoryRefreshKey((k) => k + 1)
+          }
+        }
+        tasksRef.current = updated
+        const hasActive = updated.some(
+          (t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling',
+        )
+        if (!hasActive) {
+          try {
+            const cap = await getBacktestCapacity()
+            setCapacity(cap)
+          } catch {}
           if (pollRef.current) {
             clearInterval(pollRef.current)
             pollRef.current = null
           }
-          setError('查询任务状态失败')
         }
-      }, 1500)
+      } catch {}
+    }, 1500)
+  }
+
+  // 提交回测并轮询进度（可复用于"开始回测"和"复用回测"）
+  const submitAndRun = async (payload: BacktestRequest, capitalYuan: number) => {
+    // 若用户在使用复用权重（load_model_task_id 有值），但改了关键参数（股票池/特征集/特征选择），
+    // 自动清掉 load_model_task_id 改为新训练，避免"复用权重时特征不匹配"的错误。
+    // 复用源参数从后端 snapshot 拉取（不依赖前端 state，避免复用回测时 setState 未生效导致漏检）。
+    let payloadAdj = payload
+    if (payload.load_model_task_id) {
+      let src: BacktestRequest | null = null
+      try {
+        const snap = await getBacktestSnapshot(payload.load_model_task_id)
+        src = snap.params || null
+      } catch {
+        src = null
+      }
+      if (src) {
+        const universeChanged = (payload.universe || '') !== (src.universe || '')
+        const featureChanged = (payload.feature || '') !== (src.feature || '')
+        // selected_features 比较：顺序无关，只要内容集合不同就算改
+        const a = (payload.selected_features || []).slice().sort().join(',')
+        const b = (src.selected_features || []).slice().sort().join(',')
+        const selectedChanged = a !== b
+        if (universeChanged || featureChanged || selectedChanged) {
+          const changed: string[] = []
+          if (universeChanged) changed.push('股票池')
+          if (featureChanged) changed.push('特征集')
+          if (selectedChanged) changed.push('自定义特征')
+          payloadAdj = { ...payload, load_model_task_id: null }
+          setError(
+            `检测到 ${changed.join('、')} 与复用源不同，已自动改为【新训练】（不再复用 task ${payload.load_model_task_id} 的模型权重）。`,
+          )
+        }
+      }
+    }
+    // 并发上限检查：达到上限则提示，不再提交
+    try {
+      const cap = await getBacktestCapacity()
+      setCapacity(cap)
+      if (cap.available <= 0) {
+        setError(`已达并发回测上限（${cap.max_concurrent} 个），请等待现有任务完成`)
+        return
+      }
+    } catch {
+      // 查询并发能力失败不阻塞提交
+    }
+    setLoading(true)
+    try {
+      const body: BacktestRequest = {
+        ...payloadAdj,
+        initial_capital: capitalYuan,
+      }
+      const { task_id } = await submitBacktest(body)
+      // 提交成功后：清掉"复用模型权重"标记，隐藏提示条。
+      // 后续再改参数不再提示，直到用户再次从历史回测点"复用参数"才重新出现。
+      setForm((f) => ({ ...f, load_model_task_id: null }))
+      // 新任务加入任务列表（用于多任务并行显示 + 各自取消）
+      setTasks((prev) => {
+        const newTask: BacktestTask = {
+          task_id,
+          status: 'pending',
+          progress: 0.0,
+          message: '已提交',
+          created_at: new Date().toISOString(),
+        }
+        const next: BacktestTask[] = [...prev, newTask]
+        // 立即同步 tasksRef，避免轮询读取到旧快照而把新任务覆盖掉
+        tasksRef.current = next
+        return next
+      })
+      // 启动全局轮询（只启动一次，后续提交复用同一个轮询，刷新本会话提交的所有任务）
+      startPolling()
     } catch (e) {
       setError('提交回测失败，请确认后端服务已启动')
     } finally {
@@ -378,8 +527,6 @@ export default function App() {
     await submitAndRun(form, (capitalWan || 0) * 10000)
   }
 
-  const running = task?.status === 'running' || task?.status === 'pending' || task?.status === 'cancelling'
-
   return (
     <div className="min-h-screen">
       <header className="bg-slate-900 text-white py-4 px-6 shadow">
@@ -392,7 +539,16 @@ export default function App() {
       <main className="max-w-6xl mx-auto p-6 space-y-6">
         {/* 参数表单 */}
         <section className="bg-white dark:bg-slate-800 rounded-xl shadow p-6">
-          <h2 className="text-lg font-semibold mb-4">回测参数</h2>
+          <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+            <h2 className="text-lg font-semibold">回测参数</h2>
+            {/* 复用模型权重的提示：放在标题旁边，一行写下，不挤压表单 */}
+            {form.load_model_task_id && (
+              <div className="rounded bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 px-3 py-1.5 text-xs text-amber-800 dark:text-amber-200 flex items-center gap-2">
+                <span>⚠ 正在复用模型权重（task <span className="font-mono">{form.load_model_task_id}）</span></span>
+                <span className="text-amber-600 dark:text-amber-300">· 修改股票池/特征后会自动改为新训练</span>
+              </div>
+            )}
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <label className="block">
               <span className="text-sm text-slate-500">股票池</span>
@@ -817,10 +973,10 @@ export default function App() {
             <button
               id="start-backtest-btn"
               onClick={startBacktest}
-              disabled={loading || running}
+              disabled={loading || (capacity ? capacity.available <= 0 : false)}
               className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold px-6 py-2 rounded-lg"
             >
-              {loading || running ? '回测进行中...' : '开始回测'}
+              {loading ? '提交中...' : capacity && capacity.available <= 0 ? '已达并发上限' : '开始回测'}
             </button>
             <span className="text-xs text-slate-400">
               已启用数据源:{' '}
@@ -829,54 +985,168 @@ export default function App() {
                 .map(([name]) => name)
                 .join(', ') || 'qlib'}
             </span>
+            {capacity && (
+              <span
+                className={`text-xs ${capacity.available <= 0 ? 'text-red-500 font-semibold' : 'text-slate-400'}`}
+              >
+                并发: {capacity.running}/{capacity.max_concurrent}
+                {capacity.queued > 0 && `（${capacity.queued} 排队）`}
+                {capacity.available <= 0 && ' 已达上限'}
+              </span>
+            )}
           </div>
 
           {error && <p className="mt-3 text-red-500 text-sm whitespace-pre-wrap">{error}</p>}
         </section>
 
-        {/* 进度 */}
-        {task && (
-          <section className="bg-white dark:bg-slate-800 rounded-xl shadow p-6">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-lg font-semibold">
-                任务状态{' '}
-                <span className="text-sm text-slate-500">{task.task_id}</span>
-              </h2>
-              <div className="flex items-center gap-2">
-                <span
-                  className={`px-3 py-1 rounded text-sm ${
-                    task.status === 'success'
-                      ? 'bg-green-100 text-green-700'
-                      : task.status === 'failed'
-                        ? 'bg-red-100 text-red-700'
-                        : task.status === 'cancelled'
-                          ? 'bg-gray-100 text-gray-600'
-                          : 'bg-blue-100 text-blue-700'
-                  }`}
-                >
-                  {task.status}
-                </span>
-                {running && (
-                  <button
-                    onClick={stopBacktest}
-                    className="px-3 py-1 rounded text-sm bg-red-600 text-white hover:bg-red-700"
-                  >
-                    停止回测
-                  </button>
+        {/* 进度：多任务并行显示（每个任务一张卡片，状态+进度条+单独取消） */}
+                {tasks.length > 0 && (
+                  <section className="bg-white dark:bg-slate-800 rounded-xl shadow p-6">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <h2 className="text-lg font-semibold">
+                          任务状态
+                          <span className="text-sm text-slate-400 ml-2">
+                            （共 {tasks.length} 个{tasks.filter((t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling').length > 0 && '，'
+                              + tasks.filter((t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling').length + ' 个进行中'}）
+                          </span>
+                        </h2>
+                        {(
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => {
+                                // 清除已完成/失败/已停止的任务，保留正在运行的；
+                                // 并记录已清除的任务 ID 到 localStorage，防止轮询从后端拉取时再次显示
+                                const removed = tasks.filter(
+                                  (t) =>
+                                    t.status === 'success' ||
+                                    t.status === 'failed' ||
+                                    t.status === 'cancelled',
+                                )
+                                const next = new Set(clearedTaskIdsRef.current)
+                                removed.forEach((t) => next.add(t.task_id))
+                                setClearedTaskIds(next)
+                                persistCleared(next)
+                                setTasks((prev) =>
+                                  prev.filter(
+                                    (t) =>
+                                      t.status === 'running' ||
+                                      t.status === 'pending' ||
+                                      t.status === 'cancelling',
+                                  ),
+                                )
+                              }}
+                              className="px-3 py-1 rounded text-xs bg-slate-500 text-white hover:bg-slate-600"
+                            >
+                              刷新
+                            </button>
+                            <span className="text-xs text-slate-400">
+                              请注意：点击后会清除完成、失败、已停止的任务状态
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {tasks.some((t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling') && (
+                          <button
+                            onClick={async () => {
+                              const active = tasks.filter(
+                                (t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling',
+                              )
+                              await Promise.all(
+                                active.map(async (t) => {
+                                  try {
+                                    await cancelBacktest(t.task_id)
+                                  } catch {
+                                    /* 单个失败不阻塞其他 */
+                                  }
+                                }),
+                              )
+                            }}
+                            className="px-3 py-1 rounded text-xs bg-red-600 text-white hover:bg-red-700"
+                          >
+                            一键取消所有
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="space-y-3">
+                      {tasks.map((t) => {
+                        const isActive = t.status === 'running' || t.status === 'pending' || t.status === 'cancelling'
+                        return (
+                          <div
+                            key={t.task_id}
+                            className={`border rounded-lg p-3 ${
+                              isActive ? 'border-blue-200 bg-blue-50/30 dark:bg-blue-900/10' : 'border-slate-200'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className="text-sm text-slate-600 truncate"
+                                  title={t.display_name || t.task_id}
+                                >
+                                  {t.display_name || t.task_id}
+                                </span>
+                                <span
+                                  className={`px-2 py-0.5 rounded text-xs shrink-0 ${
+                                    t.status === 'success'
+                                      ? 'bg-green-100 text-green-700'
+                                      : t.status === 'failed'
+                                        ? 'bg-red-100 text-red-700'
+                                        : t.status === 'cancelled'
+                                          ? 'bg-gray-100 text-gray-600'
+                                          : t.status === 'cancelling'
+                                            ? 'bg-orange-100 text-orange-700'
+                                            : 'bg-blue-100 text-blue-700'
+                                  }`}
+                                >
+                                  {t.status}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {isActive && (
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        await cancelBacktest(t.task_id)
+                                      } catch {
+                                        /* 单个任务取消失败不阻塞其他 */
+                                      }
+                                    }}
+                                    className="px-3 py-1 rounded text-xs bg-red-600 text-white hover:bg-red-700"
+                                  >
+                                    取消
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            <div className="w-full bg-slate-200 rounded-full h-3">
+                              <div
+                                className={`h-3 rounded-full transition-all ${
+                                  t.status === 'failed'
+                                    ? 'bg-red-500'
+                                    : t.status === 'cancelled'
+                                      ? 'bg-gray-400'
+                                      : 'bg-blue-600'
+                                }`}
+                                style={{ width: `${t.progress}%` }}
+                              />
+                            </div>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {t.progress.toFixed(1)}% - {t.message}
+                              {t.status === 'cancelling' && (
+                                <span className="ml-1 text-orange-600">
+                                  （正在等待当前训练/回测块结束，训练块完成后会停止）
+                                </span>
+                              )}
+                            </p>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </section>
                 )}
-              </div>
-            </div>
-            <div className="w-full bg-slate-200 rounded-full h-4">
-              <div
-                className="bg-blue-600 h-4 rounded-full transition-all"
-                style={{ width: `${task.progress}%` }}
-              />
-            </div>
-            <p className="mt-2 text-sm text-slate-500">
-              {task.progress.toFixed(1)}% - {task.message}
-            </p>
-          </section>
-        )}
 
         {/* 结果：实时任务成功 或 历史查看（有 result 或仅有模型产物都渲染） */}
         {(((task?.result && task.status === 'success') || viewResult?.result) ||
@@ -903,6 +1173,8 @@ export default function App() {
                 onUseParams={handleUseParams}
                 onReuseBacktest={handleReuseBacktest}
                 onViewResult={handleViewResult}
+                refreshKey={historyRefreshKey}
+                capacity={capacity}
               />
               {r?.trades && r.trades.length > 0 && <TradeLog trades={r.trades} />}
             </>
@@ -912,10 +1184,12 @@ export default function App() {
         {/* 既无结果也无模型产物时，历史回测仍显示（用于直接复用参数） */}
         {(!((task?.result && task.status === 'success') || viewResult?.result) && !viewArtifacts) && (
           <HistoryPanel
-            onUseParams={handleUseParams}
-            onReuseBacktest={handleReuseBacktest}
-            onViewResult={handleViewResult}
-          />
+                        onUseParams={handleUseParams}
+                        onReuseBacktest={handleReuseBacktest}
+                        onViewResult={handleViewResult}
+                        refreshKey={historyRefreshKey}
+                        capacity={capacity}
+                      />
         )}
       </main>
     </div>

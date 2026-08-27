@@ -294,12 +294,19 @@ def _verify_reuse_feature_order(current_names: Optional[list], load_from: str, s
     if not train_names or not current_names:
         return  # 无训练特征名或当前无特征名，无法校验，跳过
     if train_names != current_names:
+        # 展示前若干特征（避免超长刷屏），并给出"新训练 vs 复用权重"的引导
+        def _fmt(names, n=8):
+            return ", ".join(map(str, names[:n])) + ("..." if len(names) > n else "")
+
         raise ValueError(
-            "复用模型失败：当前回测的特征集/特征选择与模型训练时不匹配（特征顺序不一致）。\n"
-            "模型训练时特征（%d 个）：%s\n当前回测特征（%d 个）：%s\n"
-            "请确认使用相同的特征集（feature）和相同的特征选择（selected_features）。"
-            % (len(train_names), ",".join(map(str, train_names[:10])),
-               len(current_names), ",".join(map(str, current_names[:10])))
+            "复用模型失败：当前回测的特征与模型训练时不匹配（不能复用该模型权重做预测）。\n\n"
+            "模型训练时特征（%d 个）：%s\n"
+            "当前回测特征（%d 个）：%s\n\n"
+            "原因与处理：\n"
+            "• 若你只是想用【新参数】做新回测（改了股票池/特征/区间等），应【取消复用模型权重】，\n"
+            "  让它重新训练，就不会报此错（请把表单里的\"复用模型权重\"关掉再开始回测）。\n"
+            "• 若你确实要复用该模型权重，请把股票池、特征集、特征选择改回与训练时一致。"
+            % (len(train_names), _fmt(train_names), len(current_names), _fmt(current_names))
         )
 
 
@@ -367,10 +374,56 @@ def _save_result_json(dir_path: str, result: BacktestResult):
         logger.warning("保存回测结果 result.json 失败: %s", e)
 
 
+_SEQ_LOCK = __import__("threading").Lock()
+
+
+def _assign_backtest_seq(dir_path: str):
+    """给回测目录分配稳定序号（写入 dir_path/seq.json）。
+
+    规则：扫描 artifacts 下所有已有回测目录的 seq，取 max+1 作为新序号；
+    删除某回测后该序号不回收（因为序号是持久化在各目录的 seq.json 里）；
+    当 artifacts 目录为空（无任何 seq）时，新回测序号 = 1，重新开始。
+    """
+    import json
+    import threading
+
+    seq_file = os.path.join(dir_path, "seq.json")
+    if os.path.exists(seq_file):
+        return  # 已分配过
+
+    root = os.path.dirname(dir_path)  # artifacts/ 目录
+    with _SEQ_LOCK:
+        max_seq = 0
+        if os.path.isdir(root):
+            for d in os.listdir(root):
+                sf = os.path.join(root, d, "seq.json")
+                if os.path.exists(sf):
+                    try:
+                        with open(sf, "r", encoding="utf-8") as f:
+                            v = int(json.load(f).get("seq", 0))
+                        if v > max_seq:
+                            max_seq = v
+                    except Exception:
+                        pass
+        new_seq = max_seq + 1
+        try:
+            with open(seq_file, "w", encoding="utf-8") as f:
+                json.dump({"seq": new_seq}, f, ensure_ascii=False)
+        except Exception as e:
+            logger.warning("分配回测序号失败 %s: %s", dir_path, e)
+
+
 def _save_backtest_params(dir_path: str, req: BacktestRequest):
-    """保存回测参数快照（完整可复现参数 + 人工可读 meta）。"""
+    """保存回测参数快照（完整可复现参数 + 人工可读 meta）。
+
+    同时分配"稳定序号"（seq.json）：
+      - 序号按创建顺序递增，最早的回测序号=1；
+      - 删除某个回测后序号不回收（被删的序号永久空着）；
+      - 仅当 artifacts 目录被全部清空后，序号才重新从 1 开始。
+    """
     import json
     try:
+        _assign_backtest_seq(dir_path)
         # 完整参数（前端复现模式直接用）
         params = req.model_dump()
         with open(os.path.join(dir_path, "params.json"), "w", encoding="utf-8") as f:

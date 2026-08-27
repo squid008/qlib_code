@@ -83,6 +83,9 @@ class BacktestTask(BaseModel):
     progress: float = Field(0.0, description="进度 0-100")
     message: str = ""
     created_at: str = ""
+    display_name: Optional[str] = Field(
+        None, description="可读名称（如 20260827-123715_LightGBM_csi300_2022_2023_a7c18c4bffce，来自 artifacts 目录名）"
+    )
     result: Optional["BacktestResult"] = None
 
 
