@@ -157,6 +157,24 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
     if str(req.end_date) < str(req.start_date):
         raise ValueError(f"结束日期({req.end_date})不能早于开始日期({req.start_date})")
 
+    # 校验结束日期不能晚于数据的最后交易日（避免预测/回测区间超出数据范围）
+    try:
+        import pandas as _pd
+        from qlib.data import D
+        _ensure_qlib_init(provider_uri)
+        _full_cal = D.calendar()  # 全量交易日历（含未来日期则过滤，qlib 会返回已有数据的日历）
+        if _full_cal is not None and len(_full_cal) > 0:
+            _last_day = str(_pd.Timestamp(_full_cal[-1]).strftime("%Y-%m-%d"))
+            if str(req.end_date) > _last_day:
+                raise ValueError(
+                    f"结束日期({req.end_date})晚于数据最后交易日({_last_day})，请调整回测区间"
+                )
+    except ValueError:
+        raise
+    except Exception:
+        # 获取日历失败不阻塞（可能数据源不同），由后续逻辑报错
+        pass
+
     # 设置模型产物保存目录（可读目录名 + task_id 后缀保证唯一，用于复现/查看训练结果）
     if task_id and work_dir:
         art_dir = _make_artifact_dir(work_dir, task_id, req)
