@@ -56,6 +56,15 @@ export async function listBacktestsHistory(): Promise<{ items: HistoryItem[] }> 
   return data
 }
 
+// 版本号
+export interface AppVersion {
+  version: string
+}
+export async function getAppVersion(): Promise<AppVersion> {
+  const { data } = await http.get<AppVersion>('/version')
+  return data
+}
+
 export async function getBacktestArtifacts(taskId: string): Promise<ModelArtifacts> {
   const { data } = await http.get<ModelArtifacts>(`/backtest/${taskId}/artifacts`)
   return data

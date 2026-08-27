@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import config
+from . import config, __version__
 from .logger import get_logger
 from .routers import backtest, data, factors
 
@@ -26,7 +26,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Qlib 量化回测平台",
         description="基于 Qlib 的量价因子机器学习回测系统，支持 Qlib / rqalpha(h5) 多数据源。",
-        version="0.1.0",
+        version=__version__,
     )
 
     # CORS
@@ -53,6 +53,11 @@ def create_app() -> FastAPI:
     @app.get("/health", summary="健康检查")
     def health():
         return {"status": "ok"}
+
+    @app.get("/api/version", summary="版本号")
+    def version():
+        """返回当前版本号（语义化版本）。前端页面展示用。"""
+        return {"version": __version__}
 
     # 参数校验错误：返回友好信息，不暴露堆栈
     @app.exception_handler(RequestValidationError)

@@ -10,6 +10,7 @@ import {
   getBacktestSnapshot,
   getBacktestCapacity,
   listBacktests,
+  getAppVersion,
 } from './api'
 import type { BacktestCapacity } from './api'
 import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog } from './types'
@@ -98,6 +99,7 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [capacity, setCapacity] = useState<BacktestCapacity | null>(null)
+  const [version, setVersion] = useState('')
   // 触发历史回测面板刷新：递增该 key 即可让 HistoryPanel 自动 load（用于"任务取消/完成后自动更新"）
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0)
   const [tasks, setTasks] = useState<BacktestTask[]>([])  // 所有活跃任务（支持多任务并行显示与取消）
@@ -136,6 +138,11 @@ export default function App() {
   // 加载数据源能力信息
   useEffect(() => {
     listDataSources().then(setDataSources).catch(() => {})
+  }, [])
+
+  // 加载版本号
+  useEffect(() => {
+    getAppVersion().then((v) => setVersion(v.version)).catch(() => {})
   }, [])
 
   // 加载并发回测能力信息（并发上限 / 运行数 / 硬件资源）
@@ -530,7 +537,12 @@ export default function App() {
   return (
     <div className="min-h-screen">
       <header className="bg-slate-900 text-white py-4 px-6 shadow">
-        <h1 className="text-xl font-bold">Qlib 量化回测平台</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-bold">Qlib 量化回测平台</h1>
+          {version && (
+            <span className="text-sm text-slate-400 font-mono">v{version}</span>
+          )}
+        </div>
         <p className="text-sm text-slate-400">
           Alpha158 因子 + LightGBM 模型 + TopK 策略 | 多数据源支持
         </p>
