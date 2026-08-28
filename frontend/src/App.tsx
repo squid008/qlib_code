@@ -11,6 +11,8 @@ import {
   getBacktestCapacity,
   listBacktests,
   getAppVersion,
+  translateFormula,
+  getFactorOperators,
 } from './api'
 import type { BacktestCapacity } from './api'
 import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog } from './types'
@@ -69,6 +71,7 @@ export default function App() {
     data_source: 'qlib',
     feature: 'Alpha158',
     selected_features: null,
+    custom_formulas: null,
     bins: 5,
     deal_price: 'close',
     open_cost: 0.0005,
@@ -134,6 +137,13 @@ export default function App() {
   const [factorCatalog, setFactorCatalog] = useState<FactorCatalog | null>(null)
   const [customFeatures, setCustomFeatures] = useState<string[]>([]) // 已勾选的特征名
   const [showFeaturePanel, setShowFeaturePanel] = useState(false) // 是否展开特征选择面板
+
+  // 自定义公式因子（M2）：益盟/通达信公式 → 特征
+  const [customFormulas, setCustomFormulas] = useState<{ text: string; name: string; expression: string }[]>([])
+  const [formulaInput, setFormulaInput] = useState('') // 公式输入框
+  const [showFormulaPanel, setShowFormulaPanel] = useState(false) // 是否展开公式编辑面板
+  const [formulaError, setFormulaError] = useState('') // 公式翻译错误提示
+  const [formulaTranslating, setFormulaTranslating] = useState(false)
 
   // 加载数据源能力信息
   useEffect(() => {
@@ -227,6 +237,55 @@ export default function App() {
     }
   }
 
+  // 添加自定义公式：翻译并加入列表，同步到 form.custom_formulas
+  const addCustomFormula = async () => {
+    const text = formulaInput.trim()
+    if (!text) {
+      setFormulaError('请先输入公式')
+      return
+    }
+    setFormulaTranslating(true)
+    setFormulaError('')
+    try {
+      const r = await translateFormula(text)
+      if (r.has_patch) {
+        setFormulaError('该公式含尚未实现的有状态算子，暂不支持')
+        return
+      }
+      setCustomFormulas((prev) => {
+        // 去重：同一公式文本不重复添加
+        if (prev.some((f) => f.text.trim() === text)) return prev
+        const next = [...prev, { text, name: r.name, expression: r.expression }]
+        setForm((f) => ({ ...f, custom_formulas: next.map((x) => x.text) }))
+        return next
+      })
+      setFormulaInput('')
+    } catch (e: unknown) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const detail = (e as any)?.response?.data?.detail
+      setFormulaError(detail ? String(detail) : '公式翻译失败，请检查语法')
+    } finally {
+      setFormulaTranslating(false)
+    }
+  }
+
+  // 删除自定义公式
+  const removeCustomFormula = (idx: number) => {
+    setCustomFormulas((prev) => {
+      const next = prev.filter((_, i) => i !== idx)
+      setForm((f) => ({ ...f, custom_formulas: next.length > 0 ? next.map((x) => x.text) : null }))
+      return next
+    })
+  }
+
+  // 清空所有自定义公式
+  const clearCustomFormulas = () => {
+    setCustomFormulas([])
+    setFormulaInput('')
+    setFormulaError('')
+    setForm((f) => ({ ...f, custom_formulas: null }))
+  }
+
   // 勾选/取消单个特征
   const toggleFeature = (name: string) => {
     setCustomFeatures((prev) => {
@@ -262,6 +321,13 @@ export default function App() {
       setShowFeaturePanel(true)
     } else if (factorCatalog) {
       setCustomFeatures(factorCatalog.flat.map((f) => f.name))
+    }
+    // 同步自定义公式：历史用了公式因子则带出（显示原文，翻译结果在提交时由后端重新处理）
+    if (params.custom_formulas?.length) {
+      setCustomFormulas(
+        params.custom_formulas.map((t) => ({ text: t, name: t.split(';')[0] || '公式', expression: '' })),
+      )
+      setShowFormulaPanel(true)
     }
     // 定位到"开始回测"按钮位置
     try {
@@ -615,6 +681,85 @@ export default function App() {
                 <option value="Alpha158">Alpha158</option>
                 <option value="Alpha360">Alpha360</option>
               </select>
+              {/* 自定义公式因子开关 */}
+              <button
+                type="button"
+                onClick={() => setShowFormulaPanel(!showFormulaPanel)}
+                className={`mt-2 w-full text-xs border rounded px-2 py-1.5 ${
+                  customFormulas.length > 0
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'text-emerald-600 hover:bg-emerald-50 dark:text-emerald-400'
+                }`}
+              >
+                {showFormulaPanel
+                  ? '收起自定义公式 ▲'
+                  : `使用自定义公式因子 ▼${customFormulas.length > 0 ? `（${customFormulas.length}）` : ''}`}
+              </button>
+              {/* 自定义公式编辑面板 */}
+              {showFormulaPanel && (
+                <div className="mt-2 border rounded p-2 bg-slate-50 dark:bg-slate-900 text-xs">
+                  <p className="text-slate-500 mb-1">
+                    粘贴益盟/通达信公式（每条 1 个输出，可含 <code className="text-slate-600">A:=...</code> 中间变量），
+                    翻译后作为回测特征。示例：
+                  </p>
+                  <p className="text-slate-400 mb-2 leading-relaxed break-all">
+                    <code className="text-[10px]">
+                      A:=MA(CLOSE,5); 长期线:A+100;
+                    </code>
+                  </p>
+                  <textarea
+                    value={formulaInput}
+                    onChange={(e) => setFormulaInput(e.target.value)}
+                    rows={3}
+                    placeholder="如：A:=MA(CLOSE,5); 长期线:A+100;"
+                    className="w-full border rounded px-2 py-1 font-mono text-[11px] bg-white dark:bg-slate-800"
+                  />
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <button
+                      type="button"
+                      onClick={addCustomFormula}
+                      disabled={formulaTranslating}
+                      className="px-2 py-1 rounded bg-emerald-600 text-white text-xs disabled:opacity-50"
+                    >
+                      {formulaTranslating ? '翻译中...' : '添加并翻译'}
+                    </button>
+                    {customFormulas.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={clearCustomFormulas}
+                        className="px-2 py-1 rounded border text-red-500 text-xs hover:bg-red-50 dark:hover:bg-red-950"
+                      >
+                        清空全部
+                      </button>
+                    )}
+                  </div>
+                  {formulaError && (
+                    <p className="mt-1 text-red-500 text-[11px] break-all">{formulaError}</p>
+                  )}
+                  {customFormulas.length > 0 && (
+                    <ul className="mt-2 space-y-1 max-h-40 overflow-y-auto">
+                      {customFormulas.map((f, i) => (
+                        <li
+                          key={i}
+                          className="flex items-center justify-between gap-2 border rounded px-2 py-1 bg-white dark:bg-slate-800"
+                        >
+                          <div className="min-w-0">
+                            <span className="font-semibold text-emerald-700 dark:text-emerald-300">{f.name}</span>
+                            <span className="text-slate-400 font-mono text-[10px] break-all block">{f.expression}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeCustomFormula(i)}
+                            className="text-red-400 hover:text-red-600 text-xs shrink-0"
+                          >
+                            ✕
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
               {/* 自定义特征选择开关 */}
               <button
                 type="button"

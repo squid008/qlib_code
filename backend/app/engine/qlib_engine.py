@@ -279,6 +279,30 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg)
         "fit_end_time": train_end,
         "instruments": instruments,
     }
+    # 自定义公式因子（M2）：有公式时优先用 FormulaHandler，仅用公式生成的因子作为特征
+    custom_formulas = getattr(req, "custom_formulas", None) or []
+    if custom_formulas:
+        handler_cls = "FormulaHandler"
+        handler_module = "app.factors.handler"
+        handler_kwargs["formulas"] = list(custom_formulas)
+        handler_kwargs["label_horizon"] = getattr(req, "label_horizon", None) or 2
+        return {
+            "class": "DatasetH",
+            "module_path": "qlib.data.dataset",
+            "kwargs": {
+                "handler": {
+                    "class": handler_cls,
+                    "module_path": handler_module,
+                    "kwargs": handler_kwargs,
+                },
+                "segments": {
+                    "train": [train_start, train_end],
+                    "valid": [train_start, train_end],
+                    "test": [test_start, test_end],
+                },
+            },
+        }
+
     if (req.feature or "Alpha158").lower() == "alpha360":
         handler_cls = "SelectedAlpha360"
         handler_module = "app.factors.handler"

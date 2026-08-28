@@ -16,6 +16,7 @@ export interface BacktestRequest {
   data_source_provider_uri?: string | null
   feature: string
   selected_features?: string[] | null
+  custom_formulas?: string[] | null
   bins: number
   // 交易成本与成交设置
   deal_price: string

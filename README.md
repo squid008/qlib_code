@@ -508,6 +508,7 @@ conda env export --no-builds > qlib_env.yml  # 生成 conda 环境
 | `md/start_stop.md` | 前后端启停脚本（`start_backend.bat` / `start_frontend.bat` / `stop_*.bat`）的使用说明 |
 | `md/数据源接入.md` | 数据源抽象层（Qlib 日线 / rqalpha h5 分钟/财报/行业/指数成分）如何接入与扩展 |
 | `md/因子库特征选择.md` | 内置因子库、特征集（Alpha158/Alpha360）、自定义特征选择的使用说明 |
+| `md/自定义因子与因子库架构.md` | 2.0 架构设计稿：益盟/通达信自定义公式因子、因子库、评估看板、预处理、h5 存储（设计定稿，待落地） |
 | `md/两地 git 工作流.md` | 家/公司两地协作的 Git 工作流约定 |
 | `md/upload.md` | 本地专用文档（已在 .gitignore 排除，不上传 GitHub） |
 

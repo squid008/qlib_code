@@ -11,6 +11,8 @@ from typing import List, Optional
 from qlib.contrib.data.handler import Alpha158, Alpha360, Alpha158DL, Alpha360DL
 from qlib.data.dataset.handler import DataHandlerLP
 
+from .parser import translate_formula, CodeGenError
+
 
 class SelectedAlpha158(Alpha158):
     """Alpha158 的子集版：通过 fields 指定要保留的特征名列表（如 ["KMID", "ROC5"]）。
@@ -58,6 +60,91 @@ class SelectedAlpha360(Alpha360):
             keep = [(f, n) for f, n in zip(fields, names) if n in self._selected]
             fields, names = ([f for f, _ in keep], [n for _, n in keep])
         return fields, names
+
+    def get_label_config(self):
+        # 预测周期：未来 N 个交易日的收益。N=label_horizon
+        n = self._label_horizon
+        return [f"Ref($close, -{n + 1})/Ref($close, -1) - 1"], ["LABEL0"]
+
+
+class FormulaHandler(DataHandlerLP):
+    """自定义公式因子 Handler（M2）。
+
+    把用户粘贴的益盟/通达信公式翻译成 qlib 表达式，作为回测的特征喂给模型。
+    formulas 里的每条公式翻译成一个特征列。
+
+    用法（dataset 配置里）：
+        handler_cls = "FormulaHandler"
+        handler_module = "app.factors.handler"
+        kwargs = { ..., "formulas": ["A:=MA(CLOSE,5); 输出:A+100;", ...] }
+    """
+
+    def __init__(
+        self,
+        instruments="csi500",
+        start_time=None,
+        end_time=None,
+        freq="day",
+        infer_processors=[],
+        learn_processors=None,
+        fit_start_time=None,
+        fit_end_time=None,
+        process_type=DataHandlerLP.PTYPE_A,
+        filter_pipe=None,
+        inst_processors=None,
+        formulas: Optional[List[str]] = None,
+        label_horizon: Optional[int] = 2,
+        **kwargs,
+    ):
+        # 翻译公式 → (expressions, names)
+        self._formulas = formulas or []
+        self._label_horizon = max(1, int(label_horizon or 2))
+        self._expressions, self._names = self._translate_all(self._formulas)
+
+        # 默认学习处理器：沿用 qlib 的 DropnaLabel + CSZScoreNorm（标签标准化）
+        from qlib.contrib.data.handler import _DEFAULT_LEARN_PROCESSORS
+
+        if learn_processors is None:
+            learn_processors = _DEFAULT_LEARN_PROCESSORS
+
+        data_loader = {
+            "class": "QlibDataLoader",
+            "kwargs": {
+                "config": {
+                    "feature": self.get_feature_config(),
+                    "label": kwargs.pop("label", self.get_label_config()),
+                },
+                "filter_pipe": filter_pipe,
+                "freq": freq,
+                "inst_processors": inst_processors,
+            },
+        }
+        super().__init__(
+            instruments=instruments,
+            start_time=start_time,
+            end_time=end_time,
+            data_loader=data_loader,
+            infer_processors=infer_processors,
+            learn_processors=learn_processors,
+            process_type=process_type,
+            **kwargs,
+        )
+
+    def _translate_all(self, formulas: List[str]):
+        """翻译所有公式，返回 (expressions, names)。"""
+        expressions, names = [], []
+        for text in formulas:
+            t = translate_formula(text)
+            if t.has_patch:
+                raise CodeGenError(
+                    f"公式[{t.name}]含尚未实现的有状态算子（{t.expression}），"
+                    f"请先实现外挂算子或改用其他函数")
+            expressions.append(t.expression)
+            names.append(t.name)
+        return expressions, names
+
+    def get_feature_config(self):
+        return self._expressions, self._names
 
     def get_label_config(self):
         # 预测周期：未来 N 个交易日的收益。N=label_horizon

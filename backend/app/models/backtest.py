@@ -41,6 +41,14 @@ class BacktestRequest(BaseModel):
             "将来因子库扩展后，这里可传入任意目录中的因子名。"
         ),
     )
+    custom_formulas: Optional[List[str]] = Field(
+        None,
+        description=(
+            "自定义公式因子（M2）：粘贴益盟/通达信公式文本列表，每条翻译成一个特征列。"
+            "非空时优先使用 FormulaHandler，仅用这些公式生成的因子作为特征（忽略 feature/selected_features）。"
+            "例：[\"A:=MA(CLOSE,5); 输出:A+100;\", ...]。"
+        ),
+    )
     # bins 保留用于兼容，但分层回测当前固定为 5 组（见 _compute_layers）
     bins: int = Field(5, description="[保留] 分层组数，当前固定为 5 组")
     # 交易成本与成交设置

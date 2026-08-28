@@ -137,6 +137,34 @@ export async function getFactorCatalog(dataset = 'Alpha158'): Promise<FactorCata
   return data
 }
 
+// 公式翻译：益盟/通达信公式 → qlib 表达式
+export interface TranslateResult {
+  name: string
+  expression: string
+  inputs: string[]
+  has_patch: boolean
+  source_formula: string
+}
+export async function translateFormula(formula: string, patchable = false): Promise<TranslateResult> {
+  const { data } = await http.post<TranslateResult>('/factors/translate', {
+    formula,
+    patchable,
+  })
+  return data
+}
+
+// 算子分类清单（前端公式编辑器提示/灰显）
+export interface FactorOperators {
+  supported: string[]
+  patched_need_impl: string[]
+  level2_no_data: string[]
+  ignored_plot: string[]
+}
+export async function getFactorOperators(): Promise<FactorOperators> {
+  const { data } = await http.get<FactorOperators>('/factors/operators')
+  return data
+}
+
 // ---------- 数据 ----------
 
 export async function listDataSources(): Promise<DataSourceInfo> {
