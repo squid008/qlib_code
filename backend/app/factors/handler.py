@@ -8,10 +8,36 @@
 """
 from typing import List, Optional
 
+import numpy as np
 from qlib.contrib.data.handler import Alpha158, Alpha360, Alpha158DL, Alpha360DL
 from qlib.data.dataset.handler import DataHandlerLP
 
 from .parser import translate_formula, CodeGenError
+
+
+class CleanInf:
+    """特征清洗：把 ±inf 替换为 NaN。
+
+    自定义公式里可能出现除零（如停牌后复牌导致分母为 0），求值结果为 inf，
+    LightGBM 对 NaN 友好（按缺失处理），但对 inf 敏感；CSZScoreNorm 计算截面
+    均值/方差时也不会跳过 inf。本处理器放在 learn_processors 最前面，把 inf
+    统一替换为 NaN，避免污染标准化与训练。
+    """
+
+    def __init__(self, **kwargs):
+        pass
+
+    def fit(self, df=None):
+        return self
+
+    def __call__(self, df):
+        # 只处理数值列：±inf → NaN（NaN 保持原样）
+        numeric = df.select_dtypes(include=[np.number])
+        if numeric.empty:
+            return df
+        df = df.copy()
+        df[numeric.columns] = numeric.mask(np.isinf(numeric), np.nan)
+        return df
 
 
 class SelectedAlpha158(Alpha158):
@@ -101,11 +127,15 @@ class FormulaHandler(DataHandlerLP):
         self._label_horizon = max(1, int(label_horizon or 2))
         self._expressions, self._names = self._translate_all(self._formulas)
 
-        # 默认学习处理器：沿用 qlib 的 DropnaLabel + CSZScoreNorm（标签标准化）
+        # 默认学习处理器：先清洗 ±inf（自定义公式除零保护），
+        # 再沿用 qlib 的 DropnaLabel + CSZScoreNorm（标签标准化）
         from qlib.contrib.data.handler import _DEFAULT_LEARN_PROCESSORS
 
         if learn_processors is None:
-            learn_processors = _DEFAULT_LEARN_PROCESSORS
+            learn_processors = [
+                {"class": "CleanInf", "module_path": "app.factors.handler"},
+                *_DEFAULT_LEARN_PROCESSORS,
+            ]
 
         data_loader = {
             "class": "QlibDataLoader",

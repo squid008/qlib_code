@@ -12,6 +12,12 @@ from ..factors.catalog import get_catalog, FACTOR_PROVIDERS
 from ..factors.parser import (
     translate_formula, LexerError, ParseError, SemanticError, CodeGenError,
 )
+from ..services.custom_formulas import (
+    list_custom_formulas as _list_custom_formulas,
+    create_custom_formula as _create_custom_formula,
+    update_custom_formula as _update_custom_formula,
+    delete_custom_formula as _delete_custom_formula,
+)
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
 
@@ -19,6 +25,21 @@ router = APIRouter(prefix="/api/factors", tags=["factors"])
 class TranslateRequest(BaseModel):
     formula: str = ""          # 益盟/通达信公式文本（允许整段粘贴，含 := 中间变量，1 条输出线）
     patchable: bool = False    # 是否允许外挂算子占位（默认 False，含外挂算子报错）
+
+
+class CustomFormulaBody(BaseModel):
+    formula: str = ""          # 与 TranslateRequest 一致：用户原文公式
+    patchable: bool = False
+
+
+def _compile_formula_or_400(formula: str, patchable: bool = False):
+    """编译公式；成功返回 TranslatedFactor，失败抛 HTTPException(400)。"""
+    if not formula or not formula.strip():
+        raise HTTPException(status_code=400, detail="公式不能为空")
+    try:
+        return translate_formula(formula, patchable=patchable)
+    except (LexerError, ParseError, SemanticError, CodeGenError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/translate", summary="翻译益盟/通达信公式为 qlib 表达式")
@@ -41,6 +62,38 @@ def translate(req: TranslateRequest):
         }
     except (LexerError, ParseError, SemanticError, CodeGenError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------- 自定义公式持久化（workdir/custom_formulas.json） ----------
+
+@router.get("/custom-formulas", summary="列出已保存的自定义公式")
+def list_saved_formulas():
+    """返回全部已保存的自定义公式（含原文 text 与编译后的 expression）。"""
+    return {"items": _list_custom_formulas()}
+
+
+@router.post("/custom-formulas", summary="编译并保存自定义公式")
+def create_saved_formula(req: CustomFormulaBody):
+    """编译用户公式并保存到 workdir/custom_formulas.json，返回保存的条目。"""
+    t = _compile_formula_or_400(req.formula, req.patchable)
+    return _create_custom_formula(t.name, req.formula.strip(), t.expression)
+
+
+@router.put("/custom-formulas/{formula_id}", summary="编辑自定义公式（重新编译并保存）")
+def update_saved_formula(formula_id: str, req: CustomFormulaBody):
+    """按 id 修改公式：重新编译后覆盖 text/name/expression。"""
+    t = _compile_formula_or_400(req.formula, req.patchable)
+    item = _update_custom_formula(formula_id, t.name, req.formula.strip(), t.expression)
+    if item is None:
+        raise HTTPException(status_code=404, detail="公式不存在")
+    return item
+
+
+@router.delete("/custom-formulas/{formula_id}", summary="删除自定义公式")
+def delete_saved_formula(formula_id: str):
+    if not _delete_custom_formula(formula_id):
+        raise HTTPException(status_code=404, detail="公式不存在")
+    return {"ok": True}
 
 
 @router.get("/operators", summary="列出翻译器支持的算子分类")

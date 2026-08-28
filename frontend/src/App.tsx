@@ -11,10 +11,12 @@ import {
   getBacktestCapacity,
   listBacktests,
   getAppVersion,
-  translateFormula,
-  getFactorOperators,
+  listCustomFormulas,
+  createCustomFormula,
+  updateCustomFormula,
+  deleteCustomFormula,
 } from './api'
-import type { BacktestCapacity } from './api'
+import type { BacktestCapacity, CustomFormula } from './api'
 import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog } from './types'
 import MetricCards from './components/MetricCards'
 import NavChart from './components/NavChart'
@@ -23,38 +25,10 @@ import ICChart from './components/ICChart'
 import TradeLog from './components/TradeLog'
 import ModelArtifactsPanel from './components/ModelArtifacts'
 import HistoryPanel from './components/HistoryPanel'
-
-// 各模型的超参表单字段定义（占位提示为对应模型的 Qlib/默认值）
-interface ModelParamField {
-  key: string
-  label: string
-  placeholder: string
-  step?: number
-}
-const MODEL_PARAM_FIELDS: Record<string, ModelParamField[]> = {
-  lightgbm: [
-    { key: 'max_depth', label: '最大深度 max_depth', placeholder: 'Qlib默认 8' },
-    { key: 'num_leaves', label: '叶子节点数 num_leaves', placeholder: 'Qlib默认 210' },
-    { key: 'min_child_samples', label: '叶子最少样本 min_child_samples', placeholder: 'Qlib默认 20' },
-    { key: 'learning_rate', label: '学习率 learning_rate', placeholder: 'Qlib默认 0.0421', step: 0.001 },
-    { key: 'n_estimators', label: '树数量 n_estimators', placeholder: '默认 100' },
-    { key: 'subsample', label: '子采样 subsample', placeholder: 'Qlib默认 0.8789', step: 0.01 },
-    { key: 'colsample_bytree', label: '特征采样 colsample_bytree', placeholder: 'Qlib默认 0.8879', step: 0.01 },
-    { key: 'reg_alpha', label: 'L1正则 reg_alpha', placeholder: 'Qlib默认 205.7', step: 0.1 },
-    { key: 'reg_lambda', label: 'L2正则 reg_lambda', placeholder: 'Qlib默认 580.98', step: 0.1 },
-  ],
-  xgboost: [
-    { key: 'max_depth', label: '最大深度 max_depth', placeholder: 'XGBoost默认 6' },
-    { key: 'learning_rate', label: '学习率 learning_rate', placeholder: 'XGBoost默认 0.3', step: 0.01 },
-    { key: 'n_estimators', label: '树数量 n_estimators', placeholder: '默认 100（XGB用early_stopping截断）' },
-    { key: 'min_child_weight', label: '最小子节点权重 min_child_weight', placeholder: 'XGBoost默认 1' },
-    { key: 'subsample', label: '子采样 subsample', placeholder: 'XGBoost默认 1', step: 0.01 },
-    { key: 'colsample_bytree', label: '特征采样 colsample_bytree', placeholder: 'XGBoost默认 1', step: 0.01 },
-    { key: 'gamma', label: '分裂最小损失减 gamma', placeholder: 'XGBoost默认 0', step: 0.01 },
-    { key: 'reg_alpha', label: 'L1正则 reg_alpha', placeholder: 'XGBoost默认 0', step: 0.1 },
-    { key: 'reg_lambda', label: 'L2正则 reg_lambda', placeholder: 'XGBoost默认 1', step: 0.1 },
-  ],
-}
+import FormulaPanel from './components/FormulaPanel'
+import FeatureSelectPanel from './components/FeatureSelectPanel'
+import ModelParamsForm from './components/ModelParamsForm'
+import TaskStatusPanel from './components/TaskStatusPanel'
 
 export default function App() {
   const [form, setForm] = useState<BacktestRequest>({
@@ -138,12 +112,16 @@ export default function App() {
   const [customFeatures, setCustomFeatures] = useState<string[]>([]) // 已勾选的特征名
   const [showFeaturePanel, setShowFeaturePanel] = useState(false) // 是否展开特征选择面板
 
-  // 自定义公式因子（M2）：益盟/通达信公式 → 特征
-  const [customFormulas, setCustomFormulas] = useState<{ text: string; name: string; expression: string }[]>([])
+  // 自定义公式因子（M2）：益盟/通达信公式 → 特征（后端持久化，刷新不丢失）
+  const [customFormulas, setCustomFormulas] = useState<CustomFormula[]>([])
+  const [selectedFormulaIds, setSelectedFormulaIds] = useState<Set<string>>(new Set()) // 勾选进入回测的公式 id
   const [formulaInput, setFormulaInput] = useState('') // 公式输入框
   const [showFormulaPanel, setShowFormulaPanel] = useState(false) // 是否展开公式编辑面板
-  const [formulaError, setFormulaError] = useState('') // 公式翻译错误提示
+  const [formulaError, setFormulaError] = useState('') // 公式编译错误提示
   const [formulaTranslating, setFormulaTranslating] = useState(false)
+  // 编辑状态：editingId 非空时对应公式进入编辑模式
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingText, setEditingText] = useState('')
 
   // 加载数据源能力信息
   useEffect(() => {
@@ -153,6 +131,19 @@ export default function App() {
   // 加载版本号
   useEffect(() => {
     getAppVersion().then((v) => setVersion(v.version)).catch(() => {})
+  }, [])
+
+  // 加载已保存的自定义公式（后端持久化），默认全选
+  useEffect(() => {
+    listCustomFormulas()
+      .then(({ items }) => {
+        setCustomFormulas(items)
+        if (items.length > 0) {
+          setSelectedFormulaIds(new Set(items.map((x) => x.id)))
+          setForm((f) => ({ ...f, custom_formulas: items.map((x) => x.text) }))
+        }
+      })
+      .catch(() => {})
   }, [])
 
   // 加载并发回测能力信息（并发上限 / 运行数 / 硬件资源）
@@ -237,53 +228,108 @@ export default function App() {
     }
   }
 
-  // 添加自定义公式：翻译并加入列表，同步到 form.custom_formulas
+  // 把"勾选中的公式原文"同步到 form.custom_formulas（回测时后端按此编译特征）
+  const syncFormulasToForm = (items: CustomFormula[], ids: Set<string>) => {
+    const texts = items.filter((x) => ids.has(x.id)).map((x) => x.text)
+    setForm((f) => ({ ...f, custom_formulas: texts.length > 0 ? texts : null }))
+  }
+
+  // 添加自定义公式：编译并保存到后端，默认勾选
   const addCustomFormula = async () => {
     const text = formulaInput.trim()
     if (!text) {
       setFormulaError('请先输入公式')
       return
     }
+    if (customFormulas.some((f) => f.text.trim() === text)) {
+      setFormulaError('该公式已存在，可直接勾选使用或点编辑修改')
+      return
+    }
     setFormulaTranslating(true)
     setFormulaError('')
     try {
-      const r = await translateFormula(text)
-      if (r.has_patch) {
-        setFormulaError('该公式含尚未实现的有状态算子，暂不支持')
-        return
-      }
-      setCustomFormulas((prev) => {
-        // 去重：同一公式文本不重复添加
-        if (prev.some((f) => f.text.trim() === text)) return prev
-        const next = [...prev, { text, name: r.name, expression: r.expression }]
-        setForm((f) => ({ ...f, custom_formulas: next.map((x) => x.text) }))
-        return next
-      })
+      const item = await createCustomFormula(text)
+      const next = [...customFormulas, item]
+      setCustomFormulas(next)
+      const ids = new Set(selectedFormulaIds).add(item.id)
+      setSelectedFormulaIds(ids)
+      syncFormulasToForm(next, ids)
       setFormulaInput('')
     } catch (e: unknown) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const detail = (e as any)?.response?.data?.detail
-      setFormulaError(detail ? String(detail) : '公式翻译失败，请检查语法')
+      setFormulaError(detail ? String(detail) : '公式编译失败，请检查语法')
     } finally {
       setFormulaTranslating(false)
     }
   }
 
-  // 删除自定义公式
-  const removeCustomFormula = (idx: number) => {
-    setCustomFormulas((prev) => {
-      const next = prev.filter((_, i) => i !== idx)
-      setForm((f) => ({ ...f, custom_formulas: next.length > 0 ? next.map((x) => x.text) : null }))
-      return next
-    })
+  // 删除自定义公式（同时从后端删除）
+  const removeCustomFormula = async (id: string) => {
+    try {
+      await deleteCustomFormula(id)
+    } catch {
+      // 删除失败不阻塞本地移除（下次刷新会自动纠正）
+    }
+    const next = customFormulas.filter((x) => x.id !== id)
+    setCustomFormulas(next)
+    const ids = new Set(selectedFormulaIds)
+    ids.delete(id)
+    setSelectedFormulaIds(ids)
+    syncFormulasToForm(next, ids)
+    if (editingId === id) {
+      setEditingId(null)
+      setEditingText('')
+    }
   }
 
-  // 清空所有自定义公式
-  const clearCustomFormulas = () => {
-    setCustomFormulas([])
-    setFormulaInput('')
+  // 勾选 / 取消勾选单个自定义公式
+  const toggleFormula = (id: string) => {
+    const ids = new Set(selectedFormulaIds)
+    if (ids.has(id)) ids.delete(id)
+    else ids.add(id)
+    setSelectedFormulaIds(ids)
+    syncFormulasToForm(customFormulas, ids)
+  }
+
+  // 全选 / 全不选
+  const toggleAllFormulas = (select: boolean) => {
+    const ids = select ? new Set(customFormulas.map((x) => x.id)) : new Set<string>()
+    setSelectedFormulaIds(ids)
+    syncFormulasToForm(customFormulas, ids)
+  }
+
+  // 开始编辑某个公式（把原文放入编辑框，该项进入编辑模式）
+  const startEditFormula = (f: CustomFormula) => {
+    setEditingId(f.id)
+    setEditingText(f.text)
     setFormulaError('')
-    setForm((f) => ({ ...f, custom_formulas: null }))
+  }
+
+  // 保存编辑：重新编译并写回后端
+  const saveEditFormula = async () => {
+    if (!editingId) return
+    const text = editingText.trim()
+    if (!text) {
+      setFormulaError('公式不能为空')
+      return
+    }
+    setFormulaTranslating(true)
+    setFormulaError('')
+    try {
+      const item = await updateCustomFormula(editingId, text)
+      const next = customFormulas.map((x) => (x.id === editingId ? item : x))
+      setCustomFormulas(next)
+      syncFormulasToForm(next, selectedFormulaIds)
+      setEditingId(null)
+      setEditingText('')
+    } catch (e: unknown) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const detail = (e as any)?.response?.data?.detail
+      setFormulaError(detail ? String(detail) : '公式编译失败，请检查语法')
+    } finally {
+      setFormulaTranslating(false)
+    }
   }
 
   // 勾选/取消单个特征
@@ -322,11 +368,23 @@ export default function App() {
     } else if (factorCatalog) {
       setCustomFeatures(factorCatalog.flat.map((f) => f.name))
     }
-    // 同步自定义公式：历史用了公式因子则带出（显示原文，翻译结果在提交时由后端重新处理）
+    // 同步自定义公式：历史用了公式因子则带出（匹配已保存的自动勾选；历史有但本地没保存的临时加入本次列表）
     if (params.custom_formulas?.length) {
-      setCustomFormulas(
-        params.custom_formulas.map((t) => ({ text: t, name: t.split(';')[0] || '公式', expression: '' })),
-      )
+      const savedTexts = new Set(customFormulas.map((x) => x.text))
+      const missing = params.custom_formulas.filter((t) => !savedTexts.has(t))
+      const tempItems: CustomFormula[] = missing.map((t) => ({
+        id: t, // 临时 id 用原文，仅本次会话存在，不落盘
+        name: t.split(';')[0] || '公式',
+        text: t,
+        expression: '',
+        created_at: '',
+        updated_at: '',
+      }))
+      const merged = [...customFormulas, ...tempItems]
+      setCustomFormulas(merged)
+      const allIds = new Set(merged.map((x) => x.id))
+      setSelectedFormulaIds(allIds)
+      syncFormulasToForm(merged, allIds)
       setShowFormulaPanel(true)
     }
     // 定位到"开始回测"按钮位置
@@ -630,6 +688,7 @@ export default function App() {
               </div>
             )}
           </div>
+
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <label className="block">
               <span className="text-sm text-slate-500">股票池</span>
@@ -681,148 +740,20 @@ export default function App() {
                 <option value="Alpha158">Alpha158</option>
                 <option value="Alpha360">Alpha360</option>
               </select>
-              {/* 自定义公式因子开关 */}
-              <button
-                type="button"
-                onClick={() => setShowFormulaPanel(!showFormulaPanel)}
-                className={`mt-2 w-full text-xs border rounded px-2 py-1.5 ${
-                  customFormulas.length > 0
-                    ? 'bg-emerald-600 text-white border-emerald-600'
-                    : 'text-emerald-600 hover:bg-emerald-50 dark:text-emerald-400'
-                }`}
-              >
-                {showFormulaPanel
-                  ? '收起自定义公式 ▲'
-                  : `使用自定义公式因子 ▼${customFormulas.length > 0 ? `（${customFormulas.length}）` : ''}`}
-              </button>
-              {/* 自定义公式编辑面板 */}
-              {showFormulaPanel && (
-                <div className="mt-2 border rounded p-2 bg-slate-50 dark:bg-slate-900 text-xs">
-                  <p className="text-slate-500 mb-1">
-                    粘贴益盟/通达信公式（每条 1 个输出，可含 <code className="text-slate-600">A:=...</code> 中间变量），
-                    翻译后作为回测特征。示例：
-                  </p>
-                  <p className="text-slate-400 mb-2 leading-relaxed break-all">
-                    <code className="text-[10px]">
-                      A:=MA(CLOSE,5); 长期线:A+100;
-                    </code>
-                  </p>
-                  <textarea
-                    value={formulaInput}
-                    onChange={(e) => setFormulaInput(e.target.value)}
-                    rows={3}
-                    placeholder="如：A:=MA(CLOSE,5); 长期线:A+100;"
-                    className="w-full border rounded px-2 py-1 font-mono text-[11px] bg-white dark:bg-slate-800"
-                  />
-                  <div className="flex items-center gap-2 mt-1.5">
-                    <button
-                      type="button"
-                      onClick={addCustomFormula}
-                      disabled={formulaTranslating}
-                      className="px-2 py-1 rounded bg-emerald-600 text-white text-xs disabled:opacity-50"
-                    >
-                      {formulaTranslating ? '翻译中...' : '添加并翻译'}
-                    </button>
-                    {customFormulas.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={clearCustomFormulas}
-                        className="px-2 py-1 rounded border text-red-500 text-xs hover:bg-red-50 dark:hover:bg-red-950"
-                      >
-                        清空全部
-                      </button>
-                    )}
-                  </div>
-                  {formulaError && (
-                    <p className="mt-1 text-red-500 text-[11px] break-all">{formulaError}</p>
-                  )}
-                  {customFormulas.length > 0 && (
-                    <ul className="mt-2 space-y-1 max-h-40 overflow-y-auto">
-                      {customFormulas.map((f, i) => (
-                        <li
-                          key={i}
-                          className="flex items-center justify-between gap-2 border rounded px-2 py-1 bg-white dark:bg-slate-800"
-                        >
-                          <div className="min-w-0">
-                            <span className="font-semibold text-emerald-700 dark:text-emerald-300">{f.name}</span>
-                            <span className="text-slate-400 font-mono text-[10px] break-all block">{f.expression}</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => removeCustomFormula(i)}
-                            className="text-red-400 hover:text-red-600 text-xs shrink-0"
-                          >
-                            ✕
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
-              {/* 自定义特征选择开关 */}
-              <button
-                type="button"
-                onClick={() => setShowFeaturePanel(!showFeaturePanel)}
-                className="mt-2 w-full text-xs border rounded px-2 py-1.5 text-blue-600 hover:bg-blue-50 dark:text-blue-400"
-              >
-                {showFeaturePanel ? '收起特征选择 ▲' : '自定义筛选特征 ▼'}
-              </button>
-              {/* 特征选择面板 */}
+              {/* 特征选择面板（展开时显示在 Row 2 第 4 列 button 下方） */}
               {showFeaturePanel && factorCatalog && (
-                <div className="mt-2 border rounded p-2 bg-slate-50 dark:bg-slate-900 text-xs">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-slate-500">
-                      已选 {customFeatures.length} / {factorCatalog.total} 个特征
-                      {form.selected_features ? '' : '（全量）'}
-                    </span>
-                    <span className="space-x-1">
-                      <button type="button" onClick={() => toggleAllFeatures(true)} className="text-blue-600 hover:underline">
-                        全选
-                      </button>
-                      <span className="text-slate-300">|</span>
-                      <button type="button" onClick={() => toggleAllFeatures(false)} className="text-blue-600 hover:underline">
-                        清空
-                      </button>
-                    </span>
-                  </div>
-                  <div className="max-h-64 overflow-y-auto space-y-2 pr-1">
-                    {factorCatalog.groups.map((g) => (
-                      <div key={g.group}>
-                        <div className="font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                          {g.group}
-                        </div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {g.fields.map((f) => (
-                            <label
-                              key={f.name}
-                              title={`${f.name}\n公式: ${f.expression}\n${f.description}`}
-                              className={`px-2 py-1 rounded border cursor-pointer select-none ${
-                                customFeatures.includes(f.name)
-                                  ? 'bg-blue-600 text-white border-blue-600'
-                                  : 'bg-white dark:bg-slate-700 border-slate-300 dark:border-slate-600 hover:border-blue-400'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                className="hidden"
-                                checked={customFeatures.includes(f.name)}
-                                onChange={() => toggleFeature(f.name)}
-                              />
-                              {f.name}
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="mt-2 text-slate-400">
-                    鼠标悬停在特征名上可查看公式与说明；勾选后仅使用所选特征回测。
-                  </p>
-                </div>
+                <FeatureSelectPanel
+                  factorCatalog={factorCatalog}
+                  customFeatures={customFeatures}
+                  selected={!!form.selected_features}
+                  onToggle={toggleFeature}
+                  onToggleAll={toggleAllFeatures}
+                />
               )}
             </div>
+          </div>
 
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
             <label className="block">
               <span className="text-sm text-slate-500">开始日期</span>
               <input
@@ -853,7 +784,56 @@ export default function App() {
               />
             </label>
 
-            <label className="block">
+            {/* 第 4 列：2 个 button（视觉上紧跟特征集 select 下方） */}
+            <div className="flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => setShowFeaturePanel(!showFeaturePanel)}
+                className="w-full text-xs border rounded px-2 py-1.5 text-blue-600 hover:bg-blue-50 dark:text-blue-400"
+              >
+                {showFeaturePanel ? '收起特征选择 ▲' : '自定义筛选特征 ▼'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowFormulaPanel(!showFormulaPanel)}
+                className={`w-full text-xs border rounded px-2 py-1.5 ${
+                  customFormulas.length > 0
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'text-emerald-600 hover:bg-emerald-50 dark:text-emerald-400'
+                }`}
+              >
+                {showFormulaPanel
+                  ? '收起自定义公式 ▲'
+                  : `使用自定义公式因子 ▼${customFormulas.length > 0 ? `（${customFormulas.length}）` : ''}`}
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+            <label className="flex flex-col">
+              <span className="text-sm text-slate-500">预测周期(天)</span>
+              <input
+                type="number"
+                min={1}
+                className="mt-1 w-full border rounded px-2 py-1"
+                value={form.label_horizon}
+                onChange={(e) => update('label_horizon', Number(e.target.value))}
+              />
+              <span className="text-[10px] text-slate-400 mt-1">模型预测未来N日收益</span>
+            </label>
+
+            <label className="flex flex-col">
+              <span className="text-sm text-slate-500">分层持仓周期(天)</span>
+              <input
+                type="number"
+                min={1}
+                className="mt-1 w-full border rounded px-2 py-1"
+                value={form.layer_rebalance}
+                onChange={(e) => update('layer_rebalance', Number(e.target.value))}
+              />
+              <span className="text-[10px] text-slate-400 mt-1">1=每日重排，&gt;1=调仓日分组持有</span>
+            </label>
+
+            <label className="flex flex-col">
               <span className="text-sm text-slate-500">持仓周期(天)</span>
               <input
                 type="number"
@@ -862,68 +842,42 @@ export default function App() {
                 onChange={(e) => update('n_days_hold', Number(e.target.value))}
               />
             </label>
-            <label className="block">
-              <span className="text-sm text-slate-500">
-                预测周期(天)
-                <span className="block text-[10px] text-slate-400">模型预测未来N日收益</span>
-              </span>
-              <input
-                type="number"
-                min={1}
-                className="mt-1 w-full border rounded px-2 py-1"
-                value={form.label_horizon}
-                onChange={(e) => update('label_horizon', Number(e.target.value))}
-              />
-            </label>
-            <label className="block">
-              <span className="text-sm text-slate-500">
-                分层持仓周期(天)
-                <span className="block text-[10px] text-slate-400">{'1=每日重排；>1=调仓日分组持有（评估实盘）'}</span>
-              </span>
-              <input
-                type="number"
-                min={1}
-                className="mt-1 w-full border rounded px-2 py-1"
-                value={form.layer_rebalance}
-                onChange={(e) => update('layer_rebalance', Number(e.target.value))}
-              />
-            </label>
+
+            <div /> {/* 留空 */}
           </div>
 
-          {/* 模型超参数（LightGBM / XGBoost 可配置且字段不同；留空使用各自默认值；Linear 无树参数） */}
-          {(() => {
-            const modelKey = form.model.toLowerCase()
-            const fields = MODEL_PARAM_FIELDS[modelKey]
-            if (!fields) return null // Linear 等没有树参数
-            return (
-              <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-700">
-                <h3 className="text-sm font-semibold text-slate-600 dark:text-slate-300 mb-3">
-                  {form.model} 模型参数（留空 = {form.model} 默认值）
-                </h3>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  {fields.map((f) => (
-                    <label className="block" key={f.key}>
-                      <span className="text-sm text-slate-500">{f.label}</span>
-                      <input
-                        type="number"
-                        step={f.step}
-                        className="mt-1 w-full border rounded px-2 py-1"
-                        placeholder={f.placeholder}
-                        value={form.model_params?.[f.key] ?? ''}
-                        onChange={(e) => updateModelParam(f.key, e.target.value)}
-                      />
-                    </label>
-                  ))}
-                </div>
-                <p className="mt-2 text-xs text-slate-400">
-                  {modelKey === 'lightgbm'
-                    ? '提示：深度过深 / 叶子数过多 / 学习率过高易过拟合；留空项自动使用 Qlib 默认值。'
-                    : 'XGBoost 与 LightGBM 参数名不同（如 min_child_weight 而非 min_child_samples，无 num_leaves）；留空项使用 XGBoost 默认值。'}
-                  复用历史回测参数时会自动带出这些设置。
-                </p>
-              </div>
-            )
-          })()}
+          {/* 自定义公式编辑面板（独立整行，位于 Row3 之后、模型超参数之前） */}
+          
+{showFormulaPanel && (
+            <FormulaPanel
+              customFormulas={customFormulas}
+              selectedFormulaIds={selectedFormulaIds}
+              formulaInput={formulaInput}
+              formulaError={formulaError}
+              formulaTranslating={formulaTranslating}
+              editingId={editingId}
+              editingText={editingText}
+              onInputChange={setFormulaInput}
+              onEditingTextChange={setEditingText}
+              onAdd={addCustomFormula}
+              onToggle={toggleFormula}
+              onToggleAll={toggleAllFormulas}
+              onStartEdit={startEditFormula}
+              onSaveEdit={saveEditFormula}
+              onCancelEdit={() => {
+                setEditingId(null)
+                setEditingText('')
+                setFormulaError('')
+              }}
+              onRemove={removeCustomFormula}
+            />
+          )}
+
+          <ModelParamsForm
+            model={form.model}
+            modelParams={form.model_params}
+            onUpdate={updateModelParam}
+          />
 
           {/* 交易成本与成交设置 */}
           <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-700">
@@ -1067,57 +1021,52 @@ export default function App() {
               </label>
 
               {form.split_mode === 'custom' && (
-                <>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <span className="text-sm text-slate-500">训练窗口</span>
-                      <input
-                        type="number"
-                        min={1}
-                        className="mt-1 w-full border rounded px-2 py-1"
-                        value={form.train_win}
-                        onChange={(e) => update('train_win', Number(e.target.value))}
-                      />
-                    </div>
-                    <div>
-                      <span className="text-sm text-slate-500">训练单位</span>
-                      <select
-                        className="mt-1 w-full border rounded px-2 py-1"
-                        value={form.train_unit}
-                        onChange={(e) => update('train_unit', e.target.value)}
-                      >
-                        <option value="day">天</option>
-                        <option value="week">周</option>
-                        <option value="month">月</option>
-                      </select>
-                    </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  <div>
+                    <span className="text-sm text-slate-500">训练窗口</span>
+                    <input
+                      type="number"
+                      min={1}
+                      className="mt-1 w-full border rounded px-2 py-1"
+                      value={form.train_win}
+                      onChange={(e) => update('train_win', Number(e.target.value))}
+                    />
                   </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <span className="text-sm text-slate-500">测试窗口</span>
-                      <input
-                        type="number"
-                        min={1}
-                        className="mt-1 w-full border rounded px-2 py-1"
-                        value={form.test_win}
-                        onChange={(e) => update('test_win', Number(e.target.value))}
-                      />
-                    </div>
-                    <div>
-                      <span className="text-sm text-slate-500">测试单位</span>
-                      <select
-                        className="mt-1 w-full border rounded px-2 py-1"
-                        value={form.test_unit}
-                        onChange={(e) => update('test_unit', e.target.value)}
-                      >
-                        <option value="day">天</option>
-                        <option value="week">周</option>
-                        <option value="month">月</option>
-                      </select>
-                    </div>
+                  <div>
+                    <span className="text-sm text-slate-500">训练单位</span>
+                    <select
+                      className="mt-1 w-full border rounded px-2 py-1"
+                      value={form.train_unit}
+                      onChange={(e) => update('train_unit', e.target.value)}
+                    >
+                      <option value="day">天</option>
+                      <option value="week">周</option>
+                      <option value="month">月</option>
+                    </select>
                   </div>
-                </>
+                  <div>
+                    <span className="text-sm text-slate-500">测试窗口</span>
+                    <input
+                      type="number"
+                      min={1}
+                      className="mt-1 w-full border rounded px-2 py-1"
+                      value={form.test_win}
+                      onChange={(e) => update('test_win', Number(e.target.value))}
+                    />
+                  </div>
+                  <div>
+                    <span className="text-sm text-slate-500">测试单位</span>
+                    <select
+                      className="mt-1 w-full border rounded px-2 py-1"
+                      value={form.test_unit}
+                      onChange={(e) => update('test_unit', e.target.value)}
+                    >
+                      <option value="day">天</option>
+                      <option value="week">周</option>
+                      <option value="month">月</option>
+                    </select>
+                  </div>
+                </div>
               )}
             </div>
             {form.split_mode === 'custom' && (
@@ -1161,152 +1110,51 @@ export default function App() {
 
         {/* 进度：多任务并行显示（每个任务一张卡片，状态+进度条+单独取消） */}
                 {tasks.length > 0 && (
-                  <section className="bg-white dark:bg-slate-800 rounded-xl shadow p-6">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-3">
-                        <h2 className="text-lg font-semibold">
-                          任务状态
-                          <span className="text-sm text-slate-400 ml-2">
-                            （共 {tasks.length} 个{tasks.filter((t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling').length > 0 && '，'
-                              + tasks.filter((t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling').length + ' 个进行中'}）
-                          </span>
-                        </h2>
-                        {(
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => {
-                                // 清除已完成/失败/已停止的任务，保留正在运行的；
-                                // 并记录已清除的任务 ID 到 localStorage，防止轮询从后端拉取时再次显示
-                                const removed = tasks.filter(
-                                  (t) =>
-                                    t.status === 'success' ||
-                                    t.status === 'failed' ||
-                                    t.status === 'cancelled',
-                                )
-                                const next = new Set(clearedTaskIdsRef.current)
-                                removed.forEach((t) => next.add(t.task_id))
-                                setClearedTaskIds(next)
-                                persistCleared(next)
-                                setTasks((prev) =>
-                                  prev.filter(
-                                    (t) =>
-                                      t.status === 'running' ||
-                                      t.status === 'pending' ||
-                                      t.status === 'cancelling',
-                                  ),
-                                )
-                              }}
-                              className="px-3 py-1 rounded text-xs bg-slate-500 text-white hover:bg-slate-600"
-                            >
-                              刷新
-                            </button>
-                            <span className="text-xs text-slate-400">
-                              请注意：点击后会清除完成、失败、已停止的任务状态
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {tasks.some((t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling') && (
-                          <button
-                            onClick={async () => {
-                              const active = tasks.filter(
-                                (t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling',
-                              )
-                              await Promise.all(
-                                active.map(async (t) => {
-                                  try {
-                                    await cancelBacktest(t.task_id)
-                                  } catch {
-                                    /* 单个失败不阻塞其他 */
-                                  }
-                                }),
-                              )
-                            }}
-                            className="px-3 py-1 rounded text-xs bg-red-600 text-white hover:bg-red-700"
-                          >
-                            一键取消所有
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    <div className="space-y-3">
-                      {tasks.map((t) => {
-                        const isActive = t.status === 'running' || t.status === 'pending' || t.status === 'cancelling'
-                        return (
-                          <div
-                            key={t.task_id}
-                            className={`border rounded-lg p-3 ${
-                              isActive ? 'border-blue-200 bg-blue-50/30 dark:bg-blue-900/10' : 'border-slate-200'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between mb-2">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span
-                                  className="text-sm text-slate-600 truncate"
-                                  title={t.display_name || t.task_id}
-                                >
-                                  {t.display_name || t.task_id}
-                                </span>
-                                <span
-                                  className={`px-2 py-0.5 rounded text-xs shrink-0 ${
-                                    t.status === 'success'
-                                      ? 'bg-green-100 text-green-700'
-                                      : t.status === 'failed'
-                                        ? 'bg-red-100 text-red-700'
-                                        : t.status === 'cancelled'
-                                          ? 'bg-gray-100 text-gray-600'
-                                          : t.status === 'cancelling'
-                                            ? 'bg-orange-100 text-orange-700'
-                                            : 'bg-blue-100 text-blue-700'
-                                  }`}
-                                >
-                                  {t.status}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                {isActive && (
-                                  <button
-                                    onClick={async () => {
-                                      try {
-                                        await cancelBacktest(t.task_id)
-                                      } catch {
-                                        /* 单个任务取消失败不阻塞其他 */
-                                      }
-                                    }}
-                                    className="px-3 py-1 rounded text-xs bg-red-600 text-white hover:bg-red-700"
-                                  >
-                                    取消
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                            <div className="w-full bg-slate-200 rounded-full h-3">
-                              <div
-                                className={`h-3 rounded-full transition-all ${
-                                  t.status === 'failed'
-                                    ? 'bg-red-500'
-                                    : t.status === 'cancelled'
-                                      ? 'bg-gray-400'
-                                      : 'bg-blue-600'
-                                }`}
-                                style={{ width: `${t.progress}%` }}
-                              />
-                            </div>
-                            <p className="mt-1 text-xs text-slate-500">
-                              {t.progress.toFixed(1)}% - {t.message}
-                              {t.status === 'cancelling' && (
-                                <span className="ml-1 text-orange-600">
-                                  （正在等待当前训练/回测块结束，训练块完成后会停止）
-                                </span>
-                              )}
-                            </p>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </section>
-                )}
+          <TaskStatusPanel
+            tasks={tasks}
+            onRefresh={() => {
+              const removed = tasks.filter(
+                (t) =>
+                  t.status === 'success' ||
+                  t.status === 'failed' ||
+                  t.status === 'cancelled',
+              )
+              const next = new Set(clearedTaskIdsRef.current)
+              removed.forEach((t) => next.add(t.task_id))
+              setClearedTaskIds(next)
+              persistCleared(next)
+              setTasks((prev) =>
+                prev.filter(
+                  (t) =>
+                    t.status === 'running' ||
+                    t.status === 'pending' ||
+                    t.status === 'cancelling',
+                ),
+              )
+            }}
+            onCancelAll={async () => {
+              const active = tasks.filter(
+                (t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling',
+              )
+              await Promise.all(
+                active.map(async (t) => {
+                  try {
+                    await cancelBacktest(t.task_id)
+                  } catch {
+                    /* 单个失败不阻塞其他 */
+                  }
+                }),
+              )
+            }}
+            onCancelOne={async (taskId) => {
+              try {
+                await cancelBacktest(taskId)
+              } catch {
+                /* 单个任务取消失败不阻塞其他 */
+              }
+            }}
+          />
+        )}
 
         {/* 结果：实时任务成功 或 历史查看（有 result 或仅有模型产物都渲染） */}
         {(((task?.result && task.status === 'success') || viewResult?.result) ||

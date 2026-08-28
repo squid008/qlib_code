@@ -153,6 +153,32 @@ export async function translateFormula(formula: string, patchable = false): Prom
   return data
 }
 
+// ---------- 自定义公式持久化（后端 workdir/custom_formulas.json） ----------
+
+export interface CustomFormula {
+  id: string
+  name: string
+  text: string // 用户原文公式（前端原样显示）
+  expression: string // 编译后的 qlib 表达式（回测用，前端默认不展示）
+  created_at: string
+  updated_at: string
+}
+export async function listCustomFormulas(): Promise<{ items: CustomFormula[] }> {
+  const { data } = await http.get<{ items: CustomFormula[] }>('/factors/custom-formulas')
+  return data
+}
+export async function createCustomFormula(formula: string): Promise<CustomFormula> {
+  const { data } = await http.post<CustomFormula>('/factors/custom-formulas', { formula })
+  return data
+}
+export async function updateCustomFormula(id: string, formula: string): Promise<CustomFormula> {
+  const { data } = await http.put<CustomFormula>(`/factors/custom-formulas/${id}`, { formula })
+  return data
+}
+export async function deleteCustomFormula(id: string): Promise<void> {
+  await http.delete(`/factors/custom-formulas/${id}`)
+}
+
 // 算子分类清单（前端公式编辑器提示/灰显）
 export interface FactorOperators {
   supported: string[]

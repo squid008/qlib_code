@@ -40,6 +40,36 @@ BINOP_MAP = {
 # ---- 一元运算 ----
 UNARY_MAP = {"NEG": "Neg"}
 
+
+def _const_fold(e: Expr):
+    """对纯常量子树做常量折叠求值；子树含行情字段/变量/函数时返回 None。
+
+    用于在编译期检测恒等于 0 的除数（如 OUT:CLOSE/0 或 OUT:CLOSE/(5-5)）。
+    """
+    if isinstance(e, Num):
+        return float(e.value)
+    if isinstance(e, UnaryOp):
+        v = _const_fold(e.operand)
+        if v is None:
+            return None
+        return -v if e.op == "NEG" else None
+    if isinstance(e, BinOp):
+        lv = _const_fold(e.left)
+        rv = _const_fold(e.right)
+        if lv is None or rv is None:
+            return None
+        if e.op == "ADD":
+            return lv + rv
+        if e.op == "SUB":
+            return lv - rv
+        if e.op == "MUL":
+            return lv * rv
+        if e.op == "DIV":
+            # 除法结果继续折叠会传播 inf/nan，这里直接返回 None 交给外层除零检测
+            return None
+        return None
+    return None
+
 # ---- 函数 → qlib 表达式（直接映射）----
 FUNC_QLIB = {
     "MA": "Mean", "EMA": "EMA", "WMA": "WMA",
@@ -133,6 +163,11 @@ class CodeGen:
             op = BINOP_MAP.get(e.op)
             if op is None:
                 raise CodeGenError(f"不支持的运算：{e.op}")
+            if e.op == "DIV":
+                # 编译期拦截"分母恒等于 0"的公式，避免回测时整列出现 inf/NaN
+                denom = _const_fold(e.right)
+                if denom is not None and denom == 0:
+                    raise CodeGenError("除数为 0：公式分母恒等于 0，请修改公式")
             return f"{op}({self._g(e.left)},{self._g(e.right)})"
         if isinstance(e, FuncCall):
             return self._gen_func(e)

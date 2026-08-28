@@ -90,6 +90,7 @@ class Parser:
         if nxt.type == TT_ASSIGN:          # := 或 =（lexer 对 "=" 单字符是否给了 ASSIGN?）
             self.advance()                 # name
             self.advance()                 # :=
+            self._check_field_name(name)
             expr = self._parse_expr()
             self._expect_semi()
             return Assign(name, expr)
@@ -97,12 +98,14 @@ class Parser:
             # 单个 "=" 赋值（lexer 会把 = 标成 EQ，这里在赋值上下文视为赋值）
             self.advance()                 # name
             self.advance()                 # =
+            self._check_field_name(name)
             expr = self._parse_expr()
             self._expect_semi()
             return Assign(name, expr)
         if nxt.type == TT_COLON:           # :
             self.advance()                 # name
             self.advance()                 # :
+            self._check_field_name(name)
             expr = self._parse_expr()
             self._expect_semi()
             return Output(name, expr)
@@ -111,6 +114,26 @@ class Parser:
     def _expect_semi(self):
         if not self.match_type(TT_SEMI):
             self.error("语句应以分号 ; 结尾")
+
+    # 字段缩写 → 中文名（错误提示用）
+    _FIELD_CN = {
+        "$close": "收盘价", "$high": "最高价", "$low": "最低价",
+        "$open": "开盘价", "$volume": "成交量", "$amount": "成交额",
+        "$turn": "换手率", "$vwap": "均价",
+    }
+
+    def _check_field_name(self, name: str):
+        """字段缩写（C/H/L/O/V/CLOSE 等）不允许作为赋值变量名或输出线名。
+
+        否则表达式里引用 C 会被解析成行情字段而非变量，产生语义混淆。
+        这里直接报错，引导用户换用其他变量名。
+        """
+        upper = name.upper()
+        if upper in FIELD_MAP:
+            q = FIELD_MAP[upper]
+            cn = self._FIELD_CN.get(q, q)
+            raise ParseError(
+                f"`{name}` 是行情字段（{cn}，{q}），不允许作为变量名或输出线名，请换用其他名称")
 
     # ---- 表达式（优先级：or < and < 比较 < 加减 < 乘除 < 一元）----
     def _parse_expr(self) -> Expr:
