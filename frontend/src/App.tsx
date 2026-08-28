@@ -411,6 +411,9 @@ export default function App() {
               setArtifacts(null)
             }
             setTask(now)
+            // 成功完成也刷新历史面板，否则这里 break 后下方的刷新逻辑永远执行不到，
+            // 新生成的产物目录不会自动出现在历史列表（需手动点"刷新"）
+            setHistoryRefreshKey((k) => k + 1)
             break
           }
           // 任何任务从运行中变成已结束（success/failed/cancelled），让 HistoryPanel 刷新（is_task_running 等）

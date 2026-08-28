@@ -605,7 +605,10 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             if all_test_pred_label:
                 import pandas as pd
                 try:
+                    # 滚动各段日期区间可能重叠，concat 后会产生重复 (instrument, datetime) 行，
+                    # 导致算法A分层在 reindex 时抛 "duplicate labels"，去重后再算汇总
                     merged_pl = pd.concat(all_test_pred_label)
+                    merged_pl = merged_pl[~merged_pl.index.duplicated(keep="first")]
                     # 汇总也叠加基准线：用合并后全测试区间计算基准累计收益
                     merged_bench = None
                     if benchmark:
@@ -629,6 +632,7 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                 import pandas as pd
                 try:
                     merged_pl = pd.concat(all_test_pred_label)
+                    merged_pl = merged_pl[~merged_pl.index.duplicated(keep="first")]
                     merged_test = _compute_ic(merged_pl)
                 except Exception:
                     merged_test = None
