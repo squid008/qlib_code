@@ -36,12 +36,23 @@ qlib_code/
 │   │   │   ├── qlib_source.py    #   Qlib 数据源（日线）
 │   │   │   ├── rqalpha_source.py #   rqalpha h5 预留
 │   │   │   └── factory.py        #   数据源工厂
+│   │   ├── factors/              # ★ 公式翻译器 + 因子 Handler
+│   │   │   ├── parser/           #   Lexer/Parser/Semantic/CodeGen（益盟/通达信公式）
+│   │   │   ├── ops_ext.py        #   外挂算子（BARSLAST/BARSSINCEN/DYN_* 等）
+│   │   │   └── handler.py        #   SelectedAlpha158/360 + FormulaHandler
 │   │   ├── engine/               # 回测引擎
 │   │   │   ├── qlib_engine.py    #   Qlib 回测实现
+│   │   │   ├── board_exchange.py #   按板块涨跌停（主板10%/创业科创20%/北交所30%）
+│   │   │   ├── feature_cache.py  #   特征磁盘缓存（CachedQlibDataLoader）
+│   │   │   ├── periodic_strategy.py # 按持仓周期整体换仓策略
+│   │   │   ├── analysis.py / metrics.py / artifacts.py / charts.py  # 分层/IC/产物/绘图
 │   │   │   └── task_manager.py   #   异步任务管理
+│   │   ├── services/             # 业务服务
+│   │   │   └── custom_formulas.py #  自定义公式持久化（workdir/custom_formulas.json）
 │   │   └── routers/              # API 路由
 │   │       ├── backtest.py       #   回测接口
-│   │       └── data.py           #   数据接口
+│   │       ├── data.py           #   数据接口
+│   │       └── factors.py        #   公式翻译/算子/自定义公式 CRUD
 │   └── requirements.txt
 ├── frontend/                     # React 前端
 │   ├── src/
@@ -94,7 +105,18 @@ npm run dev
 | POST | `/api/backtest` | 提交回测任务，返回 task_id |
 | GET | `/api/backtest/{task_id}` | 查询任务状态/进度/结果 |
 | GET | `/api/backtests` | 列出所有任务 |
+| GET | `/api/backtests/history` | 历史回测列表（含是否运行中） |
+| GET | `/api/backtest/{task_id}/artifacts` | 模型交付物（公式/权重/超参数/特征） |
+| GET | `/api/backtest/{task_id}/snapshot` | 回测参数快照（复现/复用用） |
+| GET | `/api/backtest/capacity` | 并发回测能力（max/running/queued/available） |
 | GET | `/api/data-sources` | 列出数据源及能力 |
+| GET | `/api/version` | 后端版本号 |
+| POST | `/api/factors/translate` | 翻译益盟/通达信公式为 qlib 表达式 |
+| GET | `/api/factors/operators` | 列出公式翻译器支持的算子 |
+| GET | `/api/factors/custom-formulas` | 列出已保存的自定义公式 |
+| POST | `/api/factors/custom-formulas` | 编译并保存自定义公式 |
+| PUT | `/api/factors/custom-formulas/{id}` | 修改（重新编译）自定义公式 |
+| DELETE | `/api/factors/custom-formulas/{id}` | 删除自定义公式 |
 | GET | `/api/data/daily-bars` | 日线数据 |
 | GET | `/api/data/minute-bars` | 分钟数据（rqalpha） |
 | GET | `/api/data/financial` | 财报数据（rqalpha） |
@@ -121,10 +143,12 @@ npm run dev
 
 ## 回测引擎说明
 
-- 特征：Alpha158（默认）/ Alpha360
+- 特征：Alpha158（默认）/ Alpha360 / **自定义公式因子**（益盟/通达信公式，FormulaHandler，见 `md/自定义因子与因子库架构.md`）
 - 模型：LightGBM（默认）/ XGBoost / 线性回归
-- 策略：TopK 选股
-- 流程：数据 → 特征 → 训练 → 滚动预测 → 回测 → 风险指标（年化收益、夏普、最大回撤、胜率、净值曲线）
+- 策略：TopK 选股（可配置持仓周期/分层持仓）
+- 涨跌停：**按板块区分**（主板 10% / 创业板、科创板 20% / 北交所 30%，`BoardAwareExchange`，外挂实现不改 qlib 内核）
+- 特征缓存：同参数复用回测时，特征计算走磁盘缓存（`workdir/feature_cache/`），复用回测大幅加速
+- 流程：数据 → 特征 → 训练 → 滚动预测 → 回测 → 风险指标（年化收益、夏普、最大回撤、胜率、净值曲线）+ IC / 分层分析
 
 ### 关键踩坑记录
 1. **mlflow 文件存储维护模式**：需设置 `MLFLOW_ALLOW_FILE_STORE=true` 并使用 sqlite 实验追踪后端
@@ -167,7 +191,7 @@ npm run dev
 | `min_cost` | 单笔最低手续费 | 5 | 元 |
 | `impact_cost` | 滑点/市场冲击成本 | 0.0005 | 比例，作为额外成本计入 |
 | `volume_threshold` | 成交量限制 | 0.25 | 单笔成交不超过当日成交量×比例；None=不限量 |
-| `limit_threshold` | 涨跌停限制 | 0.095 | 按 |change| 判断；None=不设涨跌停 |
+| `limit_threshold` | 涨跌停限制 | 0.095 | **按板块区分**（`BoardAwareExchange`）：主板阈值=该值(≈10%)，创业板/科创板=×2(≈20%)，北交所=×3(≈30%)；None=不设涨跌停 |
 | `trade_unit` | 每手股数 | 100 | A股一手100股；None=不按手数取整 |
 
 ### 训练产物（可复现）
@@ -359,7 +383,7 @@ backend/app/engine/patches/
 ### 复用
 - **"复用参数"**：把该回测完整参数填入表单（含 `load_model_task_id` 复用权重），点"开始回测"提交。
 - **"复用回测"**：直接用该回测参数 + 复用模型权重**立即开始回测**（覆盖表单当前改动）。
-- 若在复用权重后**修改了股票池/特征**，提交时**自动改为新训练**（清掉 `load_model_task_id`）并提示，避免"特征不匹配"报错。
+- 若在复用权重后**修改了股票池 / 特征 / 自定义公式 / 训练划分方式（single↔滚动）**，提交时**自动改为新训练**（清掉 `load_model_task_id`）并提示，避免"特征不匹配"报错。
 - 提交成功后**清掉复用标记**，提示条消失；后续改参数不再提示，直到再次"复用参数"。
 
 ## 配置环境变量
