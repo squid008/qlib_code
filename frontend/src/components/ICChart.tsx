@@ -82,9 +82,12 @@ export default function ICChart({ data }: { data?: ICAnalysis | null }) {
 
   const list = tab === 'test' ? data.test || [] : data.train || []
 
-  // 测试集追加"汇总"
+  // 测试集/训练集各自追加"汇总"
   const options: { label: string }[] = list.map((s) => ({ label: s.segment }))
   if (tab === 'test' && data.merged_test?.points?.length) {
+    options.push({ label: '汇总' })
+  }
+  if (tab === 'train' && data.merged_train?.points?.length) {
     options.push({ label: '汇总' })
   }
 
@@ -93,6 +96,8 @@ export default function ICChart({ data }: { data?: ICAnalysis | null }) {
   let seg: ICSegment | undefined
   if (effective === '汇总' && tab === 'test') {
     seg = data.merged_test ?? undefined
+  } else if (effective === '汇总' && tab === 'train') {
+    seg = data.merged_train ?? undefined
   } else {
     seg = list.find((s) => s.segment === effective)
   }

@@ -147,7 +147,10 @@ export default function FormulaPanel({
                               ✕
                             </button>
                           </div>
-                          <div className="text-slate-500 font-mono text-[10px] break-all mt-0.5">
+                          <div
+                            className="text-slate-500 font-mono text-[10px] mt-0.5 truncate"
+                            title={f.text}
+                          >
                             {f.text}
                           </div>
                         </div>

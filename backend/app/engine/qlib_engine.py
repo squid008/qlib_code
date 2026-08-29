@@ -63,6 +63,7 @@ from .artifacts import (
     _dataset_feature_names,
     _verify_reuse_feature_order,
     _load_model_object,
+    _task_has_segment_models,
     _sanitize_json,
     _save_result_json,
     _save_backtest_params,
@@ -71,6 +72,8 @@ from .charts import (
     _save_curve_snapshot,
 )
 from ..datasource.factory import get_data_source, list_data_sources
+# 导入即注册自定义算子 + patch register_all_ops（必须在 qlib.init() 之前生效）
+from ..factors.ops_ext import ensure_ops_registered as _ensure_ops_registered
 
 warnings.filterwarnings("ignore")
 
@@ -95,7 +98,17 @@ def _ensure_qlib_init(provider_uri):
     from qlib.constant import REG_CN
     with _qlib_init_lock:
         if not _qlib_initialized:
-            qlib.init(provider_uri=provider_uri, region=REG_CN)
+            # 通过官方 custom_ops 机制注册自定义算子：register_all_ops 会把它注册进
+            # Operators，且 worker 进程通过 C.register_from_C(g_config) 时也会带上，
+            # 解决多进程数据加载时 "operator is not registered"。
+            from ..factors.ops_ext import _ALL_OPS as _custom_ops
+            qlib.init(
+                provider_uri=provider_uri,
+                region=REG_CN,
+                custom_ops=_custom_ops,
+            )
+            # 双保险：qlib.init 内部 reset Operators 后再次注册
+            _ensure_ops_registered(force=True)
             _qlib_initialized = True
 
 
@@ -343,6 +356,23 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
     # 基准兜底：若指定 benchmark 在该时间段无数据，回退到第一个成分股或取消基准
     benchmark = _fallback_benchmark(benchmark, start_time, end_time, instruments)
 
+    # 涨跌停限制：qlib 全局阈值不区分板块，主板约 10% / 创业板、科创板约 20% / 北交所约 30%，
+    # 使用自定义 BoardAwareExchange 按股票代码前缀区分（用户传 None 时维持不限）。
+    # 注意 get_exchange 的自定义分支只使用 exchange dict 内的 kwargs，因此完整参数需打包进 exchange 配置。
+    exchange_kwargs = {
+        "freq": "day",
+        "start_time": start_time,
+        "end_time": end_time,
+        "limit_threshold": req.limit_threshold,
+        "deal_price": req.deal_price,
+        "open_cost": req.open_cost,
+        "close_cost": req.close_cost,
+        "min_cost": req.min_cost,
+        "impact_cost": req.impact_cost,
+        "volume_threshold": volume_threshold,
+        "trade_unit": req.trade_unit,
+    }
+
     return {
         "executor": {
             "class": "SimulatorExecutor",
@@ -369,15 +399,11 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
             "account": account,
             "benchmark": benchmark,
             "exchange_kwargs": {
-                "freq": "day",
-                "limit_threshold": req.limit_threshold,
-                "deal_price": req.deal_price,
-                "open_cost": req.open_cost,
-                "close_cost": req.close_cost,
-                "min_cost": req.min_cost,
-                "impact_cost": req.impact_cost,
-                "volume_threshold": volume_threshold,
-                "trade_unit": req.trade_unit,
+                "exchange": {
+                    "class": "BoardAwareExchange",
+                    "module_path": "app.engine.board_exchange",
+                    "kwargs": exchange_kwargs,
+                },
             },
         },
     }
@@ -414,6 +440,13 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
         _report(40, "复用模型权重（task %s）..." % load_from)
         model = _load_model_object(load_from, req.model)
         if model is None:
+            if _task_has_segment_models(load_from):
+                raise ValueError(
+                    "源任务（task %s）是【滚动训练】任务，模型按段保存（segment_N）。\n"
+                    "single 一次性训练模式无法复用它的权重（不知道用哪一段的模型）。\n"
+                    "处理：把训练/测试划分改回【滚动训练】再复用；"
+                    "或取消复用模型权重改为新训练。" % load_from
+                )
             raise ValueError("未找到可复用的模型权重（task %s）" % load_from)
         # 方案B：校验特征顺序一致性，防止因子库顺序变化导致静默错位
         _verify_reuse_feature_order(_dataset_feature_names(dataset), load_from)
@@ -468,6 +501,7 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
                 "train": [{"segment": "段1", **ic_train}] if ic_train else [],
                 "test": [{"segment": "段1", **ic_test}] if ic_test else [],
                 "merged_test": ic_test,
+                "merged_train": ic_train,
             }
 
     return result
@@ -503,6 +537,7 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
     ic_train_list = []    # 每段训练集 IC
     ic_test_list = []     # 每段测试集 IC
     all_test_pred_label = []  # 各段 test 预测+label（用于汇总合成）
+    all_train_pred_label = []  # 各段 train 预测+label（用于训练集 IC 汇总）
     exp_name = "backtest_web_rolling"
     base_account = req.initial_capital if req.initial_capital else 100000000.0
     carry_account = base_account   # 当前账户总值（连续传递）
@@ -571,6 +606,10 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                 tpl = analysis.get("test_pl")
                 if tpl is not None and len(tpl):
                     all_test_pred_label.append(tpl)
+                # 训练集预测+label 也收集，用于训练集 IC 汇总
+                trpl = analysis.get("train_pl")
+                if trpl is not None and len(trpl):
+                    all_train_pred_label.append(trpl)
 
             _check_cancel()  # 回测前检查
             port_analysis_config = _build_port_config(req, benchmark, test_start, test_end,
@@ -660,10 +699,20 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                     merged_test = _compute_ic(merged_pl)
                 except Exception:
                     merged_test = None
+            merged_train = None
+            if all_train_pred_label:
+                import pandas as pd
+                try:
+                    merged_pl = pd.concat(all_train_pred_label)
+                    merged_pl = merged_pl[~merged_pl.index.duplicated(keep="first")]
+                    merged_train = _compute_ic(merged_pl)
+                except Exception:
+                    merged_train = None
             result.ic_analysis = {
                 "train": ic_train_list,
                 "test": ic_test_list,
                 "merged_test": merged_test,
+                "merged_train": merged_train,
             }
     except Exception:
         pass

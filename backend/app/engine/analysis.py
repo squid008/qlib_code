@@ -265,9 +265,10 @@ def _compute_analysis(model, dataset, instruments, seg_label: str, benchmark: Op
     label_horizon: 预测周期（天），分层/IC 用未来 N 日收益，与训练 label 口径一致。
     rebalance_period: 分层持仓周期（天，算法A）。1=每日重排；>1=调仓日分组持有到下一调仓日。
     返回 dict:
-      { "layers": {segment, groups}, "ic_train": {...}, "ic_test": {...}, "test_pl": DataFrame|None }
-    test_pl 是测试段的预测+label（调用方可复用于汇总合成，避免重复 predict）。
-    失败项为 None。
+      { "layers": {segment, groups}, "ic_train": {...}, "ic_test": {...},
+        "test_pl": DataFrame|None, "train_pl": DataFrame|None }
+    test_pl / train_pl 分别是测试段/训练段的预测+label（调用方可复用于汇总合成，
+    避免重复 predict）。失败项为 None。
     """
     test_pl = _get_pred_label(model, dataset, instruments, "test", label_horizon=label_horizon)
     train_pl = _get_pred_label(model, dataset, instruments, "train", label_horizon=label_horizon)
@@ -291,4 +292,10 @@ def _compute_analysis(model, dataset, instruments, seg_label: str, benchmark: Op
     ic_train = _compute_ic(train_pl)
     ic_test = _compute_ic(test_pl)
 
-    return {"layers": layers, "ic_train": ic_train, "ic_test": ic_test, "test_pl": test_pl}
+    return {
+        "layers": layers,
+        "ic_train": ic_train,
+        "ic_test": ic_test,
+        "test_pl": test_pl,
+        "train_pl": train_pl,
+    }

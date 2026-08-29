@@ -382,10 +382,19 @@ export default function App() {
       }))
       const merged = [...customFormulas, ...tempItems]
       setCustomFormulas(merged)
-      const allIds = new Set(merged.map((x) => x.id))
-      setSelectedFormulaIds(allIds)
-      syncFormulasToForm(merged, allIds)
+      // 只勾选历史任务实际用到的公式（按文本匹配），避免把本地其他公式也一并全选
+      const usedIds = new Set<string>()
+      for (const t of params.custom_formulas) {
+        const hit = merged.find((x) => x.text === t)
+        if (hit) usedIds.add(hit.id)
+      }
+      setSelectedFormulaIds(usedIds)
+      syncFormulasToForm(merged, usedIds)
       setShowFormulaPanel(true)
+    } else {
+      // 历史任务未用公式：清空勾选，保持面板状态与提交内容一致
+      setSelectedFormulaIds(new Set())
+      syncFormulasToForm(customFormulas, new Set())
     }
     // 定位到"开始回测"按钮位置
     try {
@@ -584,11 +593,20 @@ export default function App() {
         const a = (payload.selected_features || []).slice().sort().join(',')
         const b = (src.selected_features || []).slice().sort().join(',')
         const selectedChanged = a !== b
-        if (universeChanged || featureChanged || selectedChanged) {
+        // custom_formulas 比较：公式文本与顺序都敏感（顺序变化会导致特征顺序变化，不能复用权重）
+        const formulasChanged =
+          ((payload.custom_formulas || []) as string[]).join('\x01') !==
+          ((src.custom_formulas || []) as string[]).join('\x01')
+        // 训练/测试划分方式不同也不能复用：滚动任务的模型按段保存，single 模式加载不到；
+        // 反之 single 的单一模型用于滚动段也无意义。统一改为新训练。
+        const splitChanged = (payload.split_mode || 'single') !== (src.split_mode || 'single')
+        if (universeChanged || featureChanged || selectedChanged || formulasChanged || splitChanged) {
           const changed: string[] = []
           if (universeChanged) changed.push('股票池')
           if (featureChanged) changed.push('特征集')
           if (selectedChanged) changed.push('自定义特征')
+          if (formulasChanged) changed.push('自定义公式')
+          if (splitChanged) changed.push('训练划分方式')
           payloadAdj = { ...payload, load_model_task_id: null }
           setError(
             `检测到 ${changed.join('、')} 与复用源不同，已自动改为【新训练】（不再复用 task ${payload.load_model_task_id} 的模型权重）。`,

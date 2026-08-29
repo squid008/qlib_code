@@ -13,6 +13,7 @@ from qlib.contrib.data.handler import Alpha158, Alpha360, Alpha158DL, Alpha360DL
 from qlib.data.dataset.handler import DataHandlerLP
 
 from .parser import translate_formula, CodeGenError
+from .ops_ext import ensure_ops_registered
 
 
 class CleanInf:
@@ -39,18 +40,71 @@ class CleanInf:
         df[numeric.columns] = numeric.mask(np.isinf(numeric), np.nan)
         return df
 
+    def readonly(self):
+        # 本处理器不修改输入数据（先 copy 再改），声明为只读，避免 Handler 多余拷贝
+        return True
 
-class SelectedAlpha158(Alpha158):
+
+class SelectedAlpha158(DataHandlerLP):
     """Alpha158 的子集版：通过 fields 指定要保留的特征名列表（如 ["KMID", "ROC5"]）。
 
     留空/为 None 时行为与原生 Alpha158 完全一致（全量 158 特征）。
     特征名必须与 Alpha158DL.get_feature_config 生成的 names 一致。
+    使用 CachedQlibDataLoader：特征计算走磁盘缓存，label 每次现算。
     """
 
-    def __init__(self, fields: Optional[List[str]] = None, label_horizon: Optional[int] = 2, **kwargs):
+    def __init__(
+        self,
+        fields: Optional[List[str]] = None,
+        label_horizon: Optional[int] = 2,
+        instruments="csi500",
+        start_time=None,
+        end_time=None,
+        freq="day",
+        infer_processors=None,
+        learn_processors=None,
+        fit_start_time=None,
+        fit_end_time=None,
+        process_type=DataHandlerLP.PTYPE_A,
+        filter_pipe=None,
+        inst_processors=None,
+        **kwargs,
+    ):
+        from qlib.contrib.data.handler import check_transform_proc, _DEFAULT_LEARN_PROCESSORS
+
+        if infer_processors is None:
+            infer_processors = []
+        if learn_processors is None:
+            learn_processors = _DEFAULT_LEARN_PROCESSORS
+        infer_processors = check_transform_proc(infer_processors, fit_start_time, fit_end_time)
+        learn_processors = check_transform_proc(learn_processors, fit_start_time, fit_end_time)
+
         self._selected = set(fields) if fields else None
         self._label_horizon = max(1, int(label_horizon or 2))
-        super().__init__(**kwargs)
+
+        data_loader = {
+            "class": "CachedQlibDataLoader",
+            "module_path": "app.engine.feature_cache",
+            "kwargs": {
+                "config": {
+                    "feature": self.get_feature_config(),
+                    "label": kwargs.pop("label", self.get_label_config()),
+                },
+                "filter_pipe": filter_pipe,
+                "freq": freq,
+                "inst_processors": inst_processors,
+            },
+        }
+        super().__init__(
+            instruments=instruments,
+            start_time=start_time,
+            end_time=end_time,
+            data_loader=data_loader,
+            infer_processors=infer_processors,
+            learn_processors=learn_processors,
+            process_type=process_type,
+            **kwargs,
+        )
 
     def get_feature_config(self):
         # 复用 Alpha158 的全量配置生成逻辑（kbar+price+rolling）
@@ -71,14 +125,63 @@ class SelectedAlpha158(Alpha158):
         return [f"Ref($close, -{n + 1})/Ref($close, -1) - 1"], ["LABEL0"]
 
 
-class SelectedAlpha360(Alpha360):
+class SelectedAlpha360(DataHandlerLP):
     """Alpha360 的子集版。Alpha360 的特征名为 CLOSE{i}/OPEN{i}/HIGH{i}/LOW{i}/
-    VWAP{i}/VOLUME{i}（i=0..59）。通过 fields 指定要保留的特征名。"""
+    VWAP{i}/VOLUME{i}（i=0..59）。通过 fields 指定要保留的特征名。
+    使用 CachedQlibDataLoader：特征计算走磁盘缓存，label 每次现算。"""
 
-    def __init__(self, fields: Optional[List[str]] = None, label_horizon: Optional[int] = 2, **kwargs):
+    def __init__(
+        self,
+        fields: Optional[List[str]] = None,
+        label_horizon: Optional[int] = 2,
+        instruments="csi500",
+        start_time=None,
+        end_time=None,
+        freq="day",
+        infer_processors=None,
+        learn_processors=None,
+        fit_start_time=None,
+        fit_end_time=None,
+        process_type=DataHandlerLP.PTYPE_A,
+        filter_pipe=None,
+        inst_processors=None,
+        **kwargs,
+    ):
+        from qlib.contrib.data.handler import check_transform_proc, _DEFAULT_LEARN_PROCESSORS
+
+        if infer_processors is None:
+            infer_processors = []
+        if learn_processors is None:
+            learn_processors = _DEFAULT_LEARN_PROCESSORS
+        infer_processors = check_transform_proc(infer_processors, fit_start_time, fit_end_time)
+        learn_processors = check_transform_proc(learn_processors, fit_start_time, fit_end_time)
+
         self._selected = set(fields) if fields else None
         self._label_horizon = max(1, int(label_horizon or 2))
-        super().__init__(**kwargs)
+
+        data_loader = {
+            "class": "CachedQlibDataLoader",
+            "module_path": "app.engine.feature_cache",
+            "kwargs": {
+                "config": {
+                    "feature": self.get_feature_config(),
+                    "label": kwargs.pop("label", self.get_label_config()),
+                },
+                "filter_pipe": filter_pipe,
+                "freq": freq,
+                "inst_processors": inst_processors,
+            },
+        }
+        super().__init__(
+            instruments=instruments,
+            start_time=start_time,
+            end_time=end_time,
+            data_loader=data_loader,
+            infer_processors=infer_processors,
+            learn_processors=learn_processors,
+            process_type=process_type,
+            **kwargs,
+        )
 
     def get_feature_config(self):
         fields, names = Alpha360DL.get_feature_config()
@@ -122,6 +225,8 @@ class FormulaHandler(DataHandlerLP):
         label_horizon: Optional[int] = 2,
         **kwargs,
     ):
+        # 注册自定义算子（BARSCOUNT/BARSSINCEN），幂等
+        ensure_ops_registered()
         # 翻译公式 → (expressions, names)
         self._formulas = formulas or []
         self._label_horizon = max(1, int(label_horizon or 2))
@@ -138,7 +243,8 @@ class FormulaHandler(DataHandlerLP):
             ]
 
         data_loader = {
-            "class": "QlibDataLoader",
+            "class": "CachedQlibDataLoader",
+            "module_path": "app.engine.feature_cache",
             "kwargs": {
                 "config": {
                     "feature": self.get_feature_config(),

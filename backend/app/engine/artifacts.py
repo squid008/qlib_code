@@ -310,6 +310,27 @@ def _verify_reuse_feature_order(current_names: Optional[list], load_from: str, s
         )
 
 
+def _task_has_segment_models(task_id: str) -> bool:
+    """判断某任务是否为滚动训练（模型按 segment_N 分段保存）。
+
+    滚动训练任务只在 segment_N/model.pkl 保存模型，主目录没有 model.pkl；
+    single 任务只在主目录保存。用于区分复用失败时的错误提示。
+    """
+    import glob
+    try:
+        from ..config import WORK_DIR
+        artifacts_root = os.path.join(WORK_DIR, "artifacts")
+    except Exception:
+        artifacts_root = os.path.join(os.path.abspath("."), "artifacts")
+    dirs = glob.glob(os.path.join(artifacts_root, "*_" + task_id))
+    if not dirs:
+        dirs = glob.glob(os.path.join(artifacts_root, task_id))
+    if not dirs:
+        return False
+    base = dirs[-1]
+    return os.path.isdir(os.path.join(base, "segment_1"))
+
+
 def _load_model_object(task_id: str, model_name: str, seg_no=None):
     """从某次回测的 artifacts 加载模型对象（model.pkl）。
     seg_no 指定时，加载滚动训练的对应段模型（segment_{seg_no}/model.pkl）；

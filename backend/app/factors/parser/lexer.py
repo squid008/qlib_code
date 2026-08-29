@@ -86,7 +86,13 @@ class Lexer:
             c = self.peek()
 
             if c.isdigit() or (c == "." and self.peek(1).isdigit()):
-                # 数字（含科学计数法，如 1e-12）
+                # 数字开头：若数字后紧跟字母/下划线/中文 → 整体作为标识符（如 30均线涨，益盟命名习惯）
+                if self._is_digit_ident_continuation():
+                    raw = self._read_ident()
+                    upper = raw.upper()
+                    tokens.append(Token(TT_IDENT, upper, raw, start))
+                    continue
+                # 纯数字（含科学计数法，如 1e-12）
                 num = self._read_number()
                 tokens.append(Token(TT_NUM, num, num, start))
                 continue
@@ -139,6 +145,28 @@ class Lexer:
 
         tokens.append(Token(TT_EOF, "", "", self.n))
         return tokens
+
+    def _is_digit_ident_continuation(self) -> bool:
+        """数字开头但后面紧跟字母/下划线/中文 → 整体应作为标识符（如 30均线涨）。"""
+        i = self.pos
+        # 跳过数字与小数点
+        while i < self.n and (self.text[i].isdigit() or self.text[i] == "."):
+            i += 1
+        # 跳过指数部分（e+10 / E-3 之类），避免把 1e5 误判为标识符
+        if i < self.n and self.text[i] in ("e", "E"):
+            nxt = i + 1
+            if nxt < self.n and (
+                self.text[nxt].isdigit()
+                or (self.text[nxt] in ("+", "-") and nxt + 1 < self.n and self.text[nxt + 1].isdigit())
+            ):
+                i = nxt + 1
+                while i < self.n and self.text[i].isdigit():
+                    i += 1
+        # 数字串结束后的下一个字符是字母/下划线/中文 → 整体是标识符
+        if i < self.n:
+            c = self.text[i]
+            return c.isalpha() or c == "_" or ord(c) > 127
+        return False
 
     def _read_number(self) -> str:
         """读取数字字面量，支持小数和科学计数法（如 1.5、1e-12、2E3）。"""

@@ -71,15 +71,39 @@ def _const_fold(e: Expr):
     return None
 
 # ---- 函数 → qlib 表达式（直接映射）----
+# 说明：BARSLAST/BARSCOUNT/BARSSINCEN 及 DYN_* 是自定义外挂算子（app/factors/ops_ext.py），
+# qlib 解析表达式字符串时通过 Operators 注册表查找同名类。
+# 通达信语义：HHV/LLV 是滚动窗口极值；MAX/MIN 是两值取大/小（qlib 的 Greater/Less）。
 FUNC_QLIB = {
     "MA": "Mean", "EMA": "EMA", "WMA": "WMA",
     "HHV": "Max", "LLV": "Min",
     "SUM": "Sum", "COUNT": "Count",
     "ABS": "Abs", "SQRT": "Sqrt", "LOG": "Log", "LN": "Log",
-    "POW": "Pow", "MAX": "Max", "MIN": "Min", "MOD": "Mod",
+    "POW": "Pow", "MAX": "Greater", "MIN": "Less", "MOD": "Mod",
     "STD": "Std", "VAR": "Var", "SLOPE": "Slope",
     "REF": "Ref", "DELTA": "Delta", "MEAN": "Mean", "MED": "Med",
     "IF": "If", "IFS": "If",
+    "BARSLAST": "BARSLAST",
+    "BARSCOUNT": "BARSCOUNT",
+    "BARSSINCEN": "BARSSINCEN",
+    # 动态窗口外挂算子（用户也可直接调用 DYN_MIN/MAX/COUNT/REF/SUM）
+    "DYN_MIN": "DYN_MIN",
+    "DYN_MAX": "DYN_MAX",
+    "DYN_COUNT": "DYN_COUNT",
+    "DYN_REF": "DYN_REF",
+    "DYN_SUM": "DYN_SUM",
+}
+
+# ---- 支持动态窗口的函数：窗口参数为表达式（变量）时改用 DYN_* 外挂算子 ----
+# 通达信/益盟允许 LLV(X,N)/HHV(X,N)/COUNT(X,N)/REF(X,N)/SUM(X,N) 的 N 是变量，
+# 每个位置用该位置的 N 值作为窗口大小。常量窗口走标准 qlib 算子（性能好），
+# 变量窗口走 DYN_* 逐位置计算。
+_DYN_WINDOW_OPS = {
+    "HHV": "DYN_MAX",
+    "LLV": "DYN_MIN",
+    "COUNT": "DYN_COUNT",
+    "REF": "DYN_REF",
+    "SUM": "DYN_SUM",
 }
 
 # ---- 函数 → 组合表达式（用已有算子展开）----
@@ -103,9 +127,7 @@ def _expand_sign(args: List[Expr], code) -> str:
 PATCHED_OPS = {
     "FILTER": "FILTER（信号过滤）",
     "SMA": "SMA（通达信递归均线）",
-    "BARSLAST": "BARSLAST（距上次满足条件的周期数）",
     "BARSSINCE": "BARSSINCE",
-    "BARSCOUNT": "BARSCOUNT",
     "BACKSET": "BACKSET（未来函数）",
     "ZIG": "ZIG（摆动指标）",
     "PEAK": "PEAK", "TROUGH": "TROUGH", "SAR": "SAR",
@@ -190,6 +212,36 @@ class CodeGen:
                     f"当前阶段未实现，请先实现外挂算子或改用其他函数")
             inner = ",".join(self._g(a) for a in e.args)
             return f"PATCH:{name}({inner})"
+        # 参数个数 / 常量校验
+        if name == "COUNT":
+            if len(e.args) != 2:
+                raise CodeGenError("COUNT 需要 2 个参数：COUNT(条件, 周期)，例如 COUNT(CLOSE>OPEN,5)")
+        elif name == "BARSLAST":
+            if len(e.args) != 1:
+                raise CodeGenError("BARSLAST 需要 1 个参数：BARSLAST(条件)，例如 BARSLAST(CLOSE/REF(CLOSE,1)>=1.1)")
+        elif name == "BARSCOUNT":
+            if len(e.args) != 1:
+                raise CodeGenError("BARSCOUNT 需要 1 个参数：BARSCOUNT(CLOSE)，表示上市以来交易日数")
+        elif name == "BARSSINCEN":
+            if len(e.args) != 2:
+                raise CodeGenError("BARSSINCEN 需要 2 个参数：BARSSINCEN(条件, 周期)，例如 BARSSINCEN(HIGH>10,10)")
+            if not isinstance(e.args[1], Num):
+                raise CodeGenError("BARSSINCEN 的第 2 个参数 N 必须为常量整数（如 10）")
+        # 动态窗口：HHV/LLV/COUNT/REF/SUM 窗口参数为表达式（变量）→ DYN_* 外挂算子
+        if name in _DYN_WINDOW_OPS:
+            if len(e.args) != 2:
+                raise CodeGenError(f"{name} 需要 2 个参数：{name}(X, 周期)")
+            # 常量窗口用标准 qlib 算子（性能好）；变量窗口逐位置计算
+            q = _DYN_WINDOW_OPS[name] if not isinstance(e.args[1], Num) else FUNC_QLIB[name]
+            inner = ",".join(self._g(a) for a in e.args)
+            return f"{q}({inner})"
+        # MAX/MIN：通达信语义是两值取大/小（Greater/Less）
+        if name in ("MAX", "MIN"):
+            if len(e.args) != 2:
+                raise CodeGenError(f"{name} 需要 2 个参数：{name}(A,B)，取 A/B 的较大值/较小值")
+            q = FUNC_QLIB[name]
+            inner = ",".join(self._g(a) for a in e.args)
+            return f"{q}({inner})"
         # 直接映射
         if name in FUNC_QLIB:
             q = FUNC_QLIB[name]

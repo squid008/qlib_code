@@ -13,7 +13,9 @@ qlib_bin.tar.gz
 # 回测运行产物 / 实验记录
 mlruns/
 backend/mlruns/
-backend/workdir/
+backend/workdir/*
+# 自定义公式是用户资产，纳入版本控制（公司/本地共享），其余 workdir 内容（特征缓存等）仍忽略
+!backend/workdir/custom_formulas.json
 **/mlflow.db
 *.db
 

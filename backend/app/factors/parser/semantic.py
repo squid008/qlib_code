@@ -17,7 +17,9 @@ from .ast import (
 BUILTIN_FUNCS = {
     "MA", "SMA", "EMA", "WMA", "MEMA", "REF", "HHV", "LLV", "SUM", "COUNT",
     "FILTER", "HHVALL", "LLVALL", "HHVBARS", "LLVBARS", "BARSLAST",
-    "BARSSINCE", "BARSCOUNT", "DMA", "ALL", "ANY", "LAST",
+    "BARSSINCE", "BARSSINCEN", "BARSCOUNT", "DMA", "ALL", "ANY", "LAST",
+    # 自定义外挂算子（app/factors/ops_ext.py），需同时在 codegen 中映射
+    "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM",
     "CROSS", "IF", "IFS", "BETWEEN", "RANGE", "LONGCROSS",
     "ABS", "SQRT", "LOG", "LN", "EXP", "POW", "MAX", "MIN", "MOD",
     "INT", "CEILING", "FLOOR", "SGN", "SIGN",
@@ -39,6 +41,15 @@ def resolve_vars(formula: Formula) -> Formula:
     if len(formula.outputs) > 1:
         names = "、".join(o.name for o in formula.outputs)
         raise SemanticError(f"公式只允许 1 个输出因子，当前有 {len(formula.outputs)} 个：{names}")
+
+    # 检查变量是否被重复定义（大小写不敏感）
+    seen_assigns = {}
+    for a in formula.assigns:
+        key = a.name.upper()
+        if key in seen_assigns:
+            raise SemanticError(
+                f"变量 `{a.name}` 被重复定义（前面已定义 `{seen_assigns[key]}`），请删除其中一行或改名")
+        seen_assigns[key] = a.name
 
     # 检查中间变量是否被定义 / 是否有未定义引用
     assign_names = {a.name.upper(): a for a in formula.assigns}

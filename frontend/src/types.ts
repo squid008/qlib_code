@@ -89,6 +89,7 @@ export interface ICAnalysis {
   train?: ICSegment[] | null
   test?: ICSegment[] | null
   merged_test?: ICSegment | null
+  merged_train?: ICSegment | null
 }
 
 export interface ModelArtifacts {
