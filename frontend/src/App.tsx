@@ -51,7 +51,7 @@ export default function App() {
     open_cost: 0.0005,
     close_cost: 0.0015,
     min_cost: 5,
-    impact_cost: 0.0005,
+    impact_cost: 0.002,
     volume_threshold: 0.25,
     limit_threshold: 0.095,
     trade_unit: 100,
@@ -931,10 +931,10 @@ export default function App() {
                 <span className="text-sm text-slate-500">买入手续费(%)</span>
                 <input
                   type="number"
-                  step="0.0001"
+                  step="0.01"
                   className="mt-1 w-full border rounded px-2 py-1"
-                  value={form.open_cost}
-                  onChange={(e) => update('open_cost', Number(e.target.value))}
+                  value={form.open_cost * 100}
+                  onChange={(e) => update('open_cost', Number(e.target.value) / 100)}
                 />
               </label>
 
@@ -942,10 +942,10 @@ export default function App() {
                 <span className="text-sm text-slate-500">卖出手续费(%)</span>
                 <input
                   type="number"
-                  step="0.0001"
+                  step="0.01"
                   className="mt-1 w-full border rounded px-2 py-1"
-                  value={form.close_cost}
-                  onChange={(e) => update('close_cost', Number(e.target.value))}
+                  value={form.close_cost * 100}
+                  onChange={(e) => update('close_cost', Number(e.target.value) / 100)}
                 />
               </label>
 
@@ -953,10 +953,10 @@ export default function App() {
                 <span className="text-sm text-slate-500">滑点/冲击成本(%)</span>
                 <input
                   type="number"
-                  step="0.0001"
+                  step="0.01"
                   className="mt-1 w-full border rounded px-2 py-1"
-                  value={form.impact_cost}
-                  onChange={(e) => update('impact_cost', Number(e.target.value))}
+                  value={form.impact_cost * 100}
+                  onChange={(e) => update('impact_cost', Number(e.target.value) / 100)}
                 />
               </label>
 

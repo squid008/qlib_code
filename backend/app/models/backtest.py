@@ -56,7 +56,7 @@ class BacktestRequest(BaseModel):
     open_cost: float = Field(0.0005, description="买入手续费（如 0.0005 = 0.05%）")
     close_cost: float = Field(0.0015, description="卖出手续费（如 0.0015 = 0.15%）")
     min_cost: float = Field(5.0, description="单笔最低手续费（元）")
-    impact_cost: float = Field(0.0005, description="滑点/市场冲击成本比例（如 0.0005 = 0.05%）")
+    impact_cost: float = Field(0.002, description="滑点/市场冲击成本比例（如 0.002 = 0.2%）")
     volume_threshold: Optional[float] = Field(
         None, description="成交量限制：单笔成交不超过当日成交量比例（如 0.25 = 25%）。None 表示不限量理想成交"
     )
