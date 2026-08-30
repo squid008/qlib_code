@@ -95,6 +95,9 @@ class BacktestTask(BaseModel):
         None, description="可读名称（如 20260827-123715_LightGBM_csi300_2022_2023_a7c18c4bffce，来自 artifacts 目录名）"
     )
     result: Optional["BacktestResult"] = None
+    partial_result: Optional[Dict[str, Any]] = Field(
+        None, description="滚动训练运行中已跑段的部分结果（净值/分层/IC），供前端中途查看"
+    )
 
 
 class BacktestResult(BaseModel):

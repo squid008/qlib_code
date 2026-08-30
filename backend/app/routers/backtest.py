@@ -56,6 +56,18 @@ def get_backtest(task_id: str):
                 task.display_name = os.path.basename(adir)
         except Exception:
             pass
+    # 滚动训练运行中：附加中途 partial_result（已跑段的净值/分层/IC），前端可实时查看
+    if task.status in ("running", "cancelling"):
+        try:
+            adir = artifacts_service.find_artifact_dir(task_id)
+            if adir:
+                import json
+                ppath = os.path.join(adir, "partial_result.json")
+                if os.path.exists(ppath):
+                    with open(ppath, "r", encoding="utf-8") as f:
+                        task.partial_result = json.load(f)
+        except Exception:
+            pass
     return task
 
 

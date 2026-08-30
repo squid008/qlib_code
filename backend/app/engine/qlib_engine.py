@@ -507,6 +507,155 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
     return result
 
 
+# ---------------------------------------------------------------------------
+# 滚动回测：段结果持久化 / 断点续跑 / 中途 partial 结果
+# 每段跑完把该段净值/调仓/分层/IC 存到 segment_N/seg_result.json（+test_pl.pkl），
+# 并把"已跑段的全局汇总"写到任务目录 partial_result.json，供前端中途查看；
+# 重新提交相同参数时，检测到已完成段则直接加载跳过（断点续跑，不重复计算）。
+# ---------------------------------------------------------------------------
+
+
+def _seg_result_path(art_dir, seg_no):
+    return os.path.join(art_dir, "segment_%s" % seg_no, "seg_result.json")
+
+
+def _save_segment_result(art_dir, seg_no, nav_points, trades, total_return, end_account,
+                         bench_end, analysis, test_start, test_end):
+    """保存某段完整结果（断点续跑 + 中途 partial 用）。失败不阻塞回测。"""
+    import json as _json
+    import pickle
+    if not art_dir:
+        return
+    try:
+        seg_dir = os.path.join(art_dir, "segment_%s" % seg_no)
+        os.makedirs(seg_dir, exist_ok=True)
+        data = {
+            "seg_no": seg_no,
+            "date_range": [str(test_start), str(test_end)],
+            "nav": nav_points,          # 绝对净值点（已乘该段起始 global_nav）
+            "trades": trades,
+            "total_return": total_return,
+            "end_account": end_account,  # 该段末账户总值（供恢复 global_nav）
+            "bench_end": bench_end,      # 该段末基准相对值（供恢复 global_bench）
+            "layers": analysis.get("layers") if analysis else None,
+            "ic_train": analysis.get("ic_train") if analysis else None,
+            "ic_test": analysis.get("ic_test") if analysis else None,
+        }
+        with open(_seg_result_path(art_dir, seg_no), "w", encoding="utf-8") as f:
+            _json.dump(data, f, ensure_ascii=False, default=str)
+        tpl = analysis.get("test_pl") if analysis else None
+        if tpl is not None:
+            with open(os.path.join(seg_dir, "test_pl.pkl"), "wb") as f:
+                pickle.dump(tpl, f, protocol=4)
+        trpl = analysis.get("train_pl") if analysis else None
+        if trpl is not None:
+            with open(os.path.join(seg_dir, "train_pl.pkl"), "wb") as f:
+                pickle.dump(trpl, f, protocol=4)
+    except Exception:
+        # 段结果保存失败不阻塞回测（仅影响续跑/中途查看）
+        pass
+
+
+def _load_segment_result(art_dir, seg_no):
+    """加载已完成段的结果。返回 (data, test_pl, train_pl) 或 None。"""
+    import json as _json
+    import pickle
+    if not art_dir:
+        return None
+    path = _seg_result_path(art_dir, seg_no)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        test_pl = None
+        p = os.path.join(os.path.dirname(path), "test_pl.pkl")
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                test_pl = pickle.load(f)
+        train_pl = None
+        p = os.path.join(os.path.dirname(path), "train_pl.pkl")
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                train_pl = pickle.load(f)
+        return data, test_pl, train_pl
+    except Exception:
+        return None
+
+
+def _save_partial_result(art_dir, segments_done, segments_total, all_nav, layer_segments,
+                         ic_train_list, ic_test_list, merged_layers, merged_test, merged_train):
+    """把"已跑段"的全局汇总写到 partial_result.json（前端轮询展示）。"""
+    import json as _json
+    if not art_dir:
+        return
+    try:
+        partial = {
+            "segments_done": segments_done,
+            "segments_total": segments_total,
+            "nav": all_nav,
+            "layer_returns": {"segments": layer_segments, "merged": merged_layers},
+            "ic_analysis": {
+                "train": ic_train_list,
+                "test": ic_test_list,
+                "merged_test": merged_test,
+                "merged_train": merged_train,
+            },
+        }
+        path = os.path.join(art_dir, "partial_result.json")
+        with open(path, "w", encoding="utf-8") as f:
+            _json.dump(partial, f, ensure_ascii=False, default=str)
+    except Exception:
+        pass
+
+
+def _build_merged_analysis(all_test_pred_label, all_train_pred_label, layer_segments,
+                           benchmark, rebalance_period):
+    """合并各段的分层/IC 汇总（merged_layers / merged_test / merged_train）。
+
+    滚动各段日期区间可能重叠，concat 后会产生重复 (instrument, datetime) 行，
+    导致算法A分层在 reindex 时抛 "duplicate labels"，先去重再算汇总。
+    供任务结束时与"中途 partial_result"共用同一逻辑。
+    """
+    import pandas as pd
+    merged_layers = None
+    if layer_segments and all_test_pred_label:
+        try:
+            merged_pl = pd.concat(all_test_pred_label)
+            merged_pl = merged_pl[~merged_pl.index.duplicated(keep="first")]
+            merged_bench = None
+            if benchmark:
+                try:
+                    b_start = merged_pl.index.get_level_values("datetime").min()
+                    b_end = merged_pl.index.get_level_values("datetime").max()
+                    merged_bench = _compute_benchmark_returns(benchmark, b_start, b_end)
+                except Exception:
+                    merged_bench = None
+            merged_groups = _compute_layers(merged_pl, benchmark_ret=merged_bench,
+                                            rebalance_period=rebalance_period)
+            if merged_groups:
+                merged_layers = {"segment": "汇总", "groups": merged_groups, "benchmark": benchmark}
+        except Exception:
+            merged_layers = None
+    merged_test = None
+    if all_test_pred_label:
+        try:
+            merged_pl = pd.concat(all_test_pred_label)
+            merged_pl = merged_pl[~merged_pl.index.duplicated(keep="first")]
+            merged_test = _compute_ic(merged_pl)
+        except Exception:
+            merged_test = None
+    merged_train = None
+    if all_train_pred_label:
+        try:
+            merged_pl = pd.concat(all_train_pred_label)
+            merged_pl = merged_pl[~merged_pl.index.duplicated(keep="first")]
+            merged_train = _compute_ic(merged_pl)
+        except Exception:
+            merged_train = None
+    return merged_layers, merged_test, merged_train
+
+
 def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> BacktestResult:
     """自定义滚动训练回测：按训练/测试窗口切分，每段用截至该段的训练数据重训，再预测测试段回测。
 
@@ -550,6 +699,37 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
         test_start, test_end = seg["test"]
         # 每段开头检查取消（滚动训练停止的快速响应点）
         _check_cancel()
+
+        # 断点续跑：该段已完成（seg_result.json 存在）则恢复结果并跳过，不重复计算
+        art_dir = _get_artifact_dir()
+        loaded = _load_segment_result(art_dir, seg_no)
+        if loaded is not None:
+            data, tpl, trpl = loaded
+            all_nav.extend(data.get("nav") or [])
+            all_trades.extend(data.get("trades") or [])
+            seg_results.append(BacktestResult(
+                total_return=data.get("total_return"),
+                nav=data.get("nav") or [],
+            ))
+            if data.get("layers"):
+                layer_segments.append(data["layers"])
+            if data.get("ic_train"):
+                ic_train_list.append({"segment": "段%d" % seg_no, **data["ic_train"]})
+            if data.get("ic_test"):
+                ic_test_list.append({"segment": "段%d" % seg_no, **data["ic_test"]})
+            if tpl is not None and len(tpl):
+                all_test_pred_label.append(tpl)
+            if trpl is not None and len(trpl):
+                all_train_pred_label.append(trpl)
+            if data.get("end_account") and data["end_account"] > 0:
+                global_nav = data["end_account"] / base_account
+                carry_account = data["end_account"]
+            if data.get("bench_end") is not None:
+                global_bench = global_bench * data["bench_end"]
+            _report(20 + int(70 * (idx + 1) / total), "段%d/%d: 已完成，跳过（缓存 %s~%s）" % (
+                seg_no, total, test_start, test_end))
+            continue
+
         _report(20 + int(70 * (idx + 1) / total), "段%d/%d: 训练 %s~%s, 测试 %s~%s" % (
             seg_no, total, train_start, train_end, test_start, test_end))
 
@@ -636,12 +816,15 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             if pt.get("benchmark") is not None:
                 seg_bench_end = pt["benchmark"]
                 break
+        seg_nav_abs = []
         for pt in seg_nav:
-            all_nav.append({
+            ap = {
                 "date": pt["date"],
                 "value": round(global_nav * pt["value"], 6),
                 "benchmark": round(global_bench * pt["benchmark"], 6) if pt.get("benchmark") is not None else None,
-            })
+            }
+            all_nav.append(ap)
+            seg_nav_abs.append(ap)
         all_trades.extend(seg_trades)
         seg_results.append(seg_result)
 
@@ -656,66 +839,33 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
         if seg_bench_end is not None:
             global_bench = global_bench * seg_bench_end
 
+        # 保存该段结果（供断点续跑）并刷新 partial_result（供前端中途查看）
+        _save_segment_result(art_dir, seg_no, seg_nav_abs, seg_trades, seg_result.total_return,
+                             end_account, seg_bench_end, analysis, test_start, test_end)
+        merged_layers, merged_test, merged_train = _build_merged_analysis(
+            all_test_pred_label, all_train_pred_label, layer_segments, benchmark,
+            getattr(req, "layer_rebalance", None) or 1)
+        _save_partial_result(art_dir, idx + 1, total, all_nav, layer_segments,
+                             ic_train_list, ic_test_list, merged_layers, merged_test, merged_train)
+
     # 汇总指标：基于拼接后的全局净值重新计算
     result = _aggregate_from_nav(all_nav, seg_results)
     result.trades = all_trades
 
     # 组装分层回测与 IC 分析（含汇总合成）
     _report(92, "合成分层与 IC 汇总曲线...")
-    try:
-        if layer_segments:
-            merged_layers = None
-            if all_test_pred_label:
-                import pandas as pd
-                try:
-                    # 滚动各段日期区间可能重叠，concat 后会产生重复 (instrument, datetime) 行，
-                    # 导致算法A分层在 reindex 时抛 "duplicate labels"，去重后再算汇总
-                    merged_pl = pd.concat(all_test_pred_label)
-                    merged_pl = merged_pl[~merged_pl.index.duplicated(keep="first")]
-                    # 汇总也叠加基准线：用合并后全测试区间计算基准累计收益
-                    merged_bench = None
-                    if benchmark:
-                        try:
-                            b_start = merged_pl.index.get_level_values("datetime").min()
-                            b_end = merged_pl.index.get_level_values("datetime").max()
-                            merged_bench = _compute_benchmark_returns(benchmark, b_start, b_end)
-                        except Exception:
-                            merged_bench = None
-                    merged_groups = _compute_layers(merged_pl, benchmark_ret=merged_bench,
-                                                     rebalance_period=getattr(req, "layer_rebalance", None) or 1)
-                    if merged_groups:
-                        merged_layers = {"segment": "汇总", "groups": merged_groups, "benchmark": benchmark}
-                except Exception:
-                    merged_layers = None
-            result.layer_returns = {"segments": layer_segments, "merged": merged_layers}
-
-        if ic_test_list or ic_train_list:
-            merged_test = None
-            if all_test_pred_label:
-                import pandas as pd
-                try:
-                    merged_pl = pd.concat(all_test_pred_label)
-                    merged_pl = merged_pl[~merged_pl.index.duplicated(keep="first")]
-                    merged_test = _compute_ic(merged_pl)
-                except Exception:
-                    merged_test = None
-            merged_train = None
-            if all_train_pred_label:
-                import pandas as pd
-                try:
-                    merged_pl = pd.concat(all_train_pred_label)
-                    merged_pl = merged_pl[~merged_pl.index.duplicated(keep="first")]
-                    merged_train = _compute_ic(merged_pl)
-                except Exception:
-                    merged_train = None
-            result.ic_analysis = {
-                "train": ic_train_list,
-                "test": ic_test_list,
-                "merged_test": merged_test,
-                "merged_train": merged_train,
-            }
-    except Exception:
-        pass
+    merged_layers, merged_test, merged_train = _build_merged_analysis(
+        all_test_pred_label, all_train_pred_label, layer_segments, benchmark,
+        getattr(req, "layer_rebalance", None) or 1)
+    if layer_segments:
+        result.layer_returns = {"segments": layer_segments, "merged": merged_layers}
+    if ic_test_list or ic_train_list:
+        result.ic_analysis = {
+            "train": ic_train_list,
+            "test": ic_test_list,
+            "merged_test": merged_test,
+            "merged_train": merged_train,
+        }
 
     return result
 

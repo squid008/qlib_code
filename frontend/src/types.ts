@@ -166,6 +166,16 @@ export interface BacktestTask {
   created_at: string
   display_name?: string | null
   result?: BacktestResult | null
+  // 滚动训练运行中：已跑段的部分结果（净值/分层/IC），供中途查看
+  partial_result?: BacktestPartialResult | null
+}
+
+export interface BacktestPartialResult {
+  segments_done: number
+  segments_total: number
+  nav?: NavPoint[] | null
+  layer_returns?: LayerReturns | null
+  ic_analysis?: ICAnalysis | null
 }
 
 export interface TaskIdResponse {

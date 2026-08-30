@@ -1174,11 +1174,13 @@ export default function App() {
           />
         )}
 
-        {/* 结果：实时任务成功 或 历史查看（有 result 或仅有模型产物都渲染） */}
+        {/* 结果：实时任务成功 或 历史查看（有 result 或仅有模型产物都渲染）；
+            滚动训练运行中展示"已跑段"的部分结果（实时刷新） */}
         {(((task?.result && task.status === 'success') || viewResult?.result) ||
-          viewArtifacts) && (() => {
+          viewArtifacts || (task?.status === 'running' && task.partial_result?.nav?.length)) && (() => {
           const r = (task?.status === 'success' ? task.result : viewResult?.result) || null
           const a = (task?.status === 'success' ? artifacts : viewArtifacts) || null
+          const partial = task?.status === 'running' ? task.partial_result : null
           return (
             <>
               {r ? (
@@ -1188,20 +1190,36 @@ export default function App() {
                   <LayerChart data={r.layer_returns} rebalance={form.layer_rebalance} />
                   <ICChart data={r.ic_analysis} />
                 </>
+              ) : partial?.nav?.length ? (
+                <>
+                  <div className="bg-white dark:bg-slate-800 rounded-xl shadow p-6 text-sm">
+                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                      ⏳ 滚动训练进行中
+                    </span>
+                    <span className="ml-2 text-slate-500 dark:text-slate-300">
+                      已跑 {partial.segments_done}/{partial.segments_total} 段，以下为已完成部分的结果（每段完成后自动刷新）
+                    </span>
+                  </div>
+                  <NavChart nav={partial.nav} />
+                  <LayerChart data={partial.layer_returns} rebalance={form.layer_rebalance} />
+                  <ICChart data={partial.ic_analysis} />
+                </>
               ) : (
                 <div className="bg-white dark:bg-slate-800 rounded-xl shadow p-6 text-sm text-slate-400">
                   无回测记录
                 </div>
               )}
               {a && <ModelArtifactsPanel artifacts={a} />}
-              {/* 历史回测（复现模式）放在训练产物与调仓记录之间 */}
-              <HistoryPanel
-                onUseParams={handleUseParams}
-                onReuseBacktest={handleReuseBacktest}
-                onViewResult={handleViewResult}
-                refreshKey={historyRefreshKey}
-                capacity={capacity}
-              />
+              {/* 历史回测（复现模式）放在训练产物与调仓记录之间；运行中 partial 时走下方独立块，避免重复 */}
+              {!partial && (
+                <HistoryPanel
+                  onUseParams={handleUseParams}
+                  onReuseBacktest={handleReuseBacktest}
+                  onViewResult={handleViewResult}
+                  refreshKey={historyRefreshKey}
+                  capacity={capacity}
+                />
+              )}
               {r?.trades && r.trades.length > 0 && <TradeLog trades={r.trades} />}
             </>
           )
