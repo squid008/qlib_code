@@ -76,3 +76,26 @@ git pull              # 拉取另一地最新代码，避免冲突
 - ❌ **不要 `git init`**（会制造无共同祖先的独立仓库，合并很痛苦）
 - ❌ **不要 `git push --force`**（覆盖远程、丢历史），除非明确知道要覆盖
 - ❌ **不要把 node_modules、data、workdir、日志** 提交（已在 .gitignore 排除）
+
+---
+
+## 五、中文 commit message 的写法注意（Windows/PowerShell）
+
+Windows 终端在命令行直接传中文（`git commit -m "中文说明"`）时可能发生 GBK/UTF-8 编码错乱，
+导致 commit message 变成乱码（`git log` 里看到 `鏂偣缁祴` 这种）。**建议用 UTF-8 文件方式**：
+
+```bash
+# 1. 把提交说明写入 commit_msg.txt（保存为 UTF-8 无 BOM）
+# 2. 用文件提交（不经过命令行编码转换）
+git commit -F commit_msg.txt
+```
+
+**已推送的乱码 message 修正方法**（只改信息，保留改动与作者）：
+
+```bash
+git commit --amend -F commit_msg.txt
+git fetch origin
+git push --force-with-lease origin main   # 覆盖自己最近一次提交（比 --force 安全）
+```
+
+> ⚠️ 仅当明确要覆盖**自己刚推送的提交**时才用上面的 force 方式；普通情况下仍遵守第四条"不用 `--force`"。
