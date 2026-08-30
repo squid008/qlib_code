@@ -104,22 +104,11 @@ git push --force-with-lease origin main   # 覆盖自己最近一次提交（比
 
 ## 六、mlflow 相关文件位置与清理（备忘）
 
-回测平台用 mlflow 做实验追踪，会产生以下文件，**分布在两个不同位置**：
-
-### 1. 在 `backend/workdir/` 下（主追踪库）
+回测平台用 mlflow 做实验追踪，`backend/workdir/` 下会产生以下文件：
 
 - **`mlflow.db`**：mlflow 主实验追踪数据库（`sqlite:///workdir/mlflow.db`），累积**所有历史回测**的 run 记录（参数/指标/产物路径）。只增不减，长期可能涨到上百 MB。
 - **`mlflow.db-journal`**：SQLite 预写日志（rollback journal），有未提交事务时存在，检查点后自动清理，正常很小（几十 KB 甚至 0 字节）。
 
-### 2. 在 `C:\Users\admin\.qlib_parallel_exp\` 下（线程独立后端，**Windows 隐藏文件夹**）
-
-- **`.qlib_parallel_exp/exp_{thread_id}.db`**：多线程并发补丁（`backend/app/engine/patches/qlib_parallel.py`）给**每个回测任务线程**创建的独立 sqlite 后端。qlib 全局 `R` 是单例，多线程并发需按线程隔离 mlflow 避免互相覆盖。
-- **位置为什么是 HOME 下不是 workdir 下**：补丁的 `base_dir` 默认是 `os.path.join(QLIB_WORK_DIR or ~, ".qlib_parallel_exp")`；`patch_qlib_parallel` 用全局 `_APPLIED` 锁只生效一次，**第一次调用时**若 `self._work_dir` 还没传值，就走了 HOME 默认路径。
-- **为什么资源管理器看不到**：`.` 开头在 Windows 是**隐藏文件夹**，File Explorer 默认不显示（菜单"查看" → 勾选"显示" → "隐藏的项目"才能看到）。
-- **生命周期**：任务线程开始创建 `exp_{tid}.db`（0 → 几十 KB），任务结束 / 线程退出后**该 db 会被清理**（不是"持续累积"），所以该目录日常**基本是空的**或只有少量当前在跑任务的 db。早期可能看到过 0→25K→37K→49K 然后被删掉重建，就是某个任务线程 db 的完整生命周期。
-
-### 清理（手动）
-
-- `C:\Users\admin\.qlib_parallel_exp\`：可直接整个删（下次跑自动重建，里面只是 mlflow 中间 run 记录）
+**清理**（当前未加自动清理，需手动）：
 - `backend/workdir/mlflow.db`：可删（仅丢失 mlflow 层的 run 索引，**不影响回测功能**——回测真实产物都在 `artifacts/{task_id}/` 下的 `params.json` / `result.json` / 模型文件里）
 - 清理前先停止后端，避免 sqlite 文件占用/锁冲突
