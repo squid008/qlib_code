@@ -5,6 +5,7 @@ import {
   listDataSources,
   getBacktestArtifacts,
   getBacktestResult,
+  getBacktestPartial,
   cancelBacktest,
   resumeBacktest,
   getFactorCatalog,
@@ -492,6 +493,24 @@ export default function App() {
         }
       } catch {
         // result.json 不存在：可能是只有模型产物的目录，保留现有/清空结果
+      }
+    }
+    // 任务未完成（无 result.json）但滚动训练已跑过若干段：读 partial_result.json 展示已跑段结果
+    if (!loadedResult) {
+      try {
+        const partial = await getBacktestPartial(taskId)
+        if (partial?.nav?.length) {
+          const t = {
+            task_id: taskId,
+            status: 'cancelled',
+            progress: 100,
+            partial_result: partial,
+          } as BacktestTask
+          setViewResult(t)
+          loadedResult = true
+        }
+      } catch {
+        // 无 partial_result.json：忽略
       }
     }
 
@@ -1206,10 +1225,15 @@ export default function App() {
         {/* 结果：实时任务成功 或 历史查看（有 result 或仅有模型产物都渲染）；
             滚动训练运行中展示"已跑段"的部分结果（实时刷新） */}
         {(((task?.result && task.status === 'success') || viewResult?.result) ||
-          viewArtifacts || (task?.status === 'running' && task.partial_result?.nav?.length)) && (() => {
+          viewArtifacts || (task?.status === 'running' && task.partial_result?.nav?.length) ||
+          viewResult?.partial_result?.nav?.length) && (() => {
           const r = (task?.status === 'success' ? task.result : viewResult?.result) || null
           const a = (task?.status === 'success' ? artifacts : viewArtifacts) || null
-          const partial = task?.status === 'running' ? task.partial_result : null
+          // 运行中：实时任务 partial；查看历史：viewResult 携带的 partial（任务已停止但保留已跑段）
+          const partial =
+            task?.status === 'running'
+              ? task.partial_result
+              : (viewResult?.partial_result ?? null)
           return (
             <>
               {r ? (
@@ -1223,10 +1247,11 @@ export default function App() {
                 <>
                   <div className="bg-white dark:bg-slate-800 rounded-xl shadow p-6 text-sm">
                     <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                      ⏳ 滚动训练进行中
+                      {task?.status === 'running' ? '⏳ 滚动训练进行中' : '⏸ 回测未完成（已停止/中断）'}
                     </span>
                     <span className="ml-2 text-slate-500 dark:text-slate-300">
-                      已跑 {partial.segments_done}/{partial.segments_total} 段，以下为已完成部分的结果（每段完成后自动刷新）
+                      已跑 {partial.segments_done}/{partial.segments_total} 段，以下为已完成部分的结果
+                      {task?.status !== 'running' && '；如需继续，可在下方历史回测中点该任务的"续测"'}
                     </span>
                   </div>
                   <NavChart nav={partial.nav} />
@@ -1239,11 +1264,13 @@ export default function App() {
                 </div>
               )}
               {a && <ModelArtifactsPanel artifacts={a} />}
-              {/* 历史回测（复现模式）放在训练产物与调仓记录之间；运行中 partial 时走下方独立块，避免重复 */}
-              {!partial && (
+              {/* 历史回测（复现模式）放在训练产物与调仓记录之间；运行中 partial 时走下方独立块，避免重复。
+                  查看"未完成但已跑段"的历史任务时也显示历史表格，便于继续续测/查看其他任务 */}
+              {(!partial || viewResult?.partial_result) && (
                 <HistoryPanel
                   onUseParams={handleUseParams}
                   onReuseBacktest={handleReuseBacktest}
+                  onResume={handleResume}
                   onViewResult={handleViewResult}
                   refreshKey={historyRefreshKey}
                   capacity={capacity}
@@ -1259,6 +1286,7 @@ export default function App() {
           <HistoryPanel
                         onUseParams={handleUseParams}
                         onReuseBacktest={handleReuseBacktest}
+                        onResume={handleResume}
                         onViewResult={handleViewResult}
                         refreshKey={historyRefreshKey}
                         capacity={capacity}

@@ -162,6 +162,15 @@ def scan_history() -> dict:
 
     _manager = get_task_manager(_config.WORK_DIR)
 
+    # 正在运行/排队/取消中的任务所复用的源 task_id 集合。
+    # 续测任务复用源 artifacts 目录（目录名后缀是源 task_id），此时源目录对应的历史行也应视为"运行中"，
+    # 前端据此禁用删除（否则删除会破坏正在被续测写入的目录）。
+    resume_sources = set()
+    try:
+        resume_sources = _manager.running_resume_sources()
+    except Exception:
+        pass
+
     items = []
     for name in sorted(os.listdir(root), reverse=True):
         full = os.path.join(root, name)
@@ -244,8 +253,9 @@ def scan_history() -> dict:
             "images": images,
             "segments": segments,
             "meta_summary": meta_summary,
-            # 任务是否正在内存中运行（用于前端判断"能否删除"——运行中禁用删除）
-            "is_task_running": _is_task_running(_manager, task_id),
+            # 任务是否正在内存中运行（用于前端判断"能否删除"——运行中禁用删除）。
+            # 额外检查是否正被某个运行中任务续测占用（续测复用源目录，源 task_id 不在内存但目录被占用）
+            "is_task_running": _is_task_running(_manager, task_id) or (task_id in resume_sources),
         })
     return {"items": items}
 

@@ -65,6 +65,14 @@ def resume_backtest(task_id: str):
     req.load_model_task_id = None
     manager = get_task_manager(config.WORK_DIR)
     new_task_id = manager.submit(req)
+    # 续测任务沿用源任务的可读名（目录名），避免任务状态区显示裸 task_id
+    # （续测复用源目录，按新 task_id 查 find_artifact_dir 找不到，因此直接沿用）
+    try:
+        adir = artifacts_service.find_artifact_dir(task_id)
+        if adir:
+            manager.set_display_name(new_task_id, os.path.basename(adir))
+    except Exception:
+        pass
     return TaskIdResponse(task_id=new_task_id)
 
 
@@ -122,6 +130,30 @@ def get_backtest_result(task_id: str):
         return artifacts_service.load_result(task_id)
     except artifacts_service.ArtifactNotFoundError as e:
         raise _map_artifact_error(e)
+
+
+@router.get("/backtest/{task_id}/partial", summary="读取滚动回测已跑段的部分结果（partial_result.json）")
+def get_backtest_partial(task_id: str):
+    """读取滚动回测的 partial_result.json（已跑段的净值/分层/IC 汇总）。
+
+    任务未完成（取消/失败/中断/后端重启）但已跑过若干段时，磁盘上仍有该文件，
+    前端据此展示已跑段的结果曲线（而不是只显示"无回测记录"）。
+    """
+    import json
+    try:
+        adir = artifacts_service.find_artifact_dir(task_id)
+    except artifacts_service.ArtifactNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    if not adir:
+        raise HTTPException(status_code=404, detail=f"任务 {task_id} 没有产物目录")
+    ppath = os.path.join(adir, "partial_result.json")
+    if not os.path.exists(ppath):
+        raise HTTPException(status_code=404, detail=f"任务 {task_id} 没有已跑段的部分结果（partial_result.json）")
+    try:
+        with open(ppath, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取部分结果失败: {e}")
 
 
 @router.get("/backtest/{task_id}/image/{name}", summary="获取产物图片（曲线/参数快照）")

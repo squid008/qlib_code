@@ -57,6 +57,8 @@ class TaskManager:
         self._cancel_flags: set = set()
         self._lock = threading.Lock()
         self._work_dir = work_dir
+        # 任务请求快照：task_id -> req（用于判断续测占用源目录等场景；任务结束即清理）
+        self._reqs: Dict[str, BacktestRequest] = {}
         # 限制并发回测数量，避免多任务同时训练占满 CPU
         self._sem = threading.BoundedSemaphore(MAX_CONCURRENT_TASKS)
 
@@ -86,6 +88,7 @@ class TaskManager:
         )
         with self._lock:
             self._tasks[task_id] = task
+            self._reqs[task_id] = req
 
         # 后台线程执行
         t = threading.Thread(target=self._run, args=(task_id, req), daemon=True)
@@ -161,9 +164,35 @@ class TaskManager:
         finally:
             with self._lock:
                 self._cancel_flags.discard(task_id)
+                # 任务已结束，清理请求快照（running_resume_sources 只关心运行中的）
+                self._reqs.pop(task_id, None)
             qlib_engine.set_progress_callback(None)
             qlib_engine.set_artifact_dir(None)
             qlib_engine.set_cancel_check(None)
+
+    def set_display_name(self, task_id: str, display_name: str) -> None:
+        """为任务设置可读名称（如续测时沿用源任务目录名），用于任务状态区展示。"""
+        with self._lock:
+            t = self._tasks.get(task_id)
+            if t is not None:
+                t.display_name = display_name
+
+    def running_resume_sources(self) -> set:
+        """返回运行/排队/取消中任务所复用的源 task_id 集合（用于历史列表判断"续测占用中"）。
+
+        续测任务会复用源任务的 artifacts 目录：目录名后缀是源 task_id，
+        此时源目录对应的历史行也应视为"运行中"，禁止删除。
+        """
+        with self._lock:
+            active = {
+                tid for tid, t in self._tasks.items()
+                if t.status in ("running", "pending", "cancelling")
+            }
+            return {
+                self._reqs[tid].resume_task_id
+                for tid in active
+                if tid in self._reqs and self._reqs[tid].resume_task_id
+            }
 
     def get(self, task_id: str) -> Optional[BacktestTask]:
         with self._lock:

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { BacktestTask } from '../types'
 
 interface TaskStatusPanelProps {
@@ -17,6 +18,8 @@ export default function TaskStatusPanel({
   onCancelOne,
   onResume,
 }: TaskStatusPanelProps) {
+  // 记录悬停的任务 ID，用 inline style 控制"续测"按钮显隐（不依赖 Tailwind hover 变体）
+  const [hoverId, setHoverId] = useState<string | null>(null)
   const activeCount = tasks.filter(
     (t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling',
   ).length
@@ -68,15 +71,23 @@ export default function TaskStatusPanel({
                     {t.display_name || t.task_id}
                   </span>
                   {t.status === 'failed' || t.status === 'cancelled' ? (
-                    // 未完成（失败/已停止）：正常显示"未完成"，鼠标悬停变成"续测"按钮（滚动回测可断点续跑）
-                    <span className="group relative inline-block shrink-0">
-                      <span className="px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-700 group-hover:invisible">
+                    // 未完成（失败/已停止）：默认显示"未完成"，鼠标悬停变为"续测"按钮（滚动回测可断点续跑）。
+                    // 用 React state + inline style 控制显隐，不依赖 Tailwind hover 变体（当前环境不生成）。
+                    <span
+                      className="relative inline-block shrink-0 py-1 pl-1 -mr-1"
+                      onMouseEnter={() => setHoverId(t.task_id)}
+                      onMouseLeave={() => setHoverId(null)}
+                    >
+                      <span
+                        className="px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-700 transition-opacity duration-100"
+                        style={{ opacity: hoverId === t.task_id ? 0 : 1 }}
+                      >
                         未完成
                       </span>
                       <button
                         onClick={() => onResume?.(t.task_id)}
-                        disabled={!onResume}
-                        className="px-2 py-0.5 rounded text-xs bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 invisible group-hover:visible absolute left-0 top-0"
+                        className="absolute left-0 top-0 px-2 py-0.5 rounded text-xs bg-emerald-600 text-white transition-opacity duration-100"
+                        style={{ opacity: hoverId === t.task_id ? 1 : 0 }}
                         title="从断点继续滚动回测（跳过已完成段）"
                       >
                         续测

@@ -6,6 +6,7 @@ import type {
   DataSourceInfo,
   ModelArtifacts,
   BacktestResult,
+  BacktestPartialResult,
   FactorCatalog,
 } from './types'
 
@@ -105,6 +106,12 @@ export async function deleteBacktest(taskId: string): Promise<{ status: string }
 
 export async function getBacktestResult(taskId: string): Promise<BacktestResult> {
   const { data } = await http.get<BacktestResult>(`/backtest/${taskId}/result`)
+  return data
+}
+
+// 滚动回测已跑段的部分结果（partial_result.json）：任务未完成但跑过若干段时可用
+export async function getBacktestPartial(taskId: string): Promise<BacktestPartialResult> {
+  const { data } = await http.get<BacktestPartialResult>(`/backtest/${taskId}/partial`)
   return data
 }
 

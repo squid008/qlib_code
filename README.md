@@ -1,6 +1,13 @@
 # Qlib 量化回测平台
 
-> **当前版本：v1.3.1**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+> **当前版本：v1.3.2**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+
+### v1.3.2 更新（断点续测 + 未完成任务可查看已跑段）
+
+- **历史回测"未完成"任务新增常驻"续测"按钮**：复用源 artifacts 目录从断点继续滚动回测，跳过已完成段（断点续跑）；续测任务沿用源任务名显示
+- **续测占用保护**：目录正被续测写入时，历史表格对应行的删除按钮自动禁用（防误删）
+- **未完成任务可查看已跑段结果**：取消/中断/失败但已跑过若干段的滚动回测，可查看已跑段的净值曲线/分层/IC/段产物（读 `partial_result.json`，新增接口 `GET /api/backtest/{task_id}/partial`，任务不在内存/后端重启后仍可读）
+- 说明：调仓明细（TradeLog）只在完整 `result.json` 中有，未完成任务暂无；续测为"新建任务 + 复用源目录"机制，task_id 会变化但任务名沿用源目录名
 
 基于 Qlib 的量价因子机器学习回测系统，提供 **React 前端 + FastAPI 后端 + Qlib 回测引擎** 的完整闭环，
 并预留 **rqalpha(h5)** 多类型数据源接入接口。
@@ -106,6 +113,7 @@ npm run dev
 | GET | `/api/backtest/{task_id}` | 查询任务状态/进度/结果 |
 | GET | `/api/backtests` | 列出所有任务 |
 | GET | `/api/backtests/history` | 历史回测列表（含是否运行中） |
+| GET | `/api/backtest/{task_id}/partial` | 滚动回测已跑段的部分结果（partial_result.json，未完成任务也可读） |
 | GET | `/api/backtest/{task_id}/artifacts` | 模型交付物（公式/权重/超参数/特征） |
 | GET | `/api/backtest/{task_id}/snapshot` | 回测参数快照（复现/复用用） |
 | GET | `/api/backtest/capacity` | 并发回测能力（max/running/queued/available） |

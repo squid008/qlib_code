@@ -17,6 +17,8 @@ interface Props {
   capacity?: { available: number; running: number; max_concurrent: number } | null
   // 外部触发刷新的 key：值变化时组件会重新加载历史（用于"任务取消/完成后自动刷新"）
   refreshKey?: number
+  // 断点续跑：未完成（failed/cancelled）历史回测的"续测"按钮（点击从断点继续滚动回测）
+  onResume?: (taskId: string) => void
 }
 
 interface Row {
@@ -25,7 +27,7 @@ interface Row {
   loading: boolean
 }
 
-export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResult, refreshKey, capacity }: Props) {
+export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResult, refreshKey, capacity, onResume }: Props) {
   const [rows, setRows] = useState<Row[]>([])
   const [page, setPage] = useState(1)  // 当前页码（1-based）
   const [jumpPageInput, setJumpPageInput] = useState('')  // 输入框页码
@@ -40,6 +42,9 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
   // 单个删除确认（页面内弹窗，兼容内置浏览器不弹 window.confirm）
   const [confirmDel, setConfirmDel] = useState<Row | null>(null)
   const [deleting, setDeleting] = useState(false)
+  // 已点击续测的目录集合（乐观更新：点击续测后立即隐藏该行续测按钮，不依赖后端响应）
+  // 用 dir_name 做 key（每行唯一）；后端 history 刷新后该目录会从列表移除/变为 running，自动清理
+  const [resumingDirs, setResumingDirs] = useState<Set<string>>(new Set())
 
   // 生成分页页码数组：当前页前后显示 2 个，两端显示，中间过多用省略号
   const buildPageItems = (current: number, total: number): (number | '...')[] => {
@@ -254,9 +259,29 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
                       {row.item.dir_name}
                       {/* "未完成"标签：既没有 result.json，又不在内存中运行（避免把正在跑的任务误标为未完成） */}
                       {!row.item.has_result && !row.item.is_task_running && (
-                        <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-100 text-amber-700">
-                          未完成
-                        </span>
+                        <>
+                          <span className="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-amber-100 text-amber-700">
+                            未完成
+                          </span>
+                          {/* 续测按钮：常驻可见（不依赖 hover），仅当父组件传入 onResume 且本行未被点击过续测时渲染。
+                              点击后立即把 dir_name 加入 resumingDirs，按钮立刻消失（乐观更新），无需等后端返回。 */}
+                          {onResume && !resumingDirs.has(row.item.dir_name) && (
+                            <button
+                              onClick={() => {
+                                setResumingDirs((prev) => {
+                                  const next = new Set(prev)
+                                  next.add(row.item.dir_name)
+                                  return next
+                                })
+                                onResume(row.item.task_id)
+                              }}
+                              className="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-emerald-600 text-white"
+                              title="从断点继续滚动回测（跳过已完成段）"
+                            >
+                              续测
+                            </button>
+                          )}
+                        </>
                       )}
                     </td>
                     <td className="py-2 pr-3">{ms.model || p?.model || '-'}</td>
