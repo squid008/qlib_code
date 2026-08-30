@@ -190,7 +190,21 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
 
     # 设置模型产物保存目录（可读目录名 + task_id 后缀保证唯一，用于复现/查看训练结果）
     if task_id and work_dir:
-        art_dir = _make_artifact_dir(work_dir, task_id, req)
+        resume_from = getattr(req, "resume_task_id", None)
+        if resume_from:
+            # 断点续跑：复用源任务目录（已完成的段 seg_result 会被 _run_rolling 检测跳过），
+            # 这样续跑能接着未完成的部分继续，而不是新建空目录。
+            from ..services import artifacts_service as _art_svc
+            try:
+                src_dir = _art_svc.find_artifact_dir(resume_from)
+            except Exception:
+                src_dir = None
+            if src_dir and os.path.isdir(src_dir):
+                art_dir = src_dir
+            else:
+                art_dir = _make_artifact_dir(work_dir, task_id, req)
+        else:
+            art_dir = _make_artifact_dir(work_dir, task_id, req)
         set_artifact_dir(art_dir)
         # 保存完整回测参数快照（params.json + meta.json），供复现模式对照
         _save_backtest_params(art_dir, req)

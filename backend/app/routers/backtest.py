@@ -42,6 +42,32 @@ def create_backtest(req: BacktestRequest):
     return TaskIdResponse(task_id=task_id)
 
 
+@router.post("/backtest/{task_id}/resume", response_model=TaskIdResponse, summary="断点续跑（未完成的滚动回测）")
+def resume_backtest(task_id: str):
+    """从源任务的断点继续滚动回测。
+
+    读源任务 params.json 构造续跑请求，复用源 artifacts 目录
+    （_run_rolling 会检测已完成的段并跳过），提交一个新任务继续跑未完成的部分。
+    """
+    try:
+        snap = artifacts_service.load_snapshot(task_id)
+    except artifacts_service.ArtifactNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    params = snap.get("params")
+    if not params:
+        raise HTTPException(status_code=404, detail=f"任务 {task_id} 没有参数快照，无法续跑")
+    try:
+        req = BacktestRequest(**params)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"源任务参数解析失败，无法续跑: {e}")
+    # 续跑：复用源 artifacts 目录（段结果缓存负责跳过已完成段），未完成段正常训练
+    req.resume_task_id = task_id
+    req.load_model_task_id = None
+    manager = get_task_manager(config.WORK_DIR)
+    new_task_id = manager.submit(req)
+    return TaskIdResponse(task_id=new_task_id)
+
+
 @router.get("/backtest/{task_id}", response_model=BacktestTask, summary="查询回测任务状态")
 def get_backtest(task_id: str):
     manager = get_task_manager(config.WORK_DIR)

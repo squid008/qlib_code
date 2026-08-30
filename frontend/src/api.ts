@@ -93,6 +93,11 @@ export async function cancelBacktest(taskId: string): Promise<{ status: string }
   return data
 }
 
+export async function resumeBacktest(taskId: string): Promise<TaskIdResponse> {
+  const { data } = await http.post<TaskIdResponse>(`/backtest/${taskId}/resume`)
+  return data
+}
+
 export async function deleteBacktest(taskId: string): Promise<{ status: string }> {
   const { data } = await http.delete<{ status: string }>(`/backtest/${taskId}`)
   return data

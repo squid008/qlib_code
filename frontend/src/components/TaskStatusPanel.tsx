@@ -5,10 +5,18 @@ interface TaskStatusPanelProps {
   onRefresh: () => void
   onCancelAll: () => void
   onCancelOne: (taskId: string) => void
+  // 断点续跑：未完成（失败/已停止）的滚动回测，hover 显示"续测"按钮
+  onResume?: (taskId: string) => void
 }
 
 // 任务状态区：多任务并行显示（每任务一张卡片：状态+进度条+单独取消），支持刷新/一键取消
-export default function TaskStatusPanel({ tasks, onRefresh, onCancelAll, onCancelOne }: TaskStatusPanelProps) {
+export default function TaskStatusPanel({
+  tasks,
+  onRefresh,
+  onCancelAll,
+  onCancelOne,
+  onResume,
+}: TaskStatusPanelProps) {
   const activeCount = tasks.filter(
     (t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling',
   ).length
@@ -59,21 +67,34 @@ export default function TaskStatusPanel({ tasks, onRefresh, onCancelAll, onCance
                   <span className="text-sm text-slate-600 truncate" title={t.display_name || t.task_id}>
                     {t.display_name || t.task_id}
                   </span>
-                  <span
-                    className={`px-2 py-0.5 rounded text-xs shrink-0 ${
-                      t.status === 'success'
-                        ? 'bg-green-100 text-green-700'
-                        : t.status === 'failed'
-                          ? 'bg-red-100 text-red-700'
-                          : t.status === 'cancelled'
-                            ? 'bg-gray-100 text-gray-600'
-                            : t.status === 'cancelling'
-                              ? 'bg-orange-100 text-orange-700'
-                              : 'bg-blue-100 text-blue-700'
-                    }`}
-                  >
-                    {t.status}
-                  </span>
+                  {t.status === 'failed' || t.status === 'cancelled' ? (
+                    // 未完成（失败/已停止）：正常显示"未完成"，鼠标悬停变成"续测"按钮（滚动回测可断点续跑）
+                    <span className="group relative inline-block shrink-0">
+                      <span className="px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-700 group-hover:invisible">
+                        未完成
+                      </span>
+                      <button
+                        onClick={() => onResume?.(t.task_id)}
+                        disabled={!onResume}
+                        className="px-2 py-0.5 rounded text-xs bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 invisible group-hover:visible absolute left-0 top-0"
+                        title="从断点继续滚动回测（跳过已完成段）"
+                      >
+                        续测
+                      </button>
+                    </span>
+                  ) : (
+                    <span
+                      className={`px-2 py-0.5 rounded text-xs shrink-0 ${
+                        t.status === 'success'
+                          ? 'bg-green-100 text-green-700'
+                          : t.status === 'cancelling'
+                            ? 'bg-orange-100 text-orange-700'
+                            : 'bg-blue-100 text-blue-700'
+                      }`}
+                    >
+                      {t.status}
+                    </span>
+                  )}
                 </div>
                 {isActive && (
                   <button

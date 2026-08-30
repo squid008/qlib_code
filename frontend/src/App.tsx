@@ -6,6 +6,7 @@ import {
   getBacktestArtifacts,
   getBacktestResult,
   cancelBacktest,
+  resumeBacktest,
   getFactorCatalog,
   getBacktestSnapshot,
   getBacktestCapacity,
@@ -432,6 +433,33 @@ export default function App() {
       }
     } catch {
       // 忽略滚动异常
+    }
+  }
+
+  // 断点续跑：从"未完成"的滚动回测继续（后端复用源 artifacts 目录，跳过已完成段）
+  const handleResume = async (taskId: string) => {
+    setError('')
+    try {
+      const { task_id } = await resumeBacktest(taskId)
+      setTask(null)
+      setArtifacts(null)
+      setViewResult(null)
+      setViewArtifacts(null)
+      setTasks((prev) => {
+        const newTask: BacktestTask = {
+          task_id,
+          status: 'pending',
+          progress: 0,
+          message: '已提交（续跑）',
+          created_at: new Date().toISOString(),
+        }
+        const next = [...prev, newTask]
+        tasksRef.current = next
+        return next
+      })
+      startPolling()
+    } catch (e) {
+      setError('续跑提交失败，请确认后端服务已启动')
     }
   }
 
@@ -1171,6 +1199,7 @@ export default function App() {
                 /* 单个任务取消失败不阻塞其他 */
               }
             }}
+            onResume={handleResume}
           />
         )}
 

@@ -82,6 +82,9 @@ class BacktestRequest(BaseModel):
     load_model_task_id: Optional[str] = Field(
         None, description="复用某次回测训练好的模型权重（跳过训练，直接预测回测）。填该任务的 task_id"
     )
+    resume_task_id: Optional[str] = Field(
+        None, description="断点续跑：从该任务（未完成的滚动回测）继续，复用其 artifacts 目录并跳过已完成段"
+    )
 
 
 class BacktestTask(BaseModel):
