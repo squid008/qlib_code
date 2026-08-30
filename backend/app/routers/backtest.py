@@ -94,6 +94,14 @@ def get_backtest(task_id: str):
     if task.status in ("running", "cancelling"):
         try:
             adir = artifacts_service.find_artifact_dir(task_id)
+            if not adir:
+                # 续测任务复用源目录（目录名后缀是源 task_id），按 resume_task_id 找源目录读 partial
+                try:
+                    req = manager.get_req(task_id)
+                    if req and getattr(req, "resume_task_id", None):
+                        adir = artifacts_service.find_artifact_dir(req.resume_task_id)
+                except Exception:
+                    adir = None
             if adir:
                 import json
                 ppath = os.path.join(adir, "partial_result.json")

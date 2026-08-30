@@ -177,6 +177,11 @@ class TaskManager:
             if t is not None:
                 t.display_name = display_name
 
+    def get_req(self, task_id: str) -> Optional[BacktestRequest]:
+        """返回任务提交时的请求快照（用于续测源目录判断等；任务结束后已清理则返回 None）。"""
+        with self._lock:
+            return self._reqs.get(task_id)
+
     def running_resume_sources(self) -> set:
         """返回运行/排队/取消中任务所复用的源 task_id 集合（用于历史列表判断"续测占用中"）。
 

@@ -516,6 +516,10 @@ export default function App() {
       if (t?.result) {
         setViewResult(t)
         loadedResult = true
+      } else if (t?.status === 'running' || t?.status === 'cancelling') {
+        // 运行中任务：用任务本身展示已跑段 partial（保留 running 状态，文案显示"滚动训练进行中"）
+        setViewResult(t)
+        loadedResult = true
       }
     } catch {
       // 内存任务丢失，忽略，下面尝试读持久化 result.json
@@ -1290,7 +1294,9 @@ export default function App() {
                 <>
                   <div className="bg-white dark:bg-slate-800 rounded-xl shadow p-6 text-sm">
                     <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                      {task?.status === 'running' ? '⏳ 滚动训练进行中' : '⏸ 回测未完成（已停止/中断）'}
+                      {task?.status === 'running' || viewResult?.status === 'running'
+                        ? '⏳ 滚动训练进行中'
+                        : '⏸ 回测未完成（已停止/中断）'}
                     </span>
                     <span className="ml-2 text-slate-500 dark:text-slate-300">
                       已跑 {partial.segments_done}/{partial.segments_total} 段，以下为已完成部分的结果
