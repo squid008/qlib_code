@@ -8,6 +8,10 @@ interface TaskStatusPanelProps {
   onCancelOne: (taskId: string) => void
   // 断点续跑：未完成（失败/已停止）的滚动回测，hover 显示"续测"按钮
   onResume?: (taskId: string) => void
+  // 点击任务卡片：选中并展示该任务的曲线/已跑段（类似历史"查看"），再点取消展示
+  onSelectTask?: (taskId: string) => void
+  // 当前选中的任务 ID（用于卡片高亮）
+  selectedTaskId?: string | null
 }
 
 // 任务状态区：多任务并行显示（每任务一张卡片：状态+进度条+单独取消），支持刷新/一键取消
@@ -17,6 +21,8 @@ export default function TaskStatusPanel({
   onCancelAll,
   onCancelOne,
   onResume,
+  onSelectTask,
+  selectedTaskId,
 }: TaskStatusPanelProps) {
   // 记录悬停的任务 ID，用 inline style 控制"续测"按钮显隐（不依赖 Tailwind hover 变体）
   const [hoverId, setHoverId] = useState<string | null>(null)
@@ -61,8 +67,14 @@ export default function TaskStatusPanel({
           return (
             <div
               key={t.task_id}
-              className={`border rounded-lg p-3 ${
-                isActive ? 'border-blue-200 bg-blue-50/30 dark:bg-blue-900/10' : 'border-slate-200'
+              onClick={() => onSelectTask?.(t.task_id)}
+              title="点击查看该任务的曲线/已跑段，再点一次取消"
+              className={`border rounded-lg p-3 cursor-pointer transition-colors ${
+                selectedTaskId === t.task_id
+                  ? 'border-blue-500 ring-1 ring-blue-400'
+                  : isActive
+                    ? 'border-blue-200 bg-blue-50/30 dark:bg-blue-900/10'
+                    : 'border-slate-200'
               }`}
             >
               <div className="flex items-center justify-between mb-2">
@@ -85,7 +97,10 @@ export default function TaskStatusPanel({
                         未完成
                       </span>
                       <button
-                        onClick={() => onResume?.(t.task_id)}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onResume?.(t.task_id)
+                        }}
                         className="absolute left-0 top-0 px-2 py-0.5 rounded text-xs bg-emerald-600 text-white transition-opacity duration-100"
                         style={{ opacity: hoverId === t.task_id ? 1 : 0 }}
                         title="从断点继续滚动回测（跳过已完成段）"
@@ -109,7 +124,10 @@ export default function TaskStatusPanel({
                 </div>
                 {isActive && (
                   <button
-                    onClick={() => onCancelOne(t.task_id)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onCancelOne(t.task_id)
+                    }}
                     className="px-3 py-1 rounded text-xs bg-red-600 text-white hover:bg-red-700"
                   >
                     取消

@@ -469,6 +469,38 @@ export default function App() {
     }
   }
 
+  // 点击任务状态卡片：选中并展示该任务的曲线/已跑段（类似历史"查看"），再点一次取消展示，点其他任务切换
+  const handleSelectTask = async (taskId: string) => {
+    setError('')
+    // 已选中同一任务 → 取消展示
+    if (task?.task_id === taskId) {
+      setTask(null)
+      setArtifacts(null)
+      setViewResult(null)
+      setViewArtifacts(null)
+      return
+    }
+    try {
+      const t = await getBacktestTask(taskId)
+      setTask(t)
+      setViewResult(null)
+      setViewArtifacts(null)
+      // 成功任务：加载训练产物；运行中任务由结果区自动展示已跑段 partial
+      if (t.status === 'success') {
+        try {
+          const a = await getBacktestArtifacts(taskId)
+          setArtifacts(a)
+        } catch {
+          setArtifacts(null)
+        }
+      } else {
+        setArtifacts(null)
+      }
+    } catch {
+      setError('任务状态获取失败')
+    }
+  }
+
   // 打开某个历史回测的结果（调仓记录/曲线/训练产物）
   const handleViewResult = async (taskId: string) => {
     setError('')
@@ -1228,6 +1260,8 @@ export default function App() {
               }
             }}
             onResume={handleResume}
+            onSelectTask={handleSelectTask}
+            selectedTaskId={task?.task_id ?? null}
           />
         )}
 
