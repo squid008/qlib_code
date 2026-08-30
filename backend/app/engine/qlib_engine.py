@@ -717,6 +717,12 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
         # 断点续跑：该段已完成（seg_result.json 存在）则恢复结果并跳过，不重复计算
         art_dir = _get_artifact_dir()
         loaded = _load_segment_result(art_dir, seg_no)
+        # 防误跳：缓存段的日期窗口必须与当前段完全一致才可复用。
+        # 否则（如参数被误带 resume_task_id）会把他人的段结果当作本段缓存 → 秒完成 + 结果造假。
+        if loaded is not None:
+            _cached_range = loaded[0].get("date_range") or []
+            if _cached_range != [str(test_start), str(test_end)]:
+                loaded = None
         if loaded is not None:
             data, tpl, trpl = loaded
             all_nav.extend(data.get("nav") or [])

@@ -360,6 +360,9 @@ export default function App() {
       if (v !== undefined && v !== null) (merged as unknown as Record<string, unknown>)[k] = v
     }
     merged.load_model_task_id = taskId // 复用权重
+    // 复用参数 ≠ 续测：清掉可能残留的 resume_task_id（如之前"查看"过续测任务把它填进了表单），
+    // 否则提交会被当成"续测源任务"，复用源目录导致秒完成 + 产物写进源目录污染它。
+    merged.resume_task_id = null
     setForm(merged)
     setCapitalWan((params.initial_capital || 0) / 10000)
     setError('')
@@ -418,6 +421,8 @@ export default function App() {
     const merged: BacktestRequest = {
       ...params,
       load_model_task_id: taskId,
+      // 复用回测 ≠ 续测：不保留源任务的 resume_task_id（同上，避免误当续测）
+      resume_task_id: null,
     }
     setForm(merged)
     setCapitalWan((params.initial_capital || 0) / 10000)
@@ -625,7 +630,11 @@ export default function App() {
     // 自动清掉 load_model_task_id 改为新训练，避免"复用权重时特征不匹配"的错误。
     // 复用源参数从后端 snapshot 拉取（不依赖前端 state，避免复用回测时 setState 未生效导致漏检）。
     let payloadAdj = payload
-    if (payload.load_model_task_id) {
+    // 提交表单 ≠ 续测：兜底清掉 resume_task_id（续测走独立 resume 接口，不经过这里）。
+    // 防止"查看过续测任务"把 resume_task_id 残留进表单后被误当成续测提交，
+    // 导致复用源目录秒完成 + 污染源任务产物。
+    payloadAdj = { ...payload, resume_task_id: null }
+    if (payloadAdj.load_model_task_id) {
       let src: BacktestRequest | null = null
       try {
         const snap = await getBacktestSnapshot(payload.load_model_task_id)
