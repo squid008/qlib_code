@@ -1331,7 +1331,7 @@ export default function App() {
                     </span>
                     <span className="ml-2 text-slate-500 dark:text-slate-300">
                       已跑 {partial.segments_done}/{partial.segments_total} 段，以下为已完成部分的结果
-                      {task?.status !== 'running' && '；如需继续，可在下方历史回测中点该任务的"续测"'}
+                      {task?.status !== 'running' && viewResult?.status !== 'running' && '；如需继续，可在下方历史回测中点该任务的"续测"'}
                     </span>
                   </div>
                   <NavChart nav={partial.nav} />
