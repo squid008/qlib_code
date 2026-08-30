@@ -1255,6 +1255,14 @@ export default function App() {
                   }
                 }),
               )
+              // 乐观更新：立即把全部任务标记为 cancelling（后端已受理，不依赖轮询才显示）
+              setTasks((prev) =>
+                prev.map((t) =>
+                  t.status === 'running' || t.status === 'pending'
+                    ? { ...t, status: 'cancelling' as const, message: '正在取消...' }
+                    : t,
+                ),
+              )
             }}
             onCancelOne={async (taskId) => {
               try {
@@ -1262,6 +1270,14 @@ export default function App() {
               } catch {
                 /* 单个任务取消失败不阻塞其他 */
               }
+              // 乐观更新：立即标记该任务为 cancelling（后端已受理，马上有反馈）
+              setTasks((prev) =>
+                prev.map((t) =>
+                  t.task_id === taskId && t.status !== 'cancelling'
+                    ? { ...t, status: 'cancelling' as const, message: '正在取消...' }
+                    : t,
+                ),
+              )
             }}
             onResume={handleResume}
             onSelectTask={handleSelectTask}
