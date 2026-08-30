@@ -541,9 +541,24 @@ export default function App() {
       try {
         const partial = await getBacktestPartial(taskId)
         if (partial?.nav?.length) {
+          // 判断该历史任务是否正被运行（直接运行中，或被某个续测任务占用源目录）：
+          // 运行中 → 文案显示"滚动训练进行中"；已停止 → 显示"回测未完成（已停止/中断）"
+          let runningNow = false
+          try {
+            const all = await listBacktests()
+            for (const t of Object.values(all)) {
+              if (t.status === 'running' || t.status === 'cancelling') {
+                // 直接是它，或续测任务的 display_name 以该 task_id 结尾（续测复用源目录，任务名沿用源）
+                if (t.task_id === taskId || (t.display_name && t.display_name.endsWith(taskId))) {
+                  runningNow = true
+                  break
+                }
+              }
+            }
+          } catch {}
           const t = {
             task_id: taskId,
-            status: 'cancelled',
+            status: runningNow ? 'running' : 'cancelled',
             progress: 100,
             partial_result: partial,
           } as BacktestTask
