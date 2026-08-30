@@ -99,3 +99,18 @@ git push --force-with-lease origin main   # 覆盖自己最近一次提交（比
 ```
 
 > ⚠️ 仅当明确要覆盖**自己刚推送的提交**时才用上面的 force 方式；普通情况下仍遵守第四条"不用 `--force`"。
+
+---
+
+## 六、workdir 下 mlflow 相关文件的说明与清理（备忘）
+
+回测平台使用 mlflow 做实验追踪，`backend/workdir/` 下会产生以下文件：
+
+- **`mlflow.db`**：mlflow 主实验追踪数据库（`sqlite:///workdir/mlflow.db`），累积**所有历史回测**的 run 记录（参数/指标/产物路径）。只增不减，长期可能涨到上百 MB。
+- **`mlflow.db-journal`**：SQLite 预写日志（rollback journal），有未提交事务时存在，检查点后自动清理，正常很小（几十 KB）。
+- **`.qlib_parallel_exp/exp_{线程ID}.db`**：多线程并发补丁（`backend/app/engine/patches/qlib_parallel.py`）给**每个回测任务线程**创建的独立 sqlite 后端（qlib 全局 `R` 是单例，多线程并发需按线程隔离 mlflow 避免互相覆盖）。任务线程开始创建、跑的过程中增长（0 → 几十 KB），任务结束后**后端不显式删除**，会持续累积。新任务线程会新建自己的 `exp_{tid}.db`。
+
+**清理**（当前未加自动清理，需手动）：
+- 可安全删除 `backend/workdir/.qlib_parallel_exp/`（删后下次跑自动重建，只是 mlflow 中间 run 记录）
+- `mlflow.db` 也可删（仅丢失 mlflow 层的 run 索引，**不影响回测功能**——回测真实产物都在 `artifacts/{task_id}/` 下的 `params.json` / `result.json` / 模型文件里）
+- 清理前先停止后端，避免 sqlite 文件占用/锁冲突
