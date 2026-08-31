@@ -247,6 +247,15 @@ export default function SingleFactorTestPanel({
   // 原始小数口径：不加%，直接显示原始值（IC / RankIC / ICIR）
   const fmtRaw = (v: number | null | undefined, digits = 4) =>
     v === null || v === undefined || Number.isNaN(v) ? '-' : v.toFixed(digits)
+  // p 值：极小值（<0.001）用科学计数法显示真实量级，toFixed(4) 会退化成 0.0000 失去信息
+  const fmtP = (v: number | null | undefined) =>
+    v === null || v === undefined || Number.isNaN(v)
+      ? '-'
+      : v < 1e-300
+        ? '<1e-300*' // 双精度浮点下溢为 0，实际 p 极小（约 1e-300 以下）
+        : v < 0.001
+          ? `${v.toExponential(2)}${v < 0.05 ? '*' : ''}`
+          : `${v.toFixed(4)}${v < 0.05 ? '*' : ''}`
 
   return (
     <div className="mt-2 border rounded p-3 bg-slate-50 dark:bg-slate-900 text-xs">
@@ -415,7 +424,7 @@ export default function SingleFactorTestPanel({
             <tbody>
               {results.map((r) => {
                 const significant = r.p_value !== null && r.p_value < 0.05
-                const good =
+                const goodBase =
                   r.error == null && r.diff !== null && r.diff > 0 && (!r.is_binary || significant)
                 // 方向矛盾：IC 与触发收益差方向相反且 ICIR 稳定（|ICIR|>=0.05，即×100后>=5）
                 // 说明"触发后收益"由少数触发日主导，逐日横截面方向相反，不能仅凭 diff 下结论
@@ -428,7 +437,7 @@ export default function SingleFactorTestPanel({
                   r.diff !== null &&
                   ((r.ic < 0 && r.diff > 0) || (r.ic > 0 && r.diff < 0))
                 // 反向有效：连续因子高分位组收益显著更低（diff<0），且 IC/ICIR 稳定为负（方向一致）→ 因子需反向使用（低值组买入）
-                const goodReverse =
+                const goodReverseBase =
                   r.error == null &&
                   !r.is_binary &&
                   significant &&
@@ -438,6 +447,16 @@ export default function SingleFactorTestPanel({
                   Math.abs(r.icir) >= 0.05 &&
                   r.diff !== null &&
                   r.diff < 0
+                // 按日稳定性：|t|>=2 且胜率方向与 diff 一致。diff 是观测加权平均，若触发样本集中
+                // 在少数暴涨/暴跌日，观测平均会被拉高而逐日并无稳定超额（如暴跌抄底类信号），
+                // 此时 t≈0、胜率≈50%，不得判定为有效。
+                const stable =
+                  r.daily_t === null ||
+                  r.daily_t === undefined ||
+                  (Math.abs(r.daily_t) >= 2 &&
+                    ((r.diff ?? 0) >= 0 ? (r.daily_win ?? 0) >= 0.5 : (r.daily_win ?? 0) <= 0.5))
+                const good = goodBase && stable
+                const goodReverse = goodReverseBase && stable
                 const qr = r.quintile_ret ?? []
                 const maxAbs = qr.length > 0 ? Math.max(...qr.map((g) => Math.abs(g.mean_ret))) : 0
                 return (
@@ -476,11 +495,23 @@ export default function SingleFactorTestPanel({
                         <td className="text-right px-1">{fmt(r.trigger?.mean_ret, 3)}</td>
                         <td className="text-right px-1">{r.not_trigger?.count ?? '-'}</td>
                         <td className="text-right px-1">{fmt(r.not_trigger?.mean_ret, 3)}</td>
-                        <td className={`text-right px-1 font-semibold ${(r.diff ?? 0) >= 0 ? 'text-red-500' : 'text-emerald-600'}`}>
-                          {fmt(r.diff, 3)}
+                        <td
+                          className={`text-right px-1 font-semibold ${(r.diff ?? 0) >= 0 ? 'text-red-500' : 'text-emerald-600'}`}
+                          title={
+                            r.daily_t != null
+                              ? `按日配对检验：${r.daily_n} 个交易日，日差值均值 ${fmt(r.daily_diff, 3)}%，t=${fmtRaw(r.daily_t, 1)}，胜率 ${fmt(r.daily_win, 1)}%`
+                              : undefined
+                          }
+                        >
+                          <div>{fmt(r.diff, 3)}</div>
+                          {r.daily_t != null && (
+                            <div className="text-slate-400 font-mono text-[9px] font-normal whitespace-nowrap">
+                              日{fmt(r.daily_diff, 3)} · t={fmtRaw(r.daily_t, 1)} · 胜{fmt(r.daily_win, 1)}%
+                            </div>
+                          )}
                         </td>
                         <td className="text-right px-1">
-                          {r.p_value === null ? '-' : significant ? `${r.p_value.toFixed(4)}*` : r.p_value.toFixed(4)}
+                          {r.p_value === null ? '-' : fmtP(r.p_value)}
                         </td>
                         <td className="text-right px-1">
                           {qr.length > 0 && maxAbs > 0 ? (
@@ -522,6 +553,13 @@ export default function SingleFactorTestPanel({
                             >
                               有效(反向)✓
                             </span>
+                          ) : (goodBase || goodReverseBase) && !stable ? (
+                            <span
+                              className="text-amber-600 font-semibold"
+                              title="总差值方向显著但按日配对检验不显著（|t|&lt;2 或胜率≈50%）：差值主要由少数交易日驱动，逐日无稳定超额，慎用"
+                            >
+                              时间集中
+                            </span>
                           ) : (
                             <span className="text-slate-400">待观察</span>
                           )}
@@ -539,6 +577,7 @@ export default function SingleFactorTestPanel({
             IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.05（即×100后≥5，日频口径，市值为例0.1以上即为稳定负向）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
             分位收益：连续因子按每日横截面分 5 组（1=最低值组…5=最高值组）的平均未来收益，柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益。
             若出现"方向矛盾"：diff 为正但 IC/ICIR 稳定为负，说明信号由少数触发日主导，逐日横截面方向相反，慎用。
+            若出现"时间集中"：diff 方向显著但按日配对检验（日均差值 t 值 / 胜率）不显著，说明总差值被少数交易日拉高，逐日看并无稳定超额（典型如暴跌抄底类信号），慎用。
             有效(反向)：连续因子高分位组收益显著更低（diff&lt;0）、IC/ICIR 稳定为负且方向一致，说明因子与未来收益负相关，反向使用（因子值低时买入）有效，常见于市值、流动性等负向因子。
           </p>
         </div>

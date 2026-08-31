@@ -243,6 +243,10 @@ export interface SingleFactorTestResult {
   not_trigger: FactorTestGroupStats | null // 未触发组（<=0.5）
   diff: number | null // 触发均值 - 未触发均值
   p_value: number | null // Mann-Whitney U p 值
+  daily_diff: number | null // 按日配对检验：逐日差值均值（与 diff 同口径）
+  daily_t: number | null // 按日差值序列单样本 t 统计量
+  daily_win: number | null // 日差值>0 的交易日占比（胜率，0-1）
+  daily_n: number // 参与配对的交易日数
   ic: number | null
   rank_ic: number | null
   icir: number | null

@@ -152,6 +152,10 @@ def _test_one(df: pd.DataFrame, factor: dict, col: str) -> dict:
         "not_trigger": None,
         "diff": None,
         "p_value": None,
+        "daily_diff": None,
+        "daily_t": None,
+        "daily_win": None,
+        "daily_n": 0,
         "ic": None,
         "rank_ic": None,
         "icir": None,
@@ -222,6 +226,25 @@ def _test_one(df: pd.DataFrame, factor: dict, col: str) -> dict:
                 result["p_value"] = float(p)
             except Exception:
                 result["p_value"] = None
+        # 按日配对检验：逐日 触发均值-未触发均值 作为日差值序列做单样本 t 检验。
+        # 原始 MWU p 值在百万级样本下必然趋近 0，信息量低；日差值序列（约交易日数个点）
+        # 规避横截面收益相关导致的假高显著性，且能给出业务上有意义的胜率。
+        try:
+            dt_pos = sub.index.names.index("datetime")
+            daily = (
+                trig.groupby(level=dt_pos)["LABEL"].mean()
+                - not_trig.groupby(level=dt_pos)["LABEL"].mean()
+            ).dropna()
+            if len(daily) >= 2:
+                from scipy.stats import ttest_1samp
+
+                t_stat, _ = ttest_1samp(daily, 0)
+                result["daily_diff"] = round(float(daily.mean()), 6)
+                result["daily_t"] = round(float(t_stat), 4)
+                result["daily_win"] = round(float((daily > 0).mean()), 4)
+                result["daily_n"] = int(len(daily))
+        except Exception:
+            pass
 
     # 5 组分位收益（连续因子）：按每日横截面均分 5 组，汇总每组平均未来收益。
     # 用于识别 U 型/倒 U 型等非线性关系（单调关系 IC/RankIC 已足够，U 型/倒 U 型两端
