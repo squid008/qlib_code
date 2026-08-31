@@ -53,8 +53,10 @@ def _get_pred_label(model, dataset, instruments, segment: str, label_horizon: in
     try:
         start = pred.index.get_level_values("datetime").min()
         end = pred.index.get_level_values("datetime").max()
-        # label：未来 n 个交易日的收益（用于 IC/分层信号评估）
-        label_expr = f"Ref($close, -{n + 1}) / Ref($close, -1) - 1"
+        # label：未来 n 个交易日的收益（用于 IC/分层信号评估）。
+        # 以信号日（T）收盘价买入（与单因子测试/回测 deal_price=close 口径一致）；
+        # 此前 Ref($close,-1) 从 T+1 收盘起算，少算 T+1 全天收益。
+        label_expr = f"Ref($close, -{n + 1}) / $close - 1"
         # ret：当日收益（用于"分层持仓周期"算法A：调仓日分组后按日收益累加持有）
         ret_expr = "$close / Ref($close, 1) - 1"
         # 用进程内共享缓存包裹 D.features：相同股票池/表达式/区间 复用，避免重复 I/O+计算

@@ -237,7 +237,9 @@ def run_single_factor_test(
         progress_cb(5, "解析股票池成分股...")
 
     n = max(1, int(label_horizon or 2))
-    label_expr = f"Ref($close, -{n + 1})/Ref($close, -1) - 1"
+    # label：信号日（T）尾盘确认后以 T 收盘价买入，持有 n 个交易日到 T+n 收盘卖出。
+    # （与回测 deal_price=close 口径一致；此前 Ref($close,-1) 从 T+1 收盘起算，少算 T+1 全天收益。）
+    label_expr = f"Ref($close, -{n + 1})/$close - 1"
 
     # 因子列表中的表达式按序编号；重复表达式只加载一次（去重），统计时映射回原列
     ordered_exprs: List[str] = []

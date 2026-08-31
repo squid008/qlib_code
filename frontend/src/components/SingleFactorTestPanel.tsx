@@ -489,7 +489,7 @@ export default function SingleFactorTestPanel({
           </table>
           <p className="mt-1 text-slate-400">
             触发数为剔除"信号当日涨停"样本后的数量（涨停买不到，已按板块 10%/20%/30% 剔除）。
-            差值 = 触发均值 − 未触发均值（正数说明信号触发后未来 {labelHorizon} 日收益更高）；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
+            差值 = 触发均值 − 未触发均值（正数说明信号触发后未来 {labelHorizon} 日收益更高）；收益按信号日收盘价买入持有 {labelHorizon} 个交易日计算；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
             IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.02（即×100后≥2）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
             若出现"方向矛盾"：diff 为正但 IC/ICIR 稳定为负，说明信号由少数触发日主导，逐日横截面方向相反，慎用。
           </p>
