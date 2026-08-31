@@ -1,6 +1,11 @@
 # Qlib 量化回测平台
 
-> **当前版本：v1.4.0**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+> **当前版本：v1.4.1**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+
+### v1.4.1 更新（修复多任务并发 mlflow database is locked）
+
+- **修复多任务并发时 mlflow SQLite `database is locked`**：并发补丁给每个任务线程独立 sqlite（`exp_{tid}.db`）做隔离，但引擎启动时 `R.set_uri(主db)` 把线程独立 db 覆盖成了主 `mlflow.db` → 多任务并发写同一 db 触发锁。修复：并发补丁**忽略 uri 覆盖**（保持线程独立 db）+ 主 db 连接加 **busy_timeout=30** 兜底
+- 说明：mlflow run 记录写在线程独立 db，回测结果/历史不受影响（读的是 artifacts 文件）
 
 ### v1.4.0 更新（单因子测试按日配对检验 + 时间集中判定）
 

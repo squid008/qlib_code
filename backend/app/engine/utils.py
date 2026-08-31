@@ -21,7 +21,8 @@ def _default_exp_uri(work_dir: Optional[str] = None) -> str:
         work_dir = WORK_DIR
     os.makedirs(work_dir, exist_ok=True)
     db_path = os.path.join(work_dir, "mlflow.db")
-    return f"sqlite:///{db_path}"
+    # timeout=30：SQLite busy_timeout，写锁时最多等待 30 秒而不是立刻报 database is locked
+    return f"sqlite:///{db_path}?timeout=30"
 
 
 def _pick_benchmark(universe: str, instruments: List[str]) -> str:

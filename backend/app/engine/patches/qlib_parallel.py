@@ -51,7 +51,7 @@ class _ThreadLocalQlibRecorder:
         r = getattr(self._local, "recorder", None)
         if r is None:
             tid = threading.get_ident()
-            uri = f"sqlite:///{os.path.join(self._base_dir, f'exp_{tid}.db')}"
+            uri = f"sqlite:///{os.path.join(self._base_dir, f'exp_{tid}.db')}?timeout=30"
             os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
             mgr = MLflowExpManager(uri, self._default_exp_name)
             r = QlibRecorder(mgr)
@@ -111,7 +111,10 @@ class _ThreadLocalQlibRecorder:
         return self._get_recorder().set_tags(*args, **kwargs)
 
     def set_uri(self, uri):
-        return self._get_recorder().set_uri(uri)
+        # 忽略外部 uri 覆盖：线程本地 recorder 已用独立 sqlite（exp_{tid}.db）做并发隔离。
+        # 若允许覆盖为主 mlflow.db，多任务并发写同一个 db 会触发 SQLite "database is locked"。
+        # mlflow run 记录写在线程独立 db 即可（回测结果/历史都读 artifacts 文件，不依赖 mlflow db）。
+        return None
 
     def get_uri(self):
         return self._get_recorder().get_uri()
