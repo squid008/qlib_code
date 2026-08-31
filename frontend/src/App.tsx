@@ -427,6 +427,11 @@ export default function App() {
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null) (merged as unknown as Record<string, unknown>)[k] = v
     }
+    // 显式覆盖"允许为 null"的字段：复用回测必须完全用源任务配置。
+    // 否则 form 残留（如页面加载时 useEffect 自动填充的本地自定义公式）会让
+    // payload 与复用源不一致，触发 submitAndRun 的"自定义公式不同 → 自动改新训练"。
+    merged.custom_formulas = params.custom_formulas ?? null
+    merged.selected_features = params.selected_features ?? null
     merged.load_model_task_id = taskId
     // 复用回测 ≠ 续测：不保留源任务的 resume_task_id（同上，避免误当续测）
     merged.resume_task_id = null
