@@ -415,11 +415,12 @@ export default function SingleFactorTestPanel({
                 // 方向矛盾：IC 与触发收益差方向相反且 ICIR 稳定（|ICIR|>=2）
                 // 说明"触发后收益"由少数触发日主导，逐日横截面方向相反，不能仅凭 diff 下结论
                 // （对连续因子同样成立，不限于 0/1 信号）
+                // 注意：表格中 IC/ICIR 均为 ×100 的百分数值（见 fmt），判定需先还原到显示口径
                 const conflicting =
                   r.error == null &&
                   r.ic !== null &&
                   r.icir !== null &&
-                  Math.abs(r.icir) >= 2 &&
+                  Math.abs(r.icir * 100) >= 2 &&
                   r.diff !== null &&
                   ((r.ic < 0 && r.diff > 0) || (r.ic > 0 && r.diff < 0))
                 return (
@@ -486,7 +487,7 @@ export default function SingleFactorTestPanel({
           <p className="mt-1 text-slate-400">
             触发数为剔除"信号当日涨停"样本后的数量（涨停买不到，已按板块 10%/20%/30% 剔除）。
             差值 = 触发均值 − 未触发均值（正数说明信号触发后未来 {labelHorizon} 日收益更高）；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
-            IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差（|ICIR|≥2 视为稳定）。
+            IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差（|ICIR|≥2 视为稳定）。表中 IC/ICIR 均按 ×100 百分比显示，稳定性判定亦按该口径。
             若出现"方向矛盾"：diff 为正但 IC/ICIR 稳定为负，说明信号由少数触发日主导，逐日横截面方向相反，慎用。
           </p>
         </div>
