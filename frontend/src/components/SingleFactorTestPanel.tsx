@@ -417,14 +417,14 @@ export default function SingleFactorTestPanel({
                 const significant = r.p_value !== null && r.p_value < 0.05
                 const good =
                   r.error == null && r.diff !== null && r.diff > 0 && (!r.is_binary || significant)
-                // 方向矛盾：IC 与触发收益差方向相反且 ICIR 稳定（|ICIR|>=0.02，即×100后>=2）
+                // 方向矛盾：IC 与触发收益差方向相反且 ICIR 稳定（|ICIR|>=0.05，即×100后>=5）
                 // 说明"触发后收益"由少数触发日主导，逐日横截面方向相反，不能仅凭 diff 下结论
                 // （对连续因子同样成立，不限于 0/1 信号）
                 const conflicting =
                   r.error == null &&
                   r.ic !== null &&
                   r.icir !== null &&
-                  Math.abs(r.icir) >= 0.02 &&
+                  Math.abs(r.icir) >= 0.05 &&
                   r.diff !== null &&
                   ((r.ic < 0 && r.diff > 0) || (r.ic > 0 && r.diff < 0))
                 // 反向有效：连续因子高分位组收益显著更低（diff<0），且 IC/ICIR 稳定为负（方向一致）→ 因子需反向使用（低值组买入）
@@ -435,7 +435,7 @@ export default function SingleFactorTestPanel({
                   r.ic !== null &&
                   r.ic < 0 &&
                   r.icir !== null &&
-                  Math.abs(r.icir) >= 0.02 &&
+                  Math.abs(r.icir) >= 0.05 &&
                   r.diff !== null &&
                   r.diff < 0
                 const qr = r.quintile_ret ?? []
@@ -536,7 +536,7 @@ export default function SingleFactorTestPanel({
           <p className="mt-1 text-slate-400">
             触发分组：0/1 信号为"因子值&gt;0.5"；连续因子按分位数分组（触发 = 前 20% 高分位，未触发 = 后 20% 低分位）。触发数为剔除"信号当日涨停"样本后的数量（涨停买不到，已按板块 10%/20%/30% 剔除）。
             差值 = 触发均值 − 未触发均值（正数说明触发组未来 {labelHorizon} 日收益更高）；收益按信号日收盘价买入持有 {labelHorizon} 个交易日计算；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
-            IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.02（即×100后≥2）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
+            IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.05（即×100后≥5，日频口径，市值为例0.1以上即为稳定负向）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
             分位收益：连续因子按每日横截面分 5 组（1=最低值组…5=最高值组）的平均未来收益，柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益。
             若出现"方向矛盾"：diff 为正但 IC/ICIR 稳定为负，说明信号由少数触发日主导，逐日横截面方向相反，慎用。
             有效(反向)：连续因子高分位组收益显著更低（diff&lt;0）、IC/ICIR 稳定为负且方向一致，说明因子与未来收益负相关，反向使用（因子值低时买入）有效，常见于市值、流动性等负向因子。
