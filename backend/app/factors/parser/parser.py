@@ -29,6 +29,7 @@ FIELD_MAP = {
     "AMOUNT": "$amount",
     "TURNOVERRATE": "$turn",
     "VWAP": "$vwap",
+    "MARKET_CAP": "$market_cap",
 }
 
 

@@ -32,7 +32,7 @@ def main():
     by_name = {it.get("name"): it for it in items}
     expr_gold = by_name["黄金回踩"]["expression"]
     expr_trend = by_name["趋势顶底"]["expression"]
-    label_expr = "Ref($close, -3)/$close - 1"  # T 收盘买入持有 2 日，与 single_test/回测口径一致
+    label_expr = "Ref($close, -3)/Ref($close, -1) - 1"  # 信号次日收盘买入持有 2 日，与 single_test/回测 shift=1 口径一致
     fields = [expr_gold, expr_trend, label_expr, "$close", "$change"]
 
     # 模拟后端 qlib_engine._ensure_qlib_init 的初始化

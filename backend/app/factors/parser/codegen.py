@@ -27,6 +27,7 @@ FIELD_MAP = {
     "AMOUNT": "$amount",
     "TURNOVERRATE": "$turn",
     "VWAP": "$vwap",
+    "MARKET_CAP": "$market_cap",
 }
 
 # ---- 二元运算 → qlib 表达式 ----

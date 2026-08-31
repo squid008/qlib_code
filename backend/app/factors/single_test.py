@@ -237,9 +237,10 @@ def run_single_factor_test(
         progress_cb(5, "解析股票池成分股...")
 
     n = max(1, int(label_horizon or 2))
-    # label：信号日（T）尾盘确认后以 T 收盘价买入，持有 n 个交易日到 T+n 收盘卖出。
-    # （与回测 deal_price=close 口径一致；此前 Ref($close,-1) 从 T+1 收盘起算，少算 T+1 全天收益。）
-    label_expr = f"Ref($close, -{n + 1})/$close - 1"
+    # label：信号日 t 的分数在 t+1（成交日 T）收盘买入，持有 n 个交易日到 t+n+1（T+n）收盘卖出。
+    # （与回测 shift=1 一致：回测用 T-1 信号、T 收盘成交；分子/分母各后移一天，label 不混入
+    #  信号日当日收益，单因子测试与回测口径完全对齐，无前视。）
+    label_expr = f"Ref($close, -{n + 1})/Ref($close, -1) - 1"
 
     # 因子列表中的表达式按序编号；重复表达式只加载一次（去重），统计时映射回原列
     ordered_exprs: List[str] = []

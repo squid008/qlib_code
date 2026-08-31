@@ -121,9 +121,10 @@ class SelectedAlpha158(DataHandlerLP):
 
     def get_label_config(self):
         # 预测周期：未来 N 个交易日的收益。N=label_horizon
-        # 口径：信号日（T）收盘价买入持有 N 个交易日（与回测 deal_price=close、单因子测试一致）
+        # 口径：信号日 t 的分数在 t+1（成交日 T）收盘买入，持有 N 个交易日到 t+N+1（T+N）收盘卖出。
+        # 与回测 shift=1（用 T-1 信号、T 收盘成交）严格一致，无前视。
         n = self._label_horizon
-        return [f"Ref($close, -{n + 1})/$close - 1"], ["LABEL0"]
+        return [f"Ref($close, -{n + 1})/Ref($close, -1) - 1"], ["LABEL0"]
 
 
 class SelectedAlpha360(DataHandlerLP):
@@ -193,9 +194,10 @@ class SelectedAlpha360(DataHandlerLP):
 
     def get_label_config(self):
         # 预测周期：未来 N 个交易日的收益。N=label_horizon
-        # 口径：信号日（T）收盘价买入持有 N 个交易日（与回测 deal_price=close、单因子测试一致）
+        # 口径：信号日 t 的分数在 t+1（成交日 T）收盘买入，持有 N 个交易日到 t+N+1（T+N）收盘卖出。
+        # 与回测 shift=1（用 T-1 信号、T 收盘成交）严格一致，无前视。
         n = self._label_horizon
-        return [f"Ref($close, -{n + 1})/$close - 1"], ["LABEL0"]
+        return [f"Ref($close, -{n + 1})/Ref($close, -1) - 1"], ["LABEL0"]
 
 
 class FormulaHandler(DataHandlerLP):
@@ -286,6 +288,7 @@ class FormulaHandler(DataHandlerLP):
 
     def get_label_config(self):
         # 预测周期：未来 N 个交易日的收益。N=label_horizon
-        # 口径：信号日（T）收盘价买入持有 N 个交易日（与回测 deal_price=close、单因子测试一致）
+        # 口径：信号日 t 的分数在 t+1（成交日 T）收盘买入，持有 N 个交易日到 t+N+1（T+N）收盘卖出。
+        # 与回测 shift=1（用 T-1 信号、T 收盘成交）严格一致，无前视。
         n = self._label_horizon
-        return [f"Ref($close, -{n + 1})/$close - 1"], ["LABEL0"]
+        return [f"Ref($close, -{n + 1})/Ref($close, -1) - 1"], ["LABEL0"]
