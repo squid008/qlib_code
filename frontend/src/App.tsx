@@ -239,6 +239,46 @@ export default function App() {
     setForm((f) => ({ ...f, custom_formulas: texts.length > 0 ? texts : null }))
   }
 
+  // 同步历史参数的自定义特征/公式勾选状态（"查看"与"复用参数"共用）：
+  // 历史任务用了什么就勾什么；历史没用的（null/空）一律清空勾选，避免把本地自定义误勾上。
+  const syncCustomSelections = (params: BacktestRequest) => {
+    // 特征勾选
+    if (params.selected_features?.length) {
+      setCustomFeatures(params.selected_features)
+      setShowFeaturePanel(true)
+    } else if (factorCatalog) {
+      setCustomFeatures(factorCatalog.flat.map((f) => f.name))
+    }
+    // 公式勾选
+    if (params.custom_formulas?.length) {
+      const savedTexts = new Set(customFormulas.map((x) => x.text))
+      const missing = params.custom_formulas.filter((t) => !savedTexts.has(t))
+      const tempItems: CustomFormula[] = missing.map((t) => ({
+        id: t, // 临时 id 用原文，仅本次会话存在，不落盘
+        name: t.split(';')[0] || '公式',
+        text: t,
+        expression: '',
+        created_at: '',
+        updated_at: '',
+      }))
+      const all = [...customFormulas, ...tempItems]
+      setCustomFormulas(all)
+      // 只勾选历史任务实际用到的公式（按文本匹配），避免把本地其他公式也一并全选
+      const usedIds = new Set<string>()
+      for (const t of params.custom_formulas) {
+        const hit = all.find((x) => x.text === t)
+        if (hit) usedIds.add(hit.id)
+      }
+      setSelectedFormulaIds(usedIds)
+      syncFormulasToForm(all, usedIds)
+      setShowFormulaPanel(true)
+    } else {
+      // 历史任务未用公式：清空勾选，保持面板状态与提交内容一致
+      setSelectedFormulaIds(new Set())
+      syncFormulasToForm(customFormulas, new Set())
+    }
+  }
+
   // 添加自定义公式：编译并保存到后端，默认勾选
   const addCustomFormula = async () => {
     const text = formulaInput.trim()
@@ -369,41 +409,8 @@ export default function App() {
     setForm(merged)
     setCapitalWan((params.initial_capital || 0) / 10000)
     setError('')
-    // 同步特征勾选状态：历史选中了特征则带出，否则全量
-    if (params.selected_features?.length) {
-      setCustomFeatures(params.selected_features)
-      setShowFeaturePanel(true)
-    } else if (factorCatalog) {
-      setCustomFeatures(factorCatalog.flat.map((f) => f.name))
-    }
-    // 同步自定义公式：历史用了公式因子则带出（匹配已保存的自动勾选；历史有但本地没保存的临时加入本次列表）
-    if (params.custom_formulas?.length) {
-      const savedTexts = new Set(customFormulas.map((x) => x.text))
-      const missing = params.custom_formulas.filter((t) => !savedTexts.has(t))
-      const tempItems: CustomFormula[] = missing.map((t) => ({
-        id: t, // 临时 id 用原文，仅本次会话存在，不落盘
-        name: t.split(';')[0] || '公式',
-        text: t,
-        expression: '',
-        created_at: '',
-        updated_at: '',
-      }))
-      const merged = [...customFormulas, ...tempItems]
-      setCustomFormulas(merged)
-      // 只勾选历史任务实际用到的公式（按文本匹配），避免把本地其他公式也一并全选
-      const usedIds = new Set<string>()
-      for (const t of params.custom_formulas) {
-        const hit = merged.find((x) => x.text === t)
-        if (hit) usedIds.add(hit.id)
-      }
-      setSelectedFormulaIds(usedIds)
-      syncFormulasToForm(merged, usedIds)
-      setShowFormulaPanel(true)
-    } else {
-      // 历史任务未用公式：清空勾选，保持面板状态与提交内容一致
-      setSelectedFormulaIds(new Set())
-      syncFormulasToForm(customFormulas, new Set())
-    }
+    // 同步历史参数的自定义特征/公式勾选状态（历史没用的全部清空，避免误勾本地自定义）
+    syncCustomSelections(params)
     // 定位到"开始回测"按钮位置
     try {
       const el = document.getElementById('start-backtest-btn')
@@ -590,8 +597,14 @@ export default function App() {
         for (const [k, v] of Object.entries(snap.params)) {
           if (v !== undefined && v !== null) (merged as unknown as Record<string, unknown>)[k] = v
         }
+        // 显式覆盖"允许为 null"的字段：查看历史回测必须完全用源任务配置，
+        // 否则 form 残留（页面加载自动填充的本地公式）会让表单参数与面板勾选不一致
+        merged.custom_formulas = snap.params.custom_formulas ?? null
+        merged.selected_features = snap.params.selected_features ?? null
         setForm(merged)
         setCapitalWan((snap.params.initial_capital || 0) / 10000)
+        // 同步自定义特征/公式勾选状态（历史没用的清空，避免把本地自定义误勾上）
+        syncCustomSelections(snap.params)
       }
     } catch {
       // 无 params.json（旧任务），忽略，保持当前表单
