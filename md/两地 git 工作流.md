@@ -112,3 +112,49 @@ git push --force-with-lease origin main   # 覆盖自己最近一次提交（比
 **清理**（当前未加自动清理，需手动）：
 - `backend/workdir/mlflow.db`：可删（仅丢失 mlflow 层的 run 索引，**不影响回测功能**——回测真实产物都在 `artifacts/{task_id}/` 下的 `params.json` / `result.json` / 模型文件里）
 - 清理前先停止后端，避免 sqlite 文件占用/锁冲突
+
+---
+
+## 七、前端布局经验备忘（App.tsx）
+
+### 问题：某列加按钮后，整行被撑高，下一行输入框下移
+
+回测表单顶部参数区用 `grid grid-cols-2 md:grid-cols-4` 布局，其中第 4 列放按钮。
+当初第 4 列只有 2 个按钮（自定义筛选特征 / 使用自定义公式因子）时高度刚好；
+后来加了第 3 个按钮（单因子测试），按钮列总高度超过同行输入框列，grid 行高被撑大，
+导致下一行（预测周期 / 分层持仓周期 / 持仓周期）整体下移、和上面的输入框错位。
+
+**错误做法**：把第 3 个按钮移到下一行的第 4 列（`items-end` 对底），
+虽然输入框不再下移，但按钮和"使用自定义公式因子"隔了一行，看起来零散。
+
+### 解决办法：合并两行 grid + 按钮列 `row-span-2` 跨行
+
+把日期行和预测周期行**合并成同一个 grid**，按钮列加 `md:row-span-2` 跨两行：
+
+```jsx
+<div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+  {/* 第 1 行：开始日期 / 结束日期 / TopK / 按钮列(跨两行) */}
+  <label>开始日期...</label>
+  <label>结束日期...</label>
+  <label>TopK...</label>
+  <div className="flex flex-col gap-2 md:row-span-2">
+    <button>自定义筛选特征</button>
+    <button>使用自定义公式因子</button>
+    <button>单因子测试</button>
+  </div>
+  {/* 第 2 行：预测周期 / 分层持仓周期 / 持仓周期 */}
+  <label>预测周期...</label>
+  <label>分层持仓周期...</label>
+  <label>持仓周期...</label>
+</div>
+```
+
+要点：
+- **必须合并成同一个 grid**，`row-span-2` 才能生效；两个独立 grid 之间无法跨行。
+- 按钮列跨两行后，其高度由两行的输入框列决定，**不再撑高任何一行**，输入框位置不变。
+- 3 个按钮纵向连续排在第 4 列，"单因子测试"紧跟"使用自定义公式因子"下方。
+- 用 `md:row-span-2`（仅 md 及以上生效），小屏 `grid-cols-2` 时按钮列按普通顺序排，不受影响。
+- 相关代码位置：`frontend/src/App.tsx` 约 884-983 行的表单参数区。
+
+**通用规律**：凡是在 grid 某列里加高内容、又不想影响同行其他列高度，优先考虑
+合并相邻行 + `row-span-*` 跨行，而不是把内容硬塞进单行或挪到别的行。
