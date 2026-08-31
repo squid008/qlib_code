@@ -29,6 +29,7 @@ import ModelArtifactsPanel from './components/ModelArtifacts'
 import HistoryPanel from './components/HistoryPanel'
 import FormulaPanel from './components/FormulaPanel'
 import FeatureSelectPanel from './components/FeatureSelectPanel'
+import SingleFactorTestPanel from './components/SingleFactorTestPanel'
 import ModelParamsForm from './components/ModelParamsForm'
 import TaskStatusPanel from './components/TaskStatusPanel'
 
@@ -124,6 +125,8 @@ export default function App() {
   // 编辑状态：editingId 非空时对应公式进入编辑模式
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingText, setEditingText] = useState('')
+  // 单因子测试面板（不训练模型，勾选因子后快速诊断）
+  const [showSingleTestPanel, setShowSingleTestPanel] = useState(false)
 
   // 加载数据源能力信息
   useEffect(() => {
@@ -418,12 +421,15 @@ export default function App() {
     // 完全用历史任务的参数覆盖当前表单（用户在表单上改的参数全部丢弃），
     // 这样"复用回测"等同于"用历史参数去跑"，不会被表单残留改动影响。
     // 保留 load_model_task_id（复用模型权重，不重新训练）。
-    const merged: BacktestRequest = {
-      ...params,
-      load_model_task_id: taskId,
-      // 复用回测 ≠ 续测：不保留源任务的 resume_task_id（同上，避免误当续测）
-      resume_task_id: null,
+    // 只覆盖历史参数中"有定义"的字段：旧任务可能缺某些字段（如 label_horizon），
+    // 直接 {...params} 会把表单字段覆盖成 undefined，导致输入框 value=undefined 失控不能改。
+    const merged: BacktestRequest = { ...form }
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null) (merged as unknown as Record<string, unknown>)[k] = v
     }
+    merged.load_model_task_id = taskId
+    // 复用回测 ≠ 续测：不保留源任务的 resume_task_id（同上，避免误当续测）
+    merged.resume_task_id = null
     setForm(merged)
     setCapitalWan((params.initial_capital || 0) / 10000)
     setTask(null)
@@ -688,7 +694,7 @@ export default function App() {
     if (payloadAdj.load_model_task_id) {
       let src: BacktestRequest | null = null
       try {
-        const snap = await getBacktestSnapshot(payload.load_model_task_id)
+        const snap = await getBacktestSnapshot(payloadAdj.load_model_task_id)
         src = snap.params || null
       } catch {
         src = null
@@ -909,8 +915,8 @@ export default function App() {
               />
             </label>
 
-            {/* 第 4 列：2 个 button（视觉上紧跟特征集 select 下方） */}
-            <div className="flex flex-col gap-2">
+            {/* 第 4 列：3 个 button（row-span-2 跨两行，不撑高输入框行高） */}
+            <div className="flex flex-col gap-2 md:row-span-2">
               <button
                 type="button"
                 onClick={() => setShowFeaturePanel(!showFeaturePanel)}
@@ -931,9 +937,19 @@ export default function App() {
                   ? '收起自定义公式 ▲'
                   : `使用自定义公式因子 ▼${customFormulas.length > 0 ? `（${customFormulas.length}）` : ''}`}
               </button>
+              <button
+                type="button"
+                onClick={() => setShowSingleTestPanel(!showSingleTestPanel)}
+                className={`w-full text-xs border rounded px-2 py-1.5 ${
+                  showSingleTestPanel
+                    ? 'bg-violet-600 text-white border-violet-600'
+                    : 'text-violet-600 hover:bg-violet-50 dark:text-violet-400'
+                }`}
+              >
+                {showSingleTestPanel ? '收起单因子测试 ▲' : '单因子测试 ▼'}
+              </button>
             </div>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+
             <label className="flex flex-col">
               <span className="text-sm text-slate-500">预测周期(天)</span>
               <input
@@ -967,8 +983,6 @@ export default function App() {
                 onChange={(e) => update('n_days_hold', Number(e.target.value))}
               />
             </label>
-
-            <div /> {/* 留空 */}
           </div>
 
           {/* 自定义公式编辑面板（独立整行，位于 Row3 之后、模型超参数之前） */}
@@ -995,6 +1009,17 @@ export default function App() {
                 setFormulaError('')
               }}
               onRemove={removeCustomFormula}
+            />
+          )}
+
+          {/* 单因子测试面板（独立整行）：勾选自定义公式/Alpha158/Alpha360 因子，逐个诊断 */}
+          {showSingleTestPanel && (
+            <SingleFactorTestPanel
+              customFormulas={customFormulas}
+              defaultUniverse={form.universe}
+              defaultStartDate={form.start_date}
+              defaultEndDate={form.end_date}
+              defaultLabelHorizon={form.label_horizon}
             />
           )}
 

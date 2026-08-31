@@ -240,6 +240,12 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
                 const canReuseParams = row.item.has_params
                 // 并发回测上限：满了就不能提交新任务（包括复用回测/复用参数）
                 const capacityAtMax = capacity != null && capacity.available <= 0
+                // 快照（含 params）还没拉回来：目录有 params.json 但 snapshot 未就绪时，
+                // 点"复用参数/复用回测"拿不到参数（handleUse 直接 return 无反应），
+                // 因此置灰并提示加载中，等快照拉完自动恢复
+                const snapshotLoading = row.item.has_params && !row.snapshot
+                // 复用类按钮的统一禁用条件
+                const reuseDisabled = !canReuseParams || snapshotLoading || capacityAtMax
                 // 删除：只有"不在运行"的任务才能删除（运行中删产物目录会破坏回测）
                 const isRunning = !!row.item.is_task_running
                 const canDelete = !isRunning
@@ -332,28 +338,32 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
                         </button>
                         <button
                           onClick={() => onReuseBacktest(row.snapshot?.params!, row.item.task_id)}
-                          disabled={!canReuseParams || capacityAtMax}
+                          disabled={reuseDisabled}
                           className="px-2 py-0.5 rounded text-xs bg-green-600 text-white hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed"
                           title={
-                            !canReuseParams
-                              ? '该目录无 params.json，无法复用'
-                              : capacityAtMax
-                                ? `已达并发回测上限（${capacity!.max_concurrent} 个），请等待现有任务完成`
-                                : '直接用该次回测的参数和模型权重开始回测（复用模型，不重新训练）'
+                            snapshotLoading
+                              ? '正在加载参数...'
+                              : !canReuseParams
+                                ? '该目录无 params.json，无法复用'
+                                : capacityAtMax
+                                  ? `已达并发回测上限（${capacity!.max_concurrent} 个），请等待现有任务完成`
+                                  : '直接用该次回测的参数和模型权重开始回测（复用模型，不重新训练）'
                           }
                         >
                           复用回测
                         </button>
                         <button
                           onClick={() => handleUse(row)}
-                          disabled={!canReuseParams || capacityAtMax}
+                          disabled={reuseDisabled}
                           className="px-2 py-0.5 rounded text-xs bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
                           title={
-                            !canReuseParams
-                              ? '该目录无 params.json，无法复用'
-                              : capacityAtMax
-                                ? `已达并发回测上限（${capacity!.max_concurrent} 个），请等待现有任务完成`
-                                : '把该次回测的参数填入表单（不立即提交，需点开始回测才提交）'
+                            snapshotLoading
+                              ? '正在加载参数...'
+                              : !canReuseParams
+                                ? '该目录无 params.json，无法复用'
+                                : capacityAtMax
+                                  ? `已达并发回测上限（${capacity!.max_concurrent} 个），请等待现有任务完成`
+                                  : '把该次回测的参数填入表单（不立即提交，需点开始回测才提交）'
                           }
                         >
                           复用参数

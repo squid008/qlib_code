@@ -37,6 +37,7 @@ export interface BacktestRequest {
   step_unit?: string | null
   initial_capital: number
   load_model_task_id?: string | null
+  resume_task_id?: string | null
 }
 
 export interface NavPoint {

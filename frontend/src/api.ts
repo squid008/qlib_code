@@ -203,6 +203,78 @@ export async function getFactorOperators(): Promise<FactorOperators> {
   return data
 }
 
+// ---------- 单因子测试（不训练模型，快速诊断因子预测力） ----------
+
+export interface SingleFactorTestItem {
+  id: string
+  name: string
+  expression: string
+  source: string // custom / alpha158 / alpha360
+}
+export interface SingleFactorTestRequest {
+  universe: string
+  start_date: string
+  end_date: string
+  label_horizon: number
+  factors: SingleFactorTestItem[]
+}
+export interface FactorTestGroupStats {
+  count: number
+  mean_ret: number
+  median_ret: number
+  limit_up_excluded?: number // 触发组中信号当日涨停被剔除的样本数
+}
+export interface SingleFactorTestResult {
+  id: string
+  name: string
+  source: string
+  expression: string
+  coverage: number | null // 因子值非空比例
+  nonzero_ratio: number | null // 非零比例
+  is_binary: boolean // 是否 0/1 二值信号
+  trigger: FactorTestGroupStats | null // 触发组（>0.5）未来N日收益
+  not_trigger: FactorTestGroupStats | null // 未触发组（<=0.5）
+  diff: number | null // 触发均值 - 未触发均值
+  p_value: number | null // Mann-Whitney U p 值
+  ic: number | null
+  rank_ic: number | null
+  icir: number | null
+  rank_icir: number | null
+  n_obs: number
+  error: string | null
+}
+export interface SingleFactorTestProgress {
+  task_id: string
+  status: 'running' | 'success' | 'failed' | 'cancelled'
+  progress: number // 0-100
+  message: string
+  result?: { items: SingleFactorTestResult[]; total: number } | null
+  error?: string | null
+}
+export async function createSingleFactorTest(
+  req: SingleFactorTestRequest,
+): Promise<{ task_id: string }> {
+  // 异步提交：返回 task_id，随后轮询 getSingleFactorTestProgress
+  const { data } = await http.post<{ task_id: string }>('/factors/single-factor-test', req)
+  return data
+}
+export async function getSingleFactorTestProgress(
+  taskId: string,
+): Promise<SingleFactorTestProgress> {
+  const { data } = await http.get<SingleFactorTestProgress>(
+    `/factors/single-factor-test/progress/${taskId}`,
+  )
+  return data
+}
+export async function cancelSingleFactorTest(
+  taskId: string,
+): Promise<{ ok: boolean; message: string }> {
+  const { data } = await http.post<{ ok: boolean; message: string }>(
+    `/factors/single-factor-test/cancel/${taskId}`,
+  )
+  return data
+}
+
 // ---------- 数据 ----------
 
 export async function listDataSources(): Promise<DataSourceInfo> {
