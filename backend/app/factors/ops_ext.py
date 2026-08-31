@@ -46,6 +46,10 @@ class BARSCOUNT(ExpressionOps):
         series = self.feature.load(instrument, start_index, end_index, *args)
         return series.notna().cumsum()
 
+    def __str__(self):
+        # 同 BARSLAST：必须带子表达式，否则所有 BARSCOUNT(X) 共享进程内缓存
+        return "BARSCOUNT({})".format(self.feature)
+
     def get_longest_back_rolling(self):
         return self.feature.get_longest_back_rolling()
 
@@ -63,6 +67,13 @@ class BARSLAST(ExpressionOps):
     def __init__(self, feature):
         self.feature = feature
         super().__init__()
+
+    def __str__(self):
+        # 关键：qlib 的 Expression.load 用 str(self) 作为进程内缓存 key
+        # （qlib/data/base.py Expression.load）。ExpressionOps 基类没有 __str__，
+        # str 会退化成类名 "BARSLAST"，导致同一窗口内所有 BARSLAST(X) 共享缓存、
+        # 后算的直接返回先算的结果（不同条件的 BARSLAST 互相污染）。必须带上子表达式。
+        return "BARSLAST({})".format(self.feature)
 
     def _load_internal(self, instrument, start_index, end_index, *args):
         series = self.feature.load(instrument, start_index, end_index, *args)
@@ -97,6 +108,10 @@ class BARSSINCEN(ExpressionOps):
         self.feature = feature
         self.N = int(N)
         super().__init__()
+
+    def __str__(self):
+        # 同 BARSLAST：必须带子表达式与窗口参数，否则进程内缓存互相污染
+        return "BARSSINCEN({},{})".format(self.feature, self.N)
 
     def _load_internal(self, instrument, start_index, end_index, *args):
         series = self.feature.load(instrument, start_index, end_index, *args)
@@ -160,6 +175,12 @@ class _DynWindowOp(ExpressionOps):
         self.feature = feature
         self.N_expr = N_expr
         super().__init__()
+
+    def __str__(self):
+        # 关键：同 BARSLAST。qlib Expression.load 的进程内缓存 key 是 str(self)，
+        # ExpressionOps 基类没有 __str__，str 会退化成类名（如 "DYN_MIN"），
+        # 导致同窗口内所有 DYN_*(X,Y) 共享缓存互相污染。必须带上子表达式。
+        return "{}({},{})".format(type(self).__name__, self.feature, self.N_expr)
 
     def _load_both(self, instrument, start_index, end_index, *args):
         series = self.feature.load(instrument, start_index, end_index, *args)

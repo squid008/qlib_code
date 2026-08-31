@@ -5,6 +5,10 @@
 悬停查看公式。设计为可扩展：未来维护成千上万因子时，只需在
 app/factors/catalog.py 的 FACTOR_PROVIDERS 注册新的 provider，接口无需改动。
 """
+import threading
+import time
+import uuid
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -18,6 +22,7 @@ from ..services.custom_formulas import (
     update_custom_formula as _update_custom_formula,
     delete_custom_formula as _delete_custom_formula,
 )
+from ..factors.single_test import FactorTestCancelled, run_single_factor_test
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
 
@@ -124,3 +129,130 @@ def get_factor_catalog(dataset: str = "Alpha158"):
     if dataset.lower() not in available and dataset.lower() != "alpha360":
         raise HTTPException(status_code=404, detail=f"未知特征集: {dataset}")
     return get_catalog(dataset)
+
+
+# ---------- 单因子测试（不训练模型，快速诊断因子预测力） ----------
+
+class SingleFactorTestFactor(BaseModel):
+    id: str = ""            # 前端标识（自定义公式 id 或 因子名）
+    name: str = ""
+    expression: str = ""
+    source: str = "custom"  # custom / alpha158 / alpha360
+
+
+class SingleFactorTestRequest(BaseModel):
+    universe: str = "csi300"
+    start_date: str = ""
+    end_date: str = ""
+    label_horizon: int = 2   # 未来 N 日收益作为预测目标
+    factors: list[SingleFactorTestFactor] = []
+
+
+# ---------- 单因子测试异步任务：POST 提交返回 task_id，GET 轮询进度/结果 ----------
+# 进度存储为进程内内存 dict（本地单用户工具，无需持久化）；任务完成后保留最近 _SFT_MAX_TASKS 条。
+_SFT_MAX_TASKS = 50
+_SFT_TASKS: dict[str, dict] = {}
+_SFT_LOCK = threading.Lock()
+
+
+def _sft_store(task_id: str, state: dict) -> None:
+    with _SFT_LOCK:
+        _SFT_TASKS[task_id] = state
+        if len(_SFT_TASKS) > _SFT_MAX_TASKS:
+            # 只清理已结束任务里最旧的，保留运行中的
+            finished = [k for k, v in _SFT_TASKS.items() if v.get("status") in ("success", "failed")]
+            for k in sorted(finished, key=lambda k: _SFT_TASKS[k].get("ts", 0))[: len(_SFT_TASKS) - _SFT_MAX_TASKS]:
+                _SFT_TASKS.pop(k, None)
+
+
+def _sft_get(task_id: str):
+    with _SFT_LOCK:
+        return _SFT_TASKS.get(task_id)
+
+
+@router.post("/single-factor-test", summary="单因子测试（不训练模型，异步提交）")
+def single_factor_test(req: SingleFactorTestRequest):
+    """提交单因子测试任务，后台线程逐个因子快速诊断，返回 task_id。
+
+    完成后通过 GET /factors/single-factor-test/progress/{task_id} 轮询进度并获取结果。
+    """
+    if not req.factors:
+        raise HTTPException(status_code=400, detail="请至少勾选一个因子")
+    if not req.start_date or not req.end_date:
+        raise HTTPException(status_code=400, detail="请填写测试区间")
+
+    task_id = uuid.uuid4().hex[:12]
+    state: dict = {
+        "task_id": task_id,
+        "status": "running",
+        "progress": 0.0,
+        "message": "已提交",
+        "result": None,
+        "error": None,
+        "cancel_requested": False,
+        "ts": time.time(),
+    }
+    _sft_store(task_id, state)
+
+    def _run() -> None:
+        def _on_progress(p: float, m: str) -> None:
+            # 用户已点取消：抛异常终止任务（progress_cb 在每批特征/每个因子计算间隙被调用）
+            if state.get("cancel_requested"):
+                raise FactorTestCancelled()
+            if state.get("status") == "running":
+                state.update(progress=float(p), message=m, ts=time.time())
+
+        try:
+            items = run_single_factor_test(
+                universe=req.universe,
+                start_date=req.start_date,
+                end_date=req.end_date,
+                label_horizon=req.label_horizon,
+                factors=[f.model_dump() for f in req.factors],
+                progress_cb=_on_progress,
+            )
+            state.update(
+                status="success",
+                progress=100.0,
+                message="完成",
+                result={"items": items, "total": len(items)},
+                ts=time.time(),
+            )
+        except FactorTestCancelled:
+            state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
+        except Exception as e:
+            state.update(status="failed", progress=100.0, message=f"单因子测试失败: {e}", error=str(e), ts=time.time())
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"task_id": task_id}
+
+
+@router.get("/single-factor-test/progress/{task_id}", summary="查询单因子测试任务进度")
+def single_factor_test_progress(task_id: str):
+    """轮询单因子测试任务：status running/success/failed/cancelled，progress 0-100，success 时附带 result。"""
+    state = _sft_get(task_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return {
+        "task_id": task_id,
+        "status": state["status"],
+        "progress": state["progress"],
+        "message": state["message"],
+        "result": state.get("result"),
+        "error": state.get("error"),
+    }
+
+
+@router.post("/single-factor-test/cancel/{task_id}", summary="取消单因子测试任务")
+def single_factor_test_cancel(task_id: str):
+    """请求取消正在运行的单因子测试任务：设置取消标记，后台线程在下一个进度点终止。
+
+    返回 {ok, message}；任务已结束（success/failed/cancelled）时 ok=False 且不改变状态。
+    """
+    state = _sft_get(task_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    if state.get("status") != "running":
+        return {"ok": False, "message": f"任务已{state.get('message', '结束')}，无需取消"}
+    state["cancel_requested"] = True
+    return {"ok": True, "message": "已请求取消，正在终止..."}
