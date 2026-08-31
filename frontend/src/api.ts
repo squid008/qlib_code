@@ -224,6 +224,11 @@ export interface FactorTestGroupStats {
   median_ret: number
   limit_up_excluded?: number // 触发组中信号当日涨停被剔除的样本数
 }
+export interface QuintileGroup {
+  quantile: number // 1=最低值组 … 5=最高值组（每日横截面分位）
+  count: number
+  mean_ret: number // 该组平均未来收益（原始小数）
+}
 export interface SingleFactorTestResult {
   id: string
   name: string
@@ -232,6 +237,8 @@ export interface SingleFactorTestResult {
   coverage: number | null // 因子值非空比例
   nonzero_ratio: number | null // 非零比例
   is_binary: boolean // 是否 0/1 二值信号
+  grouping: 'binary' | 'quantile' | null // 触发分组方式
+  quintile_ret: QuintileGroup[] | null // 5组分位平均收益（连续因子），识别U型/倒U型
   trigger: FactorTestGroupStats | null // 触发组（>0.5）未来N日收益
   not_trigger: FactorTestGroupStats | null // 未触发组（<=0.5）
   diff: number | null // 触发均值 - 未触发均值

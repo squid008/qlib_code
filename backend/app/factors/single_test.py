@@ -5,10 +5,10 @@
   1. coverage        因子值非空比例
   2. nonzero_ratio   非零比例
   3. is_binary       是否为 0/1 二值信号
-  4. trigger         触发组（>0.5）未来 N 日收益统计：样本数/均值/中位数
-  5. not_trigger     未触发组（<=0.5）同口径
+  4. trigger         触发组未来 N 日收益统计：样本数/均值/中位数（0/1 信号：>0.5；连续因子：前 20% 高分位）
+  5. not_trigger     未触发组（0/1：<=0.5；连续因子：后 20% 低分位）同口径
   6. diff            触发均值 - 未触发均值
-  7. p_value         Mann-Whitney U 检验 p 值（二值信号）
+  7. p_value         Mann-Whitney U 检验 p 值（两组均有样本时计算）
   8. ic/rank_ic/icir/rank_icir   信息系数（连续因子主要指标）
 
 所有因子一次 D.features 加载（多表达式并行计算），逐个统计。
@@ -146,6 +146,8 @@ def _test_one(df: pd.DataFrame, factor: dict, col: str) -> dict:
         "coverage": None,
         "nonzero_ratio": None,
         "is_binary": False,
+        "grouping": None,
+        "quintile_ret": None,
         "trigger": None,
         "not_trigger": None,
         "diff": None,
@@ -188,9 +190,19 @@ def _test_one(df: pd.DataFrame, factor: dict, col: str) -> dict:
     except Exception:
         pass
 
-    # 触发 vs 未触发
-    trig = sub[sub[col] > 0.5]
-    not_trig = sub[sub[col] <= 0.5]
+    # 触发 vs 未触发：0/1 稀疏信号按 >0.5 分组；连续因子按分位数分组
+    # （触发 = 前 20% 高分位，未触发 = 后 20% 低分位）。否则连续因子几乎全部落入
+    # 触发组，触发/未触发统计失去意义。
+    if result["is_binary"]:
+        trig = sub[sub[col] > 0.5]
+        not_trig = sub[sub[col] <= 0.5]
+        result["grouping"] = "binary"
+    else:
+        q_hi = float(sub[col].quantile(0.8))
+        q_lo = float(sub[col].quantile(0.2))
+        trig = sub[sub[col] >= q_hi]
+        not_trig = sub[sub[col] <= q_lo]
+        result["grouping"] = "quantile"
     # 信号当日涨停的样本剔除（涨停买不到，收益不真实）
     lu_excluded = 0
     if len(trig) > 0 and "CLOSE" in df.columns and "CHANGE" in df.columns:
@@ -202,7 +214,7 @@ def _test_one(df: pd.DataFrame, factor: dict, col: str) -> dict:
     result["not_trigger"] = _stat_group(not_trig)
     if len(trig) > 0 and len(not_trig) > 0:
         result["diff"] = round(float(trig["LABEL"].mean() - not_trig["LABEL"].mean()), 6)
-        if result["is_binary"] and len(trig) >= 5 and len(not_trig) >= 5:
+        if len(trig) >= 5 and len(not_trig) >= 5:
             try:
                 from scipy.stats import mannwhitneyu
 
@@ -210,6 +222,29 @@ def _test_one(df: pd.DataFrame, factor: dict, col: str) -> dict:
                 result["p_value"] = float(p)
             except Exception:
                 result["p_value"] = None
+
+    # 5 组分位收益（连续因子）：按每日横截面均分 5 组，汇总每组平均未来收益。
+    # 用于识别 U 型/倒 U 型等非线性关系（单调关系 IC/RankIC 已足够，U 型/倒 U 型两端
+    # 收益相近、diff≈0，必须看全部分组形态）。
+    if not result["is_binary"] and len(sub) >= 100:
+        try:
+            dt_pos = sub.index.names.index("datetime")
+            tmp = sub[[col, "LABEL"]].copy()
+            tmp["_q"] = tmp.groupby(level=dt_pos)[col].transform(
+                lambda x: pd.qcut(x.rank(method="first"), 5, labels=False, duplicates="drop") + 1
+            )
+            tmp = tmp.dropna(subset=["_q"])
+            groups = []
+            for q, g in tmp.groupby("_q"):
+                groups.append({
+                    "quantile": int(q),
+                    "count": int(len(g)),
+                    "mean_ret": round(float(g["LABEL"].mean()), 6),
+                })
+            if len(groups) >= 2:
+                result["quintile_ret"] = groups
+        except Exception:
+            result["quintile_ret"] = None
     return result
 
 
