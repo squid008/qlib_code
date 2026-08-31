@@ -241,8 +241,12 @@ export default function SingleFactorTestPanel({
     }
   }
 
+  // 百分比口径：×100 显示（覆盖率 / 收益 / 差值）
   const fmt = (v: number | null | undefined, digits = 4, suffix = '') =>
     v === null || v === undefined || Number.isNaN(v) ? '-' : `${(v * 100).toFixed(digits)}${suffix}`
+  // 原始小数口径：不加%，直接显示原始值（IC / RankIC / ICIR）
+  const fmtRaw = (v: number | null | undefined, digits = 4) =>
+    v === null || v === undefined || Number.isNaN(v) ? '-' : v.toFixed(digits)
 
   return (
     <div className="mt-2 border rounded p-3 bg-slate-50 dark:bg-slate-900 text-xs">
@@ -412,15 +416,14 @@ export default function SingleFactorTestPanel({
                 const significant = r.p_value !== null && r.p_value < 0.05
                 const good =
                   r.error == null && r.diff !== null && r.diff > 0 && (!r.is_binary || significant)
-                // 方向矛盾：IC 与触发收益差方向相反且 ICIR 稳定（|ICIR|>=2）
+                // 方向矛盾：IC 与触发收益差方向相反且 ICIR 稳定（|ICIR|>=0.02，即×100后>=2）
                 // 说明"触发后收益"由少数触发日主导，逐日横截面方向相反，不能仅凭 diff 下结论
                 // （对连续因子同样成立，不限于 0/1 信号）
-                // 注意：表格中 IC/ICIR 均为 ×100 的百分数值（见 fmt），判定需先还原到显示口径
                 const conflicting =
                   r.error == null &&
                   r.ic !== null &&
                   r.icir !== null &&
-                  Math.abs(r.icir * 100) >= 2 &&
+                  Math.abs(r.icir) >= 0.02 &&
                   r.diff !== null &&
                   ((r.ic < 0 && r.diff > 0) || (r.ic > 0 && r.diff < 0))
                 return (
@@ -463,9 +466,9 @@ export default function SingleFactorTestPanel({
                         <td className="text-right px-1">
                           {r.p_value === null ? '-' : significant ? `${r.p_value.toFixed(4)}*` : r.p_value.toFixed(4)}
                         </td>
-                        <td className="text-right px-1">{fmt(r.ic, 3)}</td>
-                        <td className="text-right px-1">{fmt(r.rank_ic, 3)}</td>
-                        <td className="text-right px-1">{fmt(r.icir, 2)}</td>
+                        <td className="text-right px-1">{fmtRaw(r.ic, 4)}</td>
+                        <td className="text-right px-1">{fmtRaw(r.rank_ic, 4)}</td>
+                        <td className="text-right px-1">{fmtRaw(r.icir, 3)}</td>
                         <td className="text-right pl-2">
                           {conflicting ? (
                             <span className="text-orange-500 font-semibold" title="IC/ICIR 与触发收益差方向相反，信号可能由少数触发日主导，横截面方向相反">
@@ -487,7 +490,7 @@ export default function SingleFactorTestPanel({
           <p className="mt-1 text-slate-400">
             触发数为剔除"信号当日涨停"样本后的数量（涨停买不到，已按板块 10%/20%/30% 剔除）。
             差值 = 触发均值 − 未触发均值（正数说明信号触发后未来 {labelHorizon} 日收益更高）；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
-            IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差（|ICIR|≥2 视为稳定）。表中 IC/ICIR 均按 ×100 百分比显示，稳定性判定亦按该口径。
+            IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.02（即×100后≥2）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
             若出现"方向矛盾"：diff 为正但 IC/ICIR 稳定为负，说明信号由少数触发日主导，逐日横截面方向相反，慎用。
           </p>
         </div>
