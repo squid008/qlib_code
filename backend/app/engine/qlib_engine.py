@@ -77,12 +77,6 @@ from ..factors.ops_ext import ensure_ops_registered as _ensure_ops_registered
 
 warnings.filterwarnings("ignore")
 
-# ---- qlib 全局初始化：进程内只执行一次（多线程并发时避免互相踩踏全局 C/D 状态）----
-import threading as _threading
-
-_qlib_init_lock = _threading.Lock()
-_qlib_initialized = False
-
 
 def _ensure_qlib_init(provider_uri):
     """线程安全的 qlib.init：只在第一次调用时真正初始化，后续线程直接跳过。
@@ -90,26 +84,13 @@ def _ensure_qlib_init(provider_uri):
     背景：qlib.init() 会重置全局 C/D（config、数据模块）状态。若多个回测任务
     线程并发调用 qlib.init()，会互相覆盖导致 `KeyError('dataset_cache')`、
     `Please run qlib.init() first` 等错误。因此必须全局只 init 一次。
+
+    统一委托 app.services.qlib_runtime.ensure_qlib_init：保证 custom_ops 恒非空，
+    worker 子进程靠 C.custom_ops 导入外挂算子模块，避免 "operator is not registered"。
     """
-    global _qlib_initialized
-    if _qlib_initialized:
-        return
-    import qlib
-    from qlib.constant import REG_CN
-    with _qlib_init_lock:
-        if not _qlib_initialized:
-            # 通过官方 custom_ops 机制注册自定义算子：register_all_ops 会把它注册进
-            # Operators，且 worker 进程通过 C.register_from_C(g_config) 时也会带上，
-            # 解决多进程数据加载时 "operator is not registered"。
-            from ..factors.ops_ext import _ALL_OPS as _custom_ops
-            qlib.init(
-                provider_uri=provider_uri,
-                region=REG_CN,
-                custom_ops=_custom_ops,
-            )
-            # 双保险：qlib.init 内部 reset Operators 后再次注册
-            _ensure_ops_registered(force=True)
-            _qlib_initialized = True
+    from ..services.qlib_runtime import ensure_qlib_init
+
+    ensure_qlib_init(provider_uri)
 
 
 def _resolve_data_source(req: BacktestRequest):

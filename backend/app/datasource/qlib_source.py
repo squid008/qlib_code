@@ -35,18 +35,19 @@ class QlibDataSource(DataSource):
         self._lazy_init()
 
     def _lazy_init(self):
-        """惰性初始化 Qlib（首次使用时才加载，避免拖慢服务启动）"""
+        """惰性初始化 Qlib（首次使用时才加载，避免拖慢服务启动）。
+
+        必须走统一入口（带 custom_ops）：否则 qlib.init() 的 reset 会把
+        C.custom_ops 清空，导致 joblib worker 无法注册 DYN_* 等外挂算子，
+        单因子/回测特征计算报 "operator [DYN_COUNT] is not registered"。
+        """
         if self._qlib is None:
-            import qlib
-            from qlib.constant import REG_CN
             from qlib.data import D
 
-            region_map = {"cn": REG_CN}
-            qlib.init(
-                provider_uri=self.provider_uri,
-                region=region_map.get(self.region, REG_CN),
-            )
-            self._qlib = qlib
+            from ..services.qlib_runtime import ensure_qlib_init
+
+            ensure_qlib_init(self.provider_uri)
+            self._qlib = __import__("qlib")
             self._D = D
 
     @property
