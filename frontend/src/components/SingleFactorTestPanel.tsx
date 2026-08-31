@@ -405,6 +405,7 @@ export default function SingleFactorTestPanel({
                 <th className="text-right px-1">未触发收益</th>
                 <th className="text-right px-1">差值</th>
                 <th className="text-right px-1">p值</th>
+                <th className="text-right px-1">分位收益</th>
                 <th className="text-right px-1">IC</th>
                 <th className="text-right px-1">RankIC</th>
                 <th className="text-right px-1">ICIR</th>
@@ -426,10 +427,23 @@ export default function SingleFactorTestPanel({
                   Math.abs(r.icir) >= 0.02 &&
                   r.diff !== null &&
                   ((r.ic < 0 && r.diff > 0) || (r.ic > 0 && r.diff < 0))
+                // 反向有效：连续因子高分位组收益显著更低（diff<0），且 IC/ICIR 稳定为负（方向一致）→ 因子需反向使用（低值组买入）
+                const goodReverse =
+                  r.error == null &&
+                  !r.is_binary &&
+                  significant &&
+                  r.ic !== null &&
+                  r.ic < 0 &&
+                  r.icir !== null &&
+                  Math.abs(r.icir) >= 0.02 &&
+                  r.diff !== null &&
+                  r.diff < 0
+                const qr = r.quintile_ret ?? []
+                const maxAbs = qr.length > 0 ? Math.max(...qr.map((g) => Math.abs(g.mean_ret))) : 0
                 return (
                   <tr key={r.id} className="border-b border-slate-100 dark:border-slate-700">
                     {r.error ? (
-                      <td className="py-1 pr-2 text-red-500" colSpan={13}>
+                      <td className="py-1 pr-2 text-red-500" colSpan={14}>
                         {r.name}：{r.error}
                       </td>
                     ) : (
@@ -446,7 +460,9 @@ export default function SingleFactorTestPanel({
                           {r.is_binary ? (
                             <span className="text-emerald-600 font-semibold">0/1</span>
                           ) : (
-                            <span className="text-slate-400">连续</span>
+                            <span className="text-slate-400" title="连续因子按分位数分组：触发 = 前 20% 高分位，未触发 = 后 20% 低分位">
+                              连续·分位
+                            </span>
                           )}
                         </td>
                         <td className="text-right px-1">
@@ -466,6 +482,29 @@ export default function SingleFactorTestPanel({
                         <td className="text-right px-1">
                           {r.p_value === null ? '-' : significant ? `${r.p_value.toFixed(4)}*` : r.p_value.toFixed(4)}
                         </td>
+                        <td className="text-right px-1">
+                          {qr.length > 0 && maxAbs > 0 ? (
+                            <div
+                              className="inline-flex items-end gap-[3px] h-6 align-bottom"
+                              title="按因子值每日横截面分5组（1=最低值组…5=最高值组）的平均未来收益，中间组凸起=倒U型、两端凸起=U型"
+                            >
+                              {qr.map((g) => {
+                                const h = Math.max(3, Math.round((Math.abs(g.mean_ret) / maxAbs) * 20))
+                                const c = g.mean_ret >= 0 ? 'bg-emerald-500' : 'bg-red-400'
+                                return (
+                                  <div
+                                    key={g.quantile}
+                                    className={`w-[6px] ${c}`}
+                                    style={{ height: `${h}px` }}
+                                    title={`第${g.quantile}组(1=最低值): 收益 ${(g.mean_ret * 100).toFixed(2)}% (n=${g.count})`}
+                                  />
+                                )
+                              })}
+                            </div>
+                          ) : (
+                            '-'
+                          )}
+                        </td>
                         <td className="text-right px-1">{fmtRaw(r.ic, 4)}</td>
                         <td className="text-right px-1">{fmtRaw(r.rank_ic, 4)}</td>
                         <td className="text-right px-1">{fmtRaw(r.icir, 3)}</td>
@@ -476,6 +515,13 @@ export default function SingleFactorTestPanel({
                             </span>
                           ) : good ? (
                             <span className="text-emerald-600 font-semibold">有效✓</span>
+                          ) : goodReverse ? (
+                            <span
+                              className="text-emerald-600 font-semibold"
+                              title="连续因子：高分位组收益显著更低且 IC/ICIR 稳定为负，因子值与未来收益负相关，需反向使用（因子值低时买入）"
+                            >
+                              有效(反向)✓
+                            </span>
                           ) : (
                             <span className="text-slate-400">待观察</span>
                           )}
@@ -488,10 +534,12 @@ export default function SingleFactorTestPanel({
             </tbody>
           </table>
           <p className="mt-1 text-slate-400">
-            触发数为剔除"信号当日涨停"样本后的数量（涨停买不到，已按板块 10%/20%/30% 剔除）。
-            差值 = 触发均值 − 未触发均值（正数说明信号触发后未来 {labelHorizon} 日收益更高）；收益按信号日收盘价买入持有 {labelHorizon} 个交易日计算；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
+            触发分组：0/1 信号为"因子值&gt;0.5"；连续因子按分位数分组（触发 = 前 20% 高分位，未触发 = 后 20% 低分位）。触发数为剔除"信号当日涨停"样本后的数量（涨停买不到，已按板块 10%/20%/30% 剔除）。
+            差值 = 触发均值 − 未触发均值（正数说明触发组未来 {labelHorizon} 日收益更高）；收益按信号日收盘价买入持有 {labelHorizon} 个交易日计算；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
             IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.02（即×100后≥2）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
+            分位收益：连续因子按每日横截面分 5 组（1=最低值组…5=最高值组）的平均未来收益，柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益。
             若出现"方向矛盾"：diff 为正但 IC/ICIR 稳定为负，说明信号由少数触发日主导，逐日横截面方向相反，慎用。
+            有效(反向)：连续因子高分位组收益显著更低（diff&lt;0）、IC/ICIR 稳定为负且方向一致，说明因子与未来收益负相关，反向使用（因子值低时买入）有效，常见于市值、流动性等负向因子。
           </p>
         </div>
       )}
