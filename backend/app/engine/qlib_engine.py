@@ -722,9 +722,13 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                 all_test_pred_label.append(tpl)
             if trpl is not None and len(trpl):
                 all_train_pred_label.append(trpl)
-            if data.get("end_account") and data["end_account"] > 0:
-                global_nav = data["end_account"] / base_account
-                carry_account = data["end_account"]
+            # 复用段：用已保存的段末绝对净值更新 global_nav。
+            # 不用 end_account/base_account：report_normal 的 account 列在部分日数据异常时
+            # 与净值曲线不一致，会造成段间净值断层（如 2019-07、2023-07 的 -27%/-87% 跳变）。
+            _cached_nav = data.get("nav") or []
+            if _cached_nav and _cached_nav[-1].get("value"):
+                global_nav = _cached_nav[-1]["value"]
+                carry_account = global_nav * base_account
             if data.get("bench_end") is not None:
                 global_bench = global_bench * data["bench_end"]
             _report(20 + int(70 * (idx + 1) / total), "段%d/%d: 已完成，跳过（缓存 %s~%s）" % (
@@ -830,12 +834,11 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
         seg_results.append(seg_result)
 
         # 更新连续账户与段起始全局净值
-        if end_account is not None and end_account > 0:
-            global_nav = end_account / base_account
-            carry_account = end_account
-        else:
-            global_nav = global_nav * (1 + (seg_result.total_return or 0.0))
-            carry_account = global_nav * base_account
+        # 不用 end_account（report_normal 的 account 列在部分日数据异常时与净值曲线不一致，
+        # 直接用它会导致段间净值断层）；统一用段收益率累乘，与段内 nav 严格一致。
+        seg_growth = 1 + (seg_result.total_return or 0.0)
+        global_nav = global_nav * seg_growth
+        carry_account = global_nav * base_account
         # 更新基准累计净值
         if seg_bench_end is not None:
             global_bench = global_bench * seg_bench_end

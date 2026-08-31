@@ -1,6 +1,10 @@
 # Qlib 量化回测平台
 
-> **当前版本：v1.4.1**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+> **当前版本：v1.4.2**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+
+### v1.4.2 更新（修复滚动回测段间净值断层）
+
+- **修复滚动回测段间净值断层**：`report_normal` 的 `account` 列在部分日数据异常时与净值曲线（cumprod）不一致，段拼接用错误的 `end_account` 更新 `global_nav` 导致段边界净值跳变（如 -27%/-87% 断崖）。修复：统一用**段收益率累乘**更新 `global_nav`（与段内 nav 严格一致），不再依赖 `end_account`；复用段改用已保存的段末绝对净值
 
 ### v1.4.1 更新（修复多任务并发 mlflow database is locked）
 
