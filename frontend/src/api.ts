@@ -51,6 +51,7 @@ export interface HistoryItem {
     start_year?: string
     end_year?: string
   }
+  annual_return?: number | null // 年化收益（result.json 的 annualized_return），无结果时为 null
 }
 export async function listBacktestsHistory(): Promise<{ items: HistoryItem[] }> {
   const { data } = await http.get<{ items: HistoryItem[] }>('/backtests/history')
@@ -220,6 +221,7 @@ export interface SingleFactorTestRequest {
   exclude_limit_up_signal?: boolean // 剔除信号日(T)涨停
   exclude_limit_up_trade?: boolean // 剔除成交日(T+1)涨停
   exclude_suspended?: boolean // 剔除成交日(T+1)停牌/无行情
+  price_adjust?: string // 复权方式：none/forward/backward（缺省=不复权）
 }
 export interface FactorTestGroupStats {
   count: number
@@ -250,7 +252,11 @@ export interface SingleFactorTestResult {
   diff: number | null // 触发均值 - 未触发均值
   p_value: number | null // Mann-Whitney U p 值
   daily_diff: number | null // 按日配对检验：逐日差值均值（与 diff 同口径）
-  daily_t: number | null // 按日差值序列单样本 t 统计量
+  daily_t: number | null // 按日差值序列单样本 t 统计量（普通）
+  daily_t_hac: number | null // Newey-West HAC 稳健 t（修正自相关/异方差）
+  daily_acf1: number | null // 日差值序列 lag-1 自相关系数
+  daily_acf5: number | null // 日差值序列 lag-5 自相关系数
+  daily_var_ratio: number | null // 方差稳定性：后半段/前半段方差比
   daily_win: number | null // 日差值>0 的交易日占比（胜率，0-1）
   daily_n: number // 参与配对的交易日数
   daily_trig_mean: number | null // 信号组逐日截面收益均值（日均），用于 0/1 信号双柱展示

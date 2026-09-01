@@ -20,6 +20,7 @@ export interface BacktestRequest {
   bins: number
   // 交易成本与成交设置
   deal_price: string
+  price_adjust?: string // 复权方式：none/forward/backward（缺省=不复权）
   open_cost: number
   close_cost: number
   min_cost: number

@@ -52,6 +52,7 @@ export default function App() {
     custom_formulas: null,
     bins: 5,
     deal_price: 'close',
+    price_adjust: 'none',
     open_cost: 0.0005,
     close_cost: 0.0015,
     min_cost: 5,
@@ -505,6 +506,9 @@ export default function App() {
     // payload 与复用源不一致，触发 submitAndRun 的"自定义公式不同 → 自动改新训练"。
     merged.custom_formulas = params.custom_formulas ?? null
     merged.selected_features = params.selected_features ?? null
+    // 老任务（v1.4.9 之前）没有 price_adjust 字段，统一视为"不复权"；
+    // 复用旧模型权重时复权方式必须与源一致，否则特征不匹配。
+    merged.price_adjust = (params as BacktestRequest).price_adjust ?? 'none'
     merged.load_model_task_id = taskId
     // 复用回测 ≠ 续测：不保留源任务的 resume_task_id（同上，避免误当续测）
     merged.resume_task_id = null
@@ -800,13 +804,16 @@ export default function App() {
         // 训练/测试划分方式不同也不能复用：滚动任务的模型按段保存，single 模式加载不到；
         // 反之 single 的单一模型用于滚动段也无意义。统一改为新训练。
         const splitChanged = (payload.split_mode || 'single') !== (src.split_mode || 'single')
-        if (universeChanged || featureChanged || selectedChanged || formulasChanged || splitChanged) {
+        // 复权方式不同也会改变特征分布（复权价 ≠ 原始价），旧模型权重不匹配 → 改新训练
+        const adjustChanged = (payload.price_adjust || 'none') !== (src.price_adjust || 'none')
+        if (universeChanged || featureChanged || selectedChanged || formulasChanged || splitChanged || adjustChanged) {
           const changed: string[] = []
           if (universeChanged) changed.push('股票池')
           if (featureChanged) changed.push('特征集')
           if (selectedChanged) changed.push('自定义特征')
           if (formulasChanged) changed.push('自定义公式')
           if (splitChanged) changed.push('训练划分方式')
+          if (adjustChanged) changed.push('复权方式')
           payloadAdj = { ...payload, load_model_task_id: null }
           setError(
             `检测到 ${changed.join('、')} 与复用源不同，已自动改为【新训练】（不再复用 task ${payload.load_model_task_id} 的模型权重）。`,
@@ -1154,6 +1161,19 @@ export default function App() {
                   <option value="vwap">均价(成交量加权)</option>
                   <option value="avg_co">均价(开盘+收盘)/2</option>
                   <option value="avg_ohlc">均价(开收高低)/4</option>
+                </select>
+              </label>
+
+              <label className="block" title="前复权与后复权在比率类因子/收益率上数学等价（仅价格绝对值不同）">
+                <span className="text-sm text-slate-500">复权方式</span>
+                <select
+                  className="mt-1 w-full border rounded px-2 py-1"
+                  value={form.price_adjust || 'none'}
+                  onChange={(e) => update('price_adjust', e.target.value)}
+                >
+                  <option value="none">不复权</option>
+                  <option value="forward">前复权</option>
+                  <option value="backward">后复权</option>
                 </select>
               </label>
 

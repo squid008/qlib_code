@@ -44,6 +44,8 @@ export default function SingleFactorTestPanel({
   const [labelHorizon, setLabelHorizon] = useState<number>(
     Number.isFinite(defaultLabelHorizon) ? defaultLabelHorizon : 2,
   )
+  // 复权方式：none/forward/backward（与回测一致；前/后复权在比率类因子与收益率上数学等价）
+  const [priceAdjust, setPriceAdjust] = useState('none')
   // 触发组剔除开关：信号日(T)涨停 / 成交日(T+1)涨停 / 成交日停牌（默认全开，保持原行为 + 新增成交日口径）
   const [excludeLimitUpSignal, setExcludeLimitUpSignal] = useState(true)
   const [excludeLimitUpTrade, setExcludeLimitUpTrade] = useState(true)
@@ -261,6 +263,7 @@ export default function SingleFactorTestPanel({
         exclude_limit_up_signal: excludeLimitUpSignal,
         exclude_limit_up_trade: excludeLimitUpTrade,
         exclude_suspended: excludeSuspended,
+        price_adjust: priceAdjust,
       })
       const task_id = resp?.task_id
       if (!task_id) {
@@ -350,6 +353,18 @@ export default function SingleFactorTestPanel({
             value={Number.isFinite(labelHorizon) ? labelHorizon : 2}
             onChange={(e) => setLabelHorizon(Number(e.target.value))}
           />
+        </label>
+        <label className="flex flex-col" title="前复权与后复权在比率类因子/收益率上数学等价（仅价格绝对值不同）">
+          <span className="text-slate-500 mb-1">复权方式</span>
+          <select
+            className="border rounded px-2 py-1"
+            value={priceAdjust}
+            onChange={(e) => setPriceAdjust(e.target.value)}
+          >
+            <option value="none">不复权</option>
+            <option value="forward">前复权</option>
+            <option value="backward">后复权</option>
+          </select>
         </label>
         <div className="flex items-end gap-2">
           {running ? (
@@ -544,11 +559,13 @@ export default function SingleFactorTestPanel({
                   r.diff < 0
                 // 按日稳定性：|t|>=2 且胜率方向与 diff 一致。diff 是观测加权平均，若触发样本集中
                 // 在少数暴涨/暴跌日，观测平均会被拉高而逐日并无稳定超额（如暴跌抄底类信号），
-                // 此时 t≈0、胜率≈50%，不得判定为有效。
+                // 此时 t≈0、胜率≈50%，不得判定为有效。t 优先用 HAC 稳健 t（修正自相关/异方差），
+                // 旧结果无 HAC 字段则回退普通 t。
+                const dT = r.daily_t_hac ?? r.daily_t
                 const stable =
-                  r.daily_t === null ||
-                  r.daily_t === undefined ||
-                  (Math.abs(r.daily_t) >= 2 &&
+                  dT === null ||
+                  dT === undefined ||
+                  (Math.abs(dT) >= 2 &&
                     ((r.diff ?? 0) >= 0 ? (r.daily_win ?? 0) >= 0.5 : (r.daily_win ?? 0) <= 0.5))
                 const good = goodBase && stable
                 const goodReverse = goodReverseBase && stable
@@ -612,15 +629,29 @@ export default function SingleFactorTestPanel({
                         <td
                           className={`text-right px-1 font-semibold ${(r.diff ?? 0) >= 0 ? 'text-red-500' : 'text-emerald-600'}`}
                           title={
-                            r.daily_t != null
-                              ? `按日配对检验：${r.daily_n} 个交易日，日差值均值 ${fmt(r.daily_diff, 3)}%，t=${fmtRaw(r.daily_t, 1)}，胜率 ${fmt(r.daily_win, 1)}%`
+                            dT != null
+                              ? (() => {
+                                  const band = r.daily_n > 0 ? 1.96 / Math.sqrt(r.daily_n) : 0
+                                  const s1 = r.daily_acf1 != null ? Math.abs(r.daily_acf1) > band : null
+                                  const s5 = r.daily_acf5 != null ? Math.abs(r.daily_acf5) > band : null
+                                  return [
+                                    `按日配对检验（${r.daily_n} 个交易日）：`,
+                                    `日差值均值 ${fmt(r.daily_diff, 3)}%`,
+                                    `HAC t=${fmtRaw(dT, 2)}（普通 t=${r.daily_t != null ? fmtRaw(r.daily_t, 2) : '-'}）`,
+                                    `胜率 ${fmt(r.daily_win, 1)}%`,
+                                    `lag-1 自相关=${r.daily_acf1 ?? '-'}${s1 == null ? '' : s1 ? '（显著）' : '（不显著）'}`,
+                                    `lag-5 自相关=${r.daily_acf5 ?? '-'}${s5 == null ? '' : s5 ? '（显著）' : '（不显著）'}`,
+                                    `方差稳定性 后半/前半=${r.daily_var_ratio != null ? `${r.daily_var_ratio}x` : '-'}`,
+                                    `（HAC 修正自相关与异方差；lag 自相关置信带 ±${band.toFixed(3)}）`,
+                                  ].join('\n')
+                                })()
                               : undefined
                           }
                         >
                           <div>{fmt(r.diff, 3)}</div>
-                          {r.daily_t != null && (
+                          {dT != null && (
                             <div className="text-slate-400 font-mono text-[9px] font-normal whitespace-nowrap">
-                              日{fmt(r.daily_diff, 3)} · t={fmtRaw(r.daily_t, 1)} · 胜{fmt(r.daily_win, 1)}%
+                              日{fmt(r.daily_diff, 3)} · t={fmtRaw(dT, 1)} · 胜{fmt(r.daily_win, 1)}%
                             </div>
                           )}
                         </td>

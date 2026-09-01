@@ -67,6 +67,7 @@ from .artifacts import (
     _sanitize_json,
     _save_result_json,
     _save_backtest_params,
+    _save_train_signature,
 )
 from .charts import (
     _save_curve_snapshot,
@@ -189,6 +190,8 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
         set_artifact_dir(art_dir)
         # 保存完整回测参数快照（params.json + meta.json），供复现模式对照
         _save_backtest_params(art_dir, req)
+        # 保存训练签名快照（train_signature.json）：代码/数据/依赖/特征指纹，供历史模型追溯
+        _save_train_signature(art_dir, req)
     else:
         set_artifact_dir(None)
 
@@ -286,6 +289,7 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg)
         "fit_start_time": train_start,
         "fit_end_time": train_end,
         "instruments": instruments,
+        "price_adjust": getattr(req, "price_adjust", "none") or "none",
     }
     # 自定义公式因子（M2）：有公式时优先用 FormulaHandler，仅用公式生成的因子作为特征
     custom_formulas = getattr(req, "custom_formulas", None) or []
@@ -379,6 +383,8 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
         "volume_threshold": volume_threshold,
         "trade_unit": req.trade_unit,
         "subscribe_fields": subscribe_fields,
+        # 复权方式：none/forward/backward（BoardAwareExchange 在 quote 层调整价格）
+        "price_adjust": getattr(req, "price_adjust", "none") or "none",
     }
     if avg_mode:
         exchange_kwargs["avg_mode"] = avg_mode

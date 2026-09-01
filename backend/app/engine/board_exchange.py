@@ -21,24 +21,61 @@ import pandas as pd
 from qlib.backtest.exchange import Exchange
 
 from .limits import mark_limit_down, mark_limit_up
+from .adjust import normalize_mode
 
 
 class BoardAwareExchange(Exchange):
-    """按板块区分涨跌停的 Exchange（主板 10% / 创业板、科创板 20% / 北交所 30%）。"""
+    """按板块区分涨跌停的 Exchange（主板 10% / 创业板、科创板 20% / 北交所 30%）。
 
-    def __init__(self, *args: Any, avg_mode: Union[str, None] = None, **kwargs: Any) -> None:
-        # avg_mode 为本项目扩展参数（avg_co / avg_ohlc），父类不识别，需先取出
+    扩展参数：
+    - avg_mode：复合均价成交价基准（avg_co / avg_ohlc），本项目自定义，父类不识别。
+    - price_adjust：复权方式 none/forward/backward。在 quote 层对价格列做复权
+      （不修改 qlib 内核）。涨跌停判断用 $change（涨跌幅，复权无关）与复权后的
+      $close 反推昨收，同比例缩放后判定等价，不受复权影响。
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        avg_mode: Union[str, None] = None,
+        price_adjust: str = "none",
+        **kwargs: Any,
+    ) -> None:
+        # 本项目扩展参数，父类不识别，需先取出
         self._avg_mode = avg_mode
+        self._price_adjust = normalize_mode(price_adjust)
         super().__init__(*args, **kwargs)
 
+    def _adjust_quote_prices(self) -> None:
+        """对 quote 价格列做复权：后复权 = price * factor；前复权再除以区间最新因子。
+
+        只调整 $open/$high/$low/$close/$vwap 五个价格列；$volume/$amount/$change 不变。
+        factor 缺失（NaN）时按 1.0 处理（该股无复权数据，等价不复权）。
+        """
+        df = self.quote_df
+        if "$factor" not in df.columns:
+            return
+        factor = df["$factor"].fillna(1.0)
+        price_cols = [f for f in ("$open", "$high", "$low", "$close", "$vwap") if f in df.columns]
+        for f in price_cols:
+            df[f] = df[f] * factor
+        if self._price_adjust == "forward":
+            # 前复权：以每只股票最新有行情日的因子为基准归一化（价格观感接近实盘价）
+            last_factor = df["$factor"].groupby(level=0).transform(lambda s: s.ffill().iloc[-1])
+            last_factor = last_factor.fillna(1.0)
+            for f in price_cols:
+                df[f] = df[f] / last_factor
+
     def get_quote_from_qlib(self) -> None:
-        """加载行情后注入自定义均价列。
+        """加载行情后：按需复权价格列，再注入自定义均价列。
 
         父类 __init__ 在 get_quote_from_qlib() 返回后才构造 self.quote（NumpyQuote），
         因此这里注入的列能被 quote 正确读取。qlib 的 deal_price 只支持 quote 中已有的
         字段名（如 $close / $vwap），复合均价（如 (open+close)/2）需先算成列。
         """
         super().get_quote_from_qlib()
+        if self._price_adjust != "none":
+            self._adjust_quote_prices()
         mode = self._avg_mode
         if mode == "avg_co":
             self.quote_df["$avg_co"] = (self.quote_df["$open"] + self.quote_df["$close"]) / 2.0

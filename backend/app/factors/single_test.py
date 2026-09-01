@@ -21,6 +21,40 @@ import numpy as np
 import pandas as pd
 
 from ..engine.limits import mark_limit_up
+from ..engine.adjust import adjust_expr, normalize_mode
+
+
+def _acf(x: np.ndarray, k: int) -> float:
+    """lag-k 自相关系数（样本）。"""
+    n = len(x)
+    if n <= k:
+        return 0.0
+    xc = x - x.mean()
+    denom = float(np.sum(xc ** 2))
+    if denom <= 0:
+        return 0.0
+    return float(np.sum(xc[: n - k] * xc[k:]) / denom)
+
+
+def _hac_t(x: np.ndarray, maxlags: int = None) -> Optional[float]:
+    """Newey-West HAC 稳健 t 统计量（修正自相关 + 异方差）。
+
+    maxlags 默认按 Newey-West 建议：int(4 * (n/100)^(2/9))。
+    方差 = γ0 + 2·Σ(1 - j/(L+1))·γj；t = mean / sqrt(修正方差/n)。
+    序列方差被极端自相关压成非正时钳到极小值。
+    """
+    n = len(x)
+    if n < 3:
+        return None
+    if maxlags is None:
+        maxlags = int(4 * (n / 100.0) ** (2 / 9.0))
+        maxlags = max(1, min(maxlags, n - 2))
+    m = float(x.mean())
+    xc = x - m
+    gam = np.array([np.sum(xc[: n - k] * xc[k:]) / n for k in range(maxlags + 1)])
+    var = gam[0] + 2.0 * np.sum((1 - np.arange(1, maxlags + 1) / (maxlags + 1)) * gam[1:])
+    se = np.sqrt(max(var, 1e-18) / n)
+    return float(m / se)
 
 
 class FactorTestCancelled(Exception):
@@ -265,11 +299,29 @@ def _test_one(
             if len(daily) >= 2:
                 from scipy.stats import ttest_1samp
 
-                t_stat, _ = ttest_1samp(daily, 0)
-                result["daily_diff"] = round(float(daily.mean()), 6)
+                x = daily.to_numpy(dtype=float)
+                t_stat, _ = ttest_1samp(x, 0)
+                result["daily_diff"] = round(float(x.mean()), 6)
                 result["daily_t"] = round(float(t_stat), 4)
-                result["daily_win"] = round(float((daily > 0).mean()), 4)
-                result["daily_n"] = int(len(daily))
+                result["daily_win"] = round(float((x > 0).mean()), 4)
+                result["daily_n"] = int(len(x))
+                # Newey-West HAC 稳健 t（主显示用，修正自相关/异方差）
+                try:
+                    th = _hac_t(x)
+                    if th is not None:
+                        result["daily_t_hac"] = round(th, 4)
+                except Exception:
+                    pass
+                # 自相关（lag-1/lag-5）与方差稳定性（后半/前半方差比）
+                try:
+                    result["daily_acf1"] = round(_acf(x, 1), 4)
+                    result["daily_acf5"] = round(_acf(x, 5), 4)
+                    half = len(x) // 2
+                    v0 = float(x[:half].var())
+                    v1 = float(x[half:].var())
+                    result["daily_var_ratio"] = round((v1 / v0) if v0 > 1e-12 else float("nan"), 2)
+                except Exception:
+                    pass
         except FactorTestCancelled:
             raise
         except Exception:
@@ -315,6 +367,7 @@ def run_single_factor_test(
     exclude_limit_up_signal: bool = True,  # 剔除信号日（T）涨停样本
     exclude_limit_up_trade: bool = True,   # 剔除成交日（T+1）涨停样本
     exclude_suspended: bool = True,        # 剔除成交日（T+1）停牌/无行情样本
+    price_adjust: str = "none",            # 复权方式：none/forward/backward（与回测对齐）
 ) -> List[dict]:
     """执行单因子测试，返回每个因子的测试结果列表。
 
@@ -339,7 +392,9 @@ def run_single_factor_test(
     # label：信号日 t 的分数在 t+1（成交日 T）收盘买入，持有 n 个交易日到 t+n+1（T+n）收盘卖出。
     # （与回测 shift=1 一致：回测用 T-1 信号、T 收盘成交；分子/分母各后移一天，label 不混入
     #  信号日当日收益，单因子测试与回测口径完全对齐，无前视。）
-    label_expr = f"Ref($close, -{n + 1})/Ref($close, -1) - 1"
+    # 复权：price_adjust != none 时价格字段按复权价计算（比率类收益前/后复权等价）。
+    pa = normalize_mode(price_adjust)
+    label_expr = adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1", pa)
 
     # 因子列表中的表达式按序编号；重复表达式只加载一次（去重），统计时映射回原列
     ordered_exprs: List[str] = []
@@ -379,7 +434,10 @@ def run_single_factor_test(
     # 分小批加载（每批 2 个表达式），批间回调进度并检查"取消"。
     # 注意：D.features 单批内部不可中断，批越小取消响应越快（此前 5 个一批时，
     # 大股票池全区间的一批可能算很久，导致"取消半天没反应"）。
-    fields = ordered_exprs + [label_expr, "$close", "$change", "Ref($close, -1)", "Ref($change, -1)"]
+    # 复权：因子表达式与价格字段（$close 及其未来一日）按复权价加载；$change 为涨跌幅不受复权影响
+    adj_exprs = [adjust_expr(e, pa) for e in ordered_exprs]
+    fields = adj_exprs + [label_expr, adjust_expr("$close", pa), "$change",
+                          adjust_expr("Ref($close, -1)", pa), "Ref($change, -1)"]
     col_names = col_names + ["LABEL", "CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]
     batch_size = 2
     frames = []

@@ -59,6 +59,13 @@ class BacktestRequest(BaseModel):
             "avg_co((开盘+收盘)/2) / avg_ohlc((开盘+收盘+最高+最低)/4)"
         ),
     )
+    price_adjust: str = Field(
+        "none",
+        description=(
+            "复权方式：none=不复权(原始价) / forward=前复权 / backward=后复权。"
+            "注意：对比率类特征与收益率，前复权与后复权数学等价"
+        ),
+    )
     open_cost: float = Field(0.0005, description="买入手续费（如 0.0005 = 0.05%）")
     close_cost: float = Field(0.0015, description="卖出手续费（如 0.0015 = 0.15%）")
     min_cost: float = Field(5.0, description="单笔最低手续费（元）")

@@ -472,8 +472,96 @@ def _save_backtest_params(dir_path: str, req: BacktestRequest):
             "每手股数": req.trade_unit,
             "训练窗口": f"{req.train_win} {req.train_unit}",
             "测试窗口": f"{req.test_win} {req.test_unit}",
+            "复权方式": {"none": "不复权", "forward": "前复权", "backward": "后复权"}.get(
+                getattr(req, "price_adjust", "none") or "none", "不复权"
+            ),
         }
         with open(os.path.join(dir_path, "meta.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2, default=str)
     except Exception as e:
         logger.warning("保存回测参数快照(params/meta)失败: %s", e)
+
+
+def _save_train_signature(dir_path: str, req) -> None:
+    """保存"训练签名快照"（train_signature.json），为历史模型提供可追溯性。
+
+    记录决定训练结果的全部关键信息（代码版本 / 数据版本 / 依赖版本 / 参数 / 特征指纹），
+    用于将来精确复现：训练数据或环境一旦漂移，即可据此定位差异（见开发记录 #12 的教训）。
+    不参与回测逻辑，只做旁路记录；失败不影响任务。
+    """
+    import hashlib
+    import json
+    import subprocess
+    import time
+
+    def _git_head() -> str:
+        try:
+            repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+            out = subprocess.run(
+                ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5, cwd=repo
+            )
+            if out.returncode == 0:
+                return out.stdout.strip()
+        except Exception:
+            pass
+        return "unknown"
+
+    def _data_version() -> str:
+        try:
+            from ..config import QLIB_PROVIDER_URI
+            feat_dir = os.path.join(QLIB_PROVIDER_URI or "", "features")
+            mtimes = []
+            if os.path.isdir(feat_dir):
+                for name in os.listdir(feat_dir)[:500]:
+                    p = os.path.join(feat_dir, name)
+                    if os.path.isdir(p):
+                        mtimes.append(os.path.getmtime(p))
+            if mtimes:
+                return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(max(mtimes)))
+        except Exception:
+            pass
+        return "unknown"
+
+    def _dep_versions() -> dict:
+        deps = {}
+        for mod in ("xgboost", "pandas", "numpy", "scipy", "lightgbm"):
+            try:
+                m = __import__(mod)
+                deps[mod] = getattr(m, "__version__", "unknown")
+            except Exception:
+                pass
+        try:
+            import qlib
+            deps["qlib"] = getattr(qlib, "__version__", getattr(qlib, "__file__", "unknown"))
+        except Exception:
+            pass
+        return deps
+
+    def _feature_fingerprint() -> str:
+        parts = [
+            "feature=" + str(getattr(req, "feature", "") or "Alpha158"),
+            "selected=" + ",".join(sorted(getattr(req, "selected_features", None) or [])),
+            "formulas=" + "|".join(getattr(req, "custom_formulas", None) or []),
+            "label_horizon=" + str(getattr(req, "label_horizon", "") or ""),
+            "model=" + str(getattr(req, "model", "") or ""),
+            "price_adjust=" + str(getattr(req, "price_adjust", "none") or "none"),
+        ]
+        raw = "||".join(parts)
+        return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
+
+    try:
+        sig = {
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "git_commit": _git_head(),
+            "data_version": _data_version(),
+            "deps": _dep_versions(),
+            "price_adjust": getattr(req, "price_adjust", "none") or "none",
+            "feature_fingerprint": _feature_fingerprint(),
+            "params_md5": hashlib.md5(
+                json.dumps(req.model_dump(), sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()[:16],
+        }
+        with open(os.path.join(dir_path, "train_signature.json"), "w", encoding="utf-8") as f:
+            json.dump(sig, f, ensure_ascii=False, indent=2, default=str)
+    except Exception as e:
+        logger.warning("保存训练签名快照失败: %s", e)
