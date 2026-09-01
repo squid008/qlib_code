@@ -53,6 +53,7 @@ from .metrics import (
     _find_report_fallback,
     _get_segment_end_account,
     _extract_trades,
+    _extract_end_position,
 )
 from .artifacts import (
     _extract_model_artifacts,
@@ -345,8 +346,15 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg)
 
 
 def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, end_time: str,
-                        account: float = 100000000, instruments: Optional[list] = None) -> dict:
-    """构造 PortAnaRecord 回测配置（含交易成本、成交量限制、涨跌停等）。"""
+                        account=100000000, instruments: Optional[list] = None,
+                        rebalance_base: Optional[int] = None) -> dict:
+    """构造 PortAnaRecord 回测配置（含交易成本、成交量限制、涨跌停等）。
+
+    account: 初始账户。qlib 原生支持 float（纯现金）或 dict
+    （{"cash": 现金, 股票代码: {"amount": 股数, "price": 价格}}，用于段间持仓跨段传递）。
+    rebalance_base: 回测起点在 qlib 全局交易日历中的索引，用于策略按"全局交易日序号"确定调仓日
+    （跨滚动段连续，与段长无关）。None 时策略回退旧逻辑（段内相对 step）。
+    """
     # 成交量限制：None=不限量理想成交；传入比例则限制单笔成交不超过"当日成交量 * 比例"
     volume_threshold = None
     if req.volume_threshold is not None:
@@ -407,6 +415,8 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
                 "topk": req.topk,
                 "n_days_hold": req.n_days_hold,
                 "only_tradable": False,
+                # 调仓日按全局交易日序号判断（跨滚动段连续），None 时回退段内相对 step
+                "rebalance_base": rebalance_base,
             },
         },
         "backtest": {
@@ -497,13 +507,21 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
 
         _report(75, "执行回测(PortAnaRecord)...")
         _check_cancel()  # 回测前检查
+        # 一次性模式：调仓日也用"全局交易日序号"判断（回测起点即为全局基准，
+        # global_step - rebalance_base == trade_step，与旧逻辑完全一致），保持统一。
+        from qlib.data.data import Cal
+        try:
+            _, _, single_base, _ = Cal.locate_index(req.start_date, req.start_date, freq="day", future=True)
+        except Exception:
+            single_base = None
         port_analysis_config = _build_port_config(req, benchmark, req.start_date, req.end_date,
-                                                  account=req.initial_capital, instruments=instruments)
+                                                  account=req.initial_capital, instruments=instruments,
+                                                  rebalance_base=single_base)
         par = PortAnaRecord(recorder, port_analysis_config, "day")
         par.generate()
 
         _report(90, "提取回测结果...")
-        result = _extract_result(par, recorder)
+        result = _extract_result(par, recorder, initial_account=req.initial_capital)
         result.trades = _extract_trades(par, recorder)
 
     # 写入分层与 IC 分析结果（single：段1 既是自身也是汇总）
@@ -531,13 +549,36 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
 # ---------------------------------------------------------------------------
 
 
+def _account_total_value(account) -> Optional[float]:
+    """计算账户总值：float=纯现金；dict=现金 + Σ(股票股数×价格)。"""
+    if isinstance(account, (int, float)):
+        return float(account)
+    if isinstance(account, dict):
+        cash = float(account.get("cash") or 0.0)
+        mv = 0.0
+        for k, v in account.items():
+            if k == "cash" or not isinstance(v, dict):
+                continue
+            amt = v.get("amount")
+            price = v.get("price")
+            if amt is not None and price is not None:
+                mv += float(amt) * float(price)
+        return cash + mv
+    return None
+
+
 def _seg_result_path(art_dir, seg_no):
     return os.path.join(art_dir, "segment_%s" % seg_no, "seg_result.json")
 
 
 def _save_segment_result(art_dir, seg_no, nav_points, trades, total_return, end_account,
-                         bench_end, analysis, test_start, test_end):
-    """保存某段完整结果（断点续跑 + 中途 partial 用）。失败不阻塞回测。"""
+                         bench_end, analysis, test_start, test_end,
+                         end_position=None):
+    """保存某段完整结果（断点续跑 + 中途 partial 用）。失败不阻塞回测。
+
+    end_position: 该段末持仓（qlib account dict，含现金+股票），供续跑/下一段做初始账户，
+    实现滚动回测"持仓跨段传递"（修复只买不卖/免费清仓 BUG）。
+    """
     import json as _json
     import pickle
     if not art_dir:
@@ -553,6 +594,7 @@ def _save_segment_result(art_dir, seg_no, nav_points, trades, total_return, end_
             "total_return": total_return,
             "end_account": end_account,  # 该段末账户总值（供恢复 global_nav）
             "bench_end": bench_end,      # 该段末基准相对值（供恢复 global_bench）
+            "end_position": end_position,  # 该段末持仓（跨段传递用）
             "layers": analysis.get("layers") if analysis else None,
             "ic_train": analysis.get("ic_train") if analysis else None,
             "ic_test": analysis.get("ic_test") if analysis else None,
@@ -705,9 +747,19 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
     all_train_pred_label = []  # 各段 train 预测+label（用于训练集 IC 汇总）
     exp_name = "backtest_web_rolling"
     base_account = req.initial_capital if req.initial_capital else 100000000.0
-    carry_account = base_account   # 当前账户总值（连续传递）
+    carry_account = base_account   # 当前账户总值（连续传递，float=纯现金）
+    carry_position = None          # 上一段末持仓（qlib account dict，含现金+股票），供段间跨段传递
     global_nav = 1.0      # 段起始的全局净值
     global_bench = 1.0    # 段起始的基准累计净值
+
+    # 调仓日基准：回测起点在 qlib 全局交易日历中的索引。
+    # 滚动各段用"全局交易日序号"判断调仓日 → 调仓节奏跨段连续（与段长无关），
+    # 避免"段长 <= n_days_hold 时每段只买不卖、段末免费清仓"的收益虚高 BUG。
+    from qlib.data.data import Cal
+    try:
+        _, _, rebalance_base, _ = Cal.locate_index(req.start_date, req.start_date, freq="day", future=True)
+    except Exception:
+        rebalance_base = None
 
     for idx, seg in enumerate(segments):
         seg_no = seg["seq"]
@@ -750,6 +802,9 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             if _cached_nav and _cached_nav[-1].get("value"):
                 global_nav = _cached_nav[-1]["value"]
                 carry_account = global_nav * base_account
+            # 恢复段末持仓（跨段传递）：续跑时下一段以此持仓作为初始账户
+            if data.get("end_position"):
+                carry_position = data["end_position"]
             if data.get("bench_end") is not None:
                 global_bench = global_bench * data["bench_end"]
             _report(20 + int(70 * (idx + 1) / total), "段%d/%d: 已完成，跳过（缓存 %s~%s）" % (
@@ -818,14 +873,27 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                     all_train_pred_label.append(trpl)
 
             _check_cancel()  # 回测前检查
+            # 段间持仓跨段传递：本段初始账户 = 上一段末持仓（若存在），否则纯现金。
+            # qlib 原生支持 account 传 dict（{"cash": 现金, 股票: {"amount","price"}}），不动内核。
+            # 这样段首调仓时 current_stock_list 非空 → 能卖出不在新 topk 的旧持仓，
+            # 修复"段长<=n_days_hold 时只买不卖、段末免费清仓"的收益虚高 BUG。
+            seg_account = carry_position if carry_position else carry_account
+            seg_initial_value = _account_total_value(seg_account)
             port_analysis_config = _build_port_config(req, benchmark, test_start, test_end,
-                                                       account=carry_account, instruments=instruments)
+                                                       account=seg_account, instruments=instruments,
+                                                       rebalance_base=rebalance_base)
             par = PortAnaRecord(recorder, port_analysis_config, "day")
             par.generate()
 
-            seg_result = _extract_result(par, recorder)
+            # 传入段初账户总值：用 account 列计算段内收益，绕开 qlib return 列
+            # 在带初始持仓时把"持仓市值误算为收益"的问题（否则段收益虚高爆炸）。
+            seg_result = _extract_result(par, recorder, initial_account=seg_initial_value)
             seg_trades = _extract_trades(par, recorder)
             end_account = _get_segment_end_account(par, recorder)
+            # 提取段末持仓，作为下一段的初始账户（跨段传递）
+            end_position = _extract_end_position(recorder)
+            if end_position:
+                carry_position = end_position
 
             # 为该段单独生成曲线+参数快照图（参数横排在下方）
             art_dir = _get_artifact_dir()
@@ -866,7 +934,8 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
 
         # 保存该段结果（供断点续跑）并刷新 partial_result（供前端中途查看）
         _save_segment_result(art_dir, seg_no, seg_nav_abs, seg_trades, seg_result.total_return,
-                             end_account, seg_bench_end, analysis, test_start, test_end)
+                             end_account, seg_bench_end, analysis, test_start, test_end,
+                             end_position=end_position if end_position else None)
         merged_layers, merged_test, merged_train = _build_merged_analysis(
             all_test_pred_label, all_train_pred_label, layer_segments, benchmark,
             getattr(req, "layer_rebalance", None) or 1)

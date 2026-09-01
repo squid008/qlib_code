@@ -86,8 +86,14 @@ def _find_report_fallback():
         return None
 
 
-def _extract_result(par, recorder) -> BacktestResult:
-    """从 PortAnaRecord 的回测产物中提取风险指标与净值。"""
+def _extract_result(par, recorder, initial_account: Optional[float] = None) -> BacktestResult:
+    """从 PortAnaRecord 的回测产物中提取风险指标与净值。
+
+    initial_account: 段初账户总值（含初始持仓市值）。传入时用 report 的 account 列计算收益
+    （`account / initial_account - 1`），**绕开 qlib 的 return 列**——qlib 的 return 列在
+    账户带初始持仓时会把"初始持仓市值"误算成首日收益（如 372%），导致段收益虚高爆炸。
+    不传时回退 qlib return 列（仅兼容无初始持仓的旧场景）。
+    """
     result = BacktestResult()
     report = None
 
@@ -119,18 +125,34 @@ def _extract_result(par, recorder) -> BacktestResult:
         import pandas as pd
 
         try:
-            ret = report["return"] if "return" in report.columns else None
             bench = report["bench"] if "bench" in report.columns else None
 
-            if ret is not None:
-                ret = ret.astype(float)
-                cum = (1 + ret).cumprod()
-                result.total_return = float(cum.iloc[-1] - 1) if len(cum) else None
+            # 净值曲线来源：
+            #   - initial_account 提供且 report 有 account 列：用 account/initial_account（相对段初账户），
+            #     绕开 qlib return 列把"初始持仓市值误算为收益"的问题（带持仓跨段传递时首日 return 虚高）。
+            #   - 否则回退 qlib 的 return 列累乘。
+            use_account = initial_account is not None and "account" in report.columns and initial_account > 0
+            if use_account:
+                acct = report["account"].astype(float)
+                acct = acct.fillna(acct.ffill().bfill())
+                nav_values = acct / float(initial_account)
+                # 日收益：相邻日净值之比 - 1；首日无前值，直接 = 首日净值 - 1（相对段初账户）
+                ret = nav_values.pct_change(fill_method=None)
+                ret = ret.copy()
+                if len(ret) > 0:
+                    ret.iloc[0] = float(nav_values.iloc[0]) - 1.0
+            else:
+                ret = report["return"] if "return" in report.columns else None
+                ret = ret.astype(float) if ret is not None else None
+                nav_values = (1 + ret).cumprod() if ret is not None else None
+
+            if ret is not None and len(ret) > 0:
+                result.total_return = float(nav_values.iloc[-1] - 1)
                 years = len(ret) / 252.0
                 if years > 0 and result.total_return is not None:
                     result.annualized_return = float((1 + result.total_return) ** (1 / years) - 1)
-                running_max = cum.cummax()
-                dd = (cum / running_max - 1).min()
+                running_max = nav_values.cummax()
+                dd = (nav_values / running_max - 1).min()
                 result.max_drawdown = float(dd) if not pd.isna(dd) else None
                 std = ret.std()
                 if std and std > 0:
@@ -157,7 +179,6 @@ def _extract_result(par, recorder) -> BacktestResult:
                 else:
                     dates = [pd.Timestamp(d).strftime("%Y-%m-%d") if not isinstance(d, str) else str(d)[:10]
                              for d in ret.index]
-                nav_values = (1 + ret).cumprod()
                 bench_nav = (1 + bench).cumprod() if bench is not None else None
                 for i, d in enumerate(dates):
                     pt = {"date": d, "value": round(float(nav_values.iloc[i]), 6)}
@@ -170,6 +191,47 @@ def _extract_result(par, recorder) -> BacktestResult:
     else:
         result.message = "未找到回测报告(report_normal)"
     return result
+
+
+def _extract_end_position(recorder) -> Optional[dict]:
+    """从 recorder 提取该段回测的段末持仓，转为 qlib account dict 格式。
+
+    返回 {"cash": 现金, 股票代码: {"amount": 股数, "price": 价格}, ...}；
+    用于滚动回测"段间持仓跨段传递"：下一段以该持仓作为初始账户，
+    段首调仓时能卖出不在新 topk 的旧持仓（修复"只买不卖/免费清仓"BUG）。
+    提取失败（无 positions 记录）返回 None，调用方回退纯现金账户。
+    """
+    try:
+        import pandas as pd
+        positions = None
+        for key in ["portfolio_analysis/positions_normal_1day.pkl", "positions_normal_1day.pkl"]:
+            try:
+                positions = recorder.load_object(key)
+                if positions is not None:
+                    break
+            except Exception:
+                continue
+        if not positions:
+            return None
+        # positions: {pd.Timestamp: Position}，取最后一天
+        last_ts = sorted(positions.keys())[-1]
+        pos = positions[last_ts]
+        p = getattr(pos, "position", None)
+        if not isinstance(p, dict):
+            return None
+        account = {}
+        for k, v in p.items():
+            if k in ("cash", "now_account_value", "now_weight"):
+                continue
+            if isinstance(v, dict) and v.get("amount"):
+                entry = {"amount": float(v["amount"])}
+                if v.get("price") is not None:
+                    entry["price"] = float(v["price"])
+                account[str(k)] = entry
+        account["cash"] = float(p.get("cash") or 0.0)
+        return account
+    except Exception:
+        return None
 
 
 def _get_segment_end_account(par, recorder) -> Optional[float]:

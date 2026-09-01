@@ -37,6 +37,7 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
         risk_degree=0.95,
         only_tradable=False,
         forbid_all_trade_at_limit=True,
+        rebalance_base=None,
         **kwargs,
     ):
         super().__init__(risk_degree=risk_degree, **kwargs)
@@ -44,7 +45,13 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
         self.n_days_hold = max(1, int(n_days_hold))
         self.only_tradable = only_tradable
         self.forbid_all_trade_at_limit = forbid_all_trade_at_limit
-        # 上一次调仓的 step（时间步），用于判断是否到了调仓日
+        # 调仓节奏的全局基准：回测起点在 qlib 全局交易日历中的索引。
+        # 调仓日 = (当前全局交易日序号 - rebalance_base) % n_days_hold == 0。
+        # 用"全局交易日序号"而非"段内 step"判断 → 调仓节奏跨滚动段连续，
+        # 与段长（test_win=1/2/3/5 天任意）无关，避免"段首从空账户只买不卖"的 BUG。
+        # None 时回退旧逻辑（段内相对 step，仅兼容未传参场景）。
+        self._rebalance_base = rebalance_base
+        # 上一次调仓的 step（时间步），旧逻辑用；rebalance_base 传入时忽略
         self._last_rebalance_step = None
 
     def generate_trade_decision(self, execute_result=None):
@@ -52,10 +59,15 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
         trade_start_time, trade_end_time = self.trade_calendar.get_step_time(trade_step)
         pred_start_time, pred_end_time = self.trade_calendar.get_step_time(trade_step, shift=1)
 
-        # 非调仓日：返回空决策，持仓不动
-        if self._last_rebalance_step is not None:
-            if trade_step - self._last_rebalance_step < self.n_days_hold:
+        # 调仓日判定（优先全局交易日序号，跨段连续；回退段内相对 step）
+        if self._rebalance_base is not None:
+            global_step = self.trade_calendar.start_index + trade_step
+            if (global_step - self._rebalance_base) % self.n_days_hold != 0:
                 return TradeDecisionWO([], self)
+        else:
+            if self._last_rebalance_step is not None:
+                if trade_step - self._last_rebalance_step < self.n_days_hold:
+                    return TradeDecisionWO([], self)
 
         # 调仓日：获取当前信号
         pred_score = self.signal.get_signal(start_time=pred_start_time, end_time=pred_end_time)

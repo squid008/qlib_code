@@ -57,7 +57,7 @@ export default function App() {
     close_cost: 0.0015,
     min_cost: 5,
     impact_cost: 0.002,
-    volume_threshold: 0.25,
+    volume_threshold: null,
     limit_threshold: 0.095,
     trade_unit: 100,
     split_mode: 'single',
