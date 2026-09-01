@@ -1,6 +1,20 @@
 # Qlib 量化回测平台
 
-> **当前版本：v1.4.7**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+> **当前版本：v1.4.9**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+
+### v1.4.9 更新（续测按钮显示逻辑修复）
+
+- **续测后历史列表立即刷新**：提交续测后源目录 `is_task_running` 及时更新
+- **删除按钮乐观禁用**：点击续测后该行删除按钮立即变灰（不等后端刷新）
+- **续测失败/完成后按钮恢复**：刷新时清理残留的续测乐观标记（仅保留仍在运行的目录），"未完成"行的续测/删除按钮恢复可用
+
+### v1.4.8 更新（历史列表自动刷新 + 并发回测 mlflow 修复）
+
+- **历史回测列表自动刷新**：提交回测后立即刷新历史；轮询改用 `anyDone` 统一刷新（修复多个任务同时完成时 `break` 导致漏刷新、历史列表只显示最新一个）
+- **并发回测 `Run not found` / `already active` 修复**：
+  - patch qlib `MLflowRecorder.end_run`，改用 recorder 自身 `client` + `run_id` 结束（原 `mlflow.end_run` 用全局 client 找不到线程独立 db 里的 run → "Run with id=... not found"）
+  - 手动清理 mlflow 线程本地 active run 栈（否则同一线程下次 `start_run` 报 "Run with UUID ... is already active"）
+  - 验证：3 个回测并发 + 中途取消 1 个均正常
 
 ### v1.4.7 更新（0/1 信号分位收益双柱悬停优化）
 
@@ -418,7 +432,7 @@ backend/app/engine/patches/
 
 | 补丁 | 解决什么 | 实现方式 |
 |---|---|---|
-| **多线程并行** | qlib 的 `R`（Recorder）是进程级全局单例，多线程并发 `R.start()` 会互相覆盖 active_experiment | `patch_qlib_parallel`：每个线程懒创建独立的 `QlibRecorder(ExpManager)`，替换全局 R |
+| **多线程并行** | qlib 的 `R`（Recorder）是进程级全局单例，多线程并发 `R.start()` 会互相覆盖 active_experiment；且 mlflow 的 `end_run` 用全局 client 找不到线程独立 db 里的 run（"Run not found"）、线程本地 active run 栈不清理（"already active"） | `patch_qlib_parallel`：每个线程懒创建独立的 `QlibRecorder(ExpManager)` 替换全局 R；并 patch `MLflowRecorder.end_run` 改用自身 client+run_id 结束、手动清理 active run 栈 |
 | **训练中途可取消** | qlib 引擎 `model.fit` 训练块内无取消检查点，取消要等整个训练块结束 | `patch_cancel_callbacks`：patch `lgb.train` / `xgb.train`，注入"每 10 轮检查取消"的回调 |
 
 **为何不改 qlib 源码**：qlib 核心包 233 个 .py（约 5-6 万行），且顶层 import 所有子模块，无法只拷贝某模块单独用。改内核会导致升级困难（`pip install -U qlib` 会覆盖改动）、依赖暴增（pytorch/mosec/mlflow 等）、代码结构变乱。外挂补丁只在 **qlib 的稳定入口**（`R`、`lgb.train`、`xgb.train`）做 patch，风险低、可维护。
