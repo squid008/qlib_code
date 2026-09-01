@@ -197,6 +197,14 @@ def scan_history() -> dict:
             except Exception as e:
                 logger.warning("扫描历史时解析 meta.json 失败 %s: %s", name, e)
                 meta = None
+        # 年化收益（历史列表展示）：从 result.json 顶层读取；无结果则为 None（前端显示"-"）
+        annual_return = None
+        if os.path.exists(result_file):
+            try:
+                with open(result_file, "r", encoding="utf-8") as f:
+                    annual_return = json.load(f).get("annualized_return")
+            except Exception:
+                annual_return = None
 
         parts = name.rsplit("_", 1)
         if len(parts) == 2 and re.match(r"^[0-9a-f]{12,}$", parts[1]):
@@ -253,6 +261,7 @@ def scan_history() -> dict:
             "images": images,
             "segments": segments,
             "meta_summary": meta_summary,
+            "annual_return": annual_return,
             # 任务是否正在内存中运行（用于前端判断"能否删除"——运行中禁用删除）。
             # 额外检查是否正被某个运行中任务续测占用（续测复用源目录，源 task_id 不在内存但目录被占用）
             "is_task_running": _is_task_running(_manager, task_id) or (task_id in resume_sources),

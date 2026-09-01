@@ -212,9 +212,9 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
               <tr className="border-b text-left text-slate-500">
                 <th className="py-2 pr-3 w-12">#</th>
                 <th className="py-2 pr-3">产物目录</th>
-                <th className="py-2 pr-3">模型</th>
                 <th className="py-2 pr-3">区间</th>
                 <th className="py-2 pr-3 text-right">资金(万)</th>
+                <th className="py-2 pr-3 text-right">年化收益</th>
                 <th className="py-2 pr-3 whitespace-nowrap relative">
                   <span>操作</span>
                   {/* 批量删除：用绝对定位贴在"操作"右边，不撑大列宽（避免整列变宽） */}
@@ -299,7 +299,6 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
                         </>
                       )}
                     </td>
-                    <td className="py-2 pr-3">{ms.model || p?.model || '-'}</td>
                     <td className="py-2 pr-3">
                       {ms.start_year && ms.end_year
                         ? `${ms.start_year} ~ ${ms.end_year}`
@@ -309,6 +308,11 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
                     </td>
                     <td className="py-2 pr-3 text-right">
                       {p ? ((p.initial_capital || 0) / 10000).toLocaleString() : '-'}
+                    </td>
+                    <td className="py-2 pr-3 text-right">
+                      {row.item.annual_return != null
+                        ? `${(row.item.annual_return * 100).toFixed(2)}%`
+                        : '-'}
                     </td>
                     {batchMode && (
                       <td className="py-2 pr-3">
