@@ -20,6 +20,8 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from ..engine.limits import mark_limit_up
+
 
 class FactorTestCancelled(Exception):
     """任务被用户取消（由 progress_cb 抛出）。供路由层捕获后标记 cancelled 状态。"""
@@ -96,30 +98,6 @@ def _stat_group(g: pd.DataFrame, limit_up_excluded: int = 0) -> Optional[dict]:
     }
 
 
-def _limit_ratio(code: str) -> float:
-    """按板块返回涨停幅度：主板 10%、创业板/科创板 20%、北交所 30%。"""
-    c = str(code).upper()
-    if c.startswith(("SH688", "SZ300", "SZ301")):
-        return 0.20
-    if c.startswith("BJ"):
-        return 0.30
-    return 0.10
-
-
-def _mark_limit_up(s: pd.DataFrame, close_col: str = "CLOSE", change_col: str = "CHANGE") -> pd.Series:
-    """返回布尔 Series：收盘价是否封住涨停板。
-
-    涨停价 = round(昨收 * (1 + 板块涨停幅度), 2)，昨收由 close/(1+change) 反推。
-    """
-    if s is None or len(s) == 0:
-        return pd.Series(dtype=bool)
-    codes = s.index.get_level_values(0).astype(str)
-    ratios = pd.Series([_limit_ratio(c) for c in codes], index=s.index)
-    prev = s[close_col] / (1 + s[change_col])
-    limit_price = np.floor(prev * (1 + ratios) * 100 + 0.5) / 100
-    return (s[close_col] >= limit_price - 1e-6).fillna(False)
-
-
 def _compute_ic_stats(pl: pd.DataFrame) -> Optional[dict]:
     """对 (score, label) 面板数据计算 IC/RankIC/ICIR。pl index 为 [instrument, datetime]。"""
     from ..engine.analysis import _compute_ic
@@ -135,8 +113,22 @@ def _compute_ic_stats(pl: pd.DataFrame) -> Optional[dict]:
     }
 
 
-def _test_one(df: pd.DataFrame, factor: dict, col: str) -> dict:
-    """测试单个因子列（df 含 col 与 LABEL 两列）。"""
+def _test_one(
+    df: pd.DataFrame,
+    factor: dict,
+    col: str,
+    exclude_limit_up_signal: bool = True,
+    exclude_limit_up_trade: bool = True,
+    exclude_suspended: bool = True,
+) -> dict:
+    """测试单个因子列（df 含 col 与 LABEL 两列）。
+
+    df 还需含 CLOSE/CHANGE（信号日 T 行情）与 T1_CLOSE/T1_CHANGE（成交日 T+1 行情，Ref 取未来一天）。
+    触发组剔除（均可开关）：
+      - exclude_limit_up_signal  信号日（T）涨停：选股过滤语义（涨停后追高风险），无前视
+      - exclude_limit_up_trade   成交日（T+1）涨停：真实撮合约束（封板买不到），与回测一致
+      - exclude_suspended        成交日（T+1）停牌/无行情：同样买不到
+    """
     name = factor.get("name") or factor.get("id") or col
     result: dict = {
         "id": factor.get("id") or name,
@@ -161,7 +153,10 @@ def _test_one(df: pd.DataFrame, factor: dict, col: str) -> dict:
         "icir": None,
         "rank_icir": None,
         "n_obs": 0,
-        "limit_up_excluded": 0,
+        "limit_up_excluded": 0,       # 总剔除数（信号日涨停 + 成交日涨停 + 停牌）
+        "limit_up_excluded_t": 0,     # 信号日（T）涨停剔除数
+        "limit_up_excluded_t1": 0,    # 成交日（T+1）涨停剔除数
+        "suspended_excluded": 0,      # 成交日停牌/无行情剔除数
         "error": None,
     }
     if df is None or len(df) == 0:
@@ -207,13 +202,29 @@ def _test_one(df: pd.DataFrame, factor: dict, col: str) -> dict:
         trig = sub[sub[col] >= q_hi]
         not_trig = sub[sub[col] <= q_lo]
         result["grouping"] = "quantile"
-    # 信号当日涨停的样本剔除（涨停买不到，收益不真实）
-    lu_excluded = 0
-    if len(trig) > 0 and "CLOSE" in df.columns and "CHANGE" in df.columns:
-        trig_mask = _mark_limit_up(df.loc[trig.index])
-        lu_excluded = int(trig_mask.sum())
-        trig = trig[~trig_mask]
+    # 触发组剔除（三层独立统计，均可开关）：
+    #   1) 信号日（T）涨停：选股过滤（涨停追高风险，信号日收盘后已知，无前视）
+    #   2) 成交日（T+1）涨停：真实撮合约束（调仓日封板买不到），与回测 BoardAwareExchange 口径一致
+    #   3) 成交日（T+1）停牌/无行情：同样买不到
+    lu_t = lu_t1 = susp = 0
+    if len(trig) > 0:
+        if exclude_limit_up_signal and "CLOSE" in df.columns and "CHANGE" in df.columns:
+            mask = mark_limit_up(df.loc[trig.index], "CLOSE", "CHANGE")
+            lu_t = int(mask.sum())
+            trig = trig[~mask]
+        if exclude_limit_up_trade and "T1_CLOSE" in df.columns and "T1_CHANGE" in df.columns:
+            mask = mark_limit_up(df.loc[trig.index], "T1_CLOSE", "T1_CHANGE")
+            lu_t1 = int(mask.sum())
+            trig = trig[~mask]
+        if exclude_suspended and "T1_CLOSE" in df.columns:
+            mask = df.loc[trig.index, "T1_CLOSE"].isna()
+            susp = int(mask.sum())
+            trig = trig[~mask]
+    lu_excluded = lu_t + lu_t1 + susp
     result["limit_up_excluded"] = lu_excluded
+    result["limit_up_excluded_t"] = lu_t
+    result["limit_up_excluded_t1"] = lu_t1
+    result["suspended_excluded"] = susp
     result["trigger"] = _stat_group(trig, lu_excluded)
     result["not_trigger"] = _stat_group(not_trig)
     if len(trig) > 0 and len(not_trig) > 0:
@@ -278,6 +289,9 @@ def run_single_factor_test(
     label_horizon: int = 2,
     factors: List[dict] = None,
     progress_cb=None,
+    exclude_limit_up_signal: bool = True,  # 剔除信号日（T）涨停样本
+    exclude_limit_up_trade: bool = True,   # 剔除成交日（T+1）涨停样本
+    exclude_suspended: bool = True,        # 剔除成交日（T+1）停牌/无行情样本
 ) -> List[dict]:
     """执行单因子测试，返回每个因子的测试结果列表。
 
@@ -286,6 +300,8 @@ def run_single_factor_test(
     progress_cb: 可选回调 progress_cb(percent: float, message: str)，0-100。
         阶段：0-10 解析股票池 → 10-35 分批计算特征（批间可取消）→ 35-95 逐个因子统计 → 100 完成。
         取消：调用方通过 progress_cb 抛异常可中断任务（特征加载按批检查）。
+    exclude_limit_up_signal/trade、exclude_suspended：触发组剔除开关，
+        分别对应 信号日(T)涨停 / 成交日(T+1)涨停 / 成交日停牌 三层剔除（详见 _test_one）。
     """
     if not factors:
         return []
@@ -332,10 +348,12 @@ def run_single_factor_test(
     if progress_cb:
         progress_cb(12, f"股票池 {len(instruments)} 只，计算特征数据...")
 
-    # 加载全部因子（去重）+ label + 涨停判断所需基础字段。列名用唯一编号 F0..Fn / LABEL / CLOSE / CHANGE
+    # 加载全部因子（去重）+ label + 涨停/停牌判断所需基础字段。
+    # 列名用唯一编号 F0..Fn / LABEL / CLOSE / CHANGE（信号日 T）/ T1_CLOSE / T1_CHANGE（成交日 T+1）。
+    # T1 行情用 Ref 取未来一天（与 label 买入价 Ref($close,-1) 同源），成交日停牌时 T1_CLOSE 为 NaN。
     # 分小批加载（每批 5 个表达式），批间回调进度，从而在特征计算阶段也能响应"取消"。
-    fields = ordered_exprs + [label_expr, "$close", "$change"]
-    col_names = col_names + ["LABEL", "CLOSE", "CHANGE"]
+    fields = ordered_exprs + [label_expr, "$close", "$change", "Ref($close, -1)", "Ref($change, -1)"]
+    col_names = col_names + ["LABEL", "CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]
     batch_size = 5
     frames = []
     try:
@@ -369,7 +387,16 @@ def run_single_factor_test(
         if col_name is None:
             results.append({**_test_one(pd.DataFrame(), f, ""), "error": "因子表达式为空"})
         else:
-            results.append(_test_one(df, f, col_name))
+            results.append(
+                _test_one(
+                    df,
+                    f,
+                    col_name,
+                    exclude_limit_up_signal=exclude_limit_up_signal,
+                    exclude_limit_up_trade=exclude_limit_up_trade,
+                    exclude_suspended=exclude_suspended,
+                )
+            )
     if progress_cb:
         progress_cb(100, "测试完成")
     return results

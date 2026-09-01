@@ -217,12 +217,18 @@ export interface SingleFactorTestRequest {
   end_date: string
   label_horizon: number
   factors: SingleFactorTestItem[]
+  exclude_limit_up_signal?: boolean // 剔除信号日(T)涨停
+  exclude_limit_up_trade?: boolean // 剔除成交日(T+1)涨停
+  exclude_suspended?: boolean // 剔除成交日(T+1)停牌/无行情
 }
 export interface FactorTestGroupStats {
   count: number
   mean_ret: number
   median_ret: number
-  limit_up_excluded?: number // 触发组中信号当日涨停被剔除的样本数
+  limit_up_excluded?: number // 触发组总剔除样本数（信号日涨停 + 成交日涨停 + 停牌）
+  limit_up_excluded_t?: number // 信号日(T)涨停剔除数
+  limit_up_excluded_t1?: number // 成交日(T+1)涨停剔除数
+  suspended_excluded?: number // 成交日停牌/无行情剔除数
 }
 export interface QuintileGroup {
   quantile: number // 1=最低值组 … 5=最高值组（每日横截面分位）

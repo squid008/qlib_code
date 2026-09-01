@@ -35,6 +35,10 @@ export default function SingleFactorTestPanel({
   const [labelHorizon, setLabelHorizon] = useState<number>(
     Number.isFinite(defaultLabelHorizon) ? defaultLabelHorizon : 2,
   )
+  // 触发组剔除开关：信号日(T)涨停 / 成交日(T+1)涨停 / 成交日停牌（默认全开，保持原行为 + 新增成交日口径）
+  const [excludeLimitUpSignal, setExcludeLimitUpSignal] = useState(true)
+  const [excludeLimitUpTrade, setExcludeLimitUpTrade] = useState(true)
+  const [excludeSuspended, setExcludeSuspended] = useState(true)
 
   // 三个因子来源
   const [groups, setGroups] = useState<SourceGroup[]>([
@@ -165,6 +169,9 @@ export default function SingleFactorTestPanel({
         end_date: endDate,
         label_horizon: labelHorizon,
         factors,
+        exclude_limit_up_signal: excludeLimitUpSignal,
+        exclude_limit_up_trade: excludeLimitUpTrade,
+        exclude_suspended: excludeSuspended,
       })
       const task_id = resp?.task_id
       if (!task_id) {
@@ -314,6 +321,44 @@ export default function SingleFactorTestPanel({
             </button>
           )}
         </div>
+      </div>
+
+      {/* 触发组剔除开关行：独立 flex（不参与上面 grid，避免撑高参数行——见 md/两地 git 工作流.md 布局备忘） */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3">
+        <span className="text-slate-500">剔除开关：</span>
+        <label
+          className="flex items-center gap-1 cursor-pointer"
+          title="信号日(T)收盘后已知涨停，属选股过滤（涨停后追高风险），无前视"
+        >
+          <input
+            type="checkbox"
+            checked={excludeLimitUpSignal}
+            onChange={(e) => setExcludeLimitUpSignal(e.target.checked)}
+          />
+          <span>信号日涨停(T)</span>
+        </label>
+        <label
+          className="flex items-center gap-1 cursor-pointer"
+          title="成交日(T+1)为实际调仓买入日，涨停封板买不到，与回测 BoardAwareExchange 口径一致"
+        >
+          <input
+            type="checkbox"
+            checked={excludeLimitUpTrade}
+            onChange={(e) => setExcludeLimitUpTrade(e.target.checked)}
+          />
+          <span>成交日涨停(T+1)</span>
+        </label>
+        <label
+          className="flex items-center gap-1 cursor-pointer"
+          title="成交日(T+1)停牌/无行情，同样买不到"
+        >
+          <input
+            type="checkbox"
+            checked={excludeSuspended}
+            onChange={(e) => setExcludeSuspended(e.target.checked)}
+          />
+          <span>成交日停牌</span>
+        </label>
       </div>
 
       {/* 进度条 */}
@@ -486,9 +531,19 @@ export default function SingleFactorTestPanel({
                         </td>
                         <td className="text-right px-1">
                           {r.trigger?.count ?? '-'}
-                          {(r.trigger?.limit_up_excluded ?? 0) > 0 && (
-                            <span className="text-amber-600 ml-1" title="信号当日涨停（买不到）已剔除的样本数">
-                              -{(r.trigger as { limit_up_excluded?: number })?.limit_up_excluded}涨停
+                          {(r.trigger?.limit_up_excluded_t ?? 0) > 0 && (
+                            <span className="text-amber-600 ml-1" title="信号日(T)涨停（选股过滤，无前视）剔除数">
+                              -{r.trigger?.limit_up_excluded_t}T涨停
+                            </span>
+                          )}
+                          {(r.trigger?.limit_up_excluded_t1 ?? 0) > 0 && (
+                            <span className="text-amber-600 ml-1" title="成交日(T+1)涨停（调仓日买不到）剔除数">
+                              -{r.trigger?.limit_up_excluded_t1}T+1涨停
+                            </span>
+                          )}
+                          {(r.trigger?.suspended_excluded ?? 0) > 0 && (
+                            <span className="text-amber-600 ml-1" title="成交日(T+1)停牌/无行情（买不到）剔除数">
+                              -{r.trigger?.suspended_excluded}停牌
                             </span>
                           )}
                         </td>
@@ -572,7 +627,7 @@ export default function SingleFactorTestPanel({
             </tbody>
           </table>
           <p className="mt-1 text-slate-400">
-            触发分组：0/1 信号为"因子值&gt;0.5"；连续因子按分位数分组（触发 = 前 20% 高分位，未触发 = 后 20% 低分位）。触发数为剔除"信号当日涨停"样本后的数量（涨停买不到，已按板块 10%/20%/30% 剔除）。
+            触发分组：0/1 信号为"因子值&gt;0.5"；连续因子按分位数分组（触发 = 前 20% 高分位，未触发 = 后 20% 低分位）。触发数为按剔除开关过滤后的数量（涨停/停牌判定统一为涨停价四舍五入口径，板块 10%/20%/30%）：信号日(T)涨停 = 选股过滤无前视；成交日(T+1)涨停与停牌 = 调仓日实际买不到，与回测一致。
             差值 = 触发均值 − 未触发均值（正数说明触发组未来 {labelHorizon} 日收益更高）；收益按信号日收盘价买入持有 {labelHorizon} 个交易日计算；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
             IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.05（即×100后≥5，日频口径，市值为例0.1以上即为稳定负向）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
             分位收益：连续因子按每日横截面分 5 组（1=最低值组…5=最高值组）的平均未来收益，柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益。

@@ -146,6 +146,10 @@ class SingleFactorTestRequest(BaseModel):
     end_date: str = ""
     label_horizon: int = 2   # 未来 N 日收益作为预测目标
     factors: list[SingleFactorTestFactor] = []
+    # 触发组剔除开关（默认全开，保持原行为 + 新增成交日口径）：
+    exclude_limit_up_signal: bool = True  # 剔除信号日（T）涨停（选股过滤，无前视）
+    exclude_limit_up_trade: bool = True   # 剔除成交日（T+1）涨停（调仓日封板买不到，与回测一致）
+    exclude_suspended: bool = True        # 剔除成交日（T+1）停牌/无行情（同样买不到）
 
 
 # ---------- 单因子测试异步任务：POST 提交返回 task_id，GET 轮询进度/结果 ----------
@@ -210,6 +214,9 @@ def single_factor_test(req: SingleFactorTestRequest):
                 label_horizon=req.label_horizon,
                 factors=[f.model_dump() for f in req.factors],
                 progress_cb=_on_progress,
+                exclude_limit_up_signal=req.exclude_limit_up_signal,
+                exclude_limit_up_trade=req.exclude_limit_up_trade,
+                exclude_suspended=req.exclude_suspended,
             )
             state.update(
                 status="success",
