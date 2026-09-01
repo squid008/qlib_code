@@ -724,11 +724,13 @@ export default function App() {
           const cap = await getBacktestCapacity()
           setCapacity(cap)
         } catch {}
+        let anyDone = false
         for (let i = 0; i < updated.length; i++) {
           const was = curr[i]
           const now = updated[i]
           const wasDone = was && (was.status === 'success' || was.status === 'failed' || was.status === 'cancelled')
           const isDone = now.status === 'success' || now.status === 'failed' || now.status === 'cancelled'
+          if (!wasDone && isDone) anyDone = true
           if (!wasDone && isDone && now.status === 'success') {
             try {
               const a = await getBacktestArtifacts(now.task_id)
@@ -737,15 +739,14 @@ export default function App() {
               setArtifacts(null)
             }
             setTask(now)
-            // 成功完成也刷新历史面板，否则这里 break 后下方的刷新逻辑永远执行不到，
-            // 新生成的产物目录不会自动出现在历史列表（需手动点"刷新"）
-            setHistoryRefreshKey((k) => k + 1)
             break
           }
-          // 任何任务从运行中变成已结束（success/failed/cancelled），让 HistoryPanel 刷新（is_task_running 等）
-          if (!wasDone && isDone) {
-            setHistoryRefreshKey((k) => k + 1)
-          }
+        }
+        // 本轮有任务结束（success/failed/cancelled）就刷新历史面板。
+        // 修复：原实现把刷新放在 success 分支的 break 之前，同一轮多个任务同时完成时，
+        // 第一个 success 的 break 会让其余刚完成任务的刷新被跳过 → 历史列表漏显示。
+        if (anyDone) {
+          setHistoryRefreshKey((k) => k + 1)
         }
         tasksRef.current = updated
         const hasActive = updated.some(
@@ -852,6 +853,8 @@ export default function App() {
       window.setTimeout(() => {
         getBacktestCapacity().then(setCapacity).catch(() => {})
       }, 200)
+      // 提交后立即刷新历史列表（新任务尽早出现在历史面板，避免要手动点"刷新"）
+      setHistoryRefreshKey((k) => k + 1)
     } catch (e) {
       setError('提交回测失败，请确认后端服务已启动')
     } finally {

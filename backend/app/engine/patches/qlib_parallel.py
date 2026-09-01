@@ -125,6 +125,72 @@ class _ThreadLocalQlibRecorder:
         return self._get_recorder().exp_manager
 
 
+def _patch_recorder_end_run() -> None:
+    """patch qlib 的 MLflowRecorder.end_run：不用 mlflow 全局 active run 栈。
+
+    背景：qlib `Recorder.end_run` 里 `mlflow.end_run(status)` 依赖 mlflow 的**全局**
+    `_active_run_stack`（进程级），多任务并发时各线程的 run 互相覆盖，`mlflow.end_run`
+    会取到**别的线程**的 run_id 去 set_terminated → 在 store 里找不到 → 
+    `MlflowException: Run with id=xxx not found`（回测在 R.start 退出时失败）。
+
+    修复：改用 recorder 自身的 `client`（线程独立 sqlite uri）+ `id`（本线程 run_id）
+    直接 set_terminated，写回自己的 db，不依赖 mlflow 全局状态。可安全重复调用。
+    """
+    from qlib.workflow.recorder import MLflowRecorder, Recorder
+
+    if getattr(MLflowRecorder.end_run, "_patched_by_qlib_parallel", False):
+        return
+    from datetime import datetime
+
+    from qlib.log import TimeInspector
+
+    _orig = MLflowRecorder.end_run
+
+    def _end_run(self, status: str = Recorder.STATUS_S):
+        assert status in [
+            Recorder.STATUS_S,
+            Recorder.STATUS_R,
+            Recorder.STATUS_FI,
+            Recorder.STATUS_FA,
+        ], f"The status type {status} is not supported."
+        self.end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if self.status != Recorder.STATUS_S:
+            self.status = status
+        if self.async_log is not None:
+            # Waiting Queue should go before ending. Otherwise mlflow will raise error
+            with TimeInspector.logt("waiting `async_log`"):
+                self.async_log.wait()
+        self.async_log = None
+        # 原实现 `mlflow.end_run(status)`：
+        #   1) 用 MlflowClient()（全局 tracking uri = 主 mlflow.db）set_terminated，
+        #      但 run 实际在线程独立 db（exp_{tid}.db）→ "Run with id=... not found"；
+        #   2) 依赖 active run 栈（本版本 mlflow 为线程本地），本身是配对的。
+        # 这里先用 recorder 自己的 client + run_id 正确写回本线程独立 db。
+        try:
+            self.client.set_terminated(self.id, status)
+        except Exception:
+            # 兜底：set_terminated 异常时回退原实现（尽力而为，不阻断回测）
+            _orig(self, status)
+            return
+        # start_run 会把本 run push 进 mlflow 的（线程本地）active run 栈；
+        # 原 end_run 通过 mlflow.end_run() pop 它。我们绕过了 end_run，
+        # 必须手动把本 run 从栈中移除，否则同一线程下次 start_run 会报
+        # "Run with UUID ... is already active. To start a new run, first end the current run...".
+        try:
+            from mlflow.tracking import fluent
+
+            stack = fluent._active_run_stack.get()
+            for i in range(len(stack) - 1, -1, -1):
+                if getattr(stack[i].info, "run_id", None) == self.id:
+                    stack.pop(i)
+                    break
+        except Exception:
+            pass
+
+    _end_run._patched_by_qlib_parallel = True
+    MLflowRecorder.end_run = _end_run
+
+
 def patch_qlib_parallel(base_dir: Optional[str] = None, default_exp_name: Optional[str] = None) -> None:
     """把全局 qlib.workflow.R 替换为线程本地版本。可安全重复调用（只生效一次）。"""
     global _APPLIED
@@ -134,6 +200,8 @@ def patch_qlib_parallel(base_dir: Optional[str] = None, default_exp_name: Option
         import qlib.workflow as W
 
         W.R = _ThreadLocalQlibRecorder(base_dir=base_dir, default_exp_name=default_exp_name)
+        # 并发时 mlflow fluent end_run 依赖全局 active run 栈会互相覆盖 → patch 掉
+        _patch_recorder_end_run()
         _APPLIED = True
         import logging
 
