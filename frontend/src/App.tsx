@@ -548,6 +548,8 @@ export default function App() {
         return next
       })
       startPolling()
+      // 续测后立即刷新历史：源目录被续测任务占用（is_task_running=true），删除按钮禁用、未完成标签更新
+      setHistoryRefreshKey((k) => k + 1)
     } catch (e) {
       setError('续跑提交失败，请确认后端服务已启动')
     }

@@ -74,6 +74,14 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
       // 倒序已在后端按目录名字典序倒序（最新在前）
       const list: Row[] = items.map((it) => ({ item: it, loading: true }))
       setRows(list)
+      // 清理续测乐观标记：仅保留"仍在运行"的目录。
+      // 续测任务失败/完成后该目录不再被占用，若残留标记会导致"未完成"行的续测按钮一直隐藏、
+      // 删除按钮一直禁用（用户无法再次续测/删除）。
+      setResumingDirs((prev) => {
+        const runningDirs = new Set(items.filter((it) => it.is_task_running).map((it) => it.dir_name))
+        const next = new Set([...prev].filter((d) => runningDirs.has(d)))
+        return next.size === prev.size ? prev : next
+      })
       // 并发拉每个条目的 snapshot（拿 params 用于复用）
       await Promise.all(
         list.map(async (r) => {
@@ -246,9 +254,10 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
                 const snapshotLoading = row.item.has_params && !row.snapshot
                 // 复用类按钮的统一禁用条件
                 const reuseDisabled = !canReuseParams || snapshotLoading || capacityAtMax
-                // 删除：只有"不在运行"的任务才能删除（运行中删产物目录会破坏回测）
+                // 删除：只有"不在运行"的任务才能删除（运行中删产物目录会破坏回测）；
+                // 点击续测后（resumingDirs 乐观标记）也禁用，避免续测写入期间误删（不等后端刷新）
                 const isRunning = !!row.item.is_task_running
-                const canDelete = !isRunning
+                const canDelete = !isRunning && !resumingDirs.has(row.item.dir_name)
                 const checked = selectedIds.has(row.item.dir_name)
                 return (
                   <tr
