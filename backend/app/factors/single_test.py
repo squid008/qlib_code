@@ -120,6 +120,7 @@ def _test_one(
     exclude_limit_up_signal: bool = True,
     exclude_limit_up_trade: bool = True,
     exclude_suspended: bool = True,
+    cancelled=None,  # 取消检查回调：返回 True 表示用户已取消，在重计算步骤间调用（可空）
 ) -> dict:
     """测试单个因子列（df 含 col 与 LABEL 两列）。
 
@@ -148,6 +149,10 @@ def _test_one(
         "daily_t": None,
         "daily_win": None,
         "daily_n": 0,
+        # 逐日截面均值：信号组/非信号组各自逐日(触发组均值/未触发组均值)的日均未来收益
+        # （用于 0/1 信号的"信号组 vs 非信号组"日截面双柱展示，区别于整体观测加权 mean_ret）
+        "daily_trig_mean": None,
+        "daily_not_mean": None,
         "ic": None,
         "rank_ic": None,
         "icir": None,
@@ -182,10 +187,14 @@ def _test_one(
 
     # IC / RankIC / ICIR
     try:
+        if cancelled is not None and cancelled():
+            raise FactorTestCancelled()
         pl = sub.rename(columns={col: "score", "LABEL": "label"})
         icr = _compute_ic_stats(pl)
         if icr:
             result.update(icr)
+    except FactorTestCancelled:
+        raise
     except Exception:
         pass
 
@@ -231,21 +240,28 @@ def _test_one(
         result["diff"] = round(float(trig["LABEL"].mean() - not_trig["LABEL"].mean()), 6)
         if len(trig) >= 5 and len(not_trig) >= 5:
             try:
+                if cancelled is not None and cancelled():
+                    raise FactorTestCancelled()
                 from scipy.stats import mannwhitneyu
 
                 _, p = mannwhitneyu(trig["LABEL"], not_trig["LABEL"], alternative="two-sided")
                 result["p_value"] = float(p)
+            except FactorTestCancelled:
+                raise
             except Exception:
                 result["p_value"] = None
         # 按日配对检验：逐日 触发均值-未触发均值 作为日差值序列做单样本 t 检验。
         # 原始 MWU p 值在百万级样本下必然趋近 0，信息量低；日差值序列（约交易日数个点）
         # 规避横截面收益相关导致的假高显著性，且能给出业务上有意义的胜率。
         try:
+            if cancelled is not None and cancelled():
+                raise FactorTestCancelled()
             dt_pos = sub.index.names.index("datetime")
-            daily = (
-                trig.groupby(level=dt_pos)["LABEL"].mean()
-                - not_trig.groupby(level=dt_pos)["LABEL"].mean()
-            ).dropna()
+            daily_trig = trig.groupby(level=dt_pos)["LABEL"].mean()
+            daily_not = not_trig.groupby(level=dt_pos)["LABEL"].mean()
+            result["daily_trig_mean"] = round(float(daily_trig.mean()), 6)
+            result["daily_not_mean"] = round(float(daily_not.mean()), 6)
+            daily = (daily_trig - daily_not).dropna()
             if len(daily) >= 2:
                 from scipy.stats import ttest_1samp
 
@@ -254,6 +270,8 @@ def _test_one(
                 result["daily_t"] = round(float(t_stat), 4)
                 result["daily_win"] = round(float((daily > 0).mean()), 4)
                 result["daily_n"] = int(len(daily))
+        except FactorTestCancelled:
+            raise
         except Exception:
             pass
 
@@ -262,6 +280,8 @@ def _test_one(
     # 收益相近、diff≈0，必须看全部分组形态）。
     if not result["is_binary"] and len(sub) >= 100:
         try:
+            if cancelled is not None and cancelled():
+                raise FactorTestCancelled()
             dt_pos = sub.index.names.index("datetime")
             tmp = sub[[col, "LABEL"]].copy()
             tmp["_q"] = tmp.groupby(level=dt_pos)[col].transform(
@@ -277,6 +297,8 @@ def _test_one(
                 })
             if len(groups) >= 2:
                 result["quintile_ret"] = groups
+        except FactorTestCancelled:
+            raise
         except Exception:
             result["quintile_ret"] = None
     return result
@@ -289,6 +311,7 @@ def run_single_factor_test(
     label_horizon: int = 2,
     factors: List[dict] = None,
     progress_cb=None,
+    cancelled=None,  # 取消检查回调：返回 True 表示用户已取消（在因子间与 _test_one 内检查）
     exclude_limit_up_signal: bool = True,  # 剔除信号日（T）涨停样本
     exclude_limit_up_trade: bool = True,   # 剔除成交日（T+1）涨停样本
     exclude_suspended: bool = True,        # 剔除成交日（T+1）停牌/无行情样本
@@ -300,6 +323,8 @@ def run_single_factor_test(
     progress_cb: 可选回调 progress_cb(percent: float, message: str)，0-100。
         阶段：0-10 解析股票池 → 10-35 分批计算特征（批间可取消）→ 35-95 逐个因子统计 → 100 完成。
         取消：调用方通过 progress_cb 抛异常可中断任务（特征加载按批检查）。
+    cancelled: 可选，返回 True 表示用户已请求取消；在因子间、以及 _test_one 内部的
+        重计算步骤（IC/检验/分位）间检查，使取消响应更快（尤其单个大因子）。
     exclude_limit_up_signal/trade、exclude_suspended：触发组剔除开关，
         分别对应 信号日(T)涨停 / 成交日(T+1)涨停 / 成交日停牌 三层剔除（详见 _test_one）。
     """
@@ -351,10 +376,12 @@ def run_single_factor_test(
     # 加载全部因子（去重）+ label + 涨停/停牌判断所需基础字段。
     # 列名用唯一编号 F0..Fn / LABEL / CLOSE / CHANGE（信号日 T）/ T1_CLOSE / T1_CHANGE（成交日 T+1）。
     # T1 行情用 Ref 取未来一天（与 label 买入价 Ref($close,-1) 同源），成交日停牌时 T1_CLOSE 为 NaN。
-    # 分小批加载（每批 5 个表达式），批间回调进度，从而在特征计算阶段也能响应"取消"。
+    # 分小批加载（每批 2 个表达式），批间回调进度并检查"取消"。
+    # 注意：D.features 单批内部不可中断，批越小取消响应越快（此前 5 个一批时，
+    # 大股票池全区间的一批可能算很久，导致"取消半天没反应"）。
     fields = ordered_exprs + [label_expr, "$close", "$change", "Ref($close, -1)", "Ref($change, -1)"]
     col_names = col_names + ["LABEL", "CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]
-    batch_size = 5
+    batch_size = 2
     frames = []
     try:
         for k in range(0, len(fields), batch_size):
@@ -384,6 +411,8 @@ def run_single_factor_test(
     for i, (f, col_name) in enumerate(zip(factors, col_map), start=1):
         if progress_cb:
             progress_cb(35 + 60 * (i - 1) / total, f"测试因子 {i}/{total}: {f.get('name') or f.get('id')}")
+        if cancelled is not None and cancelled():
+            raise FactorTestCancelled()
         if col_name is None:
             results.append({**_test_one(pd.DataFrame(), f, ""), "error": "因子表达式为空"})
         else:
@@ -395,6 +424,7 @@ def run_single_factor_test(
                     exclude_limit_up_signal=exclude_limit_up_signal,
                     exclude_limit_up_trade=exclude_limit_up_trade,
                     exclude_suspended=exclude_suspended,
+                    cancelled=cancelled,
                 )
             )
     if progress_cb:

@@ -22,6 +22,8 @@ from ..services.custom_formulas import (
     update_custom_formula as _update_custom_formula,
     delete_custom_formula as _delete_custom_formula,
 )
+from .. import config
+from ..engine.task_manager import get_task_manager
 from ..factors.single_test import FactorTestCancelled, run_single_factor_test
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
@@ -206,29 +208,53 @@ def single_factor_test(req: SingleFactorTestRequest):
             if state.get("status") == "running":
                 state.update(progress=float(p), message=m, ts=time.time())
 
+        # 与回测共用并发配额：排队等待（每秒检查一次取消，排队中可随时取消）
+        manager = get_task_manager(config.WORK_DIR)
+        # 进入排队状态（计入并发统计的 queued）
+        manager.register_external_queued(task_id)
+        acquired = False
         try:
-            items = run_single_factor_test(
-                universe=req.universe,
-                start_date=req.start_date,
-                end_date=req.end_date,
-                label_horizon=req.label_horizon,
-                factors=[f.model_dump() for f in req.factors],
-                progress_cb=_on_progress,
-                exclude_limit_up_signal=req.exclude_limit_up_signal,
-                exclude_limit_up_trade=req.exclude_limit_up_trade,
-                exclude_suspended=req.exclude_suspended,
-            )
-            state.update(
-                status="success",
-                progress=100.0,
-                message="完成",
-                result={"items": items, "total": len(items)},
-                ts=time.time(),
-            )
-        except FactorTestCancelled:
-            state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
-        except Exception as e:
-            state.update(status="failed", progress=100.0, message=f"单因子测试失败: {e}", error=str(e), ts=time.time())
+            while not manager.try_acquire_slot(task_id):
+                if state.get("cancel_requested"):
+                    state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
+                    return
+                state.update(message="排队等待执行（共用回测并发配额）...", ts=time.time())
+                time.sleep(1)
+            acquired = True
+            manager.unregister_external_queued(task_id)
+
+            if state.get("cancel_requested"):
+                state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
+                return
+            state.update(message="开始执行...", ts=time.time())
+            try:
+                items = run_single_factor_test(
+                    universe=req.universe,
+                    start_date=req.start_date,
+                    end_date=req.end_date,
+                    label_horizon=req.label_horizon,
+                    factors=[f.model_dump() for f in req.factors],
+                    progress_cb=_on_progress,
+                    cancelled=lambda: bool(state.get("cancel_requested")),
+                    exclude_limit_up_signal=req.exclude_limit_up_signal,
+                    exclude_limit_up_trade=req.exclude_limit_up_trade,
+                    exclude_suspended=req.exclude_suspended,
+                )
+                state.update(
+                    status="success",
+                    progress=100.0,
+                    message="完成",
+                    result={"items": items, "total": len(items)},
+                    ts=time.time(),
+                )
+            except FactorTestCancelled:
+                state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
+            except Exception as e:
+                state.update(status="failed", progress=100.0, message=f"单因子测试失败: {e}", error=str(e), ts=time.time())
+        finally:
+            manager.unregister_external_queued(task_id)
+            if acquired:
+                manager.release_slot(task_id)
 
     threading.Thread(target=_run, daemon=True).start()
     return {"task_id": task_id}
@@ -263,3 +289,26 @@ def single_factor_test_cancel(task_id: str):
         return {"ok": False, "message": f"任务已{state.get('message', '结束')}，无需取消"}
     state["cancel_requested"] = True
     return {"ok": True, "message": "已请求取消，正在终止..."}
+
+
+@router.get("/single-factor-test/tasks", summary="列出最近的单因子测试任务")
+def single_factor_test_tasks(limit: int = 20):
+    """列出最近提交的单因子测试任务（含 running，按时间倒序）。
+
+    用于前端刷新页面后恢复"未取消完成"的任务：找到 running 任务即可重新轮询进度/继续取消。
+    """
+    with _SFT_LOCK:
+        tasks = sorted(_SFT_TASKS.values(), key=lambda v: v.get("ts", 0), reverse=True)
+    return {
+        "tasks": [
+            {
+                "task_id": t["task_id"],
+                "status": t["status"],
+                "progress": t["progress"],
+                "message": t["message"],
+                "ts": t.get("ts", 0),
+                "cancel_requested": t.get("cancel_requested", False),
+            }
+            for t in tasks[: max(1, min(int(limit or 20), 100))]
+        ]
+    }

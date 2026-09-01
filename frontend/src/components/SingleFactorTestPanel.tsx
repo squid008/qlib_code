@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { createSingleFactorTest, getSingleFactorTestProgress, cancelSingleFactorTest, getFactorCatalog } from '../api'
+import {
+  createSingleFactorTest,
+  getSingleFactorTestProgress,
+  cancelSingleFactorTest,
+  getSingleFactorTestTasks,
+  getFactorCatalog,
+} from '../api'
 import type { CustomFormula, SingleFactorTestResult } from '../api'
 import type { FactorCatalog, FactorField } from '../types'
 
@@ -9,6 +15,8 @@ interface SingleFactorTestPanelProps {
   defaultStartDate: string
   defaultEndDate: string
   defaultLabelHorizon: number
+  // 任务提交/结束/取消时触发，让 App 立即刷新"并发: x/y"显示（即时 +1/-1，不等 3 秒轮询）
+  onCapacityChange?: () => void
 }
 
 type TestResult = SingleFactorTestResult
@@ -28,6 +36,7 @@ export default function SingleFactorTestPanel({
   defaultStartDate,
   defaultEndDate,
   defaultLabelHorizon,
+  onCapacityChange,
 }: SingleFactorTestPanelProps) {
   const [universe, setUniverse] = useState(defaultUniverse)
   const [startDate, setStartDate] = useState(defaultStartDate)
@@ -72,6 +81,34 @@ export default function SingleFactorTestPanel({
     },
     [],
   )
+
+  // 刷新页面后：若后台仍有 running 的单因子测试任务（上次取消未成功/未完成），
+  // 恢复显示进度并继续轮询，避免任务"凭空消失"。
+  useEffect(() => {
+    let disposed = false
+    ;(async () => {
+      try {
+        const res = await getSingleFactorTestTasks()
+        const runningTask = res.tasks?.find((t) => t.status === 'running')
+        if (!disposed && runningTask) {
+          // 若上次已请求取消（cancel_requested），恢复后仍显示"取消中..."并禁用按钮，
+          // 避免误以为还能再次取消；轮询拿到 cancelled 后自动结束。
+          const cancelling = runningTask.cancel_requested
+          setRunning(true)
+          setCancelling(cancelling)
+          setProgress(runningTask.progress ?? 1)
+          setProgressMsg(cancelling ? '正在取消...' : runningTask.message || '恢复任务...')
+          startPolling(runningTask.task_id)
+        }
+      } catch {
+        // 后端暂不支持该接口时静默，不影响正常使用
+      }
+    })()
+    return () => {
+      disposed = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // 自定义公式变化时同步
   useEffect(() => {
@@ -138,6 +175,58 @@ export default function SingleFactorTestPanel({
     })
   }
 
+  // 停止轮询并清空任务引用
+  const stopPolling = () => {
+    if (pollTimerRef.current !== null) {
+      window.clearInterval(pollTimerRef.current)
+      pollTimerRef.current = null
+    }
+    taskIdRef.current = null
+  }
+
+  // 开始轮询任务进度：每 700ms 刷新一次，直到成功/失败/取消
+  const startPolling = (taskId: string) => {
+    stopPolling()
+    taskIdRef.current = taskId
+    pollTimerRef.current = window.setInterval(async () => {
+      try {
+        const p = await getSingleFactorTestProgress(taskId)
+        setProgress(p.progress)
+        setProgressMsg(p.message)
+        if (p.status === 'success') {
+          stopPolling()
+          setResults(p.result?.items ?? [])
+          setRunning(false)
+          setCancelling(false)
+          // 任务结束，立即刷新并发显示（占用名额 -1）
+          onCapacityChange?.()
+        } else if (p.status === 'failed') {
+          stopPolling()
+          setError(`单因子测试失败：${p.error ?? p.message}`)
+          setRunning(false)
+          setCancelling(false)
+          onCapacityChange?.()
+        } else if (p.status === 'cancelled') {
+          stopPolling()
+          setProgressMsg('已取消')
+          setRunning(false)
+          setCancelling(false)
+          onCapacityChange?.()
+        }
+      } catch (e: unknown) {
+        // 轮询瞬间失败（网络抖动）不中断，下一次轮询继续
+        const msg = e instanceof Error ? e.message : String(e)
+        if (msg.includes('404')) {
+          stopPolling()
+          setError('单因子测试任务不存在或已过期')
+          setRunning(false)
+          setCancelling(false)
+          onCapacityChange?.()
+        }
+      }
+    }, 700)
+  }
+
   const run = async () => {
     if (!startDate || !endDate) {
       setError('请填写测试区间')
@@ -180,48 +269,9 @@ export default function SingleFactorTestPanel({
         setRunning(false)
         return
       }
-      taskIdRef.current = task_id
-      // 轮询进度：每 700ms 刷新一次，直到成功/失败/取消
-      pollTimerRef.current = window.setInterval(async () => {
-        try {
-          const p = await getSingleFactorTestProgress(task_id)
-          setProgress(p.progress)
-          setProgressMsg(p.message)
-          if (p.status === 'success') {
-            if (pollTimerRef.current !== null) window.clearInterval(pollTimerRef.current)
-            pollTimerRef.current = null
-            taskIdRef.current = null
-            setResults(p.result?.items ?? [])
-            setRunning(false)
-            setCancelling(false)
-          } else if (p.status === 'failed') {
-            if (pollTimerRef.current !== null) window.clearInterval(pollTimerRef.current)
-            pollTimerRef.current = null
-            taskIdRef.current = null
-            setError(`单因子测试失败：${p.error ?? p.message}`)
-            setRunning(false)
-            setCancelling(false)
-          } else if (p.status === 'cancelled') {
-            if (pollTimerRef.current !== null) window.clearInterval(pollTimerRef.current)
-            pollTimerRef.current = null
-            taskIdRef.current = null
-            setProgressMsg('已取消')
-            setRunning(false)
-            setCancelling(false)
-          }
-        } catch (e: unknown) {
-          // 轮询瞬间失败（网络抖动）不中断，下一次轮询继续
-          const msg = e instanceof Error ? e.message : String(e)
-          if (msg.includes('404')) {
-            if (pollTimerRef.current !== null) window.clearInterval(pollTimerRef.current)
-            pollTimerRef.current = null
-            taskIdRef.current = null
-            setError('单因子测试任务不存在或已过期')
-            setRunning(false)
-            setCancelling(false)
-          }
-        }
-      }, 700)
+      startPolling(task_id)
+      // 立即刷新并发显示（留 200ms 给后端线程登记占用/排队，通常毫秒级完成）
+      window.setTimeout(() => onCapacityChange?.(), 200)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
       setError(`单因子测试失败：${msg}`)
@@ -504,6 +554,15 @@ export default function SingleFactorTestPanel({
                 const goodReverse = goodReverseBase && stable
                 const qr = r.quintile_ret ?? []
                 const maxAbs = qr.length > 0 ? Math.max(...qr.map((g) => Math.abs(g.mean_ret))) : 0
+                // 0/1 信号的双柱：信号组/非信号组的逐日截面收益均值（日均）
+                const dTrig = r.daily_trig_mean ?? null
+                const dNot = r.daily_not_mean ?? null
+                const hasDaily = dTrig !== null && dNot !== null && Number.isFinite(dTrig) && Number.isFinite(dNot)
+                const dMax = hasDaily ? Math.max(Math.abs(dTrig), Math.abs(dNot)) : 0
+                // 悬停提示同时显示信号组/非信号组日截面均值 + 配对日差（不论鼠标放在哪个柱子上）
+                const dailyTip = hasDaily
+                  ? `信号组(触发)：日截面均值 ${dTrig >= 0 ? '+' : ''}${(dTrig * 100).toFixed(3)}% (n=${r.trigger?.count ?? '-'})　|　非信号组(未触发)：日截面均值 ${dNot >= 0 ? '+' : ''}${(dNot * 100).toFixed(3)}% (n=${r.not_trigger?.count ?? '-'})　|　配对日差：${r.daily_diff != null ? `${r.daily_diff >= 0 ? '+' : ''}${(r.daily_diff * 100).toFixed(3)}%` : '-'}（${r.daily_t != null ? `t=${r.daily_t >= 0 ? '+' : ''}${r.daily_t.toFixed(1)}` : ''}）`
+                  : ''
                 return (
                   <tr key={r.id} className="border-b border-slate-100 dark:border-slate-700">
                     {r.error ? (
@@ -569,7 +628,24 @@ export default function SingleFactorTestPanel({
                           {r.p_value === null ? '-' : fmtP(r.p_value)}
                         </td>
                         <td className="text-right px-1">
-                          {qr.length > 0 && maxAbs > 0 ? (
+                          {r.is_binary && hasDaily && dMax > 0 ? (
+                            // 0/1 信号：信号组 vs 非信号组的逐日截面收益均值双柱（悬停查看数值）
+                            <div
+                              className="inline-flex items-end gap-[3px] h-6 align-bottom"
+                              title="逐日截面口径：每天先算各组平均未来收益，再对所有交易日取均值（防信号聚集虚高）"
+                            >
+                              <div
+                                className={`w-[6px] ${dTrig >= 0 ? 'bg-emerald-500' : 'bg-red-400'}`}
+                                style={{ height: `${Math.max(3, Math.round((Math.abs(dTrig) / dMax) * 20))}px` }}
+                                title={dailyTip}
+                              />
+                              <div
+                                className={`w-[6px] ${dNot >= 0 ? 'bg-emerald-500' : 'bg-red-400'}`}
+                                style={{ height: `${Math.max(3, Math.round((Math.abs(dNot) / dMax) * 20))}px` }}
+                                title={dailyTip}
+                              />
+                            </div>
+                          ) : qr.length > 0 && maxAbs > 0 ? (
                             <div
                               className="inline-flex items-end gap-[3px] h-6 align-bottom"
                               title="按因子值每日横截面分5组（1=最低值组…5=最高值组）的平均未来收益，中间组凸起=倒U型、两端凸起=U型"

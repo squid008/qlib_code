@@ -52,7 +52,13 @@ class BacktestRequest(BaseModel):
     # bins 保留用于兼容，但分层回测当前固定为 5 组（见 _compute_layers）
     bins: int = Field(5, description="[保留] 分层组数，当前固定为 5 组")
     # 交易成本与成交设置
-    deal_price: str = Field("close", description="成交价基准：close / open / vwap")
+    deal_price: str = Field(
+        "close",
+        description=(
+            "成交价基准：close / open / vwap(成交量加权均价) / "
+            "avg_co((开盘+收盘)/2) / avg_ohlc((开盘+收盘+最高+最低)/4)"
+        ),
+    )
     open_cost: float = Field(0.0005, description="买入手续费（如 0.0005 = 0.05%）")
     close_cost: float = Field(0.0015, description="卖出手续费（如 0.0015 = 0.15%）")
     min_cost: float = Field(5.0, description="单笔最低手续费（元）")

@@ -61,6 +61,9 @@ class TaskManager:
         self._reqs: Dict[str, BacktestRequest] = {}
         # 限制并发回测数量，避免多任务同时训练占满 CPU
         self._sem = threading.BoundedSemaphore(MAX_CONCURRENT_TASKS)
+        # 持有并发配额的外部任务（如单因子测试）与排队等待配额的外部任务
+        self._external: set = set()
+        self._external_queued: set = set()
 
     def cancel(self, task_id: str) -> bool:
         """请求取消任务。返回是否成功标记（任务存在且未结束）。"""
@@ -231,12 +234,17 @@ class TaskManager:
             return sum(1 for t in self._tasks.values() if t.status == "pending")
 
     def concurrency_info(self) -> dict:
-        """返回并发能力信息（供前端提示：已达上限则无法再增加回测）。"""
+        """返回并发能力信息（供前端提示：已达上限则无法再增加回测）。
+
+        注意：running/queued 包含外部任务（单因子测试）占用的并发配额，
+        使"并发: x/y"的显示与实际占用的配额一致。
+        """
+        running = self.running_count() + self.external_running()
         return {
             "max_concurrent": MAX_CONCURRENT_TASKS,
-            "running": self.running_count(),
-            "queued": self.queued_count(),
-            "available": max(0, MAX_CONCURRENT_TASKS - self.running_count()),
+            "running": running,
+            "queued": self.queued_count() + self.external_queued(),
+            "available": max(0, MAX_CONCURRENT_TASKS - running),
             "resource": resource.resource_summary(),
         }
 
@@ -246,7 +254,47 @@ class TaskManager:
         注意：这里"还能提交"指的是不会立即排队等不到 CPU；即使达到上限，
         新任务仍会进入 pending 排队，只是通过 available=0 提示用户已达并发上限。
         """
-        return self.running_count() < MAX_CONCURRENT_TASKS
+        return self.running_count() + self.external_running() < MAX_CONCURRENT_TASKS
+
+    def try_acquire_slot(self, external_id: Optional[str] = None) -> bool:
+        """尝试占用一个并发配额（不阻塞）。
+
+        供单因子测试等共享回测并发资源的任务使用：与回测共用同一信号量，
+        配额满时返回 False（需排队等待），配合 release_slot() 成对使用。
+        external_id 非空时登记为"持有配额"，计入并发统计（running）。
+        """
+        ok = self._sem.acquire(blocking=False)
+        if ok and external_id:
+            with self._lock:
+                self._external.add(external_id)
+        return ok
+
+    def release_slot(self, external_id: Optional[str] = None) -> None:
+        """归还一个并发配额（与 try_acquire_slot 成对），并注销持有登记。"""
+        self._sem.release()
+        if external_id:
+            with self._lock:
+                self._external.discard(external_id)
+
+    def register_external_queued(self, external_id: str) -> None:
+        """登记一个排队等待配额的外部任务（计入并发统计 queued）。"""
+        with self._lock:
+            self._external_queued.add(external_id)
+
+    def unregister_external_queued(self, external_id: str) -> None:
+        """取消排队登记（任务拿到配额或结束/取消时调用）。"""
+        with self._lock:
+            self._external_queued.discard(external_id)
+
+    def external_running(self) -> int:
+        """持有配额的外部任务数（如正在执行的单因子测试）。"""
+        with self._lock:
+            return len(self._external)
+
+    def external_queued(self) -> int:
+        """排队等待配额的外部任务数。"""
+        with self._lock:
+            return len(self._external_queued)
 
 
 # 全局单例

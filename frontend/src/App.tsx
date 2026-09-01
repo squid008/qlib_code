@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   submitBacktest,
   getBacktestTask,
@@ -17,6 +17,7 @@ import {
   createCustomFormula,
   updateCustomFormula,
   deleteCustomFormula,
+  getSingleFactorTestTasks,
 } from './api'
 import type { BacktestCapacity, CustomFormula } from './api'
 import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog } from './types'
@@ -127,11 +128,46 @@ export default function App() {
   const [editingText, setEditingText] = useState('')
   // 单因子测试面板（不训练模型，勾选因子后快速诊断）
   const [showSingleTestPanel, setShowSingleTestPanel] = useState(false)
+  // 刷新后若后台仍有运行中的单因子测试任务：自动展开面板并滚动定位（仅"恢复"场景触发一次）
+  const panelScrollRef = useRef(false)
 
   // 加载数据源能力信息
   useEffect(() => {
     listDataSources().then(setDataSources).catch(() => {})
   }, [])
+
+  // 刷新后恢复：检测后台是否有 running 的单因子测试任务，有则自动展开单因子面板
+  useEffect(() => {
+    let disposed = false
+    ;(async () => {
+      try {
+        const res = await getSingleFactorTestTasks()
+        if (!disposed && res.tasks?.some((t) => t.status === 'running')) {
+          panelScrollRef.current = true
+          setShowSingleTestPanel(true)
+        }
+      } catch {
+        // 后端不支持该接口时静默
+      }
+    })()
+    return () => {
+      disposed = true
+    }
+  }, [])
+
+  // 面板展开后滚动定位（仅刷新恢复场景触发，手动展开不滚动）
+  useEffect(() => {
+    if (panelScrollRef.current) {
+      panelScrollRef.current = false
+      const t = window.setTimeout(() => {
+        document.getElementById('single-factor-test-panel')?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start',
+        })
+      }, 150)
+      return () => window.clearTimeout(t)
+    }
+  }, [showSingleTestPanel])
 
   // 加载版本号
   useEffect(() => {
@@ -182,6 +218,36 @@ export default function App() {
       }
     }).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 定时刷新并发能力：单因子测试/回测/排队等任何占用配额的任务，
+  // 都会在几秒内反映到"并发: x/y"显示，无需手动刷新页面。
+  // 仅在 running/queued/max_concurrent 实际变化时才 setState，避免无谓的整树重渲染。
+  useEffect(() => {
+    const t = window.setInterval(async () => {
+      try {
+        const cap = await getBacktestCapacity()
+        setCapacity((prev) => {
+          if (
+            prev &&
+            prev.running === cap.running &&
+            prev.queued === cap.queued &&
+            prev.max_concurrent === cap.max_concurrent
+          ) {
+            return prev // 数值没变，复用旧引用，不触发重渲染
+          }
+          return cap
+        })
+      } catch {
+        // 网络抖动忽略，下一轮再试
+      }
+    }, 3000)
+    return () => window.clearInterval(t)
+  }, [])
+
+  // 立即刷新并发能力显示（供单因子面板在任务提交/结束/取消时调用，即时反馈 +1 / -1）
+  const refreshCapacity = useCallback(() => {
+    getBacktestCapacity().then(setCapacity).catch(() => {})
   }, [])
 
   // 加载因子目录（Alpha158 默认）
@@ -782,6 +848,10 @@ export default function App() {
       })
       // 启动全局轮询（只启动一次，后续提交复用同一个轮询，刷新本会话提交的所有任务）
       startPolling()
+      // 立即刷新并发显示（留 200ms 给后端登记任务占位/排队，反映 +1，与单因子测试一致）
+      window.setTimeout(() => {
+        getBacktestCapacity().then(setCapacity).catch(() => {})
+      }, 200)
     } catch (e) {
       setError('提交回测失败，请确认后端服务已启动')
     } finally {
@@ -1032,13 +1102,16 @@ export default function App() {
 
           {/* 单因子测试面板（独立整行）：勾选自定义公式/Alpha158/Alpha360 因子，逐个诊断 */}
           {showSingleTestPanel && (
-            <SingleFactorTestPanel
-              customFormulas={customFormulas}
-              defaultUniverse={form.universe}
-              defaultStartDate={form.start_date}
-              defaultEndDate={form.end_date}
-              defaultLabelHorizon={form.label_horizon}
-            />
+            <div id="single-factor-test-panel">
+              <SingleFactorTestPanel
+                customFormulas={customFormulas}
+                defaultUniverse={form.universe}
+                defaultStartDate={form.start_date}
+                defaultEndDate={form.end_date}
+                defaultLabelHorizon={form.label_horizon}
+                onCapacityChange={refreshCapacity}
+              />
+            </div>
           )}
 
           <ModelParamsForm
@@ -1073,7 +1146,9 @@ export default function App() {
                 >
                   <option value="close">收盘价</option>
                   <option value="open">开盘价</option>
-                  <option value="vwap">均价</option>
+                  <option value="vwap">均价(成交量加权)</option>
+                  <option value="avg_co">均价(开盘+收盘)/2</option>
+                  <option value="avg_ohlc">均价(开收高低)/4</option>
                 </select>
               </label>
 

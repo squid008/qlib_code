@@ -354,19 +354,34 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
     # 涨跌停限制：qlib 全局阈值不区分板块，主板约 10% / 创业板、科创板约 20% / 北交所约 30%，
     # 使用自定义 BoardAwareExchange 按股票代码前缀区分（用户传 None 时维持不限）。
     # 注意 get_exchange 的自定义分支只使用 exchange dict 内的 kwargs，因此完整参数需打包进 exchange 配置。
+    # 成交价基准：
+    #  - close/open/vwap：qlib 原生支持（vwap 的 buy_price="$vwap" 会自动进入查询字段）
+    #  - avg_co/avg_ohlc：复合均价，qlib deal_price 只认 quote 中的字段名，需订阅
+    #    $open/$high/$low 并由 BoardAwareExchange 注入 $avg_co / $avg_ohlc 列（avg_mode 参数）。
+    deal_price = req.deal_price
+    avg_mode: Optional[str] = None
+    subscribe_fields: List[str] = []
+    if deal_price in ("avg_co", "avg_ohlc"):
+        avg_mode = deal_price
+        deal_price = "close"  # 注入列由 avg_mode 指定，deal_price 只需保证初始化不报错
+        subscribe_fields = ["$open", "$high", "$low"]
+
     exchange_kwargs = {
         "freq": "day",
         "start_time": start_time,
         "end_time": end_time,
         "limit_threshold": req.limit_threshold,
-        "deal_price": req.deal_price,
+        "deal_price": deal_price,
         "open_cost": req.open_cost,
         "close_cost": req.close_cost,
         "min_cost": req.min_cost,
         "impact_cost": req.impact_cost,
         "volume_threshold": volume_threshold,
         "trade_unit": req.trade_unit,
+        "subscribe_fields": subscribe_fields,
     }
+    if avg_mode:
+        exchange_kwargs["avg_mode"] = avg_mode
 
     return {
         "executor": {

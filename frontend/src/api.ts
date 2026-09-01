@@ -253,6 +253,8 @@ export interface SingleFactorTestResult {
   daily_t: number | null // 按日差值序列单样本 t 统计量
   daily_win: number | null // 日差值>0 的交易日占比（胜率，0-1）
   daily_n: number // 参与配对的交易日数
+  daily_trig_mean: number | null // 信号组逐日截面收益均值（日均），用于 0/1 信号双柱展示
+  daily_not_mean: number | null // 非信号组逐日截面收益均值（日均）
   ic: number | null
   rank_ic: number | null
   icir: number | null
@@ -288,6 +290,23 @@ export async function cancelSingleFactorTest(
 ): Promise<{ ok: boolean; message: string }> {
   const { data } = await http.post<{ ok: boolean; message: string }>(
     `/factors/single-factor-test/cancel/${taskId}`,
+  )
+  return data
+}
+export interface SingleFactorTestTaskInfo {
+  task_id: string
+  status: 'running' | 'success' | 'failed' | 'cancelled'
+  progress: number // 0-100
+  message: string
+  ts: number
+  cancel_requested: boolean
+}
+export async function getSingleFactorTestTasks(
+  limit?: number,
+): Promise<{ tasks: SingleFactorTestTaskInfo[] }> {
+  const { data } = await http.get<{ tasks: SingleFactorTestTaskInfo[] }>(
+    '/factors/single-factor-test/tasks',
+    { params: { limit } },
   )
   return data
 }

@@ -89,3 +89,107 @@ http://127.0.0.1:5173
 | `start_frontend.bat` | 启动前端（Vite，5173） |
 | `stop_backend.bat` | 停止后端 |
 | `stop_frontend.bat` | 停止前端 |
+
+---
+
+## 五、后台静默启动与 IDE 内预览
+
+> 前三节是"开着命令行窗口"的常规方式；本节是**不占窗口**的后台静默启动，
+> 以及在 **IDE 内置浏览器**里预览页面的方法。
+
+### 5.1 在 IDE 里打开预览
+
+CodeBuddy 右侧有菜单按钮（三个点 `...`），点开后有两项：
+
+- **预览**：点击后由 AI 调用内置 Preview 能力，在 IDE 内打开预览面板。
+- **打开浏览器**：点击后会在 IDE 里打开一个内置浏览器窗口，在其中输入
+  `http://localhost:5173` 即可预览页面。
+
+**推荐顺序**：先启动后端（8001）→ 再启动前端（5173）→ 最后打开预览。
+前后端谁先谁后其实都能跑（Vite 代理是运行时转发的），但按这个顺序最稳妥，
+保证页面打开后接口不会报错。
+
+### 5.2 后台静默启动（PowerShell）
+
+> 在 PowerShell 里逐条执行。`Start-Process` 表示新起一个后台进程，
+> `-WindowStyle Hidden` 表示不弹窗口。
+
+**1. 启动后端（端口 8001）**
+
+```powershell
+cd D:\quant\qlib_code\backend
+Start-Process -FilePath "D:\miniconda3\envs\qlib\python.exe" `
+  -ArgumentList "-m","uvicorn","app.main:app","--host","0.0.0.0","--port","8001" `
+  -WorkingDirectory "D:\quant\qlib_code\backend" `
+  -RedirectStandardOutput "D:\quant\qlib_code\backend\server.log" `
+  -RedirectStandardError "D:\quant\qlib_code\backend\server_err.log" `
+  -WindowStyle Hidden
+```
+
+- 日志写到 `backend\server.log`（出错时查看）。
+- 注意：`-RedirectStandardOutput` 和 `-RedirectStandardError` **不能指向同一个文件**，所以日志和错误分两个文件。
+
+**2. 启动前端（端口 5173）**
+
+```powershell
+cd D:\quant\qlib_code\frontend
+Start-Process -FilePath "cmd.exe" `
+  -ArgumentList "/c","npm run dev > vite.log 2>&1" `
+  -WorkingDirectory "D:\quant\qlib_code\frontend" `
+  -WindowStyle Hidden
+```
+
+- 日志写到 `frontend\vite.log`。
+
+**3. 验证两个服务是否起来**
+
+```powershell
+Invoke-WebRequest -Uri "http://localhost:8001/docs" -UseBasicParsing | Select-Object StatusCode
+Invoke-WebRequest -Uri "http://localhost:5173"  -UseBasicParsing | Select-Object StatusCode
+```
+
+- 都返回 `200` 即正常；前端首次启动要等几秒，报错可过 3 秒再试。
+
+**4. 打开预览**
+
+- 方式 A：命令行打开系统默认浏览器
+
+  ```powershell
+  Start-Process "http://localhost:5173"
+  ```
+
+- 方式 B：用 5.1 的 IDE 入口（推荐），点 CodeBuddy 右侧三个点 → "打开浏览器"，在 IDE 内置浏览器里输入 `http://localhost:5173`。
+
+### 5.3 停止服务（按端口找进程）
+
+后台启动没有窗口可关，停止用端口反查进程：
+
+```powershell
+# 停后端
+Get-NetTCPConnection -LocalPort 8001 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+
+# 停前端
+Get-NetTCPConnection -LocalPort 5173 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+```
+
+先查看端口占用（确认 PID 再杀更安全）：
+
+```powershell
+Get-NetTCPConnection -LocalPort 5173,8001 -State Listen | Select-Object LocalPort,OwningProcess
+```
+
+### 5.4 日常速查
+
+| 操作 | 命令 |
+|---|---|
+| 启动后端 | 见 5.2 第 1 步 |
+| 启动前端 | 见 5.2 第 2 步 |
+| 验证服务 | `Invoke-WebRequest -Uri "http://localhost:8001/docs" -UseBasicParsing` |
+| 开系统浏览器预览 | `Start-Process "http://localhost:5173"` |
+| IDE 内置浏览器预览 | 点 CodeBuddy 右侧三个点 → "打开浏览器" → 输入 `http://localhost:5173` |
+| 看后端日志 | `Get-Content D:\quant\qlib_code\backend\server.log -Tail 50 -Wait` |
+| 看前端日志 | `Get-Content D:\quant\qlib_code\frontend\vite.log -Tail 50 -Wait` |
+| 停后端 | `Get-NetTCPConnection -LocalPort 8001 -State Listen \| ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }` |
+| 停前端 | `Get-NetTCPConnection -LocalPort 5173 -State Listen \| ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }` |
+
+> 提示：若提示"没有找到正在监听的进程"，说明该服务本来就没在运行，属正常。
