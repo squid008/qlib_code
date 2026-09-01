@@ -629,11 +629,8 @@ export default function SingleFactorTestPanel({
                         </td>
                         <td className="text-right px-1">
                           {r.is_binary && hasDaily && dMax > 0 ? (
-                            // 0/1 信号：信号组 vs 非信号组的逐日截面收益均值双柱（悬停查看数值）
-                            <div
-                              className="inline-flex items-end gap-[3px] h-6 align-bottom"
-                              title="逐日截面口径：每天先算各组平均未来收益，再对所有交易日取均值（防信号聚集虚高）"
-                            >
+                            // 0/1 信号：信号组 vs 非信号组的逐日截面收益均值双柱（悬停直接显示两组数值与配对日差）
+                            <div className="inline-flex items-end gap-[3px] h-6 align-bottom">
                               <div
                                 className={`w-[6px] ${dTrig >= 0 ? 'bg-emerald-500' : 'bg-red-400'}`}
                                 style={{ height: `${Math.max(3, Math.round((Math.abs(dTrig) / dMax) * 20))}px` }}
@@ -706,6 +703,7 @@ export default function SingleFactorTestPanel({
             触发分组：0/1 信号为"因子值&gt;0.5"；连续因子按分位数分组（触发 = 前 20% 高分位，未触发 = 后 20% 低分位）。触发数为按剔除开关过滤后的数量（涨停/停牌判定统一为涨停价四舍五入口径，板块 10%/20%/30%）：信号日(T)涨停 = 选股过滤无前视；成交日(T+1)涨停与停牌 = 调仓日实际买不到，与回测一致。
             差值 = 触发均值 − 未触发均值（正数说明触发组未来 {labelHorizon} 日收益更高）；收益按信号日收盘价买入持有 {labelHorizon} 个交易日计算；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
             IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.05（即×100后≥5，日频口径，市值为例0.1以上即为稳定负向）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
+            0/1 信号的分位收益列显示"信号组 vs 非信号组"的逐日截面收益均值双柱（每天先算各组平均未来收益，再对所有交易日取均值，防信号聚集虚高），悬停可查看两组数值与配对日差。
             分位收益：连续因子按每日横截面分 5 组（1=最低值组…5=最高值组）的平均未来收益，柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益。
             若出现"方向矛盾"：diff 为正但 IC/ICIR 稳定为负，说明信号由少数触发日主导，逐日横截面方向相反，慎用。
             若出现"时间集中"：diff 方向显著但按日配对检验（日均差值 t 值 / 胜率）不显著，说明总差值被少数交易日拉高，逐日看并无稳定超额（典型如暴跌抄底类信号），慎用。
