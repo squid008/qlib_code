@@ -1,25 +1,34 @@
 # -*- coding: utf-8 -*-
 """复权方式工具：不复权 / 前复权 / 后复权。
 
-qlib 数据里 close/open/high/low/vwap 都是【未复权】原始价，factor 是复权因子。
-本项目按"不复权 / 前复权 / 后复权"三种方式对价格做调整（**不修改 qlib 内核**，
-只在表达式构造与回测 quote 层处理）：
+【数据事实（2026-09-02 用东方财富价格逐笔核对确认）】
+本机 qlib 数据里 close/open/high/low/vwap 均为【后复权价】= 真实收盘价 × factor：
+  real_price = $close / $factor
+（验证：SH600188 2023-07-14/07-17，$close/$factor 反推 = 东财不复权价 33.87/18.75，逐分精确匹配。）
+$factor 为该日之前所有除权除息的累积后复权因子，只在除权日跳变（如 10 送转/大额分红）。
+$change 是真实价（东财"不复权"口径）的简单涨跌幅，除权日因价格跳空会大跌（如兖矿 -44.6%）；
+后复权价（=$close）序列在除权日连续，其收益率 = 含分红送转的真实可投资回报。
 
-- none（默认，历史行为）：直接用原始价。
-- backward（后复权）：adjusted = price * factor。
-  - 以最早价格为基准，序列连续、无除权跳空，历史收益准确，因子稳定可复现。
-- forward（前复权）：adjusted = price * factor / factor_end（最新交易日因子归一化）。
-  - 让最新价等于实盘价，K 线观感与行情软件一致。
+因此三种模式的正确取价（均基于同一份配套数据，内部自洽）：
+  - none（不复权 / 真实价，= 东财"不复权"K 线）：adjusted = price / $factor
+  - backward（后复权）：adjusted = price（数据原生即后复权价，无需处理）
+  - forward（前复权）：adjusted = price / $factor_end
+    （$factor_end = 每股最新交易日因子；只是"最新价 = 实盘价"的观感归一）
 
-数学事实（务必知晓）：对【比率类】特征（MA/ROC/RSV 等）与收益（label/净值），
-前复权与后复权完全等价——整体差一个常数因子，分子分母同时缩放抵消。
-因此训练特征、label、IC、净值等结果，前复权 == 后复权；唯一区别是价格绝对值
-（前复权接近实盘价，后复权数值偏大）。本模块在训练表达式层统一用 `* factor`
-（后复权形式），回测 quote 层对 forward 额外除以最新因子做归一化。
+数学事实（务必知晓）：对【比率类】特征（MA/ROC/RSV/乖离率等）与收益（label/净值），
+前复权与后复权完全等价——整体差一个每股常数因子，分子分母同时缩放抵消。
+因此训练/特征/label 表达式层 forward 与 backward 统一用数据原生后复权价（$close），
+无需额外处理；只有"绝对价格观感"（回测 quote 成交价、K 线展示）需要 forward 做
+factor_end 归一（见 board_exchange.py）。
+不复权（真实价）在除权日价格跳空，其"简单涨跌幅"在除权日含假跌，主要用于与行情软件
+K 线对照，不建议作为训练/回测的收益口径。
 
-实现：
-- 特征/label 表达式：把 $close/$open/$high/$low/$vwap 替换为复权表达式（见 adjust_expr）。
-- 回测成交价：BoardAwareExchange 加载 quote 后对价格列按 factor 调整（见 board_exchange.py）。
+历史 bug（2026-09-02 修复）：此前误以为 $close 为未复权真实价、$factor 为复权系数，
+实现为 price × factor，导致：
+  - forward/backward 双重复权（price × factor²），除权日出现 +63% 级别假跳空；
+  - "不复权"实际用了后复权价而非真实价；
+  - 涨停判定用复权价反推昨收在除权日失真（误判涨停 53%）。
+修复后按上表公式处理。
 """
 from __future__ import annotations
 
@@ -39,19 +48,23 @@ def normalize_mode(mode: str) -> str:
 
 
 def adjust_expr(expr: str, mode: str) -> str:
-    """把表达式中的价格字段替换为复权表达式（forward/backward 均等价于 `price * $factor`）。
+    """把表达式中的价格字段替换为指定口径的价格表达式。
 
-    例：`Mean($close, 20)` → `Mean(($close*$factor), 20)`
-        `Ref($close, -22)/Ref($close, -1) - 1` → `Ref(($close*$factor), -22)/Ref(($close*$factor), -1) - 1`
+    例（mode=none）：`Mean($close, 20)` → `Mean(($close/$factor), 20)`
+    mode=forward/backward：返回原表达式（$close 原生即后复权价；
+    前/后复权对比率类表达式等价，见模块 docstring）。
+
+    说明：表达式统一基于同一份数据内部的配套因子，无论数据新旧都自洽；
+    forward 的前复权观感归一只在回测 quote / K 线展示层做（见 board_exchange.py）。
     """
     m = normalize_mode(mode)
-    if not expr or m == "none":
+    if not expr or m in ("forward", "backward"):
         return expr
     out = expr
     for f in PRICE_FIELDS:
         # 只匹配独立字段 token（前/后都不是字母数字下划线），避免误伤 Ref/Mean 等算子名
         pat = re.compile(r"(?<![0-9A-Za-z_])" + re.escape(f) + r"(?![0-9A-Za-z_])")
-        out = pat.sub("(%s*$factor)" % f, out)
+        out = pat.sub("(%s/$factor)" % f, out)
     return out
 
 
@@ -61,14 +74,12 @@ def adjust_label(expr: str, mode: str) -> str:
 
 
 def quote_adjust_factors(mode: str, end_time=None) -> Tuple[str, str]:
-    """返回回测 quote 层复权时需要的信息。
+    """返回回测 quote 层取价方式（BoardAwareExchange 内部使用；本函数保留供参考/兼容）。
 
-    返回 (factor_expr, divide_end_flag)：
-    - backward: 价格列乘 `$factor`，不做额外归一化。
-    - forward:  价格列乘 `$factor` 后再除以区间最新因子（归一化到实盘价）。
-    实际复权在 board_exchange.BoardAwareExchange.get_quote_from_qlib 中执行。
+    数据 $close 原生为后复权价：
+    - none:     真实价 = $close / $factor
+    - backward: 后复权价 = $close（原生，不处理）
+    - forward:  前复权价 = $close / 每股区间最新因子（归一化到实盘价观感）
     """
     m = normalize_mode(mode)
-    if m == "none":
-        return "$factor", False
     return "$factor", (m == "forward")

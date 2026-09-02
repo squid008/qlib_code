@@ -52,7 +52,7 @@ export default function App() {
     custom_formulas: null,
     bins: 5,
     deal_price: 'close',
-    price_adjust: 'none',
+    price_adjust: 'forward',
     open_cost: 0.0005,
     close_cost: 0.0015,
     min_cost: 5,
@@ -470,6 +470,9 @@ export default function App() {
       if (v !== undefined && v !== null) (merged as unknown as Record<string, unknown>)[k] = v
     }
     merged.load_model_task_id = taskId // 复用权重
+    // 老任务（v1.5.0 之前）没有 price_adjust 字段，统一视为"不复权"；
+    // 复用旧模型权重时复权方式必须与源一致，否则特征不匹配。
+    merged.price_adjust = (params as BacktestRequest).price_adjust ?? 'none'
     // 复用参数 ≠ 续测：清掉可能残留的 resume_task_id（如之前"查看"过续测任务把它填进了表单），
     // 否则提交会被当成"续测源任务"，复用源目录导致秒完成 + 产物写进源目录污染它。
     merged.resume_task_id = null

@@ -30,8 +30,14 @@ class BoardAwareExchange(Exchange):
     扩展参数：
     - avg_mode：复合均价成交价基准（avg_co / avg_ohlc），本项目自定义，父类不识别。
     - price_adjust：复权方式 none/forward/backward。在 quote 层对价格列做复权
-      （不修改 qlib 内核）。涨跌停判断用 $change（涨跌幅，复权无关）与复权后的
-      $close 反推昨收，同比例缩放后判定等价，不受复权影响。
+      （不修改 qlib 内核）。
+      【数据事实】qlib quote 的 $close/$open/$high/$low 原生为【后复权价】= 真实价 × factor
+      （见 engine/adjust.py docstring），因此：
+        none      → 真实价 = price / factor（东财"不复权"口径）
+        backward  → 后复权价 = price（原生，不处理）
+        forward   → 前复权价 = price / 每股最新因子（归一到实盘价观感）
+      涨跌停判定恒用【真实价】（$close_real = $close/$factor）与 $change（真实价涨跌幅），
+      因涨停价由交易所按真实价确定、与复权无关。
     """
 
     def __init__(
@@ -47,24 +53,34 @@ class BoardAwareExchange(Exchange):
         super().__init__(*args, **kwargs)
 
     def _adjust_quote_prices(self) -> None:
-        """对 quote 价格列做复权：后复权 = price * factor；前复权再除以区间最新因子。
+        """按复权模式调整 quote 价格列（$close 等原生为后复权价，见模块 docstring）：
+
+        - none（真实价）   ：price / factor
+        - backward（后复权）：price（保持原生）
+        - forward（前复权） ：price / 每股区间最新因子（归一到实盘价观感）
 
         只调整 $open/$high/$low/$close/$vwap 五个价格列；$volume/$amount/$change 不变。
-        factor 缺失（NaN）时按 1.0 处理（该股无复权数据，等价不复权）。
+        factor 缺失（NaN）时按 1.0 处理（该股无复权数据，真实价=原生价）。
+        同时写入 $close_real（真实价），供涨跌停判定使用（与复权无关）。
         """
         df = self.quote_df
         if "$factor" not in df.columns:
             return
         factor = df["$factor"].fillna(1.0)
         price_cols = [f for f in ("$open", "$high", "$low", "$close", "$vwap") if f in df.columns]
-        for f in price_cols:
-            df[f] = df[f] * factor
-        if self._price_adjust == "forward":
-            # 前复权：以每只股票最新有行情日的因子为基准归一化（价格观感接近实盘价）
+        if self._price_adjust == "none":
+            for f in price_cols:
+                df[f] = df[f] / factor
+        elif self._price_adjust == "forward":
+            # 前复权：以每只股票最新有行情日的因子为基准归一化（价格观感接近实盘价；
+            # 收益率与后复权等价，因为整体常数缩放被约掉）
             last_factor = df["$factor"].groupby(level=0).transform(lambda s: s.ffill().iloc[-1])
             last_factor = last_factor.fillna(1.0)
             for f in price_cols:
                 df[f] = df[f] / last_factor
+        # backward：价格列保持原生后复权价，无需处理
+        # 真实价供涨跌停判定（交易所按真实价定价，与复权无关）
+        df["$close_real"] = df["$close"] / factor
 
     def get_quote_from_qlib(self) -> None:
         """加载行情后：按需复权价格列，再注入自定义均价列。
@@ -74,8 +90,8 @@ class BoardAwareExchange(Exchange):
         字段名（如 $close / $vwap），复合均价（如 (open+close)/2）需先算成列。
         """
         super().get_quote_from_qlib()
-        if self._price_adjust != "none":
-            self._adjust_quote_prices()
+        # 任何模式都要调（none 也需把后复权价转真实价并注入 $close_real 供涨跌停判定）
+        self._adjust_quote_prices()
         mode = self._avg_mode
         if mode == "avg_co":
             self.quote_df["$avg_co"] = (self.quote_df["$open"] + self.quote_df["$close"]) / 2.0
@@ -91,11 +107,15 @@ class BoardAwareExchange(Exchange):
         if limit_threshold is None or isinstance(limit_threshold, tuple):
             return super()._update_limit(limit_threshold)
 
-        # $close 为 NaN 表示停牌/无行情，不可交易（涨跌停判定对 NaN 返回 False，单独并上）
-        suspended = self.quote_df["$close"].isna()
+        # 涨跌停判定用【真实价】列 $close_real（= $close/$factor）与 $change（真实价涨跌幅），
+        # 两者同源，除权日也精确（涨停价由交易所按真实价确定，与复权无关）。
+        # $close_real 缺失（该股无 factor）时回退用 $close。
+        close_col = "$close_real" if "$close_real" in self.quote_df.columns else "$close"
+        # $close_real 为 NaN 表示停牌/无行情，不可交易（涨跌停判定对 NaN 返回 False，单独并上）
+        suspended = self.quote_df[close_col].isna()
         self.quote_df["limit_buy"] = mark_limit_up(
-            self.quote_df, "$close", "$change", base=float(limit_threshold)
+            self.quote_df, close_col, "$change", base=float(limit_threshold)
         ) | suspended
         self.quote_df["limit_sell"] = mark_limit_down(
-            self.quote_df, "$close", "$change", base=float(limit_threshold)
+            self.quote_df, close_col, "$change", base=float(limit_threshold)
         ) | suspended

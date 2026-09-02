@@ -57,6 +57,14 @@ def resume_backtest(task_id: str):
     if not params:
         raise HTTPException(status_code=404, detail=f"任务 {task_id} 没有参数快照，无法续跑")
     try:
+        # 老任务（v1.5.0 之前 / 参数里无复权方式）的特征是用【数据原生 $close（后复权价）】
+        # 训练的。2026-09-02 修正复权语义后（见 engine/adjust.py docstring）：
+        #   - none     = 真实价 $close/$factor（东财"不复权"口径）
+        #   - backward = $close 原生后复权价（= 老任务特征口径）
+        #   - forward  = 前复权价（比率特征与 backward 等价）
+        # 因此老任务续跑统一映射为 backward，保证与旧模型权重特征一致。
+        if "price_adjust" not in params or not params.get("price_adjust"):
+            params = {**params, "price_adjust": "backward"}
         req = BacktestRequest(**params)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"源任务参数解析失败，无法续跑: {e}")

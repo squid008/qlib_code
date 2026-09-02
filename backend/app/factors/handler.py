@@ -120,7 +120,8 @@ class SelectedAlpha158(DataHandlerLP):
         if self._selected:
             keep = [(f, n) for f, n in zip(fields, names) if n in self._selected]
             fields, names = ([f for f, _ in keep], [n for _, n in keep])
-        # 复权：price_adjust != none 时价格字段按复权价计算
+        # 复权：none → 价格字段转真实价($close/$factor)；forward/backward → 原生后复权价
+        # ($close，前/后复权对比率因子等价，见 adjust.py docstring)
         fields = [adjust_expr(f, self._price_adjust) for f in fields]
         return fields, names
 
@@ -128,7 +129,8 @@ class SelectedAlpha158(DataHandlerLP):
         # 预测周期：未来 N 个交易日的收益。N=label_horizon
         # 口径：信号日 t 的分数在 t+1（成交日 T）收盘买入，持有 N 个交易日到 t+N+1（T+N）收盘卖出。
         # 与回测 shift=1（用 T-1 信号、T 收盘成交）严格一致，无前视。
-        # 复权：price_adjust != none 时价格字段按复权价计算（比率类收益前/后复权等价）。
+        # 复权：label 收益率口径随模式（none=真实价，除权日跳空；forward/backward=后复权
+        # 原生价，含分红送转收益；前/后复权等价，见 adjust.py docstring）。
         n = self._label_horizon
         return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1", self._price_adjust)], ["LABEL0"]
 
@@ -198,7 +200,8 @@ class SelectedAlpha360(DataHandlerLP):
         if self._selected:
             keep = [(f, n) for f, n in zip(fields, names) if n in self._selected]
             fields, names = ([f for f, _ in keep], [n for _, n in keep])
-        # 复权：price_adjust != none 时价格字段按复权价计算
+        # 复权：none → 价格字段转真实价($close/$factor)；forward/backward → 原生后复权价
+        # ($close，前/后复权对比率因子等价，见 adjust.py docstring)
         fields = [adjust_expr(f, self._price_adjust) for f in fields]
         return fields, names
 
@@ -206,7 +209,8 @@ class SelectedAlpha360(DataHandlerLP):
         # 预测周期：未来 N 个交易日的收益。N=label_horizon
         # 口径：信号日 t 的分数在 t+1（成交日 T）收盘买入，持有 N 个交易日到 t+N+1（T+N）收盘卖出。
         # 与回测 shift=1（用 T-1 信号、T 收盘成交）严格一致，无前视。
-        # 复权：price_adjust != none 时价格字段按复权价计算（比率类收益前/后复权等价）。
+        # 复权：label 收益率口径随模式（none=真实价，除权日跳空；forward/backward=后复权
+        # 原生价，含分红送转收益；前/后复权等价，见 adjust.py docstring）。
         n = self._label_horizon
         return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1", self._price_adjust)], ["LABEL0"]
 
@@ -297,13 +301,15 @@ class FormulaHandler(DataHandlerLP):
         return expressions, names
 
     def get_feature_config(self):
-        # 复权：price_adjust != none 时价格字段按复权价计算
+        # 复权：none → 价格字段转真实价($close/$factor)；forward/backward → 原生后复权价
+        # ($close，前/后复权对比率因子等价，见 adjust.py docstring)
         return [adjust_expr(e, self._price_adjust) for e in self._expressions], self._names
 
     def get_label_config(self):
         # 预测周期：未来 N 个交易日的收益。N=label_horizon
         # 口径：信号日 t 的分数在 t+1（成交日 T）收盘买入，持有 N 个交易日到 t+N+1（T+N）收盘卖出。
         # 与回测 shift=1（用 T-1 信号、T 收盘成交）严格一致，无前视。
-        # 复权：price_adjust != none 时价格字段按复权价计算（比率类收益前/后复权等价）。
+        # 复权：label 收益率口径随模式（none=真实价，除权日跳空；forward/backward=后复权
+        # 原生价，含分红送转收益；前/后复权等价，见 adjust.py docstring）。
         n = self._label_horizon
         return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1", self._price_adjust)], ["LABEL0"]

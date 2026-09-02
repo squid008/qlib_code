@@ -44,8 +44,8 @@ export default function SingleFactorTestPanel({
   const [labelHorizon, setLabelHorizon] = useState<number>(
     Number.isFinite(defaultLabelHorizon) ? defaultLabelHorizon : 2,
   )
-  // 复权方式：none/forward/backward（与回测一致；前/后复权在比率类因子与收益率上数学等价）
-  const [priceAdjust, setPriceAdjust] = useState('none')
+  // 复权方式：none/forward/backward（与回测一致，默认前复权；前/后复权在比率类因子与收益率上数学等价）
+  const [priceAdjust, setPriceAdjust] = useState('forward')
   // 触发组剔除开关：信号日(T)涨停 / 成交日(T+1)涨停 / 成交日停牌（默认全开，保持原行为 + 新增成交日口径）
   const [excludeLimitUpSignal, setExcludeLimitUpSignal] = useState(true)
   const [excludeLimitUpTrade, setExcludeLimitUpTrade] = useState(true)
@@ -324,9 +324,10 @@ export default function SingleFactorTestPanel({
         <span className="text-slate-400">不训练模型，快速诊断因子预测力：稀疏 0/1 信号看"触发 vs 未触发"收益，连续因子看 IC</span>
       </div>
 
-      {/* 参数行 */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-3">
-        <label className="flex flex-col">
+      {/* 参数行：5 参数 flex-1 铺开 + 开始测试按钮同一行。
+          在面板 p-3 内边距内布局（与下方"剔除开关"文字对齐），按钮右边缘留出相同边距。 */}
+      <div className="flex flex-wrap items-end gap-3 mb-3">
+        <label className="flex-1 flex flex-col min-w-[90px]">
           <span className="text-slate-500 mb-1">股票池</span>
           <select className="border rounded px-2 py-1" value={universe} onChange={(e) => setUniverse(e.target.value)}>
             <option value="csi300">沪深300</option>
@@ -336,15 +337,15 @@ export default function SingleFactorTestPanel({
             <option value="all">全部A股</option>
           </select>
         </label>
-        <label className="flex flex-col">
+        <label className="flex-1 flex flex-col min-w-[110px]">
           <span className="text-slate-500 mb-1">开始日期</span>
           <input type="date" className="border rounded px-2 py-1" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
         </label>
-        <label className="flex flex-col">
+        <label className="flex-1 flex flex-col min-w-[110px]">
           <span className="text-slate-500 mb-1">结束日期</span>
           <input type="date" className="border rounded px-2 py-1" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
         </label>
-        <label className="flex flex-col">
+        <label className="flex-1 flex flex-col min-w-[90px]">
           <span className="text-slate-500 mb-1">预测周期(天)</span>
           <input
             type="number"
@@ -354,7 +355,7 @@ export default function SingleFactorTestPanel({
             onChange={(e) => setLabelHorizon(Number(e.target.value))}
           />
         </label>
-        <label className="flex flex-col" title="前复权与后复权在比率类因子/收益率上数学等价（仅价格绝对值不同）">
+        <label className="flex-1 flex flex-col min-w-[90px]" title="前复权与后复权在比率类因子/收益率上数学等价（仅价格绝对值不同）">
           <span className="text-slate-500 mb-1">复权方式</span>
           <select
             className="border rounded px-2 py-1"
@@ -366,7 +367,7 @@ export default function SingleFactorTestPanel({
             <option value="backward">后复权</option>
           </select>
         </label>
-        <div className="flex items-end gap-2">
+        <div className="flex items-end md:w-[calc((100%-3rem)/4)]">
           {running ? (
             <button
               type="button"
@@ -608,23 +609,40 @@ export default function SingleFactorTestPanel({
                         <td className="text-right px-1">
                           {r.trigger?.count ?? '-'}
                           {(r.trigger?.limit_up_excluded_t ?? 0) > 0 && (
-                            <span className="text-amber-600 ml-1" title="信号日(T)涨停（选股过滤，无前视）剔除数">
+                            <span className="text-amber-600 ml-1" title="信号组：信号日(T)涨停（选股过滤，无前视）剔除数">
                               -{r.trigger?.limit_up_excluded_t}T涨停
                             </span>
                           )}
                           {(r.trigger?.limit_up_excluded_t1 ?? 0) > 0 && (
-                            <span className="text-amber-600 ml-1" title="成交日(T+1)涨停（调仓日买不到）剔除数">
+                            <span className="text-amber-600 ml-1" title="信号组：成交日(T+1)涨停（调仓日买不到）剔除数">
                               -{r.trigger?.limit_up_excluded_t1}T+1涨停
                             </span>
                           )}
                           {(r.trigger?.suspended_excluded ?? 0) > 0 && (
-                            <span className="text-amber-600 ml-1" title="成交日(T+1)停牌/无行情（买不到）剔除数">
+                            <span className="text-amber-600 ml-1" title="信号组：成交日(T+1)停牌/无行情（买不到）剔除数">
                               -{r.trigger?.suspended_excluded}停牌
                             </span>
                           )}
                         </td>
                         <td className="text-right px-1">{fmt(r.trigger?.mean_ret, 3)}</td>
-                        <td className="text-right px-1">{r.not_trigger?.count ?? '-'}</td>
+                        <td className="text-right px-1">
+                          {r.not_trigger?.count ?? '-'}
+                          {(r.not_trigger?.limit_up_excluded_t ?? 0) > 0 && (
+                            <span className="text-amber-600 ml-1" title="非信号组（与信号组同口径）：信号日(T)涨停剔除数">
+                              -{r.not_trigger?.limit_up_excluded_t}T涨停
+                            </span>
+                          )}
+                          {(r.not_trigger?.limit_up_excluded_t1 ?? 0) > 0 && (
+                            <span className="text-amber-600 ml-1" title="非信号组（与信号组同口径）：成交日(T+1)涨停剔除数">
+                              -{r.not_trigger?.limit_up_excluded_t1}T+1涨停
+                            </span>
+                          )}
+                          {(r.not_trigger?.suspended_excluded ?? 0) > 0 && (
+                            <span className="text-amber-600 ml-1" title="非信号组（与信号组同口径）：成交日(T+1)停牌/无行情剔除数">
+                              -{r.not_trigger?.suspended_excluded}停牌
+                            </span>
+                          )}
+                        </td>
                         <td className="text-right px-1">{fmt(r.not_trigger?.mean_ret, 3)}</td>
                         <td
                           className={`text-right px-1 font-semibold ${(r.diff ?? 0) >= 0 ? 'text-red-500' : 'text-emerald-600'}`}

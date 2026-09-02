@@ -120,15 +120,18 @@ def _resolve_instruments(universe: str, start_date: str) -> List[str]:
     return filtered
 
 
-def _stat_group(g: pd.DataFrame, limit_up_excluded: int = 0) -> Optional[dict]:
-    """触发/未触发组的收益统计。"""
+def _stat_group(g: pd.DataFrame, lu_t: int = 0, lu_t1: int = 0, susp: int = 0) -> Optional[dict]:
+    """触发/未触发组的收益统计（含剔除明细，供前端逐项展示）。"""
     if g is None or len(g) == 0:
         return None
     return {
         "count": int(len(g)),
         "mean_ret": round(float(g["LABEL"].mean()), 6),
         "median_ret": round(float(g["LABEL"].median()), 6),
-        "limit_up_excluded": int(limit_up_excluded),
+        "limit_up_excluded": int(lu_t + lu_t1 + susp),  # 总剔除数（信号日涨停 + 成交日涨停 + 停牌）
+        "limit_up_excluded_t": int(lu_t),               # 信号日（T）涨停剔除数
+        "limit_up_excluded_t1": int(lu_t1),             # 成交日（T+1）涨停剔除数
+        "suspended_excluded": int(susp),                # 成交日停牌/无行情剔除数
     }
 
 
@@ -159,7 +162,7 @@ def _test_one(
     """测试单个因子列（df 含 col 与 LABEL 两列）。
 
     df 还需含 CLOSE/CHANGE（信号日 T 行情）与 T1_CLOSE/T1_CHANGE（成交日 T+1 行情，Ref 取未来一天）。
-    触发组剔除（均可开关）：
+    剔除开关（信号组与非信号组应用相同规则，保证两组样本口径一致，diff 公平）：
       - exclude_limit_up_signal  信号日（T）涨停：选股过滤语义（涨停后追高风险），无前视
       - exclude_limit_up_trade   成交日（T+1）涨停：真实撮合约束（封板买不到），与回测一致
       - exclude_suspended        成交日（T+1）停牌/无行情：同样买不到
@@ -192,10 +195,14 @@ def _test_one(
         "icir": None,
         "rank_icir": None,
         "n_obs": 0,
-        "limit_up_excluded": 0,       # 总剔除数（信号日涨停 + 成交日涨停 + 停牌）
-        "limit_up_excluded_t": 0,     # 信号日（T）涨停剔除数
-        "limit_up_excluded_t1": 0,    # 成交日（T+1）涨停剔除数
-        "suspended_excluded": 0,      # 成交日停牌/无行情剔除数
+        "limit_up_excluded": 0,       # 信号组总剔除数（信号日涨停 + 成交日涨停 + 停牌）
+        "limit_up_excluded_t": 0,     # 信号组信号日（T）涨停剔除数
+        "limit_up_excluded_t1": 0,    # 信号组成交日（T+1）涨停剔除数
+        "suspended_excluded": 0,      # 信号组成交日停牌/无行情剔除数
+        "not_limit_up_excluded": 0,   # 非信号组总剔除数（与信号组同口径）
+        "not_limit_up_excluded_t": 0,  # 非信号组信号日（T）涨停剔除数
+        "not_limit_up_excluded_t1": 0,  # 非信号组成交日（T+1）涨停剔除数
+        "not_suspended_excluded": 0,  # 非信号组成交日停牌/无行情剔除数
         "error": None,
     }
     if df is None or len(df) == 0:
@@ -245,31 +252,41 @@ def _test_one(
         trig = sub[sub[col] >= q_hi]
         not_trig = sub[sub[col] <= q_lo]
         result["grouping"] = "quantile"
-    # 触发组剔除（三层独立统计，均可开关）：
+    # 剔除（信号组与非信号组应用相同开关，保证两组样本口径一致，diff 才公平）：
     #   1) 信号日（T）涨停：选股过滤（涨停追高风险，信号日收盘后已知，无前视）
     #   2) 成交日（T+1）涨停：真实撮合约束（调仓日封板买不到），与回测 BoardAwareExchange 口径一致
     #   3) 成交日（T+1）停牌/无行情：同样买不到
-    lu_t = lu_t1 = susp = 0
-    if len(trig) > 0:
-        if exclude_limit_up_signal and "CLOSE" in df.columns and "CHANGE" in df.columns:
-            mask = mark_limit_up(df.loc[trig.index], "CLOSE", "CHANGE")
-            lu_t = int(mask.sum())
-            trig = trig[~mask]
-        if exclude_limit_up_trade and "T1_CLOSE" in df.columns and "T1_CHANGE" in df.columns:
-            mask = mark_limit_up(df.loc[trig.index], "T1_CLOSE", "T1_CHANGE")
-            lu_t1 = int(mask.sum())
-            trig = trig[~mask]
-        if exclude_suspended and "T1_CLOSE" in df.columns:
-            mask = df.loc[trig.index, "T1_CLOSE"].isna()
-            susp = int(mask.sum())
-            trig = trig[~mask]
-    lu_excluded = lu_t + lu_t1 + susp
-    result["limit_up_excluded"] = lu_excluded
-    result["limit_up_excluded_t"] = lu_t
-    result["limit_up_excluded_t1"] = lu_t1
-    result["suspended_excluded"] = susp
-    result["trigger"] = _stat_group(trig, lu_excluded)
-    result["not_trigger"] = _stat_group(not_trig)
+
+    def _exclude(g: pd.DataFrame):
+        """对一组样本应用剔除开关，返回 (剔除后组, T涨停数, T+1涨停数, 停牌数)。"""
+        lu_t = lu_t1 = susp = 0
+        if len(g) > 0:
+            if exclude_limit_up_signal and "CLOSE" in df.columns and "CHANGE" in df.columns:
+                mask = mark_limit_up(df.loc[g.index], "CLOSE", "CHANGE")
+                lu_t = int(mask.sum())
+                g = g[~mask]
+            if exclude_limit_up_trade and "T1_CLOSE" in df.columns and "T1_CHANGE" in df.columns:
+                mask = mark_limit_up(df.loc[g.index], "T1_CLOSE", "T1_CHANGE")
+                lu_t1 = int(mask.sum())
+                g = g[~mask]
+            if exclude_suspended and "T1_CLOSE" in df.columns:
+                mask = df.loc[g.index, "T1_CLOSE"].isna()
+                susp = int(mask.sum())
+                g = g[~mask]
+        return g, lu_t, lu_t1, susp
+
+    trig, t_lu_t, t_lu_t1, t_susp = _exclude(trig)
+    not_trig, n_lu_t, n_lu_t1, n_susp = _exclude(not_trig)
+    result["limit_up_excluded"] = t_lu_t + t_lu_t1 + t_susp
+    result["limit_up_excluded_t"] = t_lu_t
+    result["limit_up_excluded_t1"] = t_lu_t1
+    result["suspended_excluded"] = t_susp
+    result["not_limit_up_excluded"] = n_lu_t + n_lu_t1 + n_susp
+    result["not_limit_up_excluded_t"] = n_lu_t
+    result["not_limit_up_excluded_t1"] = n_lu_t1
+    result["not_suspended_excluded"] = n_susp
+    result["trigger"] = _stat_group(trig, t_lu_t, t_lu_t1, t_susp)
+    result["not_trigger"] = _stat_group(not_trig, n_lu_t, n_lu_t1, n_susp)
     if len(trig) > 0 and len(not_trig) > 0:
         result["diff"] = round(float(trig["LABEL"].mean() - not_trig["LABEL"].mean()), 6)
         if len(trig) >= 5 and len(not_trig) >= 5:
@@ -392,7 +409,8 @@ def run_single_factor_test(
     # label：信号日 t 的分数在 t+1（成交日 T）收盘买入，持有 n 个交易日到 t+n+1（T+n）收盘卖出。
     # （与回测 shift=1 一致：回测用 T-1 信号、T 收盘成交；分子/分母各后移一天，label 不混入
     #  信号日当日收益，单因子测试与回测口径完全对齐，无前视。）
-    # 复权：price_adjust != none 时价格字段按复权价计算（比率类收益前/后复权等价）。
+    # 复权：数据 $close 原生为后复权价。none→真实价($close/$factor)；forward/backward→
+    # 原生后复权价（比率类收益前/后复权等价，见 engine/adjust.py docstring）。
     pa = normalize_mode(price_adjust)
     label_expr = adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1", pa)
 
@@ -434,10 +452,18 @@ def run_single_factor_test(
     # 分小批加载（每批 2 个表达式），批间回调进度并检查"取消"。
     # 注意：D.features 单批内部不可中断，批越小取消响应越快（此前 5 个一批时，
     # 大股票池全区间的一批可能算很久，导致"取消半天没反应"）。
-    # 复权：因子表达式与价格字段（$close 及其未来一日）按复权价加载；$change 为涨跌幅不受复权影响
+    # 复权（2026-09-02 修正，见 engine/adjust.py docstring）：
+    #   数据 $close 原生为【后复权价】(=真实价×$factor)。因子表达式与 label 按复权模式
+    #   计算（none→真实价 close/$factor；forward/backward→原生后复权价 close，比率等价）。
+    #   而【涨停/停牌判定字段（CLOSE/CHANGE/T1_CLOSE/T1_CHANGE）恒用真实价
+    #   ($close/$factor 与 $change，均东财"不复权"口径且同源)】——涨停价由交易所按真实
+    #   价格确定，与复权无关；$change 反推真实昨收即可精确定涨停，除权日不受 factor 跳变影响。
     adj_exprs = [adjust_expr(e, pa) for e in ordered_exprs]
-    fields = adj_exprs + [label_expr, adjust_expr("$close", pa), "$change",
-                          adjust_expr("Ref($close, -1)", pa), "Ref($change, -1)"]
+    fields = (
+        adj_exprs
+        + [label_expr]
+        + ["$close/$factor", "$change", "Ref($close/$factor, -1)", "Ref($change, -1)"]
+    )
     col_names = col_names + ["LABEL", "CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]
     batch_size = 2
     frames = []

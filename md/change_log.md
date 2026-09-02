@@ -3,6 +3,23 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.6.1] - 2026-09-02
+
+### Fixed（重大）
+- **修正复权方向错误（此前双重复权，特征/label/回测价失真）**：
+  - **数据事实**：本机 qlib 数据 `$close/$open/$high/$low` 原生即**后复权价**（= 真实价 × `$factor`），`$change` 为真实价（东财"不复权"口径）涨跌幅。此前 `adjust.py` 误当 `$close` 为未复权价、复权 = `price × factor`，导致：
+    1. forward/backward **双重复权**（price × factor²），除权日假跳空 +63% 级；
+    2. "不复权"实际用了后复权价而非真实价；
+    3. `mark_limit_up` 用复权价 `close/(1+change)` 反推昨收，除权日 factor 跳变导致**涨停误判偏多约 53%**（实测 400 只：复权口径 T 涨停 5555 vs 不复权 3631）。
+  - **修复**（价格语义统一）：`none` = 真实价 `$close/$factor`；`backward` = 原生后复权价 `$close`；`forward` = 前复权 `$close/每股末因子`（比率类特征与 backward 等价）。涉及 `engine/adjust.py`、`engine/board_exchange.py`（quote 层 + 涨跌停判定恒用真实价 `$close_real`）、`engine/qlib_engine.py`（quote 订阅 `$factor`）、`factors/single_test.py`、`factors/handler.py`。
+  - **验证**：SH600188 `$close/$factor` = 东财不复权价 33.87/18.75 逐分一致；SH600262 前复权 13.44 与东财/通达信/聚宽逐分一致；随机股票前复权抽查全部对上。
+  - **兼容**：老任务（v1.5.0 前用原生 `$close` 训练）续跑复权映射由 `none` 改为 `backward`，保证旧权重特征一致（`routers/backtest.py`）。
+  - **注意**：此前用 forward/backward 训练的模型（基于错误的 factor² 特征）**需重新训练**。
+- **单因子测试非信号组同口径剔除**：剔除开关（信号日涨停 T / 成交日涨停 T+1 / 成交日停牌）此前只作用于信号组，现信号组与非信号组应用相同规则，`diff` 更公平；`_stat_group` 下发剔除明细，前端非信号组列同步显示剔除数（顺带修复信号组剔除标签从未显示的问题）。
+
+### Changed
+- 单因子面板参数行去掉 `-mx-3`，与下方"剔除开关"文字左右对齐（`SingleFactorTestPanel.tsx`）。
+
 ## [1.6.0] - 2026-09-02
 
 ### Fixed

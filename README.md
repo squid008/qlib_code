@@ -1,6 +1,6 @@
 # Qlib 量化回测平台
 
-> **当前版本：v1.6.0**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+> **当前版本：v1.6.1**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
 >
 > 各版本更新记录见 **[`md/change_log.md`](./md/change_log.md)**（按 Keep a Changelog 规范）。
 
@@ -157,6 +157,13 @@ npm run dev
 1. **mlflow 文件存储维护模式**：需设置 `MLFLOW_ALLOW_FILE_STORE=true` 并使用 sqlite 实验追踪后端
 2. **股票代码格式**：qlib 回测的 exchange 用**大写**格式（`SH600000`），转小写会导致策略无法建仓
 3. **回测结果提取**：从 `PortAnaRecord` 的 `report_normal_1day.pkl` 提取风险指标与净值
+4. **复权数据口径（v1.6.1 修正，务必知晓）**：本机 qlib 数据的 `$close/$open/$high/$low` 原生即**后复权价** = 真实价 × `$factor`；`$change` 是真实价（东财"不复权"口径）涨跌幅。三种复权取价：
+   - `none`（不复权/真实价）= `$close / $factor`
+   - `backward`（后复权）= `$close`（数据原生）
+   - `forward`（前复权）= `$close ÷ 每股最新因子`（以最新交易日归一，比率类特征/收益率与 backward 等价）
+   - v1.6.1 前误按"`$close` 未复权、复权 = `close×factor`"实现（双重复权 factor²、除权日假跳空），已修复。
+   - **后复权价绝对值因各行情软件复权起点基准不同，不可跨软件比较**；可比的只有"前复权价"（统一按最新交易日归一）与"收益率"。复权价与 `factor` 必须取自**同一份** qlib 数据（内部自洽），不可跨数据源混用。
+   - 收益率口径：推荐用 `forward`/`backward`（含分红送转的真实可投资回报，除权日连续）；`none` 在除权日收益率含"除权跳空"，仅适合与行情软件 K 线对照，不建议作为训练/回测口径。
 
 ## 训练/测试划分（滚动训练）
 
@@ -189,7 +196,7 @@ npm run dev
 | 参数 | 含义 | 默认 | 说明 |
 |---|---|---|---|
 | `deal_price` | 成交价基准 | `close` | close/open/vwap/avg_co/avg_ohlc（avg_co=(开+收)/2，avg_ohlc=(开收高低)/4，买卖对称共用） |
-| `price_adjust` | 复权方式 | `none` | none=不复权 / forward=前复权 / backward=后复权（比率类特征与收益率前=后复权等价） |
+| `price_adjust` | 复权方式 | `forward` | forward=前复权(默认) / backward=后复权 / none=不复权(真实价)。取价语义与复权注意事项见上文"关键踩坑记录"第 4 条 |
 | `open_cost` | 买入手续费 | 0.0005 | 比例，如 0.0005 = 0.05% |
 | `close_cost` | 卖出手续费 | 0.0015 | 比例 |
 | `min_cost` | 单笔最低手续费 | 5 | 元 |

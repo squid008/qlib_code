@@ -377,6 +377,9 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
         avg_mode = deal_price
         deal_price = "close"  # 注入列由 avg_mode 指定，deal_price 只需保证初始化不报错
         subscribe_fields = ["$open", "$high", "$low"]
+    # 复权需订阅 $factor：qlib quote 价格列原生为后复权价（=真实价×$factor），
+    # BoardAwareExchange 靠 factor 还原真实价 / 做前复权归一（见 adjust.py docstring）
+    subscribe_fields = subscribe_fields + ["$factor"] if "$factor" not in subscribe_fields else subscribe_fields
 
     exchange_kwargs = {
         "freq": "day",

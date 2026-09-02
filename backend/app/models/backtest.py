@@ -60,10 +60,13 @@ class BacktestRequest(BaseModel):
         ),
     )
     price_adjust: str = Field(
-        "none",
+        "forward",
         description=(
-            "复权方式：none=不复权(原始价) / forward=前复权 / backward=后复权。"
-            "注意：对比率类特征与收益率，前复权与后复权数学等价"
+            "复权方式：none=不复权(真实价) / forward=前复权 / backward=后复权。"
+            "数据 $close 原生为后复权价(=真实价×$factor)：none=$close/$factor、"
+            "backward=$close、forward=$close/每股最新因子(价格贴近实盘)。"
+            "对比率类特征与收益率，前复权与后复权数学等价。"
+            "推荐 forward/backward（含分红，除权日连续）；none 仅用于行情对照"
         ),
     )
     open_cost: float = Field(0.0005, description="买入手续费（如 0.0005 = 0.05%）")
