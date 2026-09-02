@@ -1,6 +1,6 @@
 # Qlib 量化回测平台
 
-> **当前版本：v1.6.3**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+> **当前版本：v1.6.4**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
 >
 > 各版本更新记录见 **[`md/change_log.md`](./md/change_log.md)**（按 Keep a Changelog 规范）。
 

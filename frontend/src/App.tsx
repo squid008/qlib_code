@@ -308,13 +308,26 @@ export default function App() {
 
   // 同步历史参数的自定义特征/公式勾选状态（"查看"与"复用参数"共用）：
   // 历史任务用了什么就勾什么；历史没用的（null/空）一律清空勾选，避免把本地自定义误勾上。
-  const syncCustomSelections = (params: BacktestRequest) => {
+  const syncCustomSelections = async (params: BacktestRequest) => {
+    // 若当前已加载的目录与历史 feature 不一致（如历史是 mixed / Alpha360），先重拉对应目录，
+    // 保证勾选面板的目录与 feature 匹配（Alpha158/Alpha360/mixed）。
+    let catalog = factorCatalog
+    const want = String(params.feature || 'Alpha158').toLowerCase()
+    const cur = (factorCatalog?.dataset || '').toLowerCase()
+    if (cur !== want && (want === 'alpha158' || want === 'alpha360' || want === 'mixed')) {
+      try {
+        catalog = await getFactorCatalog(String(params.feature || 'Alpha158'))
+        setFactorCatalog(catalog)
+      } catch {
+        catalog = factorCatalog
+      }
+    }
     // 特征勾选
     if (params.selected_features?.length) {
       setCustomFeatures(params.selected_features)
       setShowFeaturePanel(true)
-    } else if (factorCatalog) {
-      setCustomFeatures(factorCatalog.flat.map((f) => f.name))
+    } else if (catalog) {
+      setCustomFeatures(catalog.flat.map((f) => f.name))
     }
     // 公式勾选
     if (params.custom_formulas?.length) {
@@ -973,6 +986,7 @@ export default function App() {
               >
                 <option value="Alpha158">Alpha158</option>
                 <option value="Alpha360">Alpha360</option>
+                <option value="mixed">混合(158+360+公式)</option>
               </select>
               {/* 特征选择面板（展开时显示在 Row 2 第 4 列 button 下方） */}
               {showFeaturePanel && factorCatalog && (
@@ -1480,7 +1494,7 @@ export default function App() {
                       {task?.status !== 'running' && viewResult?.status !== 'running' && '；如需继续，可在下方历史回测中点该任务的"续测"'}
                     </span>
                   </div>
-                  <NavChart nav={partial.nav} />
+                  <NavChart nav={partial.nav} endDate={partial.end_date} />
                   <LayerChart data={partial.layer_returns} rebalance={form.layer_rebalance} />
                   <ICChart data={partial.ic_analysis} />
                 </>

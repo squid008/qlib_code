@@ -270,9 +270,15 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
     return result
 
 
-def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg) -> dict:
+def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg,
+                   predict_start: Optional[str] = None) -> dict:
     """构造 dataset 配置。
-    train_seg: (start, end) 训练段；test_seg: (start, end) 测试段。
+    train_seg: (start, end) 训练段；test_seg: (start, end) 测试段（=回测窗口）。
+    predict_start: 可选。早于 test_seg[0] 的"预测起点"，用于滚动回测首段预热：
+      预测（SignalRecord / model.predict）从该日起生成，从而覆盖回测起点前
+      n_days_hold 个交易日，使回测首日调仓（shift=1，需用 T-1 信号）能拿到信号建仓，
+      避免首段开头整段空仓。回测窗口仍为 test_seg（由 PortAnaRecord start_time 决定），
+      预热期预测只被首日调仓的 T-1 取用，IC/分层统计由调用方用 clip_start 裁剪。
     handler 数据范围需覆盖 train + test + 特征窗口。
     """
     from qlib.utils import init_instance_by_config
@@ -292,39 +298,33 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg)
         "instruments": instruments,
         "price_adjust": getattr(req, "price_adjust", "none") or "none",
     }
-    # 自定义公式因子（M2）：有公式时优先用 FormulaHandler，仅用公式生成的因子作为特征
+    # 特征来源（优先级）：混合(Mixed = Alpha158 子集 + Alpha360 子集 + 自定义公式)
+    # > 单一 Alpha158/360（子集） > 历史行为（勾了自定义公式则只用公式特征）。
+    # 混合模式下 selected_features 传带前缀名（A158_*/A360_*），custom_formulas 作为附加特征。
     custom_formulas = getattr(req, "custom_formulas", None) or []
-    if custom_formulas:
+    feature = (getattr(req, "feature", "Alpha158") or "Alpha158").lower()
+    if feature == "mixed":
+        handler_cls = "MixedHandler"
+        handler_module = "app.factors.handler"
+        if req.selected_features:
+            handler_kwargs["fields"] = list(req.selected_features)
+        if custom_formulas:
+            handler_kwargs["formulas"] = list(custom_formulas)
+    elif custom_formulas:
+        # 非混合模式：勾了自定义公式则只用公式（历史行为）
         handler_cls = "FormulaHandler"
         handler_module = "app.factors.handler"
         handler_kwargs["formulas"] = list(custom_formulas)
-        handler_kwargs["label_horizon"] = getattr(req, "label_horizon", None) or 2
-        return {
-            "class": "DatasetH",
-            "module_path": "qlib.data.dataset",
-            "kwargs": {
-                "handler": {
-                    "class": handler_cls,
-                    "module_path": handler_module,
-                    "kwargs": handler_kwargs,
-                },
-                "segments": {
-                    "train": [train_start, train_end],
-                    "valid": [train_start, train_end],
-                    "test": [test_start, test_end],
-                },
-            },
-        }
-
-    if (req.feature or "Alpha158").lower() == "alpha360":
+    elif feature == "alpha360":
         handler_cls = "SelectedAlpha360"
         handler_module = "app.factors.handler"
+        if req.selected_features:
+            handler_kwargs["fields"] = list(req.selected_features)
     else:
         handler_cls = "SelectedAlpha158"
         handler_module = "app.factors.handler"
-    # 支持自定义特征子集：选中了特征则传给 handler 的 fields
-    if req.selected_features:
-        handler_kwargs["fields"] = list(req.selected_features)
+        if req.selected_features:
+            handler_kwargs["fields"] = list(req.selected_features)
     # 预测周期：模型预测未来 N 日收益（label），与分层/IC 口径一致
     handler_kwargs["label_horizon"] = getattr(req, "label_horizon", None) or 2
     return {
@@ -339,7 +339,8 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg)
             "segments": {
                 "train": [train_start, train_end],
                 "valid": [train_start, train_end],
-                "test": [test_start, test_end],
+                # 预测窗口：预热时从 predict_start（更早）起，回测窗口仍以 test_start 为准
+                "test": [predict_start or test_start, test_end],
             },
         },
     }
@@ -645,8 +646,13 @@ def _load_segment_result(art_dir, seg_no):
 
 
 def _save_partial_result(art_dir, segments_done, segments_total, all_nav, layer_segments,
-                         ic_train_list, ic_test_list, merged_layers, merged_test, merged_train):
-    """把"已跑段"的全局汇总写到 partial_result.json（前端轮询展示）。"""
+                         ic_train_list, ic_test_list, merged_layers, merged_test, merged_train,
+                         target_end_date: Optional[str] = None):
+    """把"已跑段"的全局汇总写到 partial_result.json（前端轮询展示）。
+
+    target_end_date: 回测参数设定的结束日期。写入后，前端可在"未跑完"的收益曲线上把
+    X 轴右界延伸到该日期（右侧留白 = 尚未跑到的区间），直观显示进度。
+    """
     import json as _json
     if not art_dir:
         return
@@ -655,6 +661,7 @@ def _save_partial_result(art_dir, segments_done, segments_total, all_nav, layer_
             "segments_done": segments_done,
             "segments_total": segments_total,
             "nav": all_nav,
+            "end_date": str(target_end_date) if target_end_date else None,
             "layer_returns": {"segments": layer_segments, "merged": merged_layers},
             "ic_analysis": {
                 "train": ic_train_list,
@@ -715,6 +722,41 @@ def _build_merged_analysis(all_test_pred_label, all_train_pred_label, layer_segm
         except Exception:
             merged_train = None
     return merged_layers, merged_test, merged_train
+
+
+def _first_segment_warm_start(train_start: str, test_start: str, n_days_hold: int) -> Optional[str]:
+    """计算滚动回测首段的预热预测起点：test_start 之前的 n_days_hold 个交易日。
+
+    回测首日恰是全局调仓网格第 0 天，该日调仓需要 T-1 的信号（shift=1，防前视），
+    而预测若从 test_start 才开始，首日就无 T-1 信号可用 → 首段开头空仓约一个持仓
+    周期（净值出现平段）。把预测起点前移 n_days_hold 个交易日即可让首日正常建仓。
+    返回最早预热日 YYYY-MM-DD；区间不足/异常时返回 None（不预热，保持原行为）。
+    """
+    from qlib.data import D
+    try:
+        cals = D.calendar(start_time=train_start, end_time=test_start)
+        pre = [str(d)[:10] for d in cals if str(d)[:10] < str(test_start)[:10]]
+        if not pre:
+            return None
+        return pre[-min(int(n_days_hold or 1), len(pre))]
+    except Exception:
+        return None
+
+
+def _extend_all_nav(all_nav: list, seg_nav_points: list) -> None:
+    """把一段的绝对净值点拼到全局净值曲线，重复日期跳过（保留先出现的点）。
+
+    滚动测试窗口按自然月叠加（_add_period 加月返回下月同一天）时，相邻两段会重叠
+    1 个交易日（如段 N 的尾日 = 段 N+1 的首日都是 09-01），导致全局净值出现重复
+    日期、同一天被描两次。这里按日期去重，兼容"从缓存加载"与"正常执行"两条路径。
+    """
+    existing = {p.get("date") for p in all_nav}
+    for p in seg_nav_points:
+        d = p.get("date")
+        if d in existing:
+            continue
+        existing.add(d)
+        all_nav.append(p)
 
 
 def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> BacktestResult:
@@ -782,7 +824,7 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                 loaded = None
         if loaded is not None:
             data, tpl, trpl = loaded
-            all_nav.extend(data.get("nav") or [])
+            _extend_all_nav(all_nav, data.get("nav") or [])
             all_trades.extend(data.get("trades") or [])
             seg_results.append(BacktestResult(
                 total_return=data.get("total_return"),
@@ -817,7 +859,15 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
         _report(20 + int(70 * (idx + 1) / total), "段%d/%d: 训练 %s~%s, 测试 %s~%s" % (
             seg_no, total, train_start, train_end, test_start, test_end))
 
-        dataset_config = _build_dataset(req, instruments, (train_start, train_end), (test_start, test_end))
+        # 首段预热：把预测起点前移 n_days_hold 个交易日（回测窗口不变）。
+        # 回测首日恰是全局调仓网格第 0 天，需要 T-1 信号，若预测从段首才开始则首日无信号
+        # → 首段开头空仓一个持仓周期（净值平段）。预热后首日即可正常建仓。
+        warm_start = None
+        if seg_no == 1:
+            warm_start = _first_segment_warm_start(
+                train_start, test_start, max(1, int(req.n_days_hold or 1)))
+        dataset_config = _build_dataset(req, instruments, (train_start, train_end), (test_start, test_end),
+                                        predict_start=warm_start)
         dataset = init_instance_by_config(dataset_config)
 
         # 复用模式：加载对应段的模型权重，跳过训练
@@ -857,7 +907,9 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             seg_label = "段%d" % seg_no
             analysis = _compute_analysis(model, dataset, instruments, seg_label, benchmark=benchmark,
                                          label_horizon=req.label_horizon,
-                                         rebalance_period=getattr(req, "layer_rebalance", None) or 1)
+                                         rebalance_period=getattr(req, "layer_rebalance", None) or 1,
+                                         # IC/分层只统计回测窗口内的点，裁剪掉预热期预测
+                                         clip_start=str(test_start) if warm_start else None)
             if analysis:
                 layers = analysis.get("layers")
                 if layers:
@@ -920,8 +972,9 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                 "value": round(global_nav * pt["value"], 6),
                 "benchmark": round(global_bench * pt["benchmark"], 6) if pt.get("benchmark") is not None else None,
             }
-            all_nav.append(ap)
             seg_nav_abs.append(ap)
+        # 按日期去重拼接：相邻段测试窗口按自然月叠加可能重叠 1 个交易日（如 09-01 出现两次）
+        _extend_all_nav(all_nav, seg_nav_abs)
         all_trades.extend(seg_trades)
         seg_results.append(seg_result)
 
@@ -943,7 +996,8 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             all_test_pred_label, all_train_pred_label, layer_segments, benchmark,
             getattr(req, "layer_rebalance", None) or 1)
         _save_partial_result(art_dir, idx + 1, total, all_nav, layer_segments,
-                             ic_train_list, ic_test_list, merged_layers, merged_test, merged_train)
+                             ic_train_list, ic_test_list, merged_layers, merged_test, merged_train,
+                             target_end_date=req.end_date)
 
     # 汇总指标：基于拼接后的全局净值重新计算
     result = _aggregate_from_nav(all_nav, seg_results)

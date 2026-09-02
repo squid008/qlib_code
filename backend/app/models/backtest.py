@@ -32,12 +32,16 @@ class BacktestRequest(BaseModel):
     data_source_provider_uri: Optional[str] = Field(
         None, description="数据源 provider_uri（如 Qlib 数据路径 / rqalpha bundle 路径）"
     )
-    feature: str = Field("Alpha158", description="特征集：Alpha158 / Alpha360")
+    feature: str = Field(
+        "Alpha158",
+        description="特征集：Alpha158 / Alpha360 / mixed（混合：Alpha158+Alpha360+自定义公式）",
+    )
     selected_features: Optional[List[str]] = Field(
         None,
         description=(
-            "自定义特征名子集（如 [\"KMID\", \"ROC5\", \"MA20\"]）。"
+            "自定义特征名子集（如 [\"KMID\", \"ROC5\"]）。"
             "为空/None 时使用该特征集全量特征；非空时 handler 只计算这些特征。"
+            "feature=mixed 时，此处传带来源前缀的特征名：A158_<名>（Alpha158）/ A360_<名>（Alpha360）。"
             "将来因子库扩展后，这里可传入任意目录中的因子名。"
         ),
     )
@@ -45,7 +49,7 @@ class BacktestRequest(BaseModel):
         None,
         description=(
             "自定义公式因子（M2）：粘贴益盟/通达信公式文本列表，每条翻译成一个特征列。"
-            "非空时优先使用 FormulaHandler，仅用这些公式生成的因子作为特征（忽略 feature/selected_features）。"
+            "feature=mixed 时作为附加特征并入混合特征集；非 mixed 且非空时仅用这些公式特征（历史行为）。"
             "例：[\"A:=MA(CLOSE,5); 输出:A+100;\", ...]。"
         ),
     )

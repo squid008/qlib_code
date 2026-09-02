@@ -176,6 +176,8 @@ export interface BacktestPartialResult {
   segments_done: number
   segments_total: number
   nav?: NavPoint[] | null
+  // 回测参数设定的结束日期（未跑完时，曲线 X 轴右端延伸到此，直观显示进度）
+  end_date?: string | null
   layer_returns?: LayerReturns | null
   ic_analysis?: ICAnalysis | null
 }

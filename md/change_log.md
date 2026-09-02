@@ -3,6 +3,24 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.6.4] - 2026-09-02
+
+### Added
+- **混合特征集 mixed（Alpha158 子集 + Alpha360 子集 + 自定义公式，一份 dataset 同时使用）**：
+  - 新增 `MixedHandler`（`factors/handler.py`）：Alpha158/360 特征名加来源前缀 `A158_`/`A360_` 避免跨来源重名（两套都含 CLOSE0/OPEN0 等同名因子）
+  - 回测 `feature=mixed` 时 `_build_dataset` 自动走 MixedHandler：`selected_features` 传带前缀特征名（None=该来源全量），`custom_formulas` 作为附加特征并入（非 mixed 且传了公式仍保持"仅公式特征"旧行为）；`BacktestRequest` 参数说明同步（`models/backtest.py`）
+  - 特征目录支持 mixed：`get_factor_catalog(dataset=mixed)` 返回加前缀的 Alpha158/360 子集供前端勾选（`factors/catalog.py`、`routers/factors.py`）
+  - **特征磁盘缓存 key 增加列名维度**（`engine/feature_cache.py`）：同一批表达式在不同 Handler 下会映射不同列名（混合模式加前缀），缓存 key 若只含表达式会跨场景命中脏缓存，现 key = 表达式 + 列名
+  - 前端特征集下拉新增"混合(158+360+公式)"，勾选以 `A158_/A360_` 前缀名提交（`App.tsx`）
+- **滚动回测首段预热**（`engine/qlib_engine.py`、`engine/analysis.py`）：滚动首段把预测窗口前移 `n_days_hold` 个交易日（回测窗口不变），回测首日恰是全局调仓网格第 0 天，可取得 T-1 信号（shift=1 防前视）正常建仓——消除此前首段开头约一个持仓周期的空仓平段（净值开头一条平线）；预热期预测不参与 IC/分层/汇总（`_compute_analysis` 新增 `clip_start` 裁剪），指标口径不受污染
+- **partial_result 带目标结束日 + 未完成收益曲线进度化**：`partial_result.json` 记录回测参数 `end_date`；前端 NavChart 对"未跑完"（最后净值日早于结束日）的任务把 X 轴切换为真实日历时间轴并延伸到 `end_date`，右侧留白 = 尚未跑到的区间，直观看到进度；已完成曲线维持原紧凑分类轴外观
+
+### Fixed
+- **滚动净值拼接重复日期**：相邻段测试窗口按自然月叠加（`_add_period` 加月返回下月同一天）时，段 N 尾日与段 N+1 首日重叠 1 个交易日（如 09-01 出现两次），全局净值曲线现按日期去重（保留先出现的点），正常执行与断点续跑两条路径都覆盖
+
+### Changed
+- 单因子面板"开始测试/收起"按钮容器宽度补偿微调，与上方表单第 4 列按钮左对齐（`SingleFactorTestPanel.tsx`）
+
 ## [1.6.3] - 2026-09-02
 
 ### Fixed（内存治理：反复跑单因子/回测后进程内存持续爬升）

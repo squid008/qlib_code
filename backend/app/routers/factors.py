@@ -128,7 +128,7 @@ def list_datasets():
 def get_factor_catalog(dataset: str = "Alpha158"):
     """返回某特征集的因子目录：{dataset, total, groups:[{group, fields:[{name,expression,category,description}]}], flat:[...]}"""
     available = {reg["dataset"].lower() for reg in FACTOR_PROVIDERS}
-    if dataset.lower() not in available and dataset.lower() != "alpha360":
+    if dataset.lower() not in ("mixed",) and dataset.lower() not in available and dataset.lower() != "alpha360":
         raise HTTPException(status_code=404, detail=f"未知特征集: {dataset}")
     return get_catalog(dataset)
 

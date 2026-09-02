@@ -266,12 +266,16 @@ def _compute_ic(pred_label):
 
 
 def _compute_analysis(model, dataset, instruments, seg_label: str, benchmark: Optional[str] = None,
-                      label_horizon: int = 2, rebalance_period: int = 1):
+                      label_horizon: int = 2, rebalance_period: int = 1,
+                      clip_start: Optional[str] = None):
     """计算某段的分析数据：分层回测（test 段）+ 训练/测试集 IC 曲线。
 
     benchmark: 基准指数代码（如 SH000300），用于在分层图上叠加基准累计收益线。
     label_horizon: 预测周期（天），分层/IC 用未来 N 日收益，与训练 label 口径一致。
     rebalance_period: 分层持仓周期（天，算法A）。1=每日重排；>1=调仓日分组持有到下一调仓日。
+    clip_start: 可选，统计起点日期（YYYY-MM-DD）。滚动回测"首段预热"时，预测范围
+      会为了给回测首日调仓提供 T-1 信号而提前 n_days_hold 个交易日；但 IC/分层/汇总
+      只应统计回测窗口内的点，因此把早于 clip_start 的预热期预测裁剪掉，避免污染指标。
     返回 dict:
       { "layers": {segment, groups}, "ic_train": {...}, "ic_test": {...},
         "test_pl": DataFrame|None, "train_pl": DataFrame|None }
@@ -280,6 +284,12 @@ def _compute_analysis(model, dataset, instruments, seg_label: str, benchmark: Op
     """
     test_pl = _get_pred_label(model, dataset, instruments, "test", label_horizon=label_horizon)
     train_pl = _get_pred_label(model, dataset, instruments, "train", label_horizon=label_horizon)
+    # 裁剪预热期预测点（保留回测窗口内）后再做 IC/分层，保证口径与回测一致
+    if clip_start is not None and test_pl is not None and len(test_pl):
+        ts = pd.Timestamp(clip_start)
+        test_pl = test_pl[test_pl.index.get_level_values("datetime") >= ts]
+        if len(test_pl) == 0:
+            test_pl = None
 
     # 基准累计收益（与分层同日期区间）
     benchmark_ret = None

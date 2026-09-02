@@ -367,7 +367,10 @@ export default function SingleFactorTestPanel({
             <option value="backward">后复权</option>
           </select>
         </label>
-        <div className="flex items-end md:w-[calc((100%-3rem)/4)]">
+        {/* 按钮容器：宽度补偿面板 p-3+border 相对表单 p-6 的 13px×2 偏移，
+            使按钮左端与上方表单第 4 列（"单因子测试/收起单因子测试"按钮列）对齐，
+            右端保持在面板内容右缘不动。 */}
+        <div className="flex items-end md:w-[calc((100%-3rem)/4-6.5px)]">
           {running ? (
             <button
               type="button"

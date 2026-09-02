@@ -64,11 +64,17 @@ def _data_version() -> str:
     return "unknown"
 
 
-def _cache_path(instruments, exprs, start_time, end_time) -> str:
+def _cache_path(instruments, exprs, names, start_time, end_time) -> str:
+    """缓存 key 必须同时含表达式与列名（names）。
+
+    同一批表达式在不同 Handler 下可能映射不同列名（如"混合"模式下 Alpha158/360
+    的特征会加 A158_/A360_ 前缀），若 key 只含表达式会导致跨场景命中脏缓存。
+    """
     parts = [
         "v1",
         _norm_instruments(instruments),
         "\x01".join(str(e) for e in exprs),
+        "\x01".join(str(n) for n in names) if names else "",
         str(start_time),
         str(end_time),
         _data_version(),
@@ -121,10 +127,10 @@ class CachedQlibDataLoader(QlibDataLoader):
 
         out = {}
         for grp, (exprs, names) in self.fields.items():
-            # feature 与 label 都走缓存，但 key 都包含各自的表达式：
+            # feature 与 label 都走缓存，但 key 都包含各自的表达式与列名：
             #  - feature key 不含 label 配置 → 改预测周期(label_horizon)时 feature 仍命中；
             #  - label key 含 label 表达式（含 label_horizon）→ 改动后 label 单独重算（便宜）。
-            path = _cache_path(instruments, exprs, start_time, end_time)
+            path = _cache_path(instruments, exprs, names, start_time, end_time)
             df = _load_cache(path)
             if df is None:
                 df = self.load_group_df(instruments, exprs, names, start_time, end_time, grp)

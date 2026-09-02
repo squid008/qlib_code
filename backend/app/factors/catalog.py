@@ -116,8 +116,34 @@ FACTOR_PROVIDERS = [
 ]
 
 
+def _prefix_records(records: List[Dict[str, str]], prefix: str) -> List[Dict[str, str]]:
+    """给目录记录的名字加前缀（如 A158_/A360_），供混合模式勾选与后端前缀解析。"""
+    return [{**r, "name": prefix + r["name"]} for r in records]
+
+
+def get_mixed_catalog() -> Dict[str, object]:
+    """混合特征集目录：Alpha158（A158_ 前缀）+ Alpha360（A360_ 前缀）合成。
+
+    前端 feature=mixed 时用它勾选子集，勾选名带前缀传给 MixedHandler。
+    结构沿用单集的 {dataset,total,groups:[{group,fields}],flat}。
+    """
+    from .handler import MIX_PREFIX_ALPHA158, MIX_PREFIX_ALPHA360
+
+    g158 = {"group": "Alpha158 (前缀 A158_)", "fields": _prefix_records(_alpha158_provider(), MIX_PREFIX_ALPHA158)}
+    g360 = {"group": "Alpha360 (前缀 A360_)", "fields": _prefix_records(_alpha360_provider(), MIX_PREFIX_ALPHA360)}
+    flat = g158["fields"] + g360["fields"]
+    return {
+        "dataset": "mixed",
+        "total": len(flat),
+        "groups": [g158, g360],
+        "flat": flat,
+    }
+
+
 def get_catalog(dataset: str = "Alpha158") -> Dict[str, object]:
-    """返回某个特征集的因子目录（按分类分组）。"""
+    """返回某个特征集的因子目录（按分类分组）。dataset=mixed 返回合成目录。"""
+    if dataset.lower() == "mixed":
+        return get_mixed_catalog()
     for reg in FACTOR_PROVIDERS:
         if reg["dataset"].lower() == dataset.lower():
             records = reg["provider"]()

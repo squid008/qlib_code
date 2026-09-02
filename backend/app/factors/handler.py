@@ -313,3 +313,130 @@ class FormulaHandler(DataHandlerLP):
         # 原生价，含分红送转收益；前/后复权等价，见 adjust.py docstring）。
         n = self._label_horizon
         return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1", self._price_adjust)], ["LABEL0"]
+
+
+# ---------------------------------------------------------------------------
+# 混合特征集 Handler（M3）：同一份 dataset 同时使用 Alpha158 子集 + Alpha360 子集
+# + 自定义公式因子。Alpha158/360 特征名加前缀避免跨来源重名（如 CLOSE0 两套都有）：
+#   A158_<name> / A360_<name>；自定义公式特征名用公式名本身。
+# fields 传带前缀的特征名列表（None=该来源全量），formulas 传公式原文。
+# ---------------------------------------------------------------------------
+MIX_PREFIX_ALPHA158 = "A158_"
+MIX_PREFIX_ALPHA360 = "A360_"
+_MIX_A158_CONF = {
+    "kbar": {},
+    "price": {"windows": [0], "feature": ["OPEN", "HIGH", "LOW", "VWAP"]},
+    "rolling": {},
+}
+
+
+class MixedHandler(DataHandlerLP):
+    """Alpha158 + Alpha360 + 自定义公式 的混合 Handler。
+
+    - fields：带前缀特征名（A158_KMID / A360_CLOSE0...）。为 None 表示两套 Alpha 全量。
+    - formulas：自定义公式原文列表（附加特征；含未实现有状态算子时报错）。
+    learn_processors 沿用公式路径的 CleanInf（公式可能产生 ±inf，先清洗再标准化）。
+    使用 CachedQlibDataLoader：特征磁盘缓存 key 已含列名，跨场景不会命中脏缓存。
+    """
+
+    def __init__(
+        self,
+        fields: Optional[List[str]] = None,
+        formulas: Optional[List[str]] = None,
+        label_horizon: Optional[int] = 2,
+        instruments="csi500",
+        start_time=None,
+        end_time=None,
+        freq="day",
+        infer_processors=None,
+        learn_processors=None,
+        fit_start_time=None,
+        fit_end_time=None,
+        process_type=DataHandlerLP.PTYPE_A,
+        filter_pipe=None,
+        inst_processors=None,
+        price_adjust: str = "none",
+        **kwargs,
+    ):
+        ensure_ops_registered()
+        from qlib.contrib.data.handler import check_transform_proc, _DEFAULT_LEARN_PROCESSORS
+
+        if infer_processors is None:
+            infer_processors = []
+        if learn_processors is None:
+            learn_processors = [
+                {"class": "CleanInf", "module_path": "app.factors.handler"},
+                *_DEFAULT_LEARN_PROCESSORS,
+            ]
+        infer_processors = check_transform_proc(infer_processors, fit_start_time, fit_end_time)
+        learn_processors = check_transform_proc(learn_processors, fit_start_time, fit_end_time)
+
+        self._selected = set(fields) if fields else None
+        self._formulas = list(formulas or [])
+        self._label_horizon = max(1, int(label_horizon or 2))
+        self._price_adjust = normalize_mode(price_adjust)
+
+        data_loader = {
+            "class": "CachedQlibDataLoader",
+            "module_path": "app.engine.feature_cache",
+            "kwargs": {
+                "config": {
+                    "feature": self.get_feature_config(),
+                    "label": kwargs.pop("label", self.get_label_config()),
+                },
+                "filter_pipe": filter_pipe,
+                "freq": freq,
+                "inst_processors": inst_processors,
+            },
+        }
+        super().__init__(
+            instruments=instruments,
+            start_time=start_time,
+            end_time=end_time,
+            data_loader=data_loader,
+            infer_processors=infer_processors,
+            learn_processors=learn_processors,
+            process_type=process_type,
+            **kwargs,
+        )
+
+    def _alpha_block(self, dl_config_call, conf, prefix: str):
+        """取一个 Alpha 来源的 (exprs, names)；按 selected 的对应前缀过滤，names 加前缀。"""
+        fields, names = dl_config_call(conf) if conf is not None else dl_config_call()
+        if self._selected is not None:
+            keep = {s[len(prefix):] for s in self._selected if s.startswith(prefix)}
+            if not keep:
+                return [], []
+            fields = [f for f, n in zip(fields, names) if n in keep]
+            names = [n for n in names if n in keep]
+        return list(fields), [prefix + n for n in names]
+
+    def _translate_formulas(self) -> tuple:
+        expressions, names = [], []
+        for text in self._formulas:
+            t = translate_formula(text)
+            if t.has_patch:
+                raise CodeGenError(
+                    f"公式[{t.name}]含尚未实现的有状态算子（{t.expression}），"
+                    f"请先实现外挂算子或改用其他函数")
+            expressions.append(t.expression)
+            names.append(t.name)
+        return expressions, names
+
+    def get_feature_config(self):
+        e158, n158 = self._alpha_block(Alpha158DL.get_feature_config, _MIX_A158_CONF, MIX_PREFIX_ALPHA158)
+        e360, n360 = self._alpha_block(Alpha360DL.get_feature_config, None, MIX_PREFIX_ALPHA360)
+        eF, nF = self._translate_formulas()
+        exprs = e158 + e360 + eF
+        names = n158 + n360 + nF
+        if len(set(names)) != len(names):
+            dup = sorted({n for n in names if names.count(n) > 1})
+            raise ValueError(f"混合特征名冲突: {dup}（请检查自定义公式命名）")
+        # 复权：none → 价格字段转真实价($close/$factor)；forward/backward → 原生后复权价
+        # ($close，前/后复权对比率因子等价，见 adjust.py docstring)
+        exprs = [adjust_expr(e, self._price_adjust) for e in exprs]
+        return exprs, names
+
+    def get_label_config(self):
+        n = self._label_horizon
+        return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1", self._price_adjust)], ["LABEL0"]
