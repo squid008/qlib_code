@@ -1,6 +1,6 @@
 # Qlib 量化回测平台
 
-> **当前版本：v1.6.2**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+> **当前版本：v1.6.3**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
 >
 > 各版本更新记录见 **[`md/change_log.md`](./md/change_log.md)**（按 Keep a Changelog 规范）。
 
@@ -410,6 +410,7 @@ backend/app/engine/patches/
 | `QLIB_TASK_MEM_GB` | 单个回测任务估算内存（GB，默认 3.0） |
 | `QLIB_MEM_HEADROOM` | 系统保留内存比例（默认 0.3） |
 | `QLIB_CANCEL_CHECK_ITER` | 训练中途取消检查频率（每多少轮，默认 10） |
+| `QLIB_DATA_CACHE_GB` | 进程内共享数据缓存上限（GB）。默认按机器可用内存动态自适应 `clamp(可用×15%, 0.5, 4)`（16G≈2G / 48G≈4G / 96G 服务器封顶 4G）；大内存服务器可设 `8` 等放大以提升跨任务复用命中 |
 
 ---
 

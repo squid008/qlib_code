@@ -3,6 +3,16 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.6.3] - 2026-09-02
+
+### Fixed（内存治理：反复跑单因子/回测后进程内存持续爬升）
+- **单因子任务结果瘦身**（`routers/factors.py`）：任务列表保留 50 条元信息（供刷新恢复 running），但完整 result（含全部因子大 dict）只保留最近 5 条，更早的 `result` 置 `None`，任务结束自动释放——此前每条成功任务都完整驻留，多次测试累积数百 MB。
+- **回测进程内共享缓存自动逐出 + 自适应上限**（`engine/data_cache.py`）：`SHARED_CACHE` 此前只进不出、无上限（滚动回测每段缓存一份全池×区间的 label/ret 面板）。现增加节流式自动逐出（超限按"引用最少优先"淘汰），上限按机器可用内存动态自适应 `clamp(可用×15%, 0.5G, 4G)`；可用环境变量 `QLIB_DATA_CACHE_GB` 显式覆盖（服务器可调大）。与并发预算共用 `engine/resource.py` 内存口径，多人并发时缓存自动收紧。
+- **基准收益缓存加 LRU 上限**（`engine/analysis.py`）：`_BENCH_CACHE` 200 条封顶。
+
+### Changed
+- 单因子 5 分位悬停：配对日数单独换行放最后一行；删除"已按剔除开关过滤"误导说明（不勾选时确实不剔除，剔除与否由开关控制）。
+
 ## [1.6.2] - 2026-09-02
 
 ### Fixed / Changed（单因子测试统计口径与展示收敛）

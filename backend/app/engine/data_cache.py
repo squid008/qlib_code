@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import os
 import threading
 from typing import FrozenSet, List, Optional, Tuple
 
@@ -25,12 +26,41 @@ import pandas as pd
 _CACHE_LOCK = threading.Lock()
 
 
+def _auto_cache_limit_gb() -> float:
+    """共享数据缓存的自适应内存上限（GB）。
+
+    - 环境变量 `QLIB_DATA_CACHE_GB` 显式指定则优先（服务器部署者可固定，如 8）；
+    - 未指定则按【当前可用内存】动态自适应：limit = clamp(可用 × 0.15, 0.5, 4.0)。
+      与并发任务共用同一内存口径（engine/resource.py）：任务并行占用内存后可用内存下降，
+      缓存会自动收紧逐出；机器内存越大/越空闲，缓存越宽松（16G 家机 ≈ 2G、48G ≈ 4G、
+      96G 服务器 = 4G 封顶，可再调 QLIB_DATA_CACHE_GB 放大）。
+    """
+    env = os.environ.get("QLIB_DATA_CACHE_GB")
+    if env:
+        try:
+            return max(0.25, float(env))
+        except ValueError:
+            pass
+    try:
+        from . import resource
+
+        avail = resource.memory_available_gb()
+        return max(0.5, min(4.0, round(avail * 0.15, 1)))
+    except Exception:
+        return 1.0
+
+
 class DataCache:
     """线程安全的进程内数据缓存（单例）。"""
 
-    def __init__(self):
+    def __init__(self, max_gb: Optional[float] = None):
         self._cache: dict = {}
         self._lock = threading.Lock()
+        # 缓存内存上限（GB）：None=按当前可用内存动态自适应（见 _auto_cache_limit_gb）；
+        # 传具体数值=固定上限（≤0 表示禁用自动逐出）。每次加载后节流检查，
+        # 超限按"引用最少优先"逐出，防止不同 (股票池, 区间) 的特征面板无限累积。
+        self._max_gb = max_gb if max_gb is not None and max_gb > 0 else None
+        self._load_count = 0
 
     # ------------------------------------------------------------------
     # 键规范化：提高不同调用之间的命中率
@@ -69,7 +99,23 @@ class DataCache:
                 hit["refs"] += 1
                 return hit["df"]
             self._cache[key] = {"df": df, "refs": 1}
+        self._maybe_evict()  # 锁外做容量检查，避免持锁扫描
         return df
+
+    def _maybe_evict(self) -> None:
+        """节流式内存逐出：每 N 次加载才做一次全量估算，超限按引用最少优先逐出。
+
+        上限 = 构造时固定值（若有）或按当前可用内存动态自适应（_auto_cache_limit_gb）。
+        删除缓存条目不影响已取出并持本地引用的调用方；下次再 get_or_load 会重新加载。
+        """
+        self._load_count += 1
+        if self._load_count % 5 != 0:
+            return
+        limit = self._max_gb if self._max_gb is not None else _auto_cache_limit_gb()
+        try:
+            self.evict_if_over(limit)
+        except Exception:
+            pass
 
     def get(self, instruments, fields, start, end):
         """只读命中查询（不加载）。未命中返回 None。"""
@@ -138,4 +184,6 @@ class DataCache:
 
 
 # 全局共享的单例缓存实例（进程内所有回测任务共用）
-SHARED_CACHE = DataCache()
+# 上限默认按机器可用内存动态自适应（16G≈2G / 48G≈4G / 服务器96G=4G封顶），
+# 可用 QLIB_DATA_CACHE_GB 显式覆盖（如服务器固定 8）。
+SHARED_CACHE = DataCache(max_gb=None)

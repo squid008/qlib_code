@@ -5,15 +5,18 @@
 均为纯函数/轻依赖（仅 pandas / qlib.data），不依赖回测编排逻辑，便于单测。
 """
 import threading
+from collections import OrderedDict
 from typing import Optional
 
 import pandas as pd
 
 
-# 基准累计收益结果的进程内缓存（按 code+start+end），线程安全。
+# 基准累计收益结果的进程内缓存（按 code+start+end），线程安全，带条数上限防无界增长。
 class _BenchCache:
+    _MAX_ENTRIES = 200
+
     def __init__(self):
-        self._data: dict = {}
+        self._data: "OrderedDict" = OrderedDict()
         self._lock = threading.Lock()
 
     def get(self, code: str, start, end):
@@ -24,7 +27,11 @@ class _BenchCache:
     def put(self, code: str, start, end, result):
         key = (code, str(start), str(end))
         with self._lock:
+            if key in self._data:
+                self._data.move_to_end(key)
             self._data[key] = result
+            while len(self._data) > self._MAX_ENTRIES:
+                self._data.popitem(last=False)
 
 
 _BENCH_CACHE = _BenchCache()

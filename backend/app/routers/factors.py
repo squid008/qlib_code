@@ -158,6 +158,10 @@ class SingleFactorTestRequest(BaseModel):
 # ---------- 单因子测试异步任务：POST 提交返回 task_id，GET 轮询进度/结果 ----------
 # 进度存储为进程内内存 dict（本地单用户工具，无需持久化）；任务完成后保留最近 _SFT_MAX_TASKS 条。
 _SFT_MAX_TASKS = 50
+# 内存治理：任务列表最多保留 _SFT_MAX_TASKS 条元信息；但完整 result（items 含全部因子的
+# 大 dict）只保留最近 _SFT_RESULT_KEEP 个已完成任务，更早的 result 置 None 释放长驻内存
+# （此前每条成功任务都完整驻留，多测几次单因子后 result 总量可占数百 MB，导致进程内存持续高位）。
+_SFT_RESULT_KEEP = 5
 _SFT_TASKS: dict[str, dict] = {}
 _SFT_LOCK = threading.Lock()
 
@@ -170,6 +174,19 @@ def _sft_store(task_id: str, state: dict) -> None:
             finished = [k for k, v in _SFT_TASKS.items() if v.get("status") in ("success", "failed")]
             for k in sorted(finished, key=lambda k: _SFT_TASKS[k].get("ts", 0))[: len(_SFT_TASKS) - _SFT_MAX_TASKS]:
                 _SFT_TASKS.pop(k, None)
+
+
+def _sft_trim_results() -> None:
+    """内存治理：已完成任务只保留最近 _SFT_RESULT_KEEP 条的完整 result，更早的置 None。"""
+    with _SFT_LOCK:
+        finished = sorted(
+            (k for k, v in _SFT_TASKS.items() if v.get("status") in ("success", "failed")),
+            key=lambda k: _SFT_TASKS[k].get("ts", 0),
+            reverse=True,
+        )
+        for k in finished[_SFT_RESULT_KEEP:]:
+            if _SFT_TASKS[k].get("result") is not None:
+                _SFT_TASKS[k]["result"] = None
 
 
 def _sft_get(task_id: str):
@@ -257,6 +274,8 @@ def single_factor_test(req: SingleFactorTestRequest):
             manager.unregister_external_queued(task_id)
             if acquired:
                 manager.release_slot(task_id)
+            # 内存治理：任务结束立即释放超龄任务的完整结果
+            _sft_trim_results()
 
     threading.Thread(target=_run, daemon=True).start()
     return {"task_id": task_id}
