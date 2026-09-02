@@ -234,8 +234,9 @@ export interface FactorTestGroupStats {
 }
 export interface QuintileGroup {
   quantile: number // 1=最低值组 … 5=最高值组（每日横截面分位）
-  count: number
-  mean_ret: number // 该组平均未来收益（原始小数）
+  count: number // 该组剔除后样本总数（观测数）
+  n_days: number // 参与交易日数（日截面口径）
+  mean_ret: number // 该组日截面平均未来收益（每天组均值再跨日平均，原始小数）
 }
 export interface SingleFactorTestResult {
   id: string

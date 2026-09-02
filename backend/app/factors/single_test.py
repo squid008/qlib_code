@@ -344,25 +344,40 @@ def _test_one(
         except Exception:
             pass
 
-    # 5 组分位收益（连续因子）：按每日横截面均分 5 组，汇总每组平均未来收益。
-    # 用于识别 U 型/倒 U 型等非线性关系（单调关系 IC/RankIC 已足够，U 型/倒 U 型两端
-    # 收益相近、diff≈0，必须看全部分组形态）。
+    # 5 组分位收益（连续因子）：按每日横截面均分 5 组，每组收益为【日截面口径】
+    # （每天先取组内样本均值，再对所有参与交易日取平均）——与 0/1 双柱、日配对检验
+    # 一致，避免少数日子的样本集中主导组均值。用于识别 U 型/倒 U 型等非线性关系
+    # （单调关系 IC/RankIC 已足够，U 型/倒 U 型两端收益相近、diff≈0，必须看全部分组形态）。
+    # 注意：分位样本同样应用剔除开关（真实价涨停/停牌，与触发/非触发组同口径，
+    # 见上方 _exclude 语义），否则分位收益含"买不到"样本，与触发收益口径不一致。
     if not result["is_binary"] and len(sub) >= 100:
         try:
             if cancelled is not None and cancelled():
                 raise FactorTestCancelled()
-            dt_pos = sub.index.names.index("datetime")
-            tmp = sub[[col, "LABEL"]].copy()
+            meta = df.loc[sub.index, ["CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]]
+            excl = pd.Series(False, index=sub.index)
+            if exclude_limit_up_signal:
+                excl = excl | mark_limit_up(meta, "CLOSE", "CHANGE")
+            if exclude_limit_up_trade:
+                excl = excl | mark_limit_up(meta, "T1_CLOSE", "T1_CHANGE")
+            if exclude_suspended:
+                excl = excl | meta["T1_CLOSE"].isna()
+            quint = sub.loc[~excl]
+            dt_pos = quint.index.names.index("datetime")
+            tmp = quint[[col, "LABEL"]].copy()
             tmp["_q"] = tmp.groupby(level=dt_pos)[col].transform(
                 lambda x: pd.qcut(x.rank(method="first"), 5, labels=False, duplicates="drop") + 1
             )
             tmp = tmp.dropna(subset=["_q"])
             groups = []
             for q, g in tmp.groupby("_q"):
+                # 日截面：每天组内样本先取均值 → 对所有参与交易日再平均
+                dm = g.groupby(level=dt_pos)["LABEL"].mean()
                 groups.append({
                     "quantile": int(q),
-                    "count": int(len(g)),
-                    "mean_ret": round(float(g["LABEL"].mean()), 6),
+                    "count": int(len(g)),                        # 该组剔除后样本总数（观测数）
+                    "n_days": int(len(dm)),                      # 参与交易日数
+                    "mean_ret": round(float(dm.mean()), 6),      # 日截面平均收益
                 })
             if len(groups) >= 2:
                 result["quintile_ret"] = groups

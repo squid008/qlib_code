@@ -572,14 +572,22 @@ export default function SingleFactorTestPanel({
                 const goodReverse = goodReverseBase && stable
                 const qr = r.quintile_ret ?? []
                 const maxAbs = qr.length > 0 ? Math.max(...qr.map((g) => Math.abs(g.mean_ret))) : 0
+                // 分位收益悬停：直接展示 5 组日截面收益（一行一组），便于横向比较形态
+                const qrTip = qr.length
+                  ? '每日横截面分5组(1=最低值…5=最高值)，日截面平均收益（一天一组样本，已按剔除开关过滤）：\n' +
+                    qr.map((g) => `第${g.quantile}组: ${(g.mean_ret * 100).toFixed(2)}%（配对日数 ${g.n_days ?? '-'}）`).join('\n')
+                  : ''
                 // 0/1 信号的双柱：信号组/非信号组的逐日截面收益均值（日均）
                 const dTrig = r.daily_trig_mean ?? null
                 const dNot = r.daily_not_mean ?? null
                 const hasDaily = dTrig !== null && dNot !== null && Number.isFinite(dTrig) && Number.isFinite(dNot)
                 const dMax = hasDaily ? Math.max(Math.abs(dTrig), Math.abs(dNot)) : 0
                 // 悬停提示同时显示信号组/非信号组日截面均值 + 配对日差（不论鼠标放在哪个柱子上）
+                // t 与"结论/时间集中"判定同口径：优先 HAC 稳健 t（修正自相关/异方差），
+                // 旧结果无 HAC 字段则回退普通 t
+                const dTipLabel = r.daily_t_hac != null ? 'HAC t' : 't'
                 const dailyTip = hasDaily
-                  ? `信号组(触发)：日截面均值 ${dTrig >= 0 ? '+' : ''}${(dTrig * 100).toFixed(3)}% (n=${r.trigger?.count ?? '-'})　|　非信号组(未触发)：日截面均值 ${dNot >= 0 ? '+' : ''}${(dNot * 100).toFixed(3)}% (n=${r.not_trigger?.count ?? '-'})　|　配对日差：${r.daily_diff != null ? `${r.daily_diff >= 0 ? '+' : ''}${(r.daily_diff * 100).toFixed(3)}%` : '-'}（${r.daily_t != null ? `t=${r.daily_t >= 0 ? '+' : ''}${r.daily_t.toFixed(1)}` : ''}）`
+                  ? `触发组：日截面均值 ${dTrig >= 0 ? '+' : ''}${(dTrig * 100).toFixed(3)}%　|　未触发组：日截面均值 ${dNot >= 0 ? '+' : ''}${(dNot * 100).toFixed(3)}%　|　配对日差：${r.daily_diff != null ? `${r.daily_diff >= 0 ? '+' : ''}${(r.daily_diff * 100).toFixed(3)}%` : '-'}（${dT != null ? `${dTipLabel}=${dT >= 0 ? '+' : ''}${dT.toFixed(1)}` : ''}）　|　配对日数：${r.daily_n ?? '-'}`
                   : ''
                 return (
                   <tr key={r.id} className="border-b border-slate-100 dark:border-slate-700">
@@ -602,46 +610,38 @@ export default function SingleFactorTestPanel({
                             <span className="text-emerald-600 font-semibold">0/1</span>
                           ) : (
                             <span className="text-slate-400" title="连续因子按分位数分组：触发 = 前 20% 高分位，未触发 = 后 20% 低分位">
-                              连续·分位
+                              连续
                             </span>
                           )}
                         </td>
                         <td className="text-right px-1">
-                          {r.trigger?.count ?? '-'}
-                          {(r.trigger?.limit_up_excluded_t ?? 0) > 0 && (
-                            <span className="text-amber-600 ml-1" title="信号组：信号日(T)涨停（选股过滤，无前视）剔除数">
-                              -{r.trigger?.limit_up_excluded_t}T涨停
-                            </span>
-                          )}
-                          {(r.trigger?.limit_up_excluded_t1 ?? 0) > 0 && (
-                            <span className="text-amber-600 ml-1" title="信号组：成交日(T+1)涨停（调仓日买不到）剔除数">
-                              -{r.trigger?.limit_up_excluded_t1}T+1涨停
-                            </span>
-                          )}
-                          {(r.trigger?.suspended_excluded ?? 0) > 0 && (
-                            <span className="text-amber-600 ml-1" title="信号组：成交日(T+1)停牌/无行情（买不到）剔除数">
-                              -{r.trigger?.suspended_excluded}停牌
-                            </span>
-                          )}
+                          <span
+                            title={
+                              (r.trigger?.limit_up_excluded_t ?? 0) +
+                                (r.trigger?.limit_up_excluded_t1 ?? 0) +
+                                (r.trigger?.suspended_excluded ?? 0) >
+                              0
+                                ? `触发组已剔除（数字为剔除后样本数）：信号日T涨停 ${r.trigger?.limit_up_excluded_t} · 成交日T+1涨停 ${r.trigger?.limit_up_excluded_t1} · 成交日停牌 ${r.trigger?.suspended_excluded}`
+                                : undefined
+                            }
+                          >
+                            {r.trigger?.count ?? '-'}
+                          </span>
                         </td>
                         <td className="text-right px-1">{fmt(r.trigger?.mean_ret, 3)}</td>
                         <td className="text-right px-1">
-                          {r.not_trigger?.count ?? '-'}
-                          {(r.not_trigger?.limit_up_excluded_t ?? 0) > 0 && (
-                            <span className="text-amber-600 ml-1" title="非信号组（与信号组同口径）：信号日(T)涨停剔除数">
-                              -{r.not_trigger?.limit_up_excluded_t}T涨停
-                            </span>
-                          )}
-                          {(r.not_trigger?.limit_up_excluded_t1 ?? 0) > 0 && (
-                            <span className="text-amber-600 ml-1" title="非信号组（与信号组同口径）：成交日(T+1)涨停剔除数">
-                              -{r.not_trigger?.limit_up_excluded_t1}T+1涨停
-                            </span>
-                          )}
-                          {(r.not_trigger?.suspended_excluded ?? 0) > 0 && (
-                            <span className="text-amber-600 ml-1" title="非信号组（与信号组同口径）：成交日(T+1)停牌/无行情剔除数">
-                              -{r.not_trigger?.suspended_excluded}停牌
-                            </span>
-                          )}
+                          <span
+                            title={
+                              (r.not_trigger?.limit_up_excluded_t ?? 0) +
+                                (r.not_trigger?.limit_up_excluded_t1 ?? 0) +
+                                (r.not_trigger?.suspended_excluded ?? 0) >
+                              0
+                                ? `未触发组已剔除（与触发组同口径，数字为剔除后样本数）：信号日T涨停 ${r.not_trigger?.limit_up_excluded_t} · 成交日T+1涨停 ${r.not_trigger?.limit_up_excluded_t1} · 成交日停牌 ${r.not_trigger?.suspended_excluded}`
+                                : undefined
+                            }
+                          >
+                            {r.not_trigger?.count ?? '-'}
+                          </span>
                         </td>
                         <td className="text-right px-1">{fmt(r.not_trigger?.mean_ret, 3)}</td>
                         <td
@@ -692,10 +692,7 @@ export default function SingleFactorTestPanel({
                               />
                             </div>
                           ) : qr.length > 0 && maxAbs > 0 ? (
-                            <div
-                              className="inline-flex items-end gap-[3px] h-6 align-bottom"
-                              title="按因子值每日横截面分5组（1=最低值组…5=最高值组）的平均未来收益，中间组凸起=倒U型、两端凸起=U型"
-                            >
+                            <div className="inline-flex items-end gap-[3px] h-6 align-bottom" title={qrTip}>
                               {qr.map((g) => {
                                 const h = Math.max(3, Math.round((Math.abs(g.mean_ret) / maxAbs) * 20))
                                 const c = g.mean_ret >= 0 ? 'bg-emerald-500' : 'bg-red-400'
@@ -704,7 +701,7 @@ export default function SingleFactorTestPanel({
                                     key={g.quantile}
                                     className={`w-[6px] ${c}`}
                                     style={{ height: `${h}px` }}
-                                    title={`第${g.quantile}组(1=最低值): 收益 ${(g.mean_ret * 100).toFixed(2)}% (n=${g.count})`}
+                                    title={qrTip}
                                   />
                                 )
                               })}
@@ -753,9 +750,9 @@ export default function SingleFactorTestPanel({
             差值 = 触发均值 − 未触发均值（正数说明触发组未来 {labelHorizon} 日收益更高）；收益按信号日收盘价买入持有 {labelHorizon} 个交易日计算；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
             IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.05（即×100后≥5，日频口径，市值为例0.1以上即为稳定负向）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
             0/1 信号的分位收益列显示"信号组 vs 非信号组"的逐日截面收益均值双柱（每天先算各组平均未来收益，再对所有交易日取均值，防信号聚集虚高），悬停可查看两组数值与配对日差。
-            分位收益：连续因子按每日横截面分 5 组（1=最低值组…5=最高值组）的平均未来收益，柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益。
+            分位收益：连续因子按每日横截面分 5 组（1=最低值组…5=最高值组），每组为日截面平均收益（每天先算组内均值、再对所有参与交易日取平均，与 0/1 双柱同口径，避免少数日子集中主导），柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益；样本已按剔除开关过滤，悬停显示 5 组收益与各自配对日数。
             若出现"方向矛盾"：diff 为正但 IC/ICIR 稳定为负，说明信号由少数触发日主导，逐日横截面方向相反，慎用。
-            若出现"时间集中"：diff 方向显著但按日配对检验（日均差值 t 值 / 胜率）不显著，说明总差值被少数交易日拉高，逐日看并无稳定超额（典型如暴跌抄底类信号），慎用。
+            若出现"时间集中"：diff 方向显著但按日配对检验（日均差值 t 值 / 胜率）不显著，说明总差值被少数交易日拉高，逐日看并无稳定超额（典型如暴跌抄底类信号），慎用。结论判定与提示中的 t 均为 Newey-West HAC 稳健 t。
             有效(反向)：连续因子高分位组收益显著更低（diff&lt;0）、IC/ICIR 稳定为负且方向一致，说明因子与未来收益负相关，反向使用（因子值低时买入）有效，常见于市值、流动性等负向因子。
           </p>
         </div>
