@@ -27,6 +27,9 @@ test1.py
 test2.py
 *.pkl
 
+# AI 临时验算文件（探查/诊断脚本、输出等，可随时安全删除，不入版本库）
+ai_test/
+
 # TypeScript 编译缓存
 *.tsbuildinfo
 

@@ -66,7 +66,7 @@ qlib_code/
 │   └── vite.config.ts            # Vite + 代理配置
 ├── start_backend.bat             # 启动后端
 ├── start_frontend.bat            # 启动前端
-└── run_test2.bat                 # 运行数据验证脚本
+└── ai_test/                      # AI 临时验算文件（探查/诊断脚本、输出等，可随时安全删除，不入版本库）
 ```
 
 ## 快速启动
