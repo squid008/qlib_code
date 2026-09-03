@@ -28,7 +28,23 @@ FIELD_MAP = {
     "TURNOVERRATE": "$turn",
     "VWAP": "$vwap",
     "MARKET_CAP": "$market_cap",
+    # 资金流向字段（moneyflow bin，tools/dump_moneyflow.py 生成）
+    "MF_AMOUNT_MAIN": "$mf_amount_main", "MF_PCT_MAIN": "$mf_pct_main",
+    "MF_AMOUNT_XL": "$mf_amount_xl", "MF_PCT_XL": "$mf_pct_xl",
+    "MF_AMOUNT_L": "$mf_amount_l", "MF_PCT_L": "$mf_pct_l",
+    "MF_AMOUNT_M": "$mf_amount_m", "MF_PCT_M": "$mf_pct_m",
+    "MF_AMOUNT_S": "$mf_amount_s", "MF_PCT_S": "$mf_pct_s",
 }
+
+# ---- 资金流向档位选择函数 L2_PCT(n)/L2_AMO(n) ----
+# n=0 主力(main) 1 超大单(xl) 2 大单(l) 3 中单(m) 4 小单(s)；
+# 与 tools/dump_moneyflow.py 的 MF_FIELDS 下标一致。
+L2_PCT_FIELDS = [
+    "$mf_pct_main", "$mf_pct_xl", "$mf_pct_l", "$mf_pct_m", "$mf_pct_s",
+]
+L2_AMO_FIELDS = [
+    "$mf_amount_main", "$mf_amount_xl", "$mf_amount_l", "$mf_amount_m", "$mf_amount_s",
+]
 
 # ---- 二元运算 → qlib 表达式 ----
 BINOP_MAP = {
@@ -201,6 +217,16 @@ class CodeGen:
         # 忽略绘图/颜色
         if name in IGNORED_OPS:
             raise CodeGenError(f"函数 {name} 是绘图/颜色指令，不生成因子（已忽略）")
+        # 资金流向档位选择：L2_PCT(n)/L2_AMO(n) → 直接对应 dump 的净占比/净额字段
+        if name in ("L2_PCT", "L2_AMO"):
+            if len(e.args) != 1 or not isinstance(e.args[0], Num):
+                raise CodeGenError(
+                    f"{name} 需要 1 个常量档位参数：{name}(n)，"
+                    f"n=0 主力 / 1 超大单 / 2 大单 / 3 中单 / 4 小单")
+            n = int(e.args[0].value)
+            if n not in range(5):
+                raise CodeGenError(f"{name} 档位参数越界：{name}({n})，n 只能取 0~4")
+            return (L2_PCT_FIELDS if name == "L2_PCT" else L2_AMO_FIELDS)[n]
         # Level2
         if name in LEVEL2_OPS:
             raise CodeGenError(

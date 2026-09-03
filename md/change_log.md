@@ -3,6 +3,22 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.6.5] - 2026-09-03
+
+### Added
+- **A 股资金流向数据（moneyflow）接入 qlib**：
+  - 新增 `backend/tools/dump_moneyflow.py`：把东财"资金流向"日频 h5（`E:\rq\moneyflow`，2016-01-04~2026-07-28，10,557,071 行）转成 qlib feature bin（`mf_amount_*` / `mf_pct_*` 前缀，共 10 字段：主力/超大单/大单/中单/小单的净额与净占比），幂等可 `--force`/`--limit`；`cn_data` 已全量写入 ~5,451 只 × 10 bin（54,510 个文件，432.5 MB），源 vs bin 逐日比对一致、勾稽 `main=xl+l` 通过
+  - 公式翻译器新增 **`L2_PCT(n)` / `L2_AMO(n)`**（n=0 主力 / 1 超大单 / 2 大单 / 3 中单 / 4 小单 → 映射到 `mf_pct_*` / `mf_amount_*`），10 个 `mf_*` 字段也可在公式中直接引用；后续同事复制益盟公式只改函数名即可（益盟 `BIGORDER/ORDERAMT` 不做自动转换）
+- **停牌"删行"语义统一（益盟/聚宽口径，重大语义变更）**：
+  - qlib bin 在股票区间内是"每日历日一行、停牌日 NaN"，导致 `Ref/窗口` 在复牌初期把停牌日当一天（复牌首日 `Ref=NaN`、窗口被截断），与益盟/聚宽（行情无停牌行）不一致
+  - 新增外挂算子 **`SR(X[, M])`**（`factors/ops_ext.py`）：按停牌掩码剔除 NaN 行后返回连续交易日序列，读取向前扩展 250 个交易日跨停牌段取历史（复牌首日 `Ref`=停牌前收盘）；`SR($factor,$close)` 支持按 `$close` 掩码删行（factor 停牌日仍有值）
+  - `CachedQlibDataLoader` 默认对 **feature 组表达式统一包 SR**（`strip_suspended=True`）：多因子训练（A158/360/自定义公式/mixed）特征全部按益盟删行语义计算；**label 不包**
+  - 单因子测试：因子表达式包 SR，涨停/停牌判定元数据（CLOSE/CHANGE/T1_*）保持原始含 NaN（停牌剔除逻辑不受影响）
+  - 验证：万科 2016 停牌半年复牌首日 `Ref(close,1)` 由 NaN → 35.514（停牌前收盘）；`RET:CLOSE/REF(CLOSE,1)-1` 复牌日 = -0.0999
+
+### Changed
+- **特征计算语义变更**：训练特征从"补 NaN 行"改为"删停牌行连续交易日"。**此前所有训练/回测结果不可直接复现，需重新跑**（新语义与益盟/聚宽一致）
+
 ## [1.6.4] - 2026-09-02
 
 ### Added

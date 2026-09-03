@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import os
 import pickle
+import re
 
 import pandas as pd
 
@@ -62,6 +63,34 @@ def _data_version() -> str:
     except Exception:
         pass
     return "unknown"
+
+
+# 停牌删行（益盟语义）：哪些叶子字段需要按 $close 掩码删行（自身停牌日可能仍有值）
+_SR_FIELDS_BY_CLOSE_MASK = {
+    "$open", "$high", "$low", "$volume", "$amount", "$vwap", "$change", "$factor", "$market_cap",
+}
+_SR_FIELD_RE = re.compile(r"\$([a-z][a-z0-9_]*)")
+
+
+def _sr_wrap_expr(expr: str) -> str:
+    """把表达式里的行情叶子字段包上 SR（停牌删行 → 益盟/聚宽语义）。
+
+    - $close / $mf_*：按字段自身 NaN 删行（close 自身即停牌掩码；资金流字段只覆盖
+      2016+，按自身删除不会把其无数据期误当停牌）；
+    - 其余行情字段（open/high/low/volume/amount/vwap/change/factor/market_cap）：
+      factor/market_cap 停牌日仍可能有值，必须显式按 $close 掩码删行，
+      否则与已删行的价格字段组合时会把停牌行"外对齐"回来。
+    """
+    def _repl(m):
+        f = "$" + m.group(1)
+        if f == "$close":
+            return "SR($close)"
+        if f in _SR_FIELDS_BY_CLOSE_MASK:
+            return f"SR({f},$close)"
+        if f.startswith("$mf_"):
+            return f"SR({f})"
+        return f  # 未识别的字段保持原样（如 $vwap 等已在掩码集合）
+    return _SR_FIELD_RE.sub(_repl, expr)
 
 
 def _cache_path(instruments, exprs, names, start_time, end_time) -> str:
@@ -119,7 +148,28 @@ class CachedQlibDataLoader(QlibDataLoader):
 
     只缓存 "feature" 组（计算最重的部分）；"label" 组每次现算。
     非 dict config（无分组）时退化为父类行为。
+    strip_suspended=True（默认）：对 feature 组表达式统一包 SR（停牌删行），
+    使训练特征按益盟/聚宽"无停牌行"的连续交易日语义计算；label 不包。
     """
+
+    def __init__(
+        self,
+        config,
+        filter_pipe=None,
+        swap_level=True,
+        freq="day",
+        inst_processors=None,
+        *,
+        strip_suspended: bool = True,
+    ):
+        self._strip_suspended = bool(strip_suspended)
+        super().__init__(
+            config,
+            filter_pipe=filter_pipe,
+            swap_level=swap_level,
+            freq=freq,
+            inst_processors=inst_processors,
+        )
 
     def load(self, instruments=None, start_time=None, end_time=None):
         if not self.is_group:
@@ -127,6 +177,9 @@ class CachedQlibDataLoader(QlibDataLoader):
 
         out = {}
         for grp, (exprs, names) in self.fields.items():
+            if self._strip_suspended and grp == "feature":
+                # 停牌删行（益盟语义）：包装后的表达式参与缓存 key → 语义变更自动刷新缓存
+                exprs = [_sr_wrap_expr(e) for e in exprs]
             # feature 与 label 都走缓存，但 key 都包含各自的表达式与列名：
             #  - feature key 不含 label 配置 → 改预测周期(label_horizon)时 feature 仍命中；
             #  - label key 含 label 表达式（含 label_horizon）→ 改动后 label 单独重算（便宜）。

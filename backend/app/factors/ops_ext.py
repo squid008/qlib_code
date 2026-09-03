@@ -8,6 +8,10 @@
 - BARSLAST(X)：上一次 X 不为 0 到现在的天数（最近一次满足，不限窗口）
 - BARSCOUNT(X)：上市以来交易日数（数据范围内有效值累计）
 - BARSSINCEN(X, N)：N 周期内第一次 X 不为 0 到当前的周期数
+- SR(X)：益盟"删行"语义包装——把 X 序列中的 NaN 行（停牌/无值日）剔除后返回，
+  使后续 Ref/窗口/算术按"有效交易日连续序列"计算（复牌首日 Ref=停牌前收盘，
+  窗口不把停牌日计入），等价于益盟/聚宽"行情无停牌行"的数据语义。
+  用法：SR($close)、SR($mf_pct_main)。
 - DYN_MIN/DYN_MAX/DYN_COUNT/DYN_REF/DYN_SUM：动态窗口版本，
   窗口大小 N 是序列（每个位置用该位置的 N 值），用于 LLV/HHV/COUNT/REF/SUM 的变量周期写法。
   DYN_MIN/DYN_MAX 用稀疏表 RMQ（O(1) 查询），DYN_COUNT/DYN_SUM 用前缀和（O(1) 查询），
@@ -27,6 +31,7 @@ from qlib.data.ops import Operators
 __all__ = [
     "BARSLAST", "BARSCOUNT", "BARSSINCEN",
     "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM",
+    "SR",
     "ensure_ops_registered",
 ]
 
@@ -277,11 +282,66 @@ class DYN_SUM(_DynWindowOp):
         return pd.Series(out, index=idx)
 
 
+# ---------------- SR：益盟"删停牌行"语义包装 ----------------
+
+class SR(ExpressionOps):
+    """SR(X, [M])：按停牌掩码剔除行，返回"只有有效交易日"的连续序列。
+
+    qlib bin 在股票上市区间内"每个日历日一行"，停牌日以 NaN 行存在，导致
+    Ref/窗口在复牌初期把停牌日当"一天"参与运算（复牌首日 Ref=NaN、窗口被截断）。
+    包在叶子字段上后，后续 qlib 内建的 Ref/Mean/Max/算术自然按连续交易日计算
+    → 与益盟/聚宽（行情无停牌行）一致。
+
+    两种用法：
+    - SR($close)：按字段自身 NaN 剔除（行情价格/量字段停牌日为空，等价于停牌掩码）；
+    - SR($factor,$close)：按掩码字段（$close）剔除——factor/market_cap 等停牌日
+      仍有值、自身没有 NaN，必须显式按行情掩码剔除，否则与已删行的价格字段
+      组合时会把停牌行"外对齐"回来。
+    """
+
+    # 删行后为让 Ref/窗口能取到"停牌前的有效值"，读取需向前扩展覆盖可能的停牌段。
+    # 交易日起算；停牌超过该长度的极端情况 Ref 仍会断（罕见，可调大）。
+    LOOKBACK_DAYS = 250
+
+    def __init__(self, feature, mask=None, lookback=None):
+        self.feature = feature
+        self._mask = mask
+        self._lookback = int(lookback) if lookback is not None else self.LOOKBACK_DAYS
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        if self._mask is not None:
+            m = self._mask.load(instrument, start_index, end_index, *args)
+            if len(series) and len(m):
+                if not series.index.equals(m.index):
+                    m = m.reindex(series.index)
+                keep = m.notna()
+                return series[keep.values]
+            # 掩码空（如查询起点早于数据）：退化按自身
+        return series.dropna()
+
+    def __str__(self):
+        # 缓存 key 必须带子表达式/掩码/扩展窗口（同 BARSLAST 的说明）
+        if self._mask is not None:
+            return "SR({},{},{})".format(self.feature, self._mask, self._lookback)
+        return "SR({},{})".format(self.feature, self._lookback)
+
+    def get_longest_back_rolling(self):
+        return self.feature.get_longest_back_rolling()
+
+    def get_extended_window_size(self):
+        # 向前扩展 lookback 天：删行后仍能跨停牌段取到"前一个有效交易日"的值
+        lft, rght = self.feature.get_extended_window_size()
+        return lft + self._lookback, rght
+
+
 # ---------------- 注册机制 ----------------
 
 _ALL_OPS = [
     BARSLAST, BARSCOUNT, BARSSINCEN,
     DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM,
+    SR,
 ]
 
 _registered = False

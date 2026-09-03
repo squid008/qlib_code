@@ -22,6 +22,7 @@ import pandas as pd
 
 from ..engine.limits import mark_limit_up
 from ..engine.adjust import adjust_expr, normalize_mode
+from ..engine.feature_cache import _sr_wrap_expr
 
 
 def _acf(x: np.ndarray, k: int) -> float:
@@ -473,7 +474,10 @@ def run_single_factor_test(
     #   而【涨停/停牌判定字段（CLOSE/CHANGE/T1_CLOSE/T1_CHANGE）恒用真实价
     #   ($close/$factor 与 $change，均东财"不复权"口径且同源)】——涨停价由交易所按真实
     #   价格确定，与复权无关；$change 反推真实昨收即可精确定涨停，除权日不受 factor 跳变影响。
-    adj_exprs = [adjust_expr(e, pa) for e in ordered_exprs]
+    # 因子表达式包 SR（停牌删行→益盟语义）：复牌初期因子连续，信号判断与益盟一致。
+    # label / 涨停停牌判定元数据（CLOSE/CHANGE/T1_*）不包——它们必须保留停牌 NaN 行
+    # （T1 为 NaN = 成交日停牌，是剔除/涨停判断的依据，删行会破坏该逻辑）。
+    adj_exprs = [_sr_wrap_expr(adjust_expr(e, pa)) for e in ordered_exprs]
     fields = (
         adj_exprs
         + [label_expr]
