@@ -25,7 +25,14 @@ from pydantic import BaseModel, Field
 # =====================================================================
 
 class BarData(BaseModel):
-    """行情K线基类（日线/分钟通用字段）"""
+    """
+    行情K线基类（日线/分钟通用字段）。
+
+    抽象基类：不可直接实例化，必须使用子类 DailyBar / MinuteBar，
+    以避免产生无法区分日线/分钟线的"裸K线"对象。
+    注：pydantic v2 的 ModelMetaclass 继承自 ABCMeta，
+    因此这里只需声明抽象属性即可生效，无需显式继承 abc.ABC。
+    """
     instrument: str = Field(..., description="证券代码，统一格式如 sz000001")
     datetime: _dt.datetime = Field(..., description="K线时间（日线为当日，分钟为K线结束时刻）")
     open: float = 0.0
@@ -36,14 +43,27 @@ class BarData(BaseModel):
     amount: float = 0.0
     factor: float = 1.0  # 复权因子
 
+    @property
+    @abc.abstractmethod
+    def bar_kind(self) -> str:
+        """K线类型标记（daily/minute），仅用于阻止裸实例化，不参与序列化"""
+
 
 class DailyBar(BarData):
     """日线数据"""
+
+    @property
+    def bar_kind(self) -> str:
+        return "daily"
 
 
 class MinuteBar(BarData):
     """分钟数据（预留：rqalpha 支持 1/5/15/30/60 分钟）"""
     freq: str = Field("1min", description="分钟频率，如 1min/5min/60min")
+
+    @property
+    def bar_kind(self) -> str:
+        return "minute"
 
 
 class FinancialData(BaseModel):
