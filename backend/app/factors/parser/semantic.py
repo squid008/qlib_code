@@ -27,6 +27,8 @@ BUILTIN_FUNCS = {
     # Level2（留接口：语法支持，计算层待数据）
     "BIGORDER", "ORDER", "ORDERAMT", "ORDERNUM", "ORDERNWP", "ORDERVOL",
     "TRANSACTNUM", "TRANSACTVOL", "ALLASKVOL", "ALLBIDVOL",
+    # 资金流向（moneyflow）：L2_PCT(n)/L2_AMO(n)，n=0主力/1超大/2大/3中/4小
+    "L2_PCT", "L2_AMO",
 }
 
 

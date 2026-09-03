@@ -30,6 +30,12 @@ FIELD_MAP = {
     "TURNOVERRATE": "$turn",
     "VWAP": "$vwap",
     "MARKET_CAP": "$market_cap",
+    # 资金流向字段（moneyflow bin，tools/dump_moneyflow.py 生成）
+    "MF_AMOUNT_MAIN": "$mf_amount_main", "MF_PCT_MAIN": "$mf_pct_main",
+    "MF_AMOUNT_XL": "$mf_amount_xl", "MF_PCT_XL": "$mf_pct_xl",
+    "MF_AMOUNT_L": "$mf_amount_l", "MF_PCT_L": "$mf_pct_l",
+    "MF_AMOUNT_M": "$mf_amount_m", "MF_PCT_M": "$mf_pct_m",
+    "MF_AMOUNT_S": "$mf_amount_s", "MF_PCT_S": "$mf_pct_s",
 }
 
 
