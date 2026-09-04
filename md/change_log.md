@@ -3,6 +3,27 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.6.6] - 2026-09-04
+
+### Fixed
+- **涨停剔除口径对齐交易所/聚宽（重要，影响单因子测试与回测的涨跌停样本）**：
+  - 创业板涨跌停判定号段从 `SZ300/SZ301` 扩为 **`SZ30` 整段**：注册制扩容后号段沿 30 段后延（301 之后启用 302/303/…），此前只认两个前缀会把新号段（如 302132 中航成飞）当主板 10% 漏剔除；现 `SZ302/SZ303/…` 及未来 304/305 均按 20% 判定
+  - 真实价与反推昨收统一 **round 到分**再算涨停价：数据源真实价 = `$close/$factor` 是 float 除法，有尾差（如 `SZ300001` 显示 27.710001 本应 27.71），直接与涨停价比较会在整分边界与聚宽/交易所整分价口径错位；单因子测试剔除与回测 `BoardAwareExchange` 同步生效
+  - 新增 38 条 limits 单测锁定（板块幅度 / 整分口径 / float 尾差封板不漏判 / 新号段涨 10% 不得误判涨停）
+- 修复 golden 回归测试文件自引入起一直漏入库（当时提交只 `git add -u` 暂存了已跟踪文件，CI clone 实际不含该文件）的问题
+
+### Added
+- **GitHub Actions CI 提交 gate**（`.github/workflows/ci.yml`）：push/PR 自动跑 后端 pytest + ruff + 前端 `tsc --noEmit`；qlib 上游源码安装、setup-python pip 缓存
+- **golden 回归测试**（`tests/test_golden_regression.py`）：锁定复权表达式 / SR 算子逻辑与包装 / 缓存 key 敏感性 / L2 资金流翻译等纯逻辑口径
+- **回测主流程 e2e golden**（`tests/test_e2e_backtest.py`，`datareq`+`e2e` 标记，默认排除于日常全量）：custom 滚动两段 + single 一次性训练两条，断言 首段净值不平（防"首段预热"缺陷复发）/ 分层 5 组键齐全 / 交易记录非空；`scripts/check.ps1 -IncludeE2E` 手动对跑（拆分重构前后对比用）
+- 覆盖率基线（`pytest --cov=app`）：纯逻辑 38%；加入 2 条 e2e 后主流程模块 `qlib_engine` 15%→73%、`metrics` 16%→67%、`charts` 3%→86%
+
+### Changed
+- **磁盘存储治理**：回测结束自动按配额 + LRU 节流清理 `feature_cache`/artifacts 磁盘占用（`engine/storage_cleanup.py`），防长期跑回测磁盘爆满
+- **多任务并行核数协调**：多回测任务进程内共享 qlib `C["kernels"]`，按"当前运行任务数"动态分配每任务并行核数（逻辑核 ÷ 运行任务数，环境变量 `QLIB_TASK_JOBS` 可显式指定）；单因子外部任务槽位同步计数，qlib.init 后自动重设
+- **tools 脚本默认路径外置**：`dump_moneyflow.py` / `dump_market_cap.py` 的 `--qlib-dir` 默认 = `QLIB_PROVIDER_URI` → 仓库内 `data/cn_data`（不再写死 `D:\quant`）；moneyflow 源目录支持 `MONEYFLOW_SRC_ROOT` 环境变量
+- CI 依赖补全 `pytest/pyarrow/pydantic-settings`；`.gitignore` 补根目录 `workdir/` 与 `.coverage`
+
 ## [1.6.5] - 2026-09-03
 
 ### Added
