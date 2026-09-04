@@ -204,6 +204,14 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
     # 全局只 init 一次（多线程并发回测时避免重复初始化互相踩踏全局 C/D 状态）
     _ensure_qlib_init(provider_uri)
 
+    # 磁盘治理：feature_cache/artifacts 按配额 + LRU 节流清理（静默，不阻塞回测）
+    try:
+        from .storage_cleanup import cleanup_storage
+
+        cleanup_storage(work_dir)
+    except Exception:
+        pass
+
     # 2) 使用 sqlite 作为实验追踪后端，避免 filesystem 维护模式限制
     _exp_uri = _default_exp_uri(work_dir)
     R.set_uri(_exp_uri)
