@@ -81,3 +81,53 @@ class TestE2ERollingBacktest:
         for key in ["Group1", "Group2", "Group3", "Group4", "Group5"]:
             assert key in merged_groups[0]
         assert len(r.trades or []) > 0
+
+    @pytest.mark.e2e
+    def test_single_split_run(self, tmp_path):
+        """single（一次性训练）主流程：训练窗口训练一次、整段回测区间测试。"""
+        from app.engine import qlib_engine
+        from app.models.backtest import BacktestRequest
+
+        req = BacktestRequest(
+            universe="csi300",
+            instruments=["SH600000", "SH600036", "SZ000001", "SZ000002", "SH600030", "SH601318"],
+            start_date="2021-01-01",
+            end_date="2021-04-30",
+            model="LightGBM",
+            feature="Alpha158",
+            selected_features=["KMID", "ROC5", "MA5"],
+            topk=3,
+            n_days_hold=10,
+            layer_rebalance=1,
+            split_mode="single",
+            train_win=6,
+            train_unit="month",
+            initial_capital=100000000.0,
+        )
+
+        r = qlib_engine.run_backtest(req, work_dir=str(tmp_path), task_id="golden_e2e_single")
+
+        assert r is not None
+        # single 模式不走滚动汇总：report_df 不设 rolling_segments（区别于 custom 的 _aggregate_from_nav）
+        assert (r.report_df or {}).get("rolling_segments") is None
+
+        # 净值曲线完整且不平
+        nav = r.nav or []
+        assert len(nav) > 30
+        first_part = [p["value"] for p in nav[: max(5, len(nav) // 3)] if p.get("value") is not None]
+        assert len(first_part) >= 5
+        assert len({round(v, 6) for v in first_part}) >= 5
+
+        # 关键指标有限且量级合理
+        assert r.total_return is not None and math.isfinite(r.total_return)
+        assert -0.5 < r.total_return < 0.5
+        assert r.annualized_return is not None and math.isfinite(r.annualized_return)
+        assert r.benchmark_return is not None and math.isfinite(r.benchmark_return)
+
+        # 交易齐全；分层：single 段 1 既是自身也是汇总，merged 点含五组键
+        assert len(r.trades or []) > 0
+        merged = (r.layer_returns or {}).get("merged") or {}
+        merged_groups = merged.get("groups") or [{}]
+        assert merged_groups
+        for key in ["Group1", "Group2", "Group3", "Group4", "Group5"]:
+            assert key in merged_groups[0]
