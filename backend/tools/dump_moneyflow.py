@@ -166,13 +166,40 @@ def cal_pos_sub(dates: np.ndarray, cal_pos: dict) -> np.ndarray:
         return np.array(out, dtype=np.int64)
 
 
+def _default_qlib_dir() -> str:
+    """qlib 数据目录默认值：优先环境变量 QLIB_PROVIDER_URI，其次仓库内 data/cn_data。"""
+    env = os.environ.get("QLIB_PROVIDER_URI")
+    if env:
+        return env
+    return str(Path(__file__).resolve().parents[2] / "data" / "cn_data")
+
+
+def _default_moneyflow_root():
+    """moneyflow 源目录默认值：环境变量 MONEYFLOW_SRC_ROOT，其次本机 E:\\rq\\moneyflow。"""
+    env = os.environ.get("MONEYFLOW_SRC_ROOT")
+    if env:
+        return env
+    p = r"E:\rq\moneyflow"
+    return p if os.path.isdir(p) else None
+
+
 def main():
     ap = argparse.ArgumentParser(description="资金流向 h5 → qlib 字段 bin（mf_* 前缀）")
-    ap.add_argument("--src-root", default=r"E:\rq\moneyflow", help="moneyflow h5 目录")
-    ap.add_argument("--qlib-dir", default=r"D:\quant\qlib_code\data\cn_data", help="qlib 数据目录")
+    ap.add_argument(
+        "--src-root",
+        default=_default_moneyflow_root(),
+        help="moneyflow h5 目录（默认 MONEYFLOW_SRC_ROOT 或 E:\\rq\\moneyflow）",
+    )
+    ap.add_argument(
+        "--qlib-dir",
+        default=_default_qlib_dir(),
+        help="qlib 数据目录（默认 QLIB_PROVIDER_URI 或仓库 data/cn_data）",
+    )
     ap.add_argument("--force", action="store_true", help="已存在时覆盖重写")
     ap.add_argument("--limit", type=int, default=None, help="只处理前 N 只股票（冒烟用）")
     args = ap.parse_args()
+    if not args.src_root or not os.path.isdir(args.src_root):
+        ap.error("moneyflow 源目录不存在，请用 --src-root 指定（或设 MONEYFLOW_SRC_ROOT）")
     dump(args.src_root, args.qlib_dir, force=args.force, limit=args.limit)
 
 

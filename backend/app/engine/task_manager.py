@@ -108,6 +108,8 @@ class TaskManager:
         self._update(task_id, status="pending", message=f"排队中{hint}", progress=1.0)
         self._sem.acquire()
         try:
+            # 按当前并发任务数分配 qlib 并行核数（每任务 = 逻辑核/运行任务数）
+            resource.acquire_task_jobs()
             task = self._get(task_id)
             if task is None:
                 return
@@ -116,6 +118,7 @@ class TaskManager:
                 return
             self._execute(task_id, req)
         finally:
+            resource.release_task_jobs()
             self._sem.release()
 
     def _execute(self, task_id: str, req: BacktestRequest):
@@ -264,13 +267,16 @@ class TaskManager:
         external_id 非空时登记为"持有配额"，计入并发统计（running）。
         """
         ok = self._sem.acquire(blocking=False)
-        if ok and external_id:
-            with self._lock:
-                self._external.add(external_id)
+        if ok:
+            resource.acquire_task_jobs()
+            if external_id:
+                with self._lock:
+                    self._external.add(external_id)
         return ok
 
     def release_slot(self, external_id: Optional[str] = None) -> None:
         """归还一个并发配额（与 try_acquire_slot 成对），并注销持有登记。"""
+        resource.release_task_jobs()
         self._sem.release()
         if external_id:
             with self._lock:

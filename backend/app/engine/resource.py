@@ -168,4 +168,66 @@ def resource_summary() -> dict:
         "max_concurrent": max_concurrent(),
         "estimated_total_mem_for_max_gb": estimate_memory_for(max_concurrent()),
         "memory_headroom_ratio": SYSTEM_HEADROOM_RATIO,
+        "task_jobs": task_jobs_for_active(1),
     }
+
+
+# ----------------------------------------------------------------------
+# 任务级并行核数协调
+#
+# 后端多任务在同一进程共享 qlib 全局配置 C["kernels"]（决定 D.features 的
+# dataset_processor 用多少个 worker 并行取数）。若每个任务都用全核，多任务
+# 并发会互相抢占 CPU。方案：按"当前同时运行任务数"动态分配每任务核数
+#   per-task jobs = max(1, 逻辑核数 // 运行任务数)
+# 由 task_manager 在拿到并发许可时 acquire、结束时 release；qlib.init 之后
+# （init 会 reset 配置）再 apply 一次，避免被 init 覆盖。
+# 环境变量 QLIB_TASK_JOBS 可显式指定单任务核数（如服务器想限制为 4）。
+# ----------------------------------------------------------------------
+_jobs_lock = threading.Lock()
+_active_jobs = 0
+
+
+def task_jobs_for_active(active: int) -> int:
+    """给定当前运行任务数，返回每任务允许的并行核数。"""
+    env = os.environ.get("QLIB_TASK_JOBS")
+    if env:
+        try:
+            return max(1, int(env))
+        except ValueError:
+            pass
+    return max(1, cpu_logical() // max(1, active))
+
+
+def _apply_kernels(jobs: int) -> None:
+    """把 qlib 的并行 worker 数设置为 jobs（失败静默：未 init/低版本均容忍）。"""
+    try:
+        from qlib.config import C
+
+        C["kernels"] = jobs
+    except Exception:
+        pass
+
+
+def acquire_task_jobs() -> int:
+    """任务开始：登记一个运行任务，并按当前并发数分配 qlib 并行核数。返回核数。"""
+    global _active_jobs
+    with _jobs_lock:
+        _active_jobs += 1
+        jobs = task_jobs_for_active(_active_jobs)
+        _apply_kernels(jobs)
+        return jobs
+
+
+def release_task_jobs() -> None:
+    """任务结束：撤销登记并重算 qlib 并行核数（回到剩余任务可用的核数）。"""
+    global _active_jobs
+    with _jobs_lock:
+        _active_jobs = max(0, _active_jobs - 1)
+        _apply_kernels(task_jobs_for_active(max(1, _active_jobs)))
+
+
+def apply_active_jobs() -> None:
+    """在 qlib.init() 之后调用：init 会 reset 全局配置，需按当前并发重设 kernels。"""
+    with _jobs_lock:
+        jobs = task_jobs_for_active(max(1, _active_jobs))
+        _apply_kernels(jobs)

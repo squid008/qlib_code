@@ -204,6 +204,14 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
     # 全局只 init 一次（多线程并发回测时避免重复初始化互相踩踏全局 C/D 状态）
     _ensure_qlib_init(provider_uri)
 
+    # qlib.init 会 reset 全局配置 → 按当前并发任务数重新分配每任务并行核数
+    try:
+        from .resource import apply_active_jobs
+
+        apply_active_jobs()
+    except Exception:
+        pass
+
     # 磁盘治理：feature_cache/artifacts 按配额 + LRU 节流清理（静默，不阻塞回测）
     try:
         from .storage_cleanup import cleanup_storage

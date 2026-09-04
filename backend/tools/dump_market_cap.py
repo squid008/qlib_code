@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import numpy as np
@@ -108,10 +109,22 @@ def dump_field(src: str, qlib_dir: str, field: str, force: bool = False) -> None
     print(f"完成：写入 {written} 只，跳过（已存在/无数据）{skipped} 只")
 
 
+def _default_qlib_dir() -> str:
+    """qlib 数据目录默认值：优先环境变量 QLIB_PROVIDER_URI，其次仓库内 data/cn_data。"""
+    env = os.environ.get("QLIB_PROVIDER_URI")
+    if env:
+        return env
+    return str(Path(__file__).resolve().parents[2] / "data" / "cn_data")
+
+
 def main():
     ap = argparse.ArgumentParser(description="米筐 rqalpha others h5 → qlib 字段 bin")
     ap.add_argument("--src", required=True, help="源 h5 文件路径，如 E:/rq/others/market-cap/market_cap.h5")
-    ap.add_argument("--qlib-dir", default=r"D:\quant\qlib_code\data\cn_data", help="qlib 数据目录")
+    ap.add_argument(
+        "--qlib-dir",
+        default=_default_qlib_dir(),
+        help="qlib 数据目录（默认 QLIB_PROVIDER_URI 或仓库 data/cn_data）",
+    )
     ap.add_argument("--field", default="market_cap", help="目标字段名（写入 {field}.day.bin）")
     ap.add_argument("--force", action="store_true", help="已存在时覆盖重写")
     args = ap.parse_args()

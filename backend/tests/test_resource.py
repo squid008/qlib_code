@@ -43,3 +43,40 @@ class TestResourceDetection:
                   "memory_headroom_ratio"]:
             assert k in s
         assert s["max_concurrent"] >= 1
+
+
+class TestTaskJobsCoordination:
+    """任务级并行核数协调（⑤：多任务共享 qlib C["kernels"]）。"""
+
+    def test_jobs_share_cpu(self, monkeypatch):
+        # 16 核：1 任务用满 16，2 任务各 8，4 任务各 4
+        monkeypatch.setenv("QLIB_TASK_JOBS", "")  # 不启用显式覆盖
+        monkeypatch.delenv("QLIB_TASK_JOBS", raising=False)
+        monkeypatch.setattr(resource, "cpu_logical", lambda: 16)
+        assert resource.task_jobs_for_active(1) == 16
+        assert resource.task_jobs_for_active(2) == 8
+        assert resource.task_jobs_for_active(4) == 4
+        assert resource.task_jobs_for_active(20) == 1  # 不出现 0
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("QLIB_TASK_JOBS", "4")
+        assert resource.task_jobs_for_active(1) == 4
+        assert resource.task_jobs_for_active(3) == 4
+
+    def test_acquire_release_counting(self, monkeypatch):
+        monkeypatch.setattr(resource, "_apply_kernels", lambda n: None)
+        resource._active_jobs = 0
+        try:
+            n1 = resource.acquire_task_jobs()
+            n2 = resource.acquire_task_jobs()
+            assert resource._active_jobs == 2
+            assert n1 == resource.task_jobs_for_active(1)
+            assert n2 == resource.task_jobs_for_active(2)
+            resource.release_task_jobs()
+            assert resource._active_jobs == 1
+            resource.release_task_jobs()
+            assert resource._active_jobs == 0
+            resource.release_task_jobs()  # 不会降到负数
+            assert resource._active_jobs == 0
+        finally:
+            resource._active_jobs = 0
