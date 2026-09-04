@@ -126,6 +126,44 @@ class TestLevel2:
             translate_formula("OUT:BIGORDER(1,2);")
 
 
+class TestMoneyflowL2:
+    """L2_PCT/L2_AMO 档位 + 可选买卖方向参数（moneyflow3 派生字段）。"""
+
+    def test_l2_amo_net(self):
+        """L2_AMO(n) 无方向：净额字段（向后兼容）。"""
+        assert translate_formula("OUT:L2_AMO(0);").expression == "$mf_amount_main"
+        assert translate_formula("OUT:L2_AMO(3);").expression == "$mf_amount_m"
+
+    def test_l2_amo_direction(self):
+        """L2_AMO(n,b|s) 大小写不敏感 → 买入/卖出字段。"""
+        assert translate_formula("OUT:L2_AMO(0,B);").expression == "$mf_amount_main_b"
+        assert translate_formula("OUT:L2_AMO(0,b);").expression == "$mf_amount_main_b"
+        assert translate_formula("OUT:L2_AMO(0,s);").expression == "$mf_amount_main_s"
+        assert translate_formula("OUT:L2_AMO(1,S);").expression == "$mf_amount_xl_s"
+
+    def test_l2_pct(self):
+        """L2_PCT(n) 净占比 / 方向占比。"""
+        assert translate_formula("OUT:L2_PCT(0);").expression == "$mf_pct_main"
+        assert translate_formula("OUT:L2_PCT(2,b);").expression == "$mf_pct_l_b"
+        assert translate_formula("OUT:L2_PCT(4,s);").expression == "$mf_pct_s_s"
+
+    def test_l2_direct_field(self):
+        """方向字段也可在公式中直接引用。"""
+        assert translate_formula("OUT:MF_AMOUNT_MAIN_B;").expression == "$mf_amount_main_b"
+        assert translate_formula("OUT:MF_PCT_MAIN_B;").expression == "$mf_pct_main_b"
+
+    def test_l2_errors(self):
+        """参数错误分支。"""
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:L2_AMO(5);")          # 档位越界
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:L2_AMO(0,X);")        # 方向非法
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:L2_AMO(0,B,1);")      # 参数过多
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:L2_AMO();")           # 缺档位
+
+
 class TestSyntax:
     def test_parse_error(self):
         """语法错误报 ParseError。"""

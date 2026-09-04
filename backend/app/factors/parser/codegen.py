@@ -34,16 +34,50 @@ FIELD_MAP = {
     "MF_AMOUNT_L": "$mf_amount_l", "MF_PCT_L": "$mf_pct_l",
     "MF_AMOUNT_M": "$mf_amount_m", "MF_PCT_M": "$mf_pct_m",
     "MF_AMOUNT_S": "$mf_amount_s", "MF_PCT_S": "$mf_pct_s",
+    # 资金流向买卖方向字段（moneyflow3 源派生，dump_moneyflow.py 生成；b=买入/s=卖出）
+    "MF_AMOUNT_MAIN_B": "$mf_amount_main_b", "MF_AMOUNT_MAIN_S": "$mf_amount_main_s",
+    "MF_PCT_MAIN_B": "$mf_pct_main_b", "MF_PCT_MAIN_S": "$mf_pct_main_s",
+    "MF_AMOUNT_XL_B": "$mf_amount_xl_b", "MF_AMOUNT_XL_S": "$mf_amount_xl_s",
+    "MF_PCT_XL_B": "$mf_pct_xl_b", "MF_PCT_XL_S": "$mf_pct_xl_s",
+    "MF_AMOUNT_L_B": "$mf_amount_l_b", "MF_AMOUNT_L_S": "$mf_amount_l_s",
+    "MF_PCT_L_B": "$mf_pct_l_b", "MF_PCT_L_S": "$mf_pct_l_s",
+    "MF_AMOUNT_M_B": "$mf_amount_m_b", "MF_AMOUNT_M_S": "$mf_amount_m_s",
+    "MF_PCT_M_B": "$mf_pct_m_b", "MF_PCT_M_S": "$mf_pct_m_s",
+    "MF_AMOUNT_S_B": "$mf_amount_s_b", "MF_AMOUNT_S_S": "$mf_amount_s_s",
+    "MF_PCT_S_B": "$mf_pct_s_b", "MF_PCT_S_S": "$mf_pct_s_s",
 }
 
-# ---- 资金流向档位选择函数 L2_PCT(n)/L2_AMO(n) ----
+# ---- 资金流向档位选择函数 L2_PCT(n)/L2_AMO(n[,b|s]) ----
 # n=0 主力(main) 1 超大单(xl) 2 大单(l) 3 中单(m) 4 小单(s)；
 # 与 tools/dump_moneyflow.py 的 MF_FIELDS 下标一致。
+# 可选第二参 b=买入/s=卖出（moneyflow3 源派生方向字段）：
+#   L2_AMO(n)      -> 档位 n 净额（万元）   = mf_amount_<档>
+#   L2_AMO(n,b|s)  -> 档位 n 买入/卖出额     = mf_amount_<档>_b/_s
+#   L2_PCT(n)      -> 档位 n 净占比（%）     = mf_pct_<档>
+#   L2_PCT(n,b|s)  -> 档位 n 买入/卖出占比   = mf_pct_<档>_b/_s
+# 口径：net = b − s，pct 统一以"当日总成交额（4 档买之和）"为分母，故
+#   L2_AMO(n,b) − L2_AMO(n,s) == L2_AMO(n)（float32 舍入量级）、
+#   L2_PCT(n) == L2_PCT(n,b) − L2_PCT(n,s)。
 L2_PCT_FIELDS = [
     "$mf_pct_main", "$mf_pct_xl", "$mf_pct_l", "$mf_pct_m", "$mf_pct_s",
 ]
 L2_AMO_FIELDS = [
     "$mf_amount_main", "$mf_amount_xl", "$mf_amount_l", "$mf_amount_m", "$mf_amount_s",
+]
+# 方向字段（行=档位 0..4，列=[买入, 卖出]）
+L2_PCT_DIR_FIELDS = [
+    ["$mf_pct_main_b", "$mf_pct_main_s"],
+    ["$mf_pct_xl_b", "$mf_pct_xl_s"],
+    ["$mf_pct_l_b", "$mf_pct_l_s"],
+    ["$mf_pct_m_b", "$mf_pct_m_s"],
+    ["$mf_pct_s_b", "$mf_pct_s_s"],
+]
+L2_AMO_DIR_FIELDS = [
+    ["$mf_amount_main_b", "$mf_amount_main_s"],
+    ["$mf_amount_xl_b", "$mf_amount_xl_s"],
+    ["$mf_amount_l_b", "$mf_amount_l_s"],
+    ["$mf_amount_m_b", "$mf_amount_m_s"],
+    ["$mf_amount_s_b", "$mf_amount_s_s"],
 ]
 
 # ---- 二元运算 → qlib 表达式 ----
@@ -221,16 +255,27 @@ class CodeGen:
         # 忽略绘图/颜色
         if name in IGNORED_OPS:
             raise CodeGenError(f"函数 {name} 是绘图/颜色指令，不生成因子（已忽略）")
-        # 资金流向档位选择：L2_PCT(n)/L2_AMO(n) → 直接对应 dump 的净占比/净额字段
+        # 资金流向档位选择：L2_PCT(n[,b|s])/L2_AMO(n[,b|s])
+        # → 无第二参：净占比/净额字段（向后兼容）；有 b/s：买入/卖出方向字段
         if name in ("L2_PCT", "L2_AMO"):
-            if len(e.args) != 1 or not isinstance(e.args[0], Num):
+            if not e.args or not isinstance(e.args[0], Num):
                 raise CodeGenError(
-                    f"{name} 需要 1 个常量档位参数：{name}(n)，"
-                    f"n=0 主力 / 1 超大单 / 2 大单 / 3 中单 / 4 小单")
+                    f"{name} 需要档位参数：{name}(n[,b|s])，"
+                    f"n=0 主力 / 1 超大单 / 2 大单 / 3 中单 / 4 小单；b=买入 / s=卖出")
+            if len(e.args) > 2:
+                raise CodeGenError(f"{name} 最多 2 个参数：{name}(n[,b|s])")
             n = int(e.args[0].value)
             if n not in range(5):
                 raise CodeGenError(f"{name} 档位参数越界：{name}({n})，n 只能取 0~4")
-            return (L2_PCT_FIELDS if name == "L2_PCT" else L2_AMO_FIELDS)[n]
+            fields = L2_AMO_FIELDS if name == "L2_AMO" else L2_PCT_FIELDS
+            if len(e.args) == 1:
+                return fields[n]  # 净额/净占比
+            a1 = e.args[1]
+            if not isinstance(a1, Var) or a1.name.upper() not in ("B", "S"):
+                raise CodeGenError(
+                    f"{name} 的第 2 个参数只能是 b（买入）或 s（卖出），当前写法不支持")
+            dirs = L2_AMO_DIR_FIELDS if name == "L2_AMO" else L2_PCT_DIR_FIELDS
+            return dirs[n][0 if a1.name.upper() == "B" else 1]
         # Level2
         if name in LEVEL2_OPS:
             raise CodeGenError(

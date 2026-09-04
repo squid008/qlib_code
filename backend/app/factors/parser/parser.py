@@ -36,6 +36,17 @@ FIELD_MAP = {
     "MF_AMOUNT_L": "$mf_amount_l", "MF_PCT_L": "$mf_pct_l",
     "MF_AMOUNT_M": "$mf_amount_m", "MF_PCT_M": "$mf_pct_m",
     "MF_AMOUNT_S": "$mf_amount_s", "MF_PCT_S": "$mf_pct_s",
+    # 资金流向买卖方向字段（moneyflow3 源派生，dump_moneyflow.py 生成）
+    "MF_AMOUNT_MAIN_B": "$mf_amount_main_b", "MF_AMOUNT_MAIN_S": "$mf_amount_main_s",
+    "MF_PCT_MAIN_B": "$mf_pct_main_b", "MF_PCT_MAIN_S": "$mf_pct_main_s",
+    "MF_AMOUNT_XL_B": "$mf_amount_xl_b", "MF_AMOUNT_XL_S": "$mf_amount_xl_s",
+    "MF_PCT_XL_B": "$mf_pct_xl_b", "MF_PCT_XL_S": "$mf_pct_xl_s",
+    "MF_AMOUNT_L_B": "$mf_amount_l_b", "MF_AMOUNT_L_S": "$mf_amount_l_s",
+    "MF_PCT_L_B": "$mf_pct_l_b", "MF_PCT_L_S": "$mf_pct_l_s",
+    "MF_AMOUNT_M_B": "$mf_amount_m_b", "MF_AMOUNT_M_S": "$mf_amount_m_s",
+    "MF_PCT_M_B": "$mf_pct_m_b", "MF_PCT_M_S": "$mf_pct_m_s",
+    "MF_AMOUNT_S_B": "$mf_amount_s_b", "MF_AMOUNT_S_S": "$mf_amount_s_s",
+    "MF_PCT_S_B": "$mf_pct_s_b", "MF_PCT_S_S": "$mf_pct_s_s",
 }
 
 

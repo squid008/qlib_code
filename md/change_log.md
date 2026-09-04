@@ -3,6 +3,23 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.6.8] - 2026-09-04
+
+### Added
+- **资金流数据换源 moneyflow3 + 公式买卖方向参数**：
+  - 数据源从 `E:\rq\moneyflow`（2022-10 整月缺失、仅净额）切换为 **moneyflow3**（2013-01-04 ~ 2026-08-19，保留 4 档小/中/大/特大 买卖分开的量与金额；与 moneyflow2 同主键净额逐位一致）
+  - `dump_moneyflow.py` 重写：自动检测源结构（moneyflow3 原始买卖 / 旧 net 字段），从 moneyflow3 派生 **30 个 qlib 字段**：
+    - 兼容 10 个净额/净占比 `mf_amount_<档>` / `mf_pct_<档>`（数值与 moneyflow2 一致，旧公式/模型不受影响）
+    - 新增 20 个买卖方向字段 `mf_amount_<档>_b/_s`、`mf_pct_<档>_b/_s`
+  - 公式翻译器 `L2_AMO(n[,b|s])` / `L2_PCT(n[,b|s])`：
+    - 无方向参数 → 净额/净占比（**向后兼容**）
+    - 带 `b`/`s` → 买入/卖出方向（如 `L2_AMO(0,b)` = 主力买入额）
+  - 口径：所有 pct 统一以当日总成交额（4 档买之和）为分母 → `b − s == net`、`pb − ps == pct` 成立（float32 舍入量级）；`main = xl + l`
+  - 已全量 dump：156,960 字段文件（5,232 只 × 30 字段）
+
+### Changed
+- `dump_moneyflow.py`、`factors/parser`（codegen/parser/semantic）支持 L2 买卖方向；相关 25 条翻译器单测
+
 ## [1.6.7] - 2026-09-04
 
 ### Fixed

@@ -69,7 +69,11 @@ def resolve_vars(formula: Formula) -> Formula:
         elif isinstance(expr, FuncCall):
             if expr.name not in BUILTIN_FUNCS:
                 raise SemanticError(f"不支持的函数：{expr.name}（在 {ctx}）")
-            for a in expr.args:
+            for i, a in enumerate(expr.args):
+                # L2_PCT/L2_AMO 的第 2+ 参数是买卖方向关键字（b/s），
+                # 是否合法统一由 codegen 校验（此处按变量检查会把 X 误报为未定义变量）
+                if expr.name in ("L2_PCT", "L2_AMO") and i >= 1:
+                    continue
                 check(a, ctx)
 
     for a in formula.assigns:
