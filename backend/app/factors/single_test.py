@@ -401,6 +401,8 @@ def run_single_factor_test(
     exclude_limit_up_trade: bool = True,   # 剔除成交日（T+1）涨停样本
     exclude_suspended: bool = True,        # 剔除成交日（T+1）停牌/无行情样本
     price_adjust: str = "none",            # 复权方式：none/forward/backward（与回测对齐）
+    freeze_suspended_price: bool = False,  # 未来收益对停牌日采用"停牌前收盘价冻结"，把停牌/退市
+    #   崩盘的真实亏损计入（对齐聚宽/通达信因子诊断口径；默认 False=保持现状剔除，见下）
 ) -> List[dict]:
     """执行单因子测试，返回每个因子的测试结果列表。
 
@@ -429,6 +431,19 @@ def run_single_factor_test(
     # 原生后复权价（比率类收益前/后复权等价，见 engine/adjust.py docstring）。
     pa = normalize_mode(price_adjust)
     label_expr = adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1", pa)
+
+    # freeze_suspended_price（口径 B，对齐聚宽）：未来收益需在"停牌日价格冻结（前收）"的行情上
+    # 做 per-stock shift，因此行情要加载到 end_date 之后 (n+1) 个交易日（供 shift 取未来行）。
+    load_end = end_date
+    if freeze_suspended_price:
+        try:
+            from qlib.data import D as _D
+            cal = _D.calendar()
+            cal_ts = pd.to_datetime(cal)
+            pos = int((cal_ts <= pd.Timestamp(end_date)).sum())
+            load_end = str(cal_ts[min(pos + n + 3, len(cal_ts) - 1)].date())
+        except Exception:
+            load_end = end_date
 
     # 因子列表中的表达式按序编号；重复表达式只加载一次（去重），统计时映射回原列
     ordered_exprs: List[str] = []
@@ -491,7 +506,7 @@ def run_single_factor_test(
             if progress_cb:
                 done = min(k + batch_size, len(fields))
                 progress_cb(12 + 23 * (done / len(fields)), f"加载特征数据 {done}/{len(fields)}...")
-            part = D.features(instruments, fields[k:k + batch_size], start_time=start_date, end_time=end_date)
+            part = D.features(instruments, fields[k:k + batch_size], start_time=start_date, end_time=load_end)
             frames.append(part)
     except FactorTestCancelled:
         raise  # 用户取消：向上传递，由路由层标记 cancelled，不得吞掉
@@ -505,6 +520,24 @@ def run_single_factor_test(
     raw = frames[0] if len(frames) == 1 else pd.concat(frames, axis=1)
     df = raw.copy()
     df.columns = col_names
+
+    if freeze_suspended_price:
+        # 口径 B（对齐聚宽）：未来收益 label 对停牌日采用"停牌前最后收盘价冻结"——
+        # 触发后一路暴跌至停牌/退市的样本把真实亏损计入（而非因 Ref 落在停牌 NaN 被剔除）。
+        # 实现：CLOSE 按股票 ffill（停牌日=前收冻结），再 per-stock shift(-(n+1))/shift(-1)；
+        # 原 qlib Ref label 有值的样本保持原值（正常口径不受影响）。
+        try:
+            inst_lv = df.index.names.index("instrument")
+            dt_lv = df.index.names.index("datetime")
+            cf = df.groupby(level=inst_lv)["CLOSE"].ffill()
+            label_ff = cf.groupby(level=inst_lv).shift(-(n + 1)) / \
+                cf.groupby(level=inst_lv).shift(-1) - 1
+            df["LABEL"] = df["LABEL"].where(df["LABEL"].notna(), label_ff)
+            sig_end = pd.Timestamp(end_date)
+            df = df[df.index.get_level_values(dt_lv) <= sig_end]
+        except Exception as e:
+            _dump_sft_error(e)
+            return [{**_test_one(pd.DataFrame(), f, ""), "error": f"冻结价 label 计算失败: {e}"} for f in factors]
 
     if progress_cb:
         progress_cb(35, "特征数据就绪，逐个因子统计...")
