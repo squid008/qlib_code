@@ -10,6 +10,10 @@
 
 板块幅度（base 为阈值基准，默认 10%）：
   主板 base（10%）、创业板/科创板 base*2（20%）、北交所 base*3（30%）
+  【创业板号段】SZ300/SZ301/SZ302…全部 20%：深交所注册制扩容后号段沿 30 段后延
+  （301 之后启用 302/303/…），不能只匹配 SZ300/SZ301，否则新号段被当主板 10%
+  ——用前缀 SZ30 覆盖整段（SZ300000 起的创业板；SZ39 为深证指数，非股票池标的）。
+  科创板 SH688（唯一启用号段）；北交所 qlib 代码统一 BJ 前缀。
 """
 from __future__ import annotations
 
@@ -22,8 +26,8 @@ import pandas as pd
 def limit_ratio(code: Union[str, object], base: float = 0.10) -> float:
     """按股票代码返回该股的涨跌停幅度（比例，如 0.20 = 20%）。"""
     c = str(code).upper()
-    if c.startswith(("SH688", "SZ300", "SZ301")):
-        # 创业板 / 科创板：20% 涨跌幅
+    if c.startswith(("SH688", "SZ30")):
+        # 创业板（SZ300/SZ301/SZ302…整段 30 前缀）/ 科创板：20% 涨跌幅
         return base * 2.0
     if c.startswith("BJ"):
         # 北交所：30% 涨跌幅

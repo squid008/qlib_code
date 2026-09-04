@@ -27,13 +27,19 @@ class TestLimitRatio:
     def test_board_ratios(self):
         assert limit_ratio("SH600000") == pytest.approx(0.10)  # 主板沪
         assert limit_ratio("SZ000001") == pytest.approx(0.10)  # 主板深
+        assert limit_ratio("SZ002190") == pytest.approx(0.10)  # 主板深(重组前成飞集成)
         assert limit_ratio("SZ300001") == pytest.approx(0.20)  # 创业板
         assert limit_ratio("SZ301236") == pytest.approx(0.20)  # 创业板(301)
+        assert limit_ratio("SZ302132") == pytest.approx(0.20)  # 创业板(302 注册制新号段,如中航成飞)
+        assert limit_ratio("SZ303001") == pytest.approx(0.20)  # 创业板(303 未来号段)
+        assert limit_ratio("SZ305100") == pytest.approx(0.20)  # 创业板(305 未来号段)
         assert limit_ratio("SH688111") == pytest.approx(0.20)  # 科创板
         assert limit_ratio("BJ430047") == pytest.approx(0.30)  # 北交所
         # 大小写 / 带后缀的 qlib 代码
         assert limit_ratio("sz300001") == pytest.approx(0.20)
         assert limit_ratio("SZ300001") == pytest.approx(0.20)
+        # 指数代码不参与股票涨跌停（S39 深证指数不误判为创业板）
+        assert limit_ratio("SZ399006") == pytest.approx(0.10)
 
 
 class TestMarkLimitUp:
@@ -53,10 +59,21 @@ class TestMarkLimitUp:
             ("SZ300001", "2021-01-04", 11.50, 0.15),    # 15% → 未封板（若按主板10%会误判封板）
             ("SZ300001", "2021-01-05", 12.00, 0.20),    # 20% → 封板
             ("SZ301236", "2021-01-06", 12.00, 0.20),    # 301 创业板同样 20%
-            ("SH688111", "2021-01-07", 12.00, 0.20),    # 科创板同样 20%
+            ("SZ302132", "2021-01-07", 12.00, 0.20),    # 302 注册制新号段 20%
+            ("SH688111", "2021-01-08", 12.00, 0.20),    # 科创板同样 20%
         ])
         out = mark_limit_up(df, "CLOSE", "CHANGE")
-        assert list(out) == [False, True, True, True]
+        assert list(out) == [False, True, True, True, True]
+
+    def test_cyb_new_segment_not_treated_as_main_board(self):
+        # 302/303 号段涨 10%（主板阈值）绝不能被误判为涨停——若漏配 302 段会在此漏剔除
+        df = _quote([
+            ("SZ302132", "2021-01-04", 11.00, 0.10),   # 涨 10% 对创业板不算涨停
+            ("SZ303001", "2021-01-05", 11.00, 0.10),   # 同上
+            ("SZ000001", "2021-01-06", 11.00, 0.10),   # 主板对照：涨 10% 算涨停
+        ])
+        out = mark_limit_up(df, "CLOSE", "CHANGE")
+        assert list(out) == [False, False, True]
 
     def test_st_k_codes_not_handled(self):
         # 新上市首日不设涨跌停等特殊规则不在本函数范围，仅验证函数正常返回布尔
