@@ -221,6 +221,8 @@ export interface SingleFactorTestRequest {
   exclude_limit_up_signal?: boolean // 剔除信号日(T)涨停
   exclude_limit_up_trade?: boolean // 剔除成交日(T+1)涨停
   exclude_suspended?: boolean // 剔除成交日(T+1)停牌/无行情
+  freeze_suspended_price?: boolean // 停牌日价格冻结计入未来收益（对齐聚宽口径 B，默认开）
+  suspend_remove?: boolean // 信号停牌行语义：true=SR删行(益盟/回测一致，默认)；false=NaN占位(聚宽口径)
   price_adjust?: string // 复权方式：none/forward/backward（缺省=不复权）
 }
 export interface FactorTestGroupStats {

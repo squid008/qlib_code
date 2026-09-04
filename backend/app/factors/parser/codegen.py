@@ -125,12 +125,25 @@ def _const_fold(e: Expr):
 # 说明：BARSLAST/BARSCOUNT/BARSSINCEN 及 DYN_* 是自定义外挂算子（app/factors/ops_ext.py），
 # qlib 解析表达式字符串时通过 Operators 注册表查找同名类。
 # 通达信语义：HHV/LLV 是滚动窗口极值；MAX/MIN 是两值取大/小（qlib 的 Greater/Less）。
-# EMA 特例：通达信/聚宽是【递归式】EMA（Y_t=(2·X_t+(N-1)·Y_{t-1})/(N+1)），qlib 内建
-# EMA 用 pandas ewm(adjust=True) 整段归一化口径，两者在序列开头（上市初期/次新股）有
-# 初值差异，随后指数收敛。因此公式里的 EMA 必须走外挂 EMA_TDX
-# （app/factors/ops_ext.py，ewm(alpha=2/(N+1), adjust=False)）才能与通达信/聚宽对齐。
+# EMA 语义开关（保留两种实现，方便来回切换，见 _ema_op_name）：
+#   "qlib"：qlib 内建 EMA（pandas ewm(span=N, min_periods=1, adjust=True)，整段归一化），
+#           与聚宽/同事 notebook（qsdd_signal 的 ewm(span=4, adjust=True, min_periods=1)）
+#           逐位一致，作为对账基准。2026-09-04 起默认。
+#   "tdx" ：外挂 EMA_TDX（ewm(alpha=2/(N+1), adjust=False)，通达信递归式
+#           Y_t=(2·X_t+(N-1)·Y_{t-1})/(N+1)），两者仅在序列开头（上市初期/次新股）有
+#           初值差异、随后指数收敛。
+# 切换方法：改下面 EMA_SEMANTICS 后，把已保存公式重新保存一遍
+# （PUT /api/factors/custom-formulas/{id} 或前端编辑保存）让 expression 按新语义重新生成。
+EMA_SEMANTICS = "qlib"  # "qlib"（内建 EMA，聚宽口径）| "tdx"（EMA_TDX，通达信递归式）
+
+
+def _ema_op_name() -> str:
+    """当前 EMA 语义对应的 qlib 算子名。"""
+    return "EMA_TDX" if EMA_SEMANTICS == "tdx" else "EMA"
+
+
 FUNC_QLIB = {
-    "MA": "Mean", "EMA": "EMA_TDX", "WMA": "WMA",
+    "MA": "Mean", "EMA": "EMA", "WMA": "WMA",
     "HHV": "Max", "LLV": "Min",
     "SUM": "Sum", "COUNT": "Count",
     "ABS": "Abs", "SQRT": "Sqrt", "LOG": "Log", "LN": "Log",
@@ -320,7 +333,7 @@ class CodeGen:
             return f"{q}({inner})"
         # 直接映射
         if name in FUNC_QLIB:
-            q = FUNC_QLIB[name]
+            q = _ema_op_name() if name == "EMA" else FUNC_QLIB[name]
             inner = ",".join(self._g(a) for a in e.args)
             return f"{q}({inner})"
         # 组合展开

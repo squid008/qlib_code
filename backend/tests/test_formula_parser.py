@@ -91,9 +91,18 @@ class TestOperatorMapping:
         )
 
     def test_hhv_llv_ema(self):
-        """HHV/LLV/EMA 映射：EMA 须走通达信递归语义外挂算子 EMA_TDX。"""
+        """HHV/LLV/EMA 映射：默认走 qlib 内建 EMA（adjust=True，聚宽口径）。"""
         r = translate_formula("OUT:EMA(HHV(HIGH,20),5);")
-        assert r.expression == "EMA_TDX(Max($high,20),5)"
+        assert r.expression == "EMA(Max($high,20),5)"
+        # 切换 EMA_SEMANTICS='tdx' 时应回退通达信递归外挂算子 EMA_TDX
+        import app.factors.parser.codegen as cg
+        old = cg.EMA_SEMANTICS
+        try:
+            cg.EMA_SEMANTICS = "tdx"
+            r2 = translate_formula("OUT:EMA(HHV(HIGH,20),5);")
+            assert r2.expression == "EMA_TDX(Max($high,20),5)"
+        finally:
+            cg.EMA_SEMANTICS = old
 
     def test_if_logic(self):
         """IF 条件。"""

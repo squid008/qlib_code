@@ -50,6 +50,9 @@ export default function SingleFactorTestPanel({
   const [excludeLimitUpSignal, setExcludeLimitUpSignal] = useState(true)
   const [excludeLimitUpTrade, setExcludeLimitUpTrade] = useState(true)
   const [excludeSuspended, setExcludeSuspended] = useState(true)
+  // 信号停牌行语义：勾选=SR删行（益盟/通达信"无停牌行"，与回测特征一致，默认）；
+  // 取消=停牌日保留 NaN 占位（qlib 官方/聚宽 notebook 口径，对账时用）
+  const [suspendRemove, setSuspendRemove] = useState(true)
 
   // 三个因子来源
   const [groups, setGroups] = useState<SourceGroup[]>([
@@ -263,6 +266,7 @@ export default function SingleFactorTestPanel({
         exclude_limit_up_signal: excludeLimitUpSignal,
         exclude_limit_up_trade: excludeLimitUpTrade,
         exclude_suspended: excludeSuspended,
+        suspend_remove: suspendRemove,
         price_adjust: priceAdjust,
       })
       const task_id = resp?.task_id
@@ -427,6 +431,17 @@ export default function SingleFactorTestPanel({
             onChange={(e) => setExcludeSuspended(e.target.checked)}
           />
           <span>成交日停牌</span>
+        </label>
+        <label
+          className="flex items-center gap-1 cursor-pointer"
+          title="信号计算的停牌行语义：勾选=删除停牌日（益盟/通达信『无停牌行』，与你回测特征一致，默认）；取消=停牌日保留为 NaN（qlib 官方 / 聚宽 notebook 口径）。只影响因子信号计算，不影响上方样本剔除；与聚宽对账时取消勾选"
+        >
+          <input
+            type="checkbox"
+            checked={suspendRemove}
+            onChange={(e) => setSuspendRemove(e.target.checked)}
+          />
+          <span>停牌删行</span>
         </label>
       </div>
 

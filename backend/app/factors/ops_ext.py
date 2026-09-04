@@ -341,20 +341,21 @@ class SR(ExpressionOps):
         return lft + self._lookback, rght
 
 
-# ---------------- EMA 通达信递归语义版（2026-09-04 接入翻译层） ----------------
+# ---------------- EMA 通达信递归语义版（备选，默认已切回 qlib 内建 EMA） ----------------
 
 class EMA_TDX(_QLIB_EMA):
     """通达信/聚宽语义的 EMA（递归式）：
     Y_t = (2·X_t + (N−1)·Y_{t−1}) / (N+1)   →   pandas ewm(alpha=2/(N+1), adjust=False)。
 
-    qlib 内建 EMA 用 ewm(span=N, adjust=True)（pandas 默认，从序列起点整段归一化
-    指数加权），与通达信公式系统的递归口径在【序列开头】存在初值差异（随后指数收敛，
-    N=4 约 30+ 交易日后可忽略），对上市初期（次新股）的公式信号判定有明显影响。
+    qlib 内建 EMA 用 ewm(span=N, adjust=True, min_periods=1)（pandas 默认，从序列起点
+    整段归一化指数加权），与通达信公式系统的递归口径在【序列开头】存在初值差异
+    （随后指数收敛，N=4 约 30+ 交易日后可忽略），对上市初期（次新股）的公式信号判定
+    有明显影响。
 
-    公式翻译层（parser/codegen.py）把通达信公式的 EMA 一律指到本算子，确保
-    「趋势顶底」等第三方公式与通达信/聚宽口径一致。归因验证（2026-09-04）：
-    该口径修正对趋势顶底离开底部整体日截面统计影响约 0.01pp（主要改次新股信号），
-    聚宽对账余差的主要来源另在起算价/剔除口径，见 md/开发记录.md。
+    2026-09-04 归因验证：两语义对趋势顶底离开底部整体日截面统计仅差 ~0.01pp。
+    对账基准 = 聚宽/同事 notebook（qlib 内建 EMA、adjust=True），故翻译层默认已
+    切回 qlib 内建 EMA（parser/codegen.py 的 EMA_SEMANTICS="qlib"）；本 EMA_TDX 算子
+    保留，作为需要通达信递归语义时的备选（改 codegen.EMA_SEMANTICS="tdx" 并重存公式）。
     """
 
     def _load_internal(self, instrument, start_index, end_index, *args):

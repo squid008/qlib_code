@@ -153,7 +153,8 @@ class SingleFactorTestRequest(BaseModel):
     exclude_limit_up_trade: bool = True   # 剔除成交日（T+1）涨停（调仓日封板买不到，与回测一致）
     exclude_suspended: bool = True        # 剔除成交日（T+1）停牌/无行情（同样买不到）
     price_adjust: str = "forward"         # 复权方式：none/forward/backward（与回测对齐，默认前复权）
-    freeze_suspended_price: bool = False  # 停牌日价格冻结计入未来收益（对齐聚宽口径 B）
+    freeze_suspended_price: bool = True   # 停牌日价格冻结计入未来收益（对齐聚宽口径 B）
+    suspend_remove: bool = True           # 信号停牌行语义：True=SR删行(益盟/回测一致)；False=NaN占位(聚宽口径)
 
 
 # ---------- 单因子测试异步任务：POST 提交返回 task_id，GET 轮询进度/结果 ----------
@@ -260,6 +261,7 @@ def single_factor_test(req: SingleFactorTestRequest):
                     exclude_suspended=req.exclude_suspended,
                     price_adjust=req.price_adjust,
                     freeze_suspended_price=req.freeze_suspended_price,
+                    suspend_remove=req.suspend_remove,
                 )
                 state.update(
                     status="success",
