@@ -3,7 +3,7 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
-## [1.6.10] - 2026-09-05
+## [1.7.0] - 2026-09-05
 
 ### Changed
 - **EMA 语义默认回切 qlib 内建 EMA**（`ewm(span=N, adjust=True)`，与聚宽/同事 notebook `qsdd_signal` 逐位一致）：公式翻译层默认生成 qlib 内建 `EMA`；通达信递归语义保留为外挂 `EMA_TDX` 算子 + 翻译层 `EMA_SEMANTICS` 开关（`"qlib"`/`"tdx"`）可切换，重存公式后生效
