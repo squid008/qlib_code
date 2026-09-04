@@ -16,6 +16,10 @@ def pytest_configure(config):
         "markers",
         "datareq: 需要本机真实行情(cn_data)/资金流(moneyflow)数据；无数据环境(CI)自动跳过",
     )
+    config.addinivalue_line(
+        "markers",
+        "e2e: 真实回测主流程 golden（含滚动训练/回放，单条 ~3 分钟）；低频手动跑，日常全量默认排除",
+    )
 
 
 @pytest.fixture(autouse=True)
