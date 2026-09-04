@@ -1,0 +1,10 @@
+# ruff 静态检查配置（提交 gate 用）。
+# 规则保持保守：E9（语法级错误）+ 未定义名/重定义（F821/F811/F823），
+# 不做样式/未用 import 强约束（项目存在依赖"导入副作用"的外挂模块，避免误删）。
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+exclude = ["__pycache__", "workdir"]
+
+[tool.ruff.lint]
+select = ["E9", "F821", "F811", "F823"]

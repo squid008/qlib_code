@@ -1,0 +1,62 @@
+# CI：pytest + 后端 ruff + 前端 tsc --noEmit 作为提交 gate。
+#
+# 说明：
+# - 数据（cn_data / moneyflow）不在仓库，后端测试只跑纯逻辑子集
+#   （`-m "not datareq"`；datareq 用例需真实数据，在本地用 scripts/check.ps1 跑）。
+# - qlib 以源码方式安装（pip install -e <上游 main>），与本机开发版同源；
+#   若上游 API 漂移导致测试红，说明依赖版本需要锁定/复查，见 md/开发记录.md。
+# - 本地离线等价物：scripts/check.ps1（可 -SkipData）。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: 后端 pytest + ruff
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: 安装 Python 依赖 + qlib（上游源码）
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy pandas lightgbm joblib h5py \
+            fastapi "uvicorn[standard]" pydantic python-multipart pyyaml tqdm cython ruff
+          git clone --depth 1 https://github.com/microsoft/qlib "$HOME/qlib"
+          pip install -e "$HOME/qlib"
+
+      - name: pytest（纯逻辑；datareq 无数据自动跳过）
+        run: python -m pytest tests -m "not datareq" -q
+
+      - name: ruff 静态检查
+        run: python -m ruff check app tests tools
+
+  frontend:
+    name: 前端 tsc --noEmit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: TypeScript 类型检查
+        run: npx tsc --noEmit -p tsconfig.json

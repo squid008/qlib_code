@@ -1051,8 +1051,11 @@ def _gen_rolling_segments(req: BacktestRequest, calendar) -> list:
         # 测试段必须包含至少一个交易日，否则跳过（纯节假日段无行情/基准，回测无意义）。
         # 典型：test 窗口整周落在春节/国庆假期（如 2025-01-28~02-04），
         # 会导致基准(SH000300)查询为空 → qlib 报 "benchmark does not exist" → 整个回测失败。
-        c0, c1 = str(cursor), str(cur_test_end)
-        has_trade_day = any(c0 <= str(d.date()) <= c1 for d in calendar)
+        # calendar 为 None（纯逻辑调用/单测）时视为有交易日，不做节假日跳过。
+        has_trade_day = True
+        if calendar is not None:
+            c0, c1 = str(cursor), str(cur_test_end)
+            has_trade_day = any(c0 <= str(d.date()) <= c1 for d in calendar)
         if not has_trade_day:
             # 跳过该段，按正常步长推进（不占段序号）
             if cur_test_end >= test_end:
