@@ -91,8 +91,12 @@ def _const_fold(e: Expr):
 # 说明：BARSLAST/BARSCOUNT/BARSSINCEN 及 DYN_* 是自定义外挂算子（app/factors/ops_ext.py），
 # qlib 解析表达式字符串时通过 Operators 注册表查找同名类。
 # 通达信语义：HHV/LLV 是滚动窗口极值；MAX/MIN 是两值取大/小（qlib 的 Greater/Less）。
+# EMA 特例：通达信/聚宽是【递归式】EMA（Y_t=(2·X_t+(N-1)·Y_{t-1})/(N+1)），qlib 内建
+# EMA 用 pandas ewm(adjust=True) 整段归一化口径，两者在序列开头（上市初期/次新股）有
+# 初值差异，随后指数收敛。因此公式里的 EMA 必须走外挂 EMA_TDX
+# （app/factors/ops_ext.py，ewm(alpha=2/(N+1), adjust=False)）才能与通达信/聚宽对齐。
 FUNC_QLIB = {
-    "MA": "Mean", "EMA": "EMA", "WMA": "WMA",
+    "MA": "Mean", "EMA": "EMA_TDX", "WMA": "WMA",
     "HHV": "Max", "LLV": "Min",
     "SUM": "Sum", "COUNT": "Count",
     "ABS": "Abs", "SQRT": "Sqrt", "LOG": "Log", "LN": "Log",

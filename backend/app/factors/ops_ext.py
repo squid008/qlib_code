@@ -16,6 +16,9 @@
   窗口大小 N 是序列（每个位置用该位置的 N 值），用于 LLV/HHV/COUNT/REF/SUM 的变量周期写法。
   DYN_MIN/DYN_MAX 用稀疏表 RMQ（O(1) 查询），DYN_COUNT/DYN_SUM 用前缀和（O(1) 查询），
   整体 O(n log n)，避免对每个位置循环窗口导致回测缓慢。
+- EMA_TDX(X, N)：通达信/聚宽递归语义的 EMA（ewm(alpha=2/(N+1), adjust=False)），
+  对齐通达信公式系统的递归式 EMA；公式翻译层（parser/codegen.py）已把公式里的 EMA
+  指到本算子（qlib 内建 EMA 是 pandas ewm adjust=True 归一化口径，序列开头初值不同）。
 
 注册机制：除了 Operators.register，还 patch 了 qlib 的 register_all_ops，
 保证 qlib.init() 内部 reset Operators 后总是重新注册自定义算子
@@ -27,11 +30,13 @@ import numpy as np
 import pandas as pd
 from qlib.data.base import Expression, ExpressionOps
 from qlib.data.ops import Operators
+from qlib.data.ops import EMA as _QLIB_EMA
 
 __all__ = [
     "BARSLAST", "BARSCOUNT", "BARSSINCEN",
     "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM",
     "SR",
+    "EMA_TDX",
     "ensure_ops_registered",
 ]
 
@@ -336,12 +341,40 @@ class SR(ExpressionOps):
         return lft + self._lookback, rght
 
 
+# ---------------- EMA 通达信递归语义版（2026-09-04 接入翻译层） ----------------
+
+class EMA_TDX(_QLIB_EMA):
+    """通达信/聚宽语义的 EMA（递归式）：
+    Y_t = (2·X_t + (N−1)·Y_{t−1}) / (N+1)   →   pandas ewm(alpha=2/(N+1), adjust=False)。
+
+    qlib 内建 EMA 用 ewm(span=N, adjust=True)（pandas 默认，从序列起点整段归一化
+    指数加权），与通达信公式系统的递归口径在【序列开头】存在初值差异（随后指数收敛，
+    N=4 约 30+ 交易日后可忽略），对上市初期（次新股）的公式信号判定有明显影响。
+
+    公式翻译层（parser/codegen.py）把通达信公式的 EMA 一律指到本算子，确保
+    「趋势顶底」等第三方公式与通达信/聚宽口径一致。归因验证（2026-09-04）：
+    该口径修正对趋势顶底离开底部整体日截面统计影响约 0.01pp（主要改次新股信号），
+    聚宽对账余差的主要来源另在起算价/剔除口径，见 md/开发记录.md。
+    """
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        if isinstance(self.N, int) and self.N == 0:
+            # 通达信 EMA 无 N=0 语义；防御性等价 expanding 均值
+            return series.expanding(min_periods=1).mean()
+        if 0 < self.N < 1:
+            return series.ewm(alpha=self.N, adjust=False, min_periods=1).mean()
+        # N>=1：span=N 等价 alpha=2/(N+1)，显式 adjust=False 走通达信递归式
+        return series.ewm(alpha=2.0 / (self.N + 1), adjust=False, min_periods=1).mean()
+
+
 # ---------------- 注册机制 ----------------
 
 _ALL_OPS = [
     BARSLAST, BARSCOUNT, BARSSINCEN,
     DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM,
     SR,
+    EMA_TDX,
 ]
 
 _registered = False

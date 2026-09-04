@@ -1,6 +1,6 @@
 # Qlib 量化回测平台
 
-> **当前版本：v1.6.6**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+> **当前版本：v1.6.7**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
 >
 > 各版本更新记录见 **[`md/change_log.md`](./md/change_log.md)**（按 Keep a Changelog 规范）。
 
@@ -40,7 +40,7 @@ qlib_code/
 │   │   │   └── factory.py        #   数据源工厂
 │   │   ├── factors/              # ★ 公式翻译器 + 因子 Handler
 │   │   │   ├── parser/           #   Lexer/Parser/Semantic/CodeGen（益盟/通达信公式）
-│   │   │   ├── ops_ext.py        #   外挂算子（BARSLAST/BARSSINCEN/DYN_* 等）
+│   │   │   ├── ops_ext.py        #   外挂算子（BARSLAST/BARSSINCEN/DYN_*/SR/EMA_TDX 等）
 │   │   │   └── handler.py        #   SelectedAlpha158/360 + FormulaHandler
 │   │   ├── engine/               # 回测引擎
 │   │   │   ├── qlib_engine.py    #   Qlib 回测实现

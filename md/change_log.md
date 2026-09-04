@@ -3,6 +3,15 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.6.7] - 2026-09-04
+
+### Fixed
+- **公式 `EMA` 语义对齐通达信/聚宽（递归式 EMA）**：通达信公式系统的 `EMA(X,N)` 是递归式 `Y_t=(2X_t+(N-1)Y_{t-1})/(N+1)`（= pandas `ewm(alpha=2/(N+1), adjust=False)`）；而 qlib 内建 EMA 走 `ewm(span=N, adjust=True)`（从序列起点整段归一化），两者在**序列开头**（上市初期/次新股）存在初值差异、随后指数收敛。对含 EMA 的第三方公式（趋势顶底系列）在次新股上的信号判定有明显影响
+  - 新增外挂算子 **`EMA_TDX`**（`factors/ops_ext.py`，继承 qlib EMA、仅把 `_load_internal` 改为 `adjust=False` 递归式）；公式翻译器把公式里的 `EMA` 一律映射到 `EMA_TDX`（`factors/parser/codegen.py`），**公式文本写法不变**（仍写 `EMA`）
+  - 存量公式 expression 已迁移（含 EMA 的 2 条：趋势顶底 `914a3494aee2`、趋势顶底离开底部 `97c3c31b8be1`）；特征缓存 key 含表达式，自动按新表达式重算，无需清缓存
+  - 归因验证（与聚宽对账）：口径修正使触发组日截面 0.499%→0.4868%（约 -0.01pp，主要改次新股信号翻转），非触发组不变 → EMA **不是**聚宽对账整体余差（触发组 +0.12pp）的主因，余差指向起算价/剔除口径，另行对账
+  - qlib 内建 EMA 未改动（ML 长序列因子场景不受影响）
+
 ## [1.6.6] - 2026-09-04
 
 ### Fixed

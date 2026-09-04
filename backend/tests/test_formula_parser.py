@@ -91,9 +91,9 @@ class TestOperatorMapping:
         )
 
     def test_hhv_llv_ema(self):
-        """HHV/LLV/EMA 映射。"""
+        """HHV/LLV/EMA 映射：EMA 须走通达信递归语义外挂算子 EMA_TDX。"""
         r = translate_formula("OUT:EMA(HHV(HIGH,20),5);")
-        assert r.expression == "EMA(Max($high,20),5)"
+        assert r.expression == "EMA_TDX(Max($high,20),5)"
 
     def test_if_logic(self):
         """IF 条件。"""
