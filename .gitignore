@@ -19,6 +19,10 @@ backend/workdir/*
 **/mlflow.db
 *.db
 
+# AI 临时探查文件（根目录 workdir 与覆盖率产物）
+workdir/
+.coverage
+
 # 日志
 *.log
 
