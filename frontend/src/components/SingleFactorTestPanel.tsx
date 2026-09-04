@@ -434,7 +434,7 @@ export default function SingleFactorTestPanel({
         </label>
         <label
           className="flex items-center gap-1 cursor-pointer"
-          title="信号计算的停牌行语义：勾选=删除停牌日（益盟/通达信『无停牌行』，与你回测特征一致，默认）；取消=停牌日保留为 NaN（qlib 官方 / 聚宽 notebook 口径）。只影响因子信号计算，不影响上方样本剔除；与聚宽对账时取消勾选"
+          title="信号计算的停牌行语义：勾选=删除停牌日（益盟/通达信『无停牌行』，默认）；取消=停牌日保留为 NaN（qlib 官方 / 聚宽 notebook 口径）。只影响因子信号计算，不影响上方样本剔除；与聚宽对账时取消勾选"
         >
           <input
             type="checkbox"
