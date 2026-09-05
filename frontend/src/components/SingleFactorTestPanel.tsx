@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import DateInput from './DateInput'
+import DateInput, { type DateInputHandle } from './DateInput'
 import {
   createSingleFactorTest,
   getSingleFactorTestProgress,
@@ -80,6 +80,9 @@ export default function SingleFactorTestPanel({
   )
   // 并行测试：多个预测周期各占一个共享并发单元同时跑（与回测/训练共用并发配额，自动排队）
   const [parallel, setParallel] = useState(false)
+  // 日期三段输入：开始日期填完整后自动跳到结束日期年份
+  const startDateRef = useRef<DateInputHandle>(null)
+  const endDateRef = useRef<DateInputHandle>(null)
   // 复权方式：none/forward/backward（与回测一致，默认前复权；前/后复权在比率类因子与收益率上数学等价）
   const [priceAdjust, setPriceAdjust] = useState('forward')
   // 触发组剔除开关：信号日(T)涨停 / 成交日(T+1)涨停 / 成交日停牌（默认全开，保持原行为 + 新增成交日口径）
@@ -427,13 +430,19 @@ export default function SingleFactorTestPanel({
             <option value="all">全部A股</option>
           </select>
         </label>
-        <label className="flex-1 flex flex-col min-w-[150px]">
+        <label className="flex-1 flex flex-col min-w-[170px]">
           <span className="text-slate-500 mb-1">开始日期</span>
-          <DateInput className="mt-0.5" value={startDate} onChange={setStartDate} />
+          <DateInput
+            ref={startDateRef}
+            className="mt-0.5 w-full"
+            value={startDate}
+            onChange={setStartDate}
+            onComplete={() => endDateRef.current?.focusYear()}
+          />
         </label>
-        <label className="flex-1 flex flex-col min-w-[150px]">
+        <label className="flex-1 flex flex-col min-w-[170px]">
           <span className="text-slate-500 mb-1">结束日期</span>
-          <DateInput className="mt-0.5" value={endDate} onChange={setEndDate} />
+          <DateInput ref={endDateRef} className="mt-0.5 w-full" value={endDate} onChange={setEndDate} />
         </label>
         <label className="flex-1 flex flex-col min-w-[120px]">
           <span className="text-slate-500 mb-1">预测周期(天)</span>
