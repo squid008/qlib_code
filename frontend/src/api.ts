@@ -217,10 +217,15 @@ export interface SingleFactorTestRequest {
   start_date: string
   end_date: string
   label_horizon: number
+  label_horizons?: number[] // 批量预测周期（如 [1,2,3,5,10,15,20]），传了则忽略 label_horizon
+  parallel?: boolean // 并行测试：多个周期各占一个共享并发单元同时跑（与回测/训练共用配额）
   factors: SingleFactorTestItem[]
   exclude_limit_up_signal?: boolean // 剔除信号日(T)涨停
   exclude_limit_up_trade?: boolean // 剔除成交日(T+1)涨停
   exclude_suspended?: boolean // 剔除成交日(T+1)停牌/无行情
+  exclude_st_t1?: boolean // 剔除成交日(T+1)处于 ST/*ST/退市整理 的样本（日截面，T+1 当日状态）
+  exclude_stock_gem?: boolean // 剔除创业板（SZ30 段）
+  exclude_stock_kcb?: boolean // 剔除科创板（SH688）
   freeze_suspended_price?: boolean // 停牌日价格冻结计入未来收益（对齐聚宽口径 B，默认开）
   suspend_remove?: boolean // 信号停牌行语义：true=SR删行(益盟/回测一致，默认)；false=NaN占位(聚宽口径)
   price_adjust?: string // 复权方式：none/forward/backward（缺省=不复权）
@@ -233,6 +238,7 @@ export interface FactorTestGroupStats {
   limit_up_excluded_t?: number // 该组信号日(T)涨停剔除数
   limit_up_excluded_t1?: number // 该组成交日(T+1)涨停剔除数
   suspended_excluded?: number // 该组成交日停牌/无行情剔除数
+  extra_excluded?: number // 该组 ST(T+1)/创业板/科创板剔除数（勾选对应开关时）
 }
 export interface QuintileGroup {
   quantile: number // 1=最低值组 … 5=最高值组（每日横截面分位）
@@ -245,6 +251,7 @@ export interface SingleFactorTestResult {
   name: string
   source: string
   expression: string
+  horizon?: number // 该行对应的预测周期（批量测试时每 因子×周期 一行）
   coverage: number | null // 因子值非空比例
   nonzero_ratio: number | null // 非零比例
   is_binary: boolean // 是否 0/1 二值信号

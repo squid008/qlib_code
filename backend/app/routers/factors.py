@@ -8,6 +8,7 @@ app/factors/catalog.py 的 FACTOR_PROVIDERS 注册新的 provider，接口无需
 import threading
 import time
 import uuid
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -146,12 +147,19 @@ class SingleFactorTestRequest(BaseModel):
     universe: str = "csi300"
     start_date: str = ""
     end_date: str = ""
-    label_horizon: int = 2   # 未来 N 日收益作为预测目标
+    label_horizon: int = 2   # 未来 N 日收益作为预测目标（label_horizons 未传时的默认单周期）
+    label_horizons: Optional[List[int]] = None  # 批量预测周期（如 [1,2,3,5,10,15,20] 或 range 展开）；
+    #   传了则忽略 label_horizon；结果按"因子分组、组内周期升序"返回，每行带 horizon 字段
+    parallel: bool = False   # 并行测试：多个预测周期各占一个共享并发单元同时跑（与回测/训练共用
+    #   并发配额：回测占用多时自动少跑/排队，占用释放后自动顶上）；单个周期时无效果
     factors: list[SingleFactorTestFactor] = []
     # 触发组剔除开关（默认全开，保持原行为 + 新增成交日口径）：
     exclude_limit_up_signal: bool = True  # 剔除信号日（T）涨停（选股过滤，无前视）
     exclude_limit_up_trade: bool = True   # 剔除成交日（T+1）涨停（调仓日封板买不到，与回测一致）
     exclude_suspended: bool = True        # 剔除成交日（T+1）停牌/无行情（同样买不到）
+    exclude_st_t1: bool = False           # 剔除成交日（T+1）处于 ST/*ST/退市整理 的样本（日截面，T+1 当日状态）
+    exclude_stock_gem: bool = False       # 剔除创业板（SZ30 段，20% 涨跌幅）
+    exclude_stock_kcb: bool = False       # 剔除科创板（SH688，20% 涨跌幅）
     price_adjust: str = "forward"         # 复权方式：none/forward/backward（与回测对齐，默认前复权）
     freeze_suspended_price: bool = True   # 停牌日价格冻结计入未来收益（对齐聚宽口径 B）
     suspend_remove: bool = True           # 信号停牌行语义：True=SR删行(益盟/回测一致)；False=NaN占位(聚宽口径)
@@ -200,12 +208,35 @@ def _sft_get(task_id: str):
 def single_factor_test(req: SingleFactorTestRequest):
     """提交单因子测试任务，后台线程逐个因子快速诊断，返回 task_id。
 
+    批量预测周期：
+      - label_horizons=[1,2,5,...] 一次测多个持有周期（结果为"因子分组、组内周期升序"，
+        每行带 horizon 字段）；单周期（默认 label_horizon=2）行为与历史完全一致。
+      - parallel=True：多个周期各占一个共享并发单元并行跑——与回测/训练共用同一并发配额，
+        回测任务占用多时单因子自动少跑/排队，占用释放后自动顶上（无需手动指定并发数）。
     完成后通过 GET /factors/single-factor-test/progress/{task_id} 轮询进度并获取结果。
     """
     if not req.factors:
         raise HTTPException(status_code=400, detail="请至少勾选一个因子")
     if not req.start_date or not req.end_date:
         raise HTTPException(status_code=400, detail="请填写测试区间")
+
+    # 归并预测周期：label_horizons 优先；否则退化为 label_horizon（单周期，历史行为）
+    raw = req.label_horizons if req.label_horizons else ([req.label_horizon] if req.label_horizon else [])
+    if not raw:
+        raise HTTPException(status_code=400, detail="预测周期不能为空")
+    horizons: list[int] = []
+    for h in raw:
+        try:
+            hi = int(h)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"预测周期必须为正整数：{h!r}")
+        if not (1 <= hi <= 250):
+            raise HTTPException(status_code=400, detail=f"预测周期需在 1~250 之间：{hi}")
+        if hi not in horizons:
+            horizons.append(hi)
+    horizons.sort()  # 结果按因子分组、组内周期升序
+    parallel = bool(req.parallel) and len(horizons) > 1
+    n_h = len(horizons)
 
     task_id = uuid.uuid4().hex[:12]
     state: dict = {
@@ -217,69 +248,145 @@ def single_factor_test(req: SingleFactorTestRequest):
         "error": None,
         "cancel_requested": False,
         "ts": time.time(),
+        "config": {"horizons": horizons, "parallel": parallel},
     }
     _sft_store(task_id, state)
 
     def _run() -> None:
-        def _on_progress(p: float, m: str) -> None:
-            # 用户已点取消：抛异常终止任务（progress_cb 在每批特征/每个因子计算间隙被调用）
-            if state.get("cancel_requested"):
-                raise FactorTestCancelled()
-            if state.get("status") == "running":
-                state.update(progress=float(p), message=m, ts=time.time())
-
-        # 与回测共用并发配额：排队等待（每秒检查一次取消，排队中可随时取消）
         manager = get_task_manager(config.WORK_DIR)
         # 进入排队状态（计入并发统计的 queued）
         manager.register_external_queued(task_id)
-        acquired = False
+        # 并行 worker 前先确保 qlib 只初始化一次（引擎 init 自带锁；先 init 完再开线程）
         try:
-            while not manager.try_acquire_slot(task_id):
-                if state.get("cancel_requested"):
-                    state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
-                    return
-                state.update(message="排队等待执行（共用回测并发配额）...", ts=time.time())
-                time.sleep(1)
-            acquired = True
+            from ..factors.single_test import _ensure_qlib_init
+            _ensure_qlib_init()
+        except Exception as e:
+            state.update(status="failed", progress=100.0, message=f"单因子测试失败: {e}", error=str(e), ts=time.time())
             manager.unregister_external_queued(task_id)
-
-            if state.get("cancel_requested"):
-                state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
-                return
-            state.update(message="开始执行...", ts=time.time())
-            try:
-                items = run_single_factor_test(
-                    universe=req.universe,
-                    start_date=req.start_date,
-                    end_date=req.end_date,
-                    label_horizon=req.label_horizon,
-                    factors=[f.model_dump() for f in req.factors],
-                    progress_cb=_on_progress,
-                    cancelled=lambda: bool(state.get("cancel_requested")),
-                    exclude_limit_up_signal=req.exclude_limit_up_signal,
-                    exclude_limit_up_trade=req.exclude_limit_up_trade,
-                    exclude_suspended=req.exclude_suspended,
-                    price_adjust=req.price_adjust,
-                    freeze_suspended_price=req.freeze_suspended_price,
-                    suspend_remove=req.suspend_remove,
-                )
-                state.update(
-                    status="success",
-                    progress=100.0,
-                    message="完成",
-                    result={"items": items, "total": len(items)},
-                    ts=time.time(),
-                )
-            except FactorTestCancelled:
-                state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
-            except Exception as e:
-                state.update(status="failed", progress=100.0, message=f"单因子测试失败: {e}", error=str(e), ts=time.time())
-        finally:
-            manager.unregister_external_queued(task_id)
-            if acquired:
-                manager.release_slot(task_id)
-            # 内存治理：任务结束立即释放超龄任务的完整结果
             _sft_trim_results()
+            return
+
+        lock = threading.Lock()
+        queue = list(horizons)            # 待跑周期队列（升序，worker 弹队首）
+        per_h: dict[int, list] = {}       # 周期 -> 该周期全部因子的结果
+        prog: dict[int, float] = {}       # 周期 -> 该周期内部进度 0-100（用于汇总整体进度）
+        fatal: dict[int, str] = {}        # 周期 -> 致命错误（异常抛出时记录）
+        done = 0                          # 已完成的周期数（progress 文案用）
+
+        def _worker() -> None:
+            nonlocal done
+            while True:
+                with lock:
+                    if not queue:
+                        return
+                    h = queue.pop(0)
+                acquired = False
+                try:
+                    # 与回测/训练共用并发配额：并行下每周期各占一个并发单元，拿不到就排队
+                    # （排队中每秒检查一次取消）——回测占用多时自动少跑，释放后自动顶上
+                    while not manager.try_acquire_slot(task_id):
+                        if state.get("cancel_requested"):
+                            state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
+                            return
+                        if state.get("status") == "running":
+                            state.update(
+                                message=f"排队等待并发单元（预测周期 {h} 日，与回测共用配额）...",
+                                ts=time.time(),
+                            )
+                        time.sleep(1)
+                    acquired = True
+                    manager.unregister_external_queued(task_id)
+
+                    def _cb(p: float, m: str) -> None:
+                        # 汇总整体进度：各周期进度等权平均；取消时抛异常终止（因子间/批间检查点）
+                        with lock:
+                            prog[h] = float(p)
+                            overall = sum(prog.values()) / n_h
+                            n_done = done
+                        msg = f"[周期 {h} 日] {m}" if n_h > 1 else m
+                        if n_h > 1 and n_done:
+                            msg = f"{msg}（{n_done}/{n_h} 周期完成）"
+                        if state.get("cancel_requested"):
+                            raise FactorTestCancelled()
+                        if state.get("status") == "running":
+                            state.update(progress=round(overall, 1), message=msg, ts=time.time())
+
+                    if state.get("cancel_requested"):
+                        raise FactorTestCancelled()
+                    items = run_single_factor_test(
+                        universe=req.universe,
+                        start_date=req.start_date,
+                        end_date=req.end_date,
+                        label_horizon=h,
+                        factors=[f.model_dump() for f in req.factors],
+                        progress_cb=_cb,
+                        cancelled=lambda: bool(state.get("cancel_requested")),
+                        exclude_limit_up_signal=req.exclude_limit_up_signal,
+                        exclude_limit_up_trade=req.exclude_limit_up_trade,
+                        exclude_suspended=req.exclude_suspended,
+                        exclude_st_t1=req.exclude_st_t1,
+                        exclude_stock_gem=req.exclude_stock_gem,
+                        exclude_stock_kcb=req.exclude_stock_kcb,
+                        price_adjust=req.price_adjust,
+                        freeze_suspended_price=req.freeze_suspended_price,
+                        suspend_remove=req.suspend_remove,
+                    )
+                    with lock:
+                        per_h[h] = items
+                        done += 1
+                except FactorTestCancelled:
+                    with lock:
+                        if state.get("status") == "running":
+                            state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
+                    return
+                except Exception as e:
+                    with lock:
+                        fatal[h] = str(e)
+                    return
+                finally:
+                    if acquired:
+                        manager.release_slot(task_id)
+
+        # 并行 = 每个周期一个 worker（内部排队等 slot）；串行 = 1 个 worker 顺序跑完所有周期
+        n_worker = n_h if parallel else 1
+        threads = [threading.Thread(target=_worker, daemon=True) for _ in range(n_worker)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        with lock:
+            if state.get("status") == "cancelled":
+                manager.unregister_external_queued(task_id)
+                _sft_trim_results()
+                return
+            if fatal:
+                errs = "; ".join(f"{h} 日: {e}" for h, e in sorted(fatal.items()))
+                state.update(status="failed", progress=100.0, message=f"单因子测试失败: {errs}", error=errs, ts=time.time())
+                manager.unregister_external_queued(task_id)
+                _sft_trim_results()
+                return
+            # 结果按"因子分组、组内周期升序"组织：对每个因子，遍历所有周期取同一下标的行
+            items: list[dict] = []
+            n_factor = len(req.factors)
+            for fi in range(n_factor):
+                for h in horizons:
+                    rows = per_h.get(h)
+                    if rows is None or fi >= len(rows):
+                        continue
+                    row = dict(rows[fi])
+                    row["horizon"] = h
+                    items.append(row)
+            state.update(
+                status="success",
+                progress=100.0,
+                message=f"完成（{n_h} 个预测周期）" if n_h > 1 else "完成",
+                result={"items": items, "total": len(items)},
+                ts=time.time(),
+            )
+        manager.unregister_external_queued(task_id)
+        # 内存治理：任务结束立即释放超龄任务的完整结果
+        _sft_trim_results()
 
     threading.Thread(target=_run, daemon=True).start()
     return {"task_id": task_id}

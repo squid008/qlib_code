@@ -62,19 +62,32 @@ def _as_price(s: pd.Series) -> pd.Series:
     return s.round(2)
 
 
+def _limit_tag(s: pd.DataFrame, close_col: str, tag_kind: str):
+    """返回 (标签列名, 是否存在)。"""
+    prefix = "T1_" if str(close_col).startswith("T1") else ""
+    col = f"{prefix}{tag_kind}"
+    return col, col in s.columns
+
+
 def mark_limit_up(
     s: pd.DataFrame,
     close_col: str = "CLOSE",
     change_col: str = "CHANGE",
     base: float = 0.10,
 ) -> pd.Series:
-    """收盘是否封住涨停（涨停价四舍五入口径）。NaN（停牌/无行情）返回 False。
+    """收盘是否封住涨停。NaN（停牌/无行情）返回 False。
 
-    口径对齐（交易所/聚宽）：昨收 = round(真实价/(1+涨跌幅), 2)（整分价），
-    涨停价 = round(昨收×(1+板块幅度), 2)；真实价也 round 到分后比较。
+    优先用交易所标签列（close_col 对应 T1_LIMIT_UP/LIMIT_UP）：close >= limit_up - 1e-6，
+    天然覆盖 ST/退市整理/创业科创/北交全部涨跌停规则；无标签列时回退"涨停价四舍五入"倒推：
+    昨收 = round(真实价/(1+涨跌幅), 2)，涨停价 = round(昨收×(1+板块幅度), 2)（该口径不识别
+    ST 5% 涨停，仅作无标签源的兜底/对账）。
     """
     if s is None or len(s) == 0:
         return pd.Series(dtype=bool)
+    tag, has_tag = _limit_tag(s, close_col, "LIMIT_UP")
+    if has_tag:
+        close = _as_price(s[close_col])
+        return (close >= s[tag] - 1e-6).fillna(False)
     codes = _codes(s)
     ratios = pd.Series([limit_ratio(c, base) for c in codes], index=s.index)
     close = _as_price(s[close_col])
@@ -89,12 +102,13 @@ def mark_limit_down(
     change_col: str = "CHANGE",
     base: float = 0.10,
 ) -> pd.Series:
-    """收盘是否封死跌停（跌停价四舍五入口径）。NaN（停牌/无行情）返回 False。
-
-    口径与 mark_limit_up 对称：昨收/跌停价/真实价均按整分价计算与比较。
-    """
+    """收盘是否封死跌停（优先交易所标签列，口径与 mark_limit_up 对称）。NaN 返回 False。"""
     if s is None or len(s) == 0:
         return pd.Series(dtype=bool)
+    tag, has_tag = _limit_tag(s, close_col, "LIMIT_DOWN")
+    if has_tag:
+        close = _as_price(s[close_col])
+        return (close <= s[tag] + 1e-6).fillna(False)
     codes = _codes(s)
     ratios = pd.Series([limit_ratio(c, base) for c in codes], index=s.index)
     close = _as_price(s[close_col])

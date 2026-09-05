@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   createSingleFactorTest,
   getSingleFactorTestProgress,
@@ -21,10 +21,41 @@ interface SingleFactorTestPanelProps {
 
 type TestResult = SingleFactorTestResult
 
+// 解析批量预测周期输入：单值 / 逗号枚举(1,2,3,5) / range 区间(1:5:20 = 起点:步长:终点，含终点)。
+// 值范围 1~250（后端同样校验兜底）。返回去重后的周期列表，非法时带中文错误。
+function parseHorizons(text: string): { horizons: number[]; error?: string } {
+  const s = text
+    .trim()
+    .replace(/[，;；\s]+/g, ',')
+    .replace(/,+/g, ',')
+    .replace(/^,|,$/g, '')
+  if (!s) return { horizons: [] }
+  const out: number[] = []
+  for (const part of s.split(',')) {
+    if (!part) continue
+    const m = part.match(/^(\d+)(?::(\d+)(?::(\d+))?)?$/)
+    if (!m) return { horizons: [], error: `无法识别"${part}"：支持单个数字、逗号枚举(如 1,2,5)或区间(如 1:5:20)` }
+    const a = Number(m[1])
+    if (m[2] == null) {
+      out.push(a)
+    } else {
+      // a:b → a..b（步长默认 1）；a:b:c → a..c（含终点，b 为步长）
+      const step = m[3] == null ? 1 : Number(m[2])
+      const b = m[3] == null ? Number(m[2]) : Number(m[3])
+      if (step <= 0) return { horizons: [], error: `步长必须为正整数：${step}` }
+      if (a > b) return { horizons: [], error: `区间起点 ${a} 不能大于终点 ${b}` }
+      for (let v = a; v <= b; v += step) out.push(v)
+    }
+  }
+  const bad = out.find((v) => v < 1 || v > 250)
+  if (bad) return { horizons: [], error: `预测周期需在 1~250 之间：${bad}` }
+  return { horizons: [...new Set(out)] } // 去重保序
+}
+
 interface SourceGroup {
   source: 'custom' | 'alpha158' | 'alpha360'
   label: string
-  items: { key: string; id: string; name: string; expression: string }[]
+  items: { key: string; id: string; name: string; expression: string; original?: string }[]
   loaded?: boolean
 }
 
@@ -41,15 +72,22 @@ export default function SingleFactorTestPanel({
   const [universe, setUniverse] = useState(defaultUniverse)
   const [startDate, setStartDate] = useState(defaultStartDate)
   const [endDate, setEndDate] = useState(defaultEndDate)
-  const [labelHorizon, setLabelHorizon] = useState<number>(
-    Number.isFinite(defaultLabelHorizon) ? defaultLabelHorizon : 2,
+  // 预测周期：支持单值 / 逗号枚举(1,2,3,5) / range 区间(1:5:20 → 1,6,11,16，含终点)
+  const [labelHorizonText, setLabelHorizonText] = useState<string>(
+    String(Number.isFinite(defaultLabelHorizon) ? defaultLabelHorizon : 2),
   )
+  // 并行测试：多个预测周期各占一个共享并发单元同时跑（与回测/训练共用并发配额，自动排队）
+  const [parallel, setParallel] = useState(false)
   // 复权方式：none/forward/backward（与回测一致，默认前复权；前/后复权在比率类因子与收益率上数学等价）
   const [priceAdjust, setPriceAdjust] = useState('forward')
   // 触发组剔除开关：信号日(T)涨停 / 成交日(T+1)涨停 / 成交日停牌（默认全开，保持原行为 + 新增成交日口径）
   const [excludeLimitUpSignal, setExcludeLimitUpSignal] = useState(true)
   const [excludeLimitUpTrade, setExcludeLimitUpTrade] = useState(true)
   const [excludeSuspended, setExcludeSuspended] = useState(true)
+  // 新增日截面剔除：ST(T+1) / 创业板 / 科创板（均只用当日已发布状态，无未来函数；默认关）
+  const [excludeStT1, setExcludeStT1] = useState(false)
+  const [excludeGem, setExcludeGem] = useState(false)
+  const [excludeKcb, setExcludeKcb] = useState(false)
   // 信号停牌行语义：勾选=SR删行（益盟/通达信"无停牌行"，与回测特征一致，默认）；
   // 取消=停牌日保留 NaN 占位（qlib 官方/聚宽 notebook 口径，对账时用）
   const [suspendRemove, setSuspendRemove] = useState(true)
@@ -64,6 +102,7 @@ export default function SingleFactorTestPanel({
         id: f.id,
         name: f.name,
         expression: f.expression,
+        original: f.text,
       })),
     },
     { source: 'alpha158', label: 'Alpha158', items: [] },
@@ -250,6 +289,16 @@ export default function SingleFactorTestPanel({
       setError('请至少勾选一个因子')
       return
     }
+    // 解析预测周期（单值 / 逗号枚举 / range 区间），前端先校验，后端再兜底
+    const parsed = parseHorizons(labelHorizonText)
+    if (parsed.error) {
+      setError(parsed.error)
+      return
+    }
+    if (parsed.horizons.length === 0) {
+      setError('请填写预测周期，如 2 或 1,2,5 或 1:5:20')
+      return
+    }
     setRunning(true)
     setCancelling(false)
     setError('')
@@ -261,11 +310,16 @@ export default function SingleFactorTestPanel({
         universe,
         start_date: startDate,
         end_date: endDate,
-        label_horizon: labelHorizon,
+        label_horizon: parsed.horizons[0], // 兼容旧后端（单周期）
+        label_horizons: parsed.horizons,
+        parallel,
         factors,
         exclude_limit_up_signal: excludeLimitUpSignal,
         exclude_limit_up_trade: excludeLimitUpTrade,
         exclude_suspended: excludeSuspended,
+        exclude_st_t1: excludeStT1,
+        exclude_stock_gem: excludeGem,
+        exclude_stock_kcb: excludeKcb,
         suspend_remove: suspendRemove,
         price_adjust: priceAdjust,
       })
@@ -304,6 +358,14 @@ export default function SingleFactorTestPanel({
       setCancelling(false)
     }
   }
+
+  // 结果行"编译前公式"：按 (source,id) 回查勾选项原文（自定义公式用用户写的 text；目录因子无原文则回退 qlib 表达式）
+  const srcByKey = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const g of groups)
+      for (const it of g.items) if (it.original != null) m.set(`${g.source}:${it.id}`, it.original)
+    return m
+  }, [groups])
 
   // 百分比口径：×100 显示（覆盖率 / 收益 / 差值）
   const fmt = (v: number | null | undefined, digits = 4, suffix = '') =>
@@ -349,14 +411,16 @@ export default function SingleFactorTestPanel({
           <span className="text-slate-500 mb-1">结束日期</span>
           <input type="date" className="border rounded px-2 py-1" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
         </label>
-        <label className="flex-1 flex flex-col min-w-[90px]">
+        <label className="flex-1 flex flex-col min-w-[120px]">
           <span className="text-slate-500 mb-1">预测周期(天)</span>
           <input
-            type="number"
-            min={1}
+            type="text"
+            inputMode="numeric"
+            placeholder="如 2 / 1,2,3,5 / 1:5:20"
+            title="单个数字=测一个周期；逗号枚举=批量测多个；a:b:c=起点:步长:终点(含终点)，如 1:5:20 → 1,6,11,16"
             className="border rounded px-2 py-1"
-            value={Number.isFinite(labelHorizon) ? labelHorizon : 2}
-            onChange={(e) => setLabelHorizon(Number(e.target.value))}
+            value={labelHorizonText}
+            onChange={(e) => setLabelHorizonText(e.target.value)}
           />
         </label>
         <label className="flex-1 flex flex-col min-w-[90px]" title="前复权与后复权在比率类因子/收益率上数学等价（仅价格绝对值不同）">
@@ -434,6 +498,27 @@ export default function SingleFactorTestPanel({
         </label>
         <label
           className="flex items-center gap-1 cursor-pointer"
+          title="成交日(T+1)处于 ST/*ST/退市整理 的样本剔除（用 T+1 当日状态判定，日截面、无未来函数；涨停判定已直接使用交易所标签，覆盖 ST 5% 涨跌停）"
+        >
+          <input type="checkbox" checked={excludeStT1} onChange={(e) => setExcludeStT1(e.target.checked)} />
+          <span>剔除ST(T+1)</span>
+        </label>
+        <label
+          className="flex items-center gap-1 cursor-pointer"
+          title="剔除创业板（SZ30 号段，20% 涨跌幅）；板块归属恒定，无未来函数"
+        >
+          <input type="checkbox" checked={excludeGem} onChange={(e) => setExcludeGem(e.target.checked)} />
+          <span>剔除创业板</span>
+        </label>
+        <label
+          className="flex items-center gap-1 cursor-pointer"
+          title="剔除科创板（SH688，20% 涨跌幅）；板块归属恒定，无未来函数"
+        >
+          <input type="checkbox" checked={excludeKcb} onChange={(e) => setExcludeKcb(e.target.checked)} />
+          <span>剔除科创板</span>
+        </label>
+        <label
+          className="flex items-center gap-1 cursor-pointer"
           title="信号计算的停牌行语义：勾选=删除停牌日（益盟/通达信『无停牌行』，默认）；取消=停牌日保留为 NaN（qlib 官方 / 聚宽 notebook 口径）。只影响因子信号计算，不影响上方样本剔除；与聚宽对账时取消勾选"
         >
           <input
@@ -442,6 +527,13 @@ export default function SingleFactorTestPanel({
             onChange={(e) => setSuspendRemove(e.target.checked)}
           />
           <span>停牌删行</span>
+        </label>
+        <label
+          className="flex items-center gap-1 cursor-pointer"
+          title="多个预测周期并行：每个周期各占一个共享并发单元同时跑（与回测/训练共用并发上限；回测占用多时自动排队少跑，占用释放后自动顶上）。仅单个周期时无效果"
+        >
+          <input type="checkbox" checked={parallel} onChange={(e) => setParallel(e.target.checked)} />
+          <span className="text-emerald-600">并行测试</span>
         </label>
       </div>
 
@@ -501,7 +593,7 @@ export default function SingleFactorTestPanel({
                           ? 'bg-blue-600 text-white border-blue-600'
                           : 'border-slate-200 dark:border-slate-600 hover:border-blue-400'
                       }`}
-                      title={it.expression}
+                      title={it.original ?? it.expression}
                     >
                       <input
                         type="checkbox"
@@ -535,6 +627,7 @@ export default function SingleFactorTestPanel({
             <thead>
               <tr className="text-slate-500 border-b">
                 <th className="text-left py-1 pr-2">因子</th>
+                <th className="text-right px-1">周期</th>
                 <th className="text-right px-1">覆盖率</th>
                 <th className="text-right px-1">信号</th>
                 <th className="text-right px-1">触发数</th>
@@ -552,6 +645,8 @@ export default function SingleFactorTestPanel({
             </thead>
             <tbody>
               {results.map((r) => {
+                // 优先展示用户原文公式（看得懂）；目录因子无原文时展示 qlib 表达式
+                const shownFormula = srcByKey.get(`${r.source}:${r.id}`) ?? r.expression
                 const significant = r.p_value !== null && r.p_value < 0.05
                 const goodBase =
                   r.error == null && r.diff !== null && r.diff > 0 && (!r.is_binary || significant)
@@ -609,19 +704,25 @@ export default function SingleFactorTestPanel({
                   ? `触发组：日截面均值 ${dTrig >= 0 ? '+' : ''}${(dTrig * 100).toFixed(3)}%　|　未触发组：日截面均值 ${dNot >= 0 ? '+' : ''}${(dNot * 100).toFixed(3)}%　|　配对日差：${r.daily_diff != null ? `${r.daily_diff >= 0 ? '+' : ''}${(r.daily_diff * 100).toFixed(3)}%` : '-'}（${dT != null ? `${dTipLabel}=${dT >= 0 ? '+' : ''}${dT.toFixed(1)}` : ''}）　|　配对日数：${r.daily_n ?? '-'}`
                   : ''
                 return (
-                  <tr key={r.id} className="border-b border-slate-100 dark:border-slate-700">
+                  <tr key={`${r.id}:${r.horizon ?? '-'}`} className="border-b border-slate-100 dark:border-slate-700">
                     {r.error ? (
-                      <td className="py-1 pr-2 text-red-500" colSpan={14}>
-                        {r.name}：{r.error}
+                      <td className="py-1 pr-2 text-red-500" colSpan={15}>
+                        {r.name}{r.horizon ? `（周期 ${r.horizon} 天）` : ''}：{r.error}
                       </td>
                     ) : (
                       <>
                         <td className="py-1 pr-2">
                           <span className="font-semibold">{r.name}</span>
                           <span className="text-slate-400 ml-1">[{r.source}]</span>
-                          <div className="text-slate-400 font-mono text-[9px] truncate max-w-[220px]" title={r.expression}>
-                            {r.expression}
+                          <div
+                            className="text-slate-400 font-mono text-[9px] truncate max-w-[160px]"
+                            title={shownFormula || undefined}
+                          >
+                            {shownFormula.length > 14 ? `${shownFormula.slice(0, 14)}…` : shownFormula}
                           </div>
+                        </td>
+                        <td className="text-right px-1 whitespace-nowrap text-slate-500">
+                          {r.horizon ? `${r.horizon} 天` : '-'}
                         </td>
                         <td className="text-right px-1">{fmt(r.coverage, 2)}</td>
                         <td className="text-right px-1">
@@ -638,9 +739,10 @@ export default function SingleFactorTestPanel({
                             title={
                               (r.trigger?.limit_up_excluded_t ?? 0) +
                                 (r.trigger?.limit_up_excluded_t1 ?? 0) +
-                                (r.trigger?.suspended_excluded ?? 0) >
+                                (r.trigger?.suspended_excluded ?? 0) +
+                                (r.trigger?.extra_excluded ?? 0) >
                               0
-                                ? `触发组已剔除（数字为剔除后样本数）：信号日T涨停 ${r.trigger?.limit_up_excluded_t} · 成交日T+1涨停 ${r.trigger?.limit_up_excluded_t1} · 成交日停牌 ${r.trigger?.suspended_excluded}`
+                                ? `触发组已剔除（数字为剔除后样本数）：信号日T涨停 ${r.trigger?.limit_up_excluded_t} · 成交日T+1涨停 ${r.trigger?.limit_up_excluded_t1} · 成交日停牌 ${r.trigger?.suspended_excluded}${(r.trigger?.extra_excluded ?? 0) > 0 ? ` · ST/创/科剔除 ${r.trigger?.extra_excluded}` : ''}`
                                 : undefined
                             }
                           >
@@ -653,9 +755,10 @@ export default function SingleFactorTestPanel({
                             title={
                               (r.not_trigger?.limit_up_excluded_t ?? 0) +
                                 (r.not_trigger?.limit_up_excluded_t1 ?? 0) +
-                                (r.not_trigger?.suspended_excluded ?? 0) >
+                                (r.not_trigger?.suspended_excluded ?? 0) +
+                                (r.not_trigger?.extra_excluded ?? 0) >
                               0
-                                ? `未触发组已剔除（与触发组同口径，数字为剔除后样本数）：信号日T涨停 ${r.not_trigger?.limit_up_excluded_t} · 成交日T+1涨停 ${r.not_trigger?.limit_up_excluded_t1} · 成交日停牌 ${r.not_trigger?.suspended_excluded}`
+                                ? `未触发组已剔除（与触发组同口径，数字为剔除后样本数）：信号日T涨停 ${r.not_trigger?.limit_up_excluded_t} · 成交日T+1涨停 ${r.not_trigger?.limit_up_excluded_t1} · 成交日停牌 ${r.not_trigger?.suspended_excluded}${(r.not_trigger?.extra_excluded ?? 0) > 0 ? ` · ST/创/科剔除 ${r.not_trigger?.extra_excluded}` : ''}`
                                 : undefined
                             }
                           >
@@ -734,7 +837,7 @@ export default function SingleFactorTestPanel({
                         <td className="text-right px-1">{fmtRaw(r.icir, 3)}</td>
                         <td className="text-right pl-2">
                           {conflicting ? (
-                            <span className="text-orange-500 font-semibold" title="IC/ICIR 与触发收益差方向相反，信号可能由少数触发日主导，横截面方向相反">
+                            <span className="text-red-600 font-semibold" title="IC/ICIR 与触发收益差方向相反，信号可能由少数触发日主导，横截面方向相反">
                               方向矛盾
                             </span>
                           ) : good ? (
@@ -766,7 +869,7 @@ export default function SingleFactorTestPanel({
           </table>
           <p className="mt-1 text-slate-400">
             触发分组：0/1 信号为"因子值&gt;0.5"；连续因子按分位数分组（触发 = 前 20% 高分位，未触发 = 后 20% 低分位）。触发数为按剔除开关过滤后的数量（涨停/停牌判定统一为涨停价四舍五入口径，板块 10%/20%/30%）：信号日(T)涨停 = 选股过滤无前视；成交日(T+1)涨停与停牌 = 调仓日实际买不到，与回测一致。
-            差值 = 触发均值 − 未触发均值（正数说明触发组未来 {labelHorizon} 日收益更高）；收益按信号日收盘价买入持有 {labelHorizon} 个交易日计算；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
+            差值 = 触发均值 − 未触发均值（正数说明触发组未来收益更高）；收益按信号日收盘价买入、持有"周期"列对应天数计算（同因子不同周期逐行对比，可看持有期长短对预测力的影响）；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
             IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.05（即×100后≥5，日频口径，市值为例0.1以上即为稳定负向）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
             0/1 信号的分位收益列显示"信号组 vs 非信号组"的逐日截面收益均值双柱（每天先算各组平均未来收益，再对所有交易日取均值，防信号聚集虚高），悬停可查看两组数值与配对日差。
             分位收益：连续因子按每日横截面分 5 组（1=最低值组…5=最高值组），每组为日截面平均收益（每天先算组内均值、再对所有参与交易日取平均，与 0/1 双柱同口径，避免少数日子集中主导），柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益；勾选剔除开关时，分位样本先按剔除开关过滤再分组，悬停显示 5 组日截面收益与配对日数。

@@ -61,8 +61,10 @@ class TaskManager:
         self._reqs: Dict[str, BacktestRequest] = {}
         # 限制并发回测数量，避免多任务同时训练占满 CPU
         self._sem = threading.BoundedSemaphore(MAX_CONCURRENT_TASKS)
-        # 持有并发配额的外部任务（如单因子测试）与排队等待配额的外部任务
-        self._external: set = set()
+        # 持有并发配额的外部任务（如单因子测试）与排队等待配额的外部任务。
+        # external：task_id -> 当前持有 slot 数——一个外部任务可同时占多个并发单元
+        # （单因子测试"并行测试"模式下每个预测周期各占一个，与回测/训练共享同一信号量）。
+        self._external: Dict[str, int] = {}
         self._external_queued: set = set()
 
     def cancel(self, task_id: str) -> bool:
@@ -264,23 +266,28 @@ class TaskManager:
 
         供单因子测试等共享回测并发资源的任务使用：与回测共用同一信号量，
         配额满时返回 False（需排队等待），配合 release_slot() 成对使用。
-        external_id 非空时登记为"持有配额"，计入并发统计（running）。
+        external_id 非空时登记"持有配额"（计数 +1，同一任务可多次 acquire 占多个
+        slot，如单因子测试并行模式每个预测周期各占一个），计入并发统计（running）。
         """
         ok = self._sem.acquire(blocking=False)
         if ok:
             resource.acquire_task_jobs()
             if external_id:
                 with self._lock:
-                    self._external.add(external_id)
+                    self._external[external_id] = self._external.get(external_id, 0) + 1
         return ok
 
     def release_slot(self, external_id: Optional[str] = None) -> None:
-        """归还一个并发配额（与 try_acquire_slot 成对），并注销持有登记。"""
+        """归还一个并发配额（与 try_acquire_slot 成对），并注销持有登记（计数 -1，归零移除）。"""
         resource.release_task_jobs()
         self._sem.release()
         if external_id:
             with self._lock:
-                self._external.discard(external_id)
+                n = self._external.get(external_id, 0)
+                if n > 1:
+                    self._external[external_id] = n - 1
+                else:
+                    self._external.pop(external_id, None)
 
     def register_external_queued(self, external_id: str) -> None:
         """登记一个排队等待配额的外部任务（计入并发统计 queued）。"""
@@ -293,9 +300,9 @@ class TaskManager:
             self._external_queued.discard(external_id)
 
     def external_running(self) -> int:
-        """持有配额的外部任务数（如正在执行的单因子测试）。"""
+        """外部任务当前持有的并发配额总数（如单因子测试并行模式 = 各任务已占 slot 之和）。"""
         with self._lock:
-            return len(self._external)
+            return sum(self._external.values())
 
     def external_queued(self) -> int:
         """排队等待配额的外部任务数。"""

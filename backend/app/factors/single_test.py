@@ -25,6 +25,13 @@ from ..engine.adjust import adjust_expr, normalize_mode
 from ..engine.feature_cache import _sr_wrap_expr
 
 
+def _inst_codes(s: pd.DataFrame) -> pd.Series:
+    """每行样本的 instrument 代码（大写，如 SZ300001/SH688001/BJ430047）；单标的（无 instrument 层）返回空串。"""
+    if isinstance(s.index, pd.MultiIndex):
+        return s.index.get_level_values(0).astype(str).str.upper()
+    return pd.Series([""] * len(s), index=s.index)
+
+
 def _acf(x: np.ndarray, k: int) -> float:
     """lag-k 自相关系数（样本）。"""
     n = len(x)
@@ -121,7 +128,7 @@ def _resolve_instruments(universe: str, start_date: str) -> List[str]:
     return filtered
 
 
-def _stat_group(g: pd.DataFrame, lu_t: int = 0, lu_t1: int = 0, susp: int = 0) -> Optional[dict]:
+def _stat_group(g: pd.DataFrame, lu_t: int = 0, lu_t1: int = 0, susp: int = 0, extra: int = 0) -> Optional[dict]:
     """触发/未触发组的收益统计（含剔除明细，供前端逐项展示）。"""
     if g is None or len(g) == 0:
         return None
@@ -133,6 +140,7 @@ def _stat_group(g: pd.DataFrame, lu_t: int = 0, lu_t1: int = 0, susp: int = 0) -
         "limit_up_excluded_t": int(lu_t),               # 信号日（T）涨停剔除数
         "limit_up_excluded_t1": int(lu_t1),             # 成交日（T+1）涨停剔除数
         "suspended_excluded": int(susp),                # 成交日停牌/无行情剔除数
+        "extra_excluded": int(extra),                   # ST(T+1)/创业板/科创板剔除数（勾选时）
     }
 
 
@@ -158,6 +166,9 @@ def _test_one(
     exclude_limit_up_signal: bool = True,
     exclude_limit_up_trade: bool = True,
     exclude_suspended: bool = True,
+    exclude_st_t1: bool = False,       # 剔除成交日 T+1 处于 ST/*ST/退市整理 的样本（日截面）
+    exclude_stock_gem: bool = False,   # 剔除创业板
+    exclude_stock_kcb: bool = False,   # 剔除科创板
     cancelled=None,  # 取消检查回调：返回 True 表示用户已取消，在重计算步骤间调用（可空）
 ) -> dict:
     """测试单个因子列（df 含 col 与 LABEL 两列）。
@@ -259,8 +270,12 @@ def _test_one(
     #   3) 成交日（T+1）停牌/无行情：同样买不到
 
     def _exclude(g: pd.DataFrame):
-        """对一组样本应用剔除开关，返回 (剔除后组, T涨停数, T+1涨停数, 停牌数)。"""
-        lu_t = lu_t1 = susp = 0
+        """对一组样本应用剔除开关，返回 (组, T涨停数, T+1涨停数, 停牌数, ST/板块剔除数)。
+
+        涨停判定优先交易所标签列（df 含 LIMIT_UP/T1_LIMIT_UP 时 mark_limit_up 自动走标签，
+        覆盖 ST 5% / 退市整理 10% / 创业科创 20%）；ST/板块剔除只用 T+1 当日已发布状态（日截面，无未来函数）。
+        """
+        lu_t = lu_t1 = susp = extra = 0
         if len(g) > 0:
             if exclude_limit_up_signal and "CLOSE" in df.columns and "CHANGE" in df.columns:
                 mask = mark_limit_up(df.loc[g.index], "CLOSE", "CHANGE")
@@ -274,10 +289,22 @@ def _test_one(
                 mask = df.loc[g.index, "T1_CLOSE"].isna()
                 susp = int(mask.sum())
                 g = g[~mask]
-        return g, lu_t, lu_t1, susp
+            # ST/板块剔除：日截面（T+1 当日状态/所属板块），无未来函数
+            if (exclude_st_t1 or exclude_stock_gem or exclude_stock_kcb) and len(g):
+                codes = _inst_codes(df.loc[g.index])
+                keep = pd.Series(True, index=g.index)
+                if exclude_st_t1 and "T1_IS_ST" in df.columns:
+                    keep &= ~(df.loc[g.index, "T1_IS_ST"] > 0.5)
+                if exclude_stock_gem:
+                    keep &= ~codes.str.startswith("SZ30")
+                if exclude_stock_kcb:
+                    keep &= ~codes.str.startswith("SH688")
+                extra = int((~keep).sum())
+                g = g[keep]
+        return g, lu_t, lu_t1, susp, extra
 
-    trig, t_lu_t, t_lu_t1, t_susp = _exclude(trig)
-    not_trig, n_lu_t, n_lu_t1, n_susp = _exclude(not_trig)
+    trig, t_lu_t, t_lu_t1, t_susp, t_extra = _exclude(trig)
+    not_trig, n_lu_t, n_lu_t1, n_susp, n_extra = _exclude(not_trig)
     result["limit_up_excluded"] = t_lu_t + t_lu_t1 + t_susp
     result["limit_up_excluded_t"] = t_lu_t
     result["limit_up_excluded_t1"] = t_lu_t1
@@ -286,8 +313,8 @@ def _test_one(
     result["not_limit_up_excluded_t"] = n_lu_t
     result["not_limit_up_excluded_t1"] = n_lu_t1
     result["not_suspended_excluded"] = n_susp
-    result["trigger"] = _stat_group(trig, t_lu_t, t_lu_t1, t_susp)
-    result["not_trigger"] = _stat_group(not_trig, n_lu_t, n_lu_t1, n_susp)
+    result["trigger"] = _stat_group(trig, t_lu_t, t_lu_t1, t_susp, t_extra)
+    result["not_trigger"] = _stat_group(not_trig, n_lu_t, n_lu_t1, n_susp, n_extra)
     if len(trig) > 0 and len(not_trig) > 0:
         result["diff"] = round(float(trig["LABEL"].mean() - not_trig["LABEL"].mean()), 6)
         if len(trig) >= 5 and len(not_trig) >= 5:
@@ -355,7 +382,8 @@ def _test_one(
         try:
             if cancelled is not None and cancelled():
                 raise FactorTestCancelled()
-            meta = df.loc[sub.index, ["CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]]
+            meta = df.loc[sub.index, ["CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE",
+                                      "LIMIT_UP", "T1_LIMIT_UP", "IS_ST", "T1_IS_ST"]]
             excl = pd.Series(False, index=sub.index)
             if exclude_limit_up_signal:
                 excl = excl | mark_limit_up(meta, "CLOSE", "CHANGE")
@@ -363,6 +391,15 @@ def _test_one(
                 excl = excl | mark_limit_up(meta, "T1_CLOSE", "T1_CHANGE")
             if exclude_suspended:
                 excl = excl | meta["T1_CLOSE"].isna()
+            # ST/板块剔除（与触发/非触发组同口径，见 _exclude）
+            if exclude_st_t1:
+                excl = excl | (meta["T1_IS_ST"] > 0.5)
+            if exclude_stock_gem or exclude_stock_kcb:
+                codes = _inst_codes(meta)
+                if exclude_stock_gem:
+                    excl = excl | codes.str.startswith("SZ30")
+                if exclude_stock_kcb:
+                    excl = excl | codes.str.startswith("SH688")
             quint = sub.loc[~excl]
             dt_pos = quint.index.names.index("datetime")
             tmp = quint[[col, "LABEL"]].copy()
@@ -406,6 +443,10 @@ def run_single_factor_test(
     suspend_remove: bool = True,           # 信号计算的停牌行语义：True=SR删行（益盟/通达信
     #   "无停牌行"，与回测特征一致，默认）；False=停牌日保留 NaN 占位（qlib 官方/聚宽 notebook
     #   口径）。只影响因子信号，不影响 label 与涨停/停牌元数据。
+    exclude_st_t1: bool = False,           # 剔除成交日（T+1）处于 ST/*ST/退市整理 的样本（日截面，
+    #   用 T+1 当日状态判定可买，无未来函数；源 bundle st_stock_days）
+    exclude_stock_gem: bool = False,       # 剔除创业板（SZ30 段，20% 涨跌幅）
+    exclude_stock_kcb: bool = False,       # 剔除科创板（SH688，20% 涨跌幅）
 ) -> List[dict]:
     """执行单因子测试，返回每个因子的测试结果列表。
 
@@ -504,9 +545,14 @@ def run_single_factor_test(
     fields = (
         adj_exprs
         + [label_expr]
-        + ["$close/$factor", "$change", "Ref($close/$factor, -1)", "Ref($change, -1)"]
+        + ["$close/$factor", "$change", "Ref($close/$factor, -1)", "Ref($change, -1)",
+           # 交易所涨跌停价与 ST 状态标签（真实价，日级；T1_ = 成交日 T+1 的未来一日标签）：
+           # 涨停/ST 判定直接读标签（自动覆盖 ST 5% / 退市整理 10% / 创业科创 20% / 北交 30%）
+           "$limit_up", "$limit_down", "$is_st",
+           "Ref($limit_up, -1)", "Ref($limit_down, -1)", "Ref($is_st, -1)"]
     )
-    col_names = col_names + ["LABEL", "CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]
+    col_names = col_names + ["LABEL", "CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE",
+                             "LIMIT_UP", "LIMIT_DOWN", "IS_ST", "T1_LIMIT_UP", "T1_LIMIT_DOWN", "T1_IS_ST"]
     batch_size = 2
     frames = []
     try:
@@ -573,6 +619,9 @@ def run_single_factor_test(
                     exclude_limit_up_signal=exclude_limit_up_signal,
                     exclude_limit_up_trade=exclude_limit_up_trade,
                     exclude_suspended=exclude_suspended,
+                    exclude_st_t1=exclude_st_t1,
+                    exclude_stock_gem=exclude_stock_gem,
+                    exclude_stock_kcb=exclude_stock_kcb,
                     cancelled=cancelled,
                 )
             )
