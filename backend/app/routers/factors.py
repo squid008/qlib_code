@@ -141,6 +141,7 @@ class SingleFactorTestFactor(BaseModel):
     name: str = ""
     expression: str = ""
     source: str = "custom"  # custom / alpha158 / alpha360
+    source_formula: str = ""  # 用户原文公式（custom=保存的原文；目录因子=表达式本身），仅随结果回传用于展示
 
 
 class SingleFactorTestRequest(BaseModel):

@@ -211,6 +211,7 @@ export interface SingleFactorTestItem {
   name: string
   expression: string
   source: string // custom / alpha158 / alpha360
+  source_formula?: string // 用户原文公式（custom=保存原文；目录因子=表达式本身），仅展示用
 }
 export interface SingleFactorTestRequest {
   universe: string
@@ -252,6 +253,7 @@ export interface SingleFactorTestResult {
   source: string
   expression: string
   horizon?: number // 该行对应的预测周期（批量测试时每 因子×周期 一行）
+  source_formula?: string // 用户原文公式（custom=保存原文；目录因子=表达式本身）
   coverage: number | null // 因子值非空比例
   nonzero_ratio: number | null // 非零比例
   is_binary: boolean // 是否 0/1 二值信号

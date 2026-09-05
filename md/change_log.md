@@ -3,6 +3,11 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.9.2] - 2026-09-05
+
+### Fixed
+- **单因子测试结果/悬停公式显示"编译后表达式"根治**：用户原文不再依赖前端按 (source,id) 回查勾选项（历史/恢复场景可能匹配不上而回退表达式），改为**原文随请求下发、随结果回传**——请求 `factors[].source_formula`，结果每行直接带 `source_formula`（custom=保存原文，目录因子=表达式本身），展示层优先使用；旧结果无该字段时仍回退本地回查/表达式
+
 ## [1.9.1] - 2026-09-05
 
 ### Fixed / Added

@@ -185,6 +185,7 @@ def _test_one(
         "name": name,
         "source": factor.get("source") or "custom",
         "expression": factor.get("expression") or "",
+        "source_formula": factor.get("source_formula") or "",  # 用户原文（仅展示用，随结果回传）
         "coverage": None,
         "nonzero_ratio": None,
         "is_binary": False,

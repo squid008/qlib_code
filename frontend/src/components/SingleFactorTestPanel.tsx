@@ -285,7 +285,13 @@ export default function SingleFactorTestPanel({
     const factors = groups.flatMap((g) =>
       g.items
         .filter((it) => selected.has(it.key))
-        .map((it) => ({ id: it.id, name: it.name, expression: it.expression, source: g.source })),
+        .map((it) => ({
+          id: it.id,
+          name: it.name,
+          expression: it.expression,
+          source: g.source,
+          source_formula: it.original ?? it.expression, // 原文随请求走，结果直接回传展示
+        })),
     )
     if (factors.length === 0) {
       setError('请至少勾选一个因子')
@@ -676,8 +682,10 @@ export default function SingleFactorTestPanel({
             </thead>
             <tbody>
               {results.map((r) => {
-                // 优先展示用户原文公式（看得懂）；目录因子无原文时展示 qlib 表达式
-                const shownFormula = srcByKey.get(`${r.source}:${r.id}`) ?? r.expression
+                // 展示用户原文公式（看得懂）：后端随结果回传的 source_formula 最可靠（含历史/恢复场景），
+                // 其次本地按 (source,id) 回查，最后回退 qlib 表达式（旧结果无 source_formula 字段）
+                const shownFormula =
+                  r.source_formula || srcByKey.get(`${r.source}:${r.id}`) || r.expression
                 const significant = r.p_value !== null && r.p_value < 0.05
                 const goodBase =
                   r.error == null && r.diff !== null && r.diff > 0 && (!r.is_binary || significant)
