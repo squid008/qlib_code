@@ -41,7 +41,7 @@ export default function FormulaHandbookModal({ open, onClose, onInsert }: Formul
   const insert = (entry: HandbookEntry) => {
     const token = entry.kind === 'func' ? `${entry.name}(` : entry.name
     onInsert(token)
-    // 插入后保持弹窗打开，便于连续插入；焦点回到编辑窗（由父组件处理）
+    onClose() // 插入后关闭，焦点回到公式编辑窗（由父组件恢复光标）
   }
 
   return (
