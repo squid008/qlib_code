@@ -168,8 +168,8 @@ const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput
             }}
             onBlur={onBlur}
             maxLength={LENS[i]}
-            className={`bg-transparent outline-none px-0.5 text-center ${fontSize} text-slate-700 dark:text-slate-200 ${
-              i === 0 ? 'w-[3.4rem]' : 'w-[1.7rem]'
+            className={`bg-transparent outline-none px-1 text-center ${fontSize} text-slate-700 dark:text-slate-200 ${
+              i === 0 ? 'w-[4rem]' : 'w-[2.2rem]'
             }`}
           />
           {i < 2 && <span className="text-slate-400 select-none">-</span>}

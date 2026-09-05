@@ -3,6 +3,11 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.10.8] - 2026-09-05
+
+### Changed
+- 日期三段输入框每段宽度放宽（年 4rem / 月日 2.2rem，加 px-1 内距），数字不再被压缩在窄列，视觉与 TopK 输入对齐
+
 ## [1.10.7] - 2026-09-05
 
 ### Changed
