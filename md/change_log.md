@@ -3,6 +3,11 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.10.5] - 2026-09-05
+
+### Fixed
+- 回测"封板不可交易"勾选框高度调到 `h-[36px]`，与旁边含 spinner 的 number 输入框等高
+
 ## [1.10.4] - 2026-09-05
 
 ### Fixed

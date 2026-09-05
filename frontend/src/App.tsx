@@ -1258,7 +1258,7 @@ export default function App() {
               <div className="block">
                 <span className="text-sm text-slate-500">涨跌停限制</span>
                 <label
-                  className="mt-1 flex items-center gap-1.5 text-sm cursor-pointer border rounded px-2 h-[30px] bg-white dark:bg-slate-900"
+                  className="mt-1 flex items-center gap-1.5 text-sm cursor-pointer border rounded px-2 h-[36px] bg-white dark:bg-slate-900"
                   title="自动识别：主板 10%、创业/科创 20%、北交 30%；数据有交易所涨跌停价标签时直接按标签（ST 5%/退市整理 10% 也自动正确）。取消=不设涨跌停（理想成交）"
                 >
                   <input
