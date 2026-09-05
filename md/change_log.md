@@ -3,6 +3,11 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.9.3] - 2026-09-05
+
+### Fixed
+- **结果表因子列：用户原文与 qlib 表达式内容相同时不再重复展示**。原 v1.9.2 显示源码但若用户保存的"自定义公式"原文本身就是 qlib 表达式（直接复制粘贴的 expression），会显示为长串且与编译后无差异——现改为：内容一致时隐藏灰色公式行，改显示 `（原文即为 qlib 表达式）` 提示，hover 公式名看完整 expression
+
 ## [1.9.2] - 2026-09-05
 
 ### Fixed
