@@ -3,6 +3,11 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.11.0] - 2026-09-05
+
+### Fixed
+- 单因子测试提交报错现在直接显示后端返回的 `detail`（如勾选"剔除ST(T+1)"但本机无 `is_st` 标签时的 400 提示），此前前端只显示 axios 通用文案 "Request failed with status code 400"，看不到具体原因与解决办法（无 `detail` 时回退原 message；`frontend/src/components/SingleFactorTestPanel.tsx`）
+
 ## [1.10.10] - 2026-09-05
 
 ### Added

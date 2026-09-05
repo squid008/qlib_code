@@ -350,8 +350,12 @@ export default function SingleFactorTestPanel({
       // 立即刷新并发显示（留 200ms 给后端线程登记占用/排队，通常毫秒级完成）
       window.setTimeout(() => onCapacityChange?.(), 200)
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
-      setError(`单因子测试失败：${msg}`)
+      const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+      setError(
+        detail
+          ? `单因子测试失败：${String(detail)}`
+          : `单因子测试失败：${e instanceof Error ? e.message : String(e)}`,
+      )
       setRunning(false)
       setCancelling(false)
     }
