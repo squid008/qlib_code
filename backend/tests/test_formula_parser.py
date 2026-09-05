@@ -160,6 +160,16 @@ class TestMoneyflowL2:
         """方向字段也可在公式中直接引用。"""
         assert translate_formula("OUT:MF_AMOUNT_MAIN_B;").expression == "$mf_amount_main_b"
         assert translate_formula("OUT:MF_PCT_MAIN_B;").expression == "$mf_pct_main_b"
+        assert translate_formula("OUT:MF_VOL_MAIN;").expression == "$mf_vol_main"
+        assert translate_formula("OUT:MF_VOL_L_B;").expression == "$mf_vol_l_b"
+
+    def test_l2_vol(self):
+        """L2_VOL(n) 净流入量（手）/ L2_VOL(n,b|s) 买入量/卖出量。"""
+        assert translate_formula("OUT:L2_VOL(0);").expression == "$mf_vol_main"
+        assert translate_formula("OUT:L2_VOL(4);").expression == "$mf_vol_s"
+        assert translate_formula("OUT:L2_VOL(1,b);").expression == "$mf_vol_xl_b"
+        assert translate_formula("OUT:L2_VOL(2,S);").expression == "$mf_vol_l_s"
+        assert translate_formula("OUT:L2_VOL(3,B);").expression == "$mf_vol_m_b"
 
     def test_l2_errors(self):
         """参数错误分支。"""
@@ -171,6 +181,10 @@ class TestMoneyflowL2:
             translate_formula("OUT:L2_AMO(0,B,1);")      # 参数过多
         with pytest.raises(CodeGenError):
             translate_formula("OUT:L2_AMO();")           # 缺档位
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:L2_VOL(5);")          # 档位越界
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:L2_VOL(0,X);")        # 方向非法
 
 
 class TestSyntax:

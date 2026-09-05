@@ -3,6 +3,15 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.7.1] - 2026-09-05
+
+### Added
+- **资金流买卖量字段 + `L2_VOL(n[,b|s])`**（moneyflow3 源的量 `_bq/_sq`，单位=手）：
+  - `dump_moneyflow.py` 新增 15 个量 bin：`mf_vol_<main|xl|l|m|s>`（净流入量）+ `mf_vol_<档>_b/_s`（买卖量）；现共导出 45 个字段（净额/净占比/量 × 净+买卖方向），已全量重 dump 到 `data/cn_data`
+  - 公式翻译器新增 `L2_VOL(n[,b|s])`（与 `L2_AMO` 同构）：`L2_VOL(n)` = 档位 n 净流入量（手，可为负），`L2_VOL(n,b|s)` = 买入量/卖出量；公式里也可直接引用 `MF_VOL_MAIN` / `MF_VOL_L_B` 等字段
+  - 至此益盟 `BIGORDER/ORDERAMT` 的改写覆盖**净额、单边买卖、`×vol` 量**三类口径（此前 `×vol` 标注"无买卖数据不支持"）
+- 翻译器单测新增 `L2_VOL` 档位/方向/越界用例
+
 ## [1.7.0] - 2026-09-05
 
 ### Changed

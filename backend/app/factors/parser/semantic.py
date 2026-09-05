@@ -27,8 +27,8 @@ BUILTIN_FUNCS = {
     # Level2（留接口：语法支持，计算层待数据）
     "BIGORDER", "ORDER", "ORDERAMT", "ORDERNUM", "ORDERNWP", "ORDERVOL",
     "TRANSACTNUM", "TRANSACTVOL", "ALLASKVOL", "ALLBIDVOL",
-    # 资金流向（moneyflow）：L2_PCT(n)/L2_AMO(n)，n=0主力/1超大/2大/3中/4小
-    "L2_PCT", "L2_AMO",
+    # 资金流向（moneyflow）：L2_PCT(n)/L2_AMO(n)/L2_VOL(n)，n=0主力/1超大/2大/3中/4小
+    "L2_PCT", "L2_AMO", "L2_VOL",
 }
 
 
@@ -70,9 +70,9 @@ def resolve_vars(formula: Formula) -> Formula:
             if expr.name not in BUILTIN_FUNCS:
                 raise SemanticError(f"不支持的函数：{expr.name}（在 {ctx}）")
             for i, a in enumerate(expr.args):
-                # L2_PCT/L2_AMO 的第 2+ 参数是买卖方向关键字（b/s），
+                # L2_PCT/L2_AMO/L2_VOL 的第 2+ 参数是买卖方向关键字（b/s），
                 # 是否合法统一由 codegen 校验（此处按变量检查会把 X 误报为未定义变量）
-                if expr.name in ("L2_PCT", "L2_AMO") and i >= 1:
+                if expr.name in ("L2_PCT", "L2_AMO", "L2_VOL") and i >= 1:
                     continue
                 check(a, ctx)
 

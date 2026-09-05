@@ -2,7 +2,7 @@
 """把 A 股资金流数据源转成 qlib feature bin（mf_* 前缀）。
 
 用法：
-    python tools/dump_moneyflow.py            # 全量 dump（30 个字段）
+    python tools/dump_moneyflow.py            # 全量 dump（45 个字段）
     python tools/dump_moneyflow.py --limit 5  # 冒烟：只处理前 N 只股票
     python tools/dump_moneyflow.py --force    # 已存在也覆盖重写
     python tools/dump_moneyflow.py --src-root E:\\rq\\moneyflow3 --qlib-dir D:/.../cn_data
@@ -15,7 +15,7 @@
     2013-01-04 ~ 2026-08-19，4 档买卖逐行严格平衡，无 NaN。
 
 目标：qlib features/{code}/{field}.day.bin（header=日历起始行号 + float32 序列），
-写入后可在特征/公式里以 $mf_* 引用。输出 30 个字段：
+写入后可在特征/公式里以 $mf_* 引用。输出 45 个字段：
 
   兼容字段（10 个，数值 = 买-卖 派生，与 moneyflow2 的 net_amount_* 完全一致）：
     mf_amount_<main|xl|l|m|s>   档位净额（万元）      = 买入额 - 卖出额
@@ -24,6 +24,10 @@
   买卖方向字段（20 个，moneyflow3 特有，L2_AMO/L2_PCT 的 b/s 参数用）：
     mf_amount_<档>_b / _s       档位买入额 / 卖出额（万元）
     mf_pct_<档>_b / _s          档位买入占比 / 卖出占比（%）
+
+  量字段（15 个，moneyflow3 特有，L2_VOL 的 b/s 参数用；单位=手）：
+    mf_vol_<main|xl|l|m|s>      档位净流入量（手）    = 买量 - 卖量
+    mf_vol_<档>_b / _s          档位买入量 / 卖出量（手）
 
 口径：
   - 档位映射：源 x→xl（超大）、l→l（大）、m→m（中）、s→s（小）；main = xl + l
@@ -55,8 +59,9 @@ import pandas as pd
 TIERS = ["main", "xl", "l", "m", "s"]
 SRC_TIER = {"xl": "x", "l": "l", "m": "m", "s": "s"}  # main 由 xl+l 派生
 
-NET_DST = []   # 10 个兼容字段
-DIR_DST = []   # 20 个方向字段
+NET_DST = []   # 10 个兼容字段（金额/占比）
+DIR_DST = []   # 20 个方向字段（金额/占比 买卖）
+VOL_DST = []   # 30 个量字段（手）：5 净量 + 20 买卖方向量（moneyflow3 源 _bq/_sq）
 for t in TIERS:
     NET_DST += [f"mf_amount_{t}", f"mf_pct_{t}"]
 for t in TIERS:
@@ -64,7 +69,11 @@ for t in TIERS:
         f"mf_amount_{t}_b", f"mf_amount_{t}_s",
         f"mf_pct_{t}_b", f"mf_pct_{t}_s",
     ]
-ALL_DST = NET_DST + DIR_DST
+for t in TIERS:
+    VOL_DST += [f"mf_vol_{t}"]  # 净流入量(手) = 买量 − 卖量
+for t in TIERS:
+    VOL_DST += [f"mf_vol_{t}_b", f"mf_vol_{t}_s"]
+ALL_DST = NET_DST + DIR_DST + VOL_DST
 
 # 旧源（已折算净额）字段名 -> 目标字段名
 LEGACY_MAP = {
@@ -113,15 +122,21 @@ def load_all_years(src_root: str):
 
 
 def _derive_new(sub):
-    """moneyflow3 结构 → {目标字段: float32 数组}（30 列）。
+    """moneyflow3 结构 → {目标字段: float32 数组}（60 列：金额/占比 30 + 量 30）。
 
     计算顺序与 moneyflow2 构建路径一致，保证兼容 10 字段逐位相同：
     main_net = (x_ba-x_sa) + (l_ba-l_sa)，而非 (x_ba+l_ba)-(x_sa+l_sa)。
+    量（手）字段由源 _bq/_sq（买量/卖量）派生，与金额同构。
     """
     x_ba, x_sa = sub["x_ba"], sub["x_sa"]
     l_ba, l_sa = sub["l_ba"], sub["l_sa"]
     m_ba, m_sa = sub["m_ba"], sub["m_sa"]
     s_ba, s_sa = sub["s_ba"], sub["s_sa"]
+    # 量（手）
+    x_bq, x_sq = sub["x_bq"], sub["x_sq"]
+    l_bq, l_sq = sub["l_bq"], sub["l_sq"]
+    m_bq, m_sq = sub["m_bq"], sub["m_sq"]
+    s_bq, s_sq = sub["s_bq"], sub["s_sq"]
     # 净额（float32 同序运算）
     xl_net = x_ba - x_sa
     l_net = l_ba - l_sa
@@ -131,6 +146,14 @@ def _derive_new(sub):
     # 买入/卖出额（main 派生）
     main_b = x_ba + l_ba
     main_s = x_sa + l_sa
+    # 净量 / 买卖量（main 派生）
+    xl_netv = x_bq - x_sq
+    l_netv = l_bq - l_sq
+    m_netv = m_bq - m_sq
+    s_netv = s_bq - s_sq
+    main_netv = xl_netv + l_netv
+    main_bv = x_bq + l_bq
+    main_sv = x_sq + l_sq
     # 当日总成交额（4 档买之和，float32；moneyflow3 每行买卖平衡）
     turnover = s_ba + m_ba + l_ba + x_ba
     good = turnover > 0
@@ -145,18 +168,27 @@ def _derive_new(sub):
         net = {"xl": xl_net, "l": l_net, "m": m_net, "s": s_net}[t]
         b = {"xl": x_ba, "l": l_ba, "m": m_ba, "s": s_ba}[t]
         s_ = {"xl": x_sa, "l": l_sa, "m": m_sa, "s": s_sa}[t]
+        netv = {"xl": xl_netv, "l": l_netv, "m": m_netv, "s": s_netv}[t]
+        bv = {"xl": x_bq, "l": l_bq, "m": m_bq, "s": s_bq}[t]
+        sv = {"xl": x_sq, "l": l_sq, "m": m_sq, "s": s_sq}[t]
         cols[f"mf_amount_{t}"] = net.astype(np.float32)
         cols[f"mf_pct_{t}"] = _pct(net)
         cols[f"mf_amount_{t}_b"] = b.astype(np.float32)
         cols[f"mf_amount_{t}_s"] = s_.astype(np.float32)
         cols[f"mf_pct_{t}_b"] = _pct(b)
         cols[f"mf_pct_{t}_s"] = _pct(s_)
+        cols[f"mf_vol_{t}"] = netv.astype(np.float32)
+        cols[f"mf_vol_{t}_b"] = bv.astype(np.float32)
+        cols[f"mf_vol_{t}_s"] = sv.astype(np.float32)
     cols["mf_amount_main"] = main_net.astype(np.float32)
     cols["mf_pct_main"] = _pct(main_net)
     cols["mf_amount_main_b"] = main_b.astype(np.float32)
     cols["mf_amount_main_s"] = main_s.astype(np.float32)
     cols["mf_pct_main_b"] = _pct(main_b)
     cols["mf_pct_main_s"] = _pct(main_s)
+    cols["mf_vol_main"] = main_netv.astype(np.float32)
+    cols["mf_vol_main_b"] = main_bv.astype(np.float32)
+    cols["mf_vol_main_s"] = main_sv.astype(np.float32)
     return cols
 
 
@@ -202,7 +234,7 @@ def dump(src_root: str, qlib_dir: str, force: bool = False, limit: int | None = 
     arr = arr[order]
     sid_arr = arr["sid"]
 
-    dst_fields = NET_DST + (DIR_DST if mode == "new" else [])
+    dst_fields = NET_DST + (DIR_DST + VOL_DST if mode == "new" else [])
     if mode == "legacy":
         print("注意: 旧源无买卖方向数据，本次只更新 10 个净额字段；方向字段待换 moneyflow3 源")
     features_dir = qlib_dir / "features"

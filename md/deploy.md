@@ -80,22 +80,28 @@ pip install pyqlib
 
 > 配置优先级：环境变量 > 项目内 data/cn_data > 主目录 .qlib
 
-### 资金流向（moneyflow）数据（v1.6.5+，资金流/L2 因子用）
+### 资金流向（moneyflow）数据（v1.7.1+，资金流/L2 因子用）
 
-资金流字段（`mf_amount_*` / `mf_pct_*`，共 10 个）以 bin 形式随 `cn_data` 存放：
-`cn_data/features/<代码>/mf_*.day.bin`（约 5,451 只 × 10 = 54,510 文件 / 432.5 MB）。
+资金流字段共 **45 个 bin**（净额/占比 × 净+买卖方向 + 量）随 `cn_data` 存放：
+`cn_data/features/<代码>/mf_*.day.bin`（约 5,2xx 只 × 45）。
 它们**不在 git 仓库**（`data/` 已被 .gitignore），部署/拷贝方式二选一：
 
-- **方式 A（推荐）**：拷贝源 h5 目录 `E:\rq\moneyflow\`（399.6 MB，含 `sid.h5` + `mf_2016~mf_2026.h5`）后执行：
+- **方式 A（推荐）**：拷贝源 h5 目录 `E:\rq\moneyflow3\`（含 `sid.h5` + `mf_2013~mf_2026.h5`，2013-01-04 ~ 2026-08-19，4 档买卖分开的量与金额）后执行：
   ```bash
   python backend/tools/dump_moneyflow.py            # 默认写入 D:\quant\qlib_code\data\cn_data
   python backend/tools/dump_moneyflow.py --qlib-dir <你的cn_data路径>   # 自定义数据目录
   ```
+  脚本自动检测源结构（moneyflow3 原始买卖 / 旧 net 字段）；旧源仅导出兼容净额字段。
 - **方式 B**：打包/拷贝 `cn_data/features/` 下所有 `mf_*.day.bin`（保持目录结构），解压到目标 `cn_data/features/`。
 
-**数据更新（服务器每天跑）**：更新行情日历后执行 `python backend/tools/dump_moneyflow.py --force`（幂等全量重写，约 1 分钟）即可补新交易日资金流；若行情 bin 重建（日历重排/前插日期），需与 moneyflow 基于同一天历一起重 dump，否则字段错位。
+字段（dump_moneyflow.py 自动幂等：已存在跳过，--force 全量重写）：
+- 净额/净占比 10：`mf_amount_<main|xl|l|m|s>`、`mf_pct_<main|xl|l|m|s>`（万元 / %）
+- 买卖方向 20：`mf_amount_<档>_b/_s`、`mf_pct_<档>_b/_s`
+- 量（手）15：`mf_vol_<main|xl|l|m|s>`（净流入量）+ `mf_vol_<档>_b/_s`（买卖量）→ 供 `L2_VOL`
 
-> 校验：`mf_amount_main = mf_amount_xl + mf_amount_l`（勾稽）；源 h5 vs bin 逐日比对已一致（开发机验证）。
+**数据更新（服务器每天跑）**：更新行情日历后执行 `python backend/tools/dump_moneyflow.py --force`（幂等全量重写）即可补新交易日资金流；若行情 bin 重建（日历重排/前插日期），需与 moneyflow 基于同一天历一起重 dump，否则字段错位。
+
+> 校验：`mf_amount_main = mf_amount_xl + mf_amount_l`、`mf_vol_<档> = mf_vol_<档>_b − mf_vol_<档>_s`（勾稽）；源 h5 vs bin 逐日比对已一致（开发机验证）。
 
 ---
 

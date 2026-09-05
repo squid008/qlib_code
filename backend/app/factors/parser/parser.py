@@ -47,6 +47,14 @@ FIELD_MAP = {
     "MF_PCT_M_B": "$mf_pct_m_b", "MF_PCT_M_S": "$mf_pct_m_s",
     "MF_AMOUNT_S_B": "$mf_amount_s_b", "MF_AMOUNT_S_S": "$mf_amount_s_s",
     "MF_PCT_S_B": "$mf_pct_s_b", "MF_PCT_S_S": "$mf_pct_s_s",
+    # 资金流向量字段（手，moneyflow3 源 _bq/_sq 派生，L2_VOL 用）
+    "MF_VOL_MAIN": "$mf_vol_main", "MF_VOL_XL": "$mf_vol_xl",
+    "MF_VOL_L": "$mf_vol_l", "MF_VOL_M": "$mf_vol_m", "MF_VOL_S": "$mf_vol_s",
+    "MF_VOL_MAIN_B": "$mf_vol_main_b", "MF_VOL_MAIN_S": "$mf_vol_main_s",
+    "MF_VOL_XL_B": "$mf_vol_xl_b", "MF_VOL_XL_S": "$mf_vol_xl_s",
+    "MF_VOL_L_B": "$mf_vol_l_b", "MF_VOL_L_S": "$mf_vol_l_s",
+    "MF_VOL_M_B": "$mf_vol_m_b", "MF_VOL_M_S": "$mf_vol_m_s",
+    "MF_VOL_S_B": "$mf_vol_s_b", "MF_VOL_S_S": "$mf_vol_s_s",
 }
 
 
