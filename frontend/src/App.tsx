@@ -1266,7 +1266,7 @@ export default function App() {
                     checked={form.limit_threshold != null}
                     onChange={(e) => update('limit_threshold', e.target.checked ? 0.1 : null)}
                   />
-                  <span>封板不可交易（自动按板块/标签）</span>
+                  <span>封板不可交易</span>
                 </label>
               </div>
 

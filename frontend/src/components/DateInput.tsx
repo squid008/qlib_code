@@ -7,11 +7,12 @@ import {
   type KeyboardEvent,
 } from 'react'
 
-// 年月日三段数字输入，外观接近原生 date 输入框（单容器，内嵌无边框三段）。
+// 年月日三段数字输入 + 日历按钮（外观接近原生 date 输入框）。
 // - 输入满 4 位年份自动跳到月份、满 2 位月份自动跳到日期；Backspace 空段跳回上一段
 // - 失焦只对"单数字月/日"补零（1→01），年不足 4 位不补（避免出现 0202 这类假值）
 // - 编辑期间不受外部 value 重置干扰；日期完整合法才对外回调完整 YYYY-MM-DD
-// - onComplete：某次把日期"填到完整"时触发（日输入满 2 位时），供父组件做跨日期框跳转
+// - 右侧日历按钮弹出月历：切换年/月、点日期直接选定并回调
+// - onComplete：某次把日期"填到完整"时触发（日输入满 2 位或日历选定），供父组件跨框跳转
 // - 暴露 focusYear()：让"结束日期"的年份框聚焦（开始日期输完 → 自动跳过来）
 export interface DateInputHandle {
   focusYear: () => void
@@ -24,6 +25,7 @@ interface DateInputProps {
 }
 
 const LENS = [4, 2, 2]
+const WEEK_HEAD = ['一', '二', '三', '四', '五', '六', '日']
 
 function splitValue(v: string): string[] {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || '')
@@ -54,11 +56,24 @@ const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput
   ]
   const [parts, setParts] = useState<string[]>(() => splitValue(value))
   const [editing, setEditing] = useState(false)
+  const [showCal, setShowCal] = useState(false)
+  const [cal, setCal] = useState(() => calOf(value))
+  const wrapRef = useRef<HTMLSpanElement>(null)
 
   // 编辑过程中外部 value 变化不覆盖正在输入的三段；失焦后再与外部值保持同步
   useEffect(() => {
     if (!editing) setParts(splitValue(value))
   }, [value, editing])
+
+  // 点击组件外部时关闭日历弹层
+  useEffect(() => {
+    if (!showCal) return
+    const h = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setShowCal(false)
+    }
+    window.addEventListener('mousedown', h)
+    return () => window.removeEventListener('mousedown', h)
+  }, [showCal])
 
   useImperativeHandle(ref, () => ({
     focusYear: () => refs[0].current?.focus(),
@@ -101,9 +116,30 @@ const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput
     emit(p)
   }
 
+  const pickDate = (dStr: string) => {
+    onChange(dStr)
+    onComplete?.()
+    setShowCal(false)
+  }
+
+  const today = new Date()
+  const cy = cal.y
+  const cm = cal.m
+  const firstDow = (new Date(cy, cm - 1, 1).getDay() + 6) % 7 // 周一=0
+  const daysInMonth = new Date(cy, cm, 0).getDate()
+  const cells: (string | null)[] = [
+    ...Array.from({ length: firstDow }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, i) => {
+      const d = String(i + 1).padStart(2, '0')
+      return `${cy}-${String(cm).padStart(2, '0')}-${d}`
+    }),
+  ]
+  const currentFull = joinParts(parts)
+
   return (
     <span
-      className={`inline-flex items-center border rounded px-1.5 py-1 bg-white dark:bg-slate-900 ${className}`}
+      ref={wrapRef}
+      className={`relative inline-flex items-center border rounded px-1.5 py-1 bg-white dark:bg-slate-900 ${className}`}
     >
       {parts.map((p, i) => (
         <span key={i} className="inline-flex items-center">
@@ -127,8 +163,94 @@ const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput
           {i < 2 && <span className="text-slate-400 select-none">-</span>}
         </span>
       ))}
+      <button
+        type="button"
+        title="选择日期"
+        onMouseDown={(e) => e.preventDefault()} // 避免抢走输入框焦点
+        onClick={() => {
+          setCal(calOf(currentFull || value))
+          setShowCal((s) => !s)
+        }}
+        className="ml-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 px-0.5"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="4" width="18" height="18" rx="2" />
+          <line x1="16" y1="2" x2="16" y2="6" />
+          <line x1="8" y1="2" x2="8" y2="6" />
+          <line x1="3" y1="10" x2="21" y2="10" />
+        </svg>
+      </button>
+
+      {showCal && (
+        <div className="absolute top-full mt-1 right-0 z-50 w-[16rem] bg-white dark:bg-slate-800 border rounded-lg shadow-lg p-2 text-xs">
+          <div className="flex items-center justify-between mb-1">
+            <button
+              type="button"
+              onClick={() => setCal(prevCal(cy, cm, -1))}
+              className="px-1.5 py-0.5 rounded text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
+            >
+              ‹
+            </button>
+            <span className="font-semibold text-slate-600 dark:text-slate-200">
+              {cy} 年 {cm} 月
+            </span>
+            <button
+              type="button"
+              onClick={() => setCal(prevCal(cy, cm, 1))}
+              className="px-1.5 py-0.5 rounded text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
+            >
+              ›
+            </button>
+          </div>
+          <div className="grid grid-cols-7 text-center text-slate-400 mb-1">
+            {WEEK_HEAD.map((w) => (
+              <span key={w} className="py-0.5">
+                {w}
+              </span>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 text-center">
+            {cells.map((c, idx) =>
+              c === null ? (
+                <span key={`b${idx}`} />
+              ) : (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => pickDate(c)}
+                  className={`py-0.5 rounded hover:bg-blue-100 dark:hover:bg-blue-900/40 ${
+                    c === currentFull
+                      ? 'bg-blue-600 text-white hover:bg-blue-600'
+                      : c === `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+                        ? 'text-blue-600 dark:text-blue-300 font-semibold'
+                        : 'text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {c.slice(8)}
+                </button>
+              ),
+            )}
+          </div>
+        </div>
+      )}
     </span>
   )
 })
+
+function calOf(value: string): { y: number; m: number } {
+  const m = /^(\d{4})-(\d{2})/.exec(value || '')
+  if (m) {
+    const y = +m[1]
+    const mo = +m[2]
+    if (y >= 1900 && y <= 2100 && mo >= 1 && mo <= 12) return { y, m: mo }
+  }
+  const n = new Date()
+  return { y: n.getFullYear(), m: n.getMonth() + 1 }
+}
+
+function prevCal(y: number, m: number, delta: number): { y: number; m: number } {
+  const d = new Date(y, m - 1 + delta, 1)
+  return { y: d.getFullYear(), m: d.getMonth() + 1 }
+}
 
 export default DateInput
