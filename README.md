@@ -427,7 +427,7 @@ backend/app/engine/patches/
 | `requirements_qlib.txt` | ✅ 已生成 | qlib 环境完整 pip 依赖（**主力安装清单**） |
 | `qlib_env.yml` | ✅ 已生成 | conda 环境清单（参考，conda 无法锁定 pip 包） |
 | `vs_BuildTools.exe` | ✅ | 编译 C 扩展需 MSVC 工具链 |
-| `qlib_bin.tar.gz` | ✅ | A股日线数据（需解压） |
+| 数据包 `qlib_cn_1/2.tar.gz` | ✅ | A股 qlib 数据 `cn_data`（GitHub Release `data-2026-09-05` 两分卷，下载解压合并，见第四节） |
 | `<你的qlib源码目录>` 源码 | ⚠️ 需确认 | **qlib 是源码安装的**（见下文第三步） |
 
 ### 二、新电脑需要安装的软件
@@ -473,8 +473,26 @@ pip install pyqlib
 
 ### 四、部署数据
 
-1. 解压 `qlib_bin.tar.gz`，得到 `cn_data` 数据目录
-2. 数据路径通过 **环境变量** 或 **目录约定** 指定（不用改代码）：
+1. 下载 A股 qlib 数据包（`cn_data`，**两个分卷都要下，缺一不可**），二选一：
+
+   **方式1：GitHub Release 下载（推荐）**
+   打开 https://github.com/squid008/qlib_code/releases/tag/data-2026-09-05 ，下载两个分卷：
+   - `qlib_cn_1.tar.gz`（987.5 MB）
+   - `qlib_cn_2.tar.gz`（1289.1 MB）
+
+   **方式2：命令行下载（需 gh CLI 且已登录 GitHub）**
+   ```bash
+   gh release download -R squid008/qlib_code data-2026-09-05 -D data
+   ```
+
+2. 把两个分卷**都**解压到同一 `qlib_code\data` 目录，自动合并为完整 `cn_data`：
+   ```bash
+   cd qlib_code
+   tar -xzf qlib_cn_1.tar.gz -C data
+   tar -xzf qlib_cn_2.tar.gz -C data
+   ```
+
+3. 数据路径通过 **环境变量** 或 **目录约定** 指定（不用改代码）：
 
    **方法1（推荐）设环境变量：**
    ```bash

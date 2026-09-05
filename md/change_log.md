@@ -3,6 +3,12 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [数据包] data-2026-09-05（非代码版本，A股 qlib 数据交付）
+
+- 发布 `cn_data` 全量数据包分卷：`qlib_cn_1.tar.gz`（987.5 MB）+ `qlib_cn_2.tar.gz`（1289.1 MB）
+- 内容：基础行情 + `market_cap` + moneyflow 45 字段（`mf_*`）+ 交易所标签 `limit_up/limit_down/is_st`（每只股票 59 个 bin）
+- 下载与解压合并步骤见 README「部署数据」/ md/deploy.md「四、部署数据」
+
 ## [1.10.9] - 2026-09-05
 
 ### Changed
