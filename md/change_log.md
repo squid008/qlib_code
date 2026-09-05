@@ -3,6 +3,11 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.10.7] - 2026-09-05
+
+### Changed
+- 回测（多因子训练）表单的开始/结束日期数字字号调大到 `text-sm`，与 TopK 等数字输入对齐；单因子测试面板保持小号（`text-xs`）不变（DateInput 新增 fontSize 参数）
+
 ## [1.10.6] - 2026-09-05
 
 ### Fixed

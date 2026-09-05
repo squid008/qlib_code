@@ -24,6 +24,7 @@ interface DateInputProps {
   onChange: (v: string) => void
   className?: string
   onComplete?: () => void
+  fontSize?: string // 三段数字的字体大小 class，默认 text-xs（单因子面板用）；回测表单可传 text-sm 与 TOPK 等输入对齐
 }
 
 const LENS = [4, 2, 2]
@@ -48,7 +49,7 @@ function validDate(y: string, m: string, d: string): boolean {
 }
 
 const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput(
-  { value, onChange, className = '', onComplete },
+  { value, onChange, className = '', onComplete, fontSize = 'text-xs' },
   ref,
 ) {
   const refs = [
@@ -167,7 +168,7 @@ const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput
             }}
             onBlur={onBlur}
             maxLength={LENS[i]}
-            className={`bg-transparent outline-none px-0.5 text-center text-xs text-slate-700 dark:text-slate-200 ${
+            className={`bg-transparent outline-none px-0.5 text-center ${fontSize} text-slate-700 dark:text-slate-200 ${
               i === 0 ? 'w-[3.4rem]' : 'w-[1.7rem]'
             }`}
           />
