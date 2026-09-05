@@ -168,6 +168,7 @@ export default function SingleFactorTestPanel({
                 id: f.id,
                 name: f.name,
                 expression: f.expression,
+                original: f.text,
               })),
             }
           : g,
@@ -682,14 +683,11 @@ export default function SingleFactorTestPanel({
             </thead>
             <tbody>
               {results.map((r) => {
-                // 展示用户原文公式（看得懂）：后端随结果回传的 source_formula 最可靠（含历史/恢复场景），
-                // 其次本地按 (source,id) 回查，最后回退 qlib 表达式（旧结果无 source_formula 字段）
-                const rawFormula = r.source_formula || srcByKey.get(`${r.source}:${r.id}`) || r.expression
-                // 用户原文与 qlib 表达式内容一致时（如直接复制粘贴 qlib 表达式作"自定义公式"），
-                // 重复展示没有意义——隐藏并提示"原文就是 qlib 表达式"。
-                const sameAsExpr =
-                  !!r.source_formula && r.source_formula.replace(/\s+/g, '') === (r.expression || '').replace(/\s+/g, '')
-                const shownFormula = sameAsExpr ? '' : rawFormula
+                // 展示用的公式：优先用户原文（source_formula 随结果回传，最可靠）；
+                // 没有原文时回退到本地按 (source,id) 查询；都没有才用 expression（兜底）。
+                // 只在 hover 公式名时显示——因子列底下不再常驻公式行。
+                const hoverFormula =
+                  r.source_formula || srcByKey.get(`${r.source}:${r.id}`) || r.expression
                 const significant = r.p_value !== null && r.p_value < 0.05
                 const goodBase =
                   r.error == null && r.diff !== null && r.diff > 0 && (!r.is_binary || significant)
@@ -754,21 +752,9 @@ export default function SingleFactorTestPanel({
                       </td>
                     ) : (
                       <>
-                        <td className="py-1 pr-2">
+                        <td className="py-1 pr-2" title={hoverFormula}>
                           <span className="font-semibold">{r.name}</span>
                           <span className="text-slate-400 ml-1">[{r.source}]</span>
-                          {sameAsExpr ? (
-                            <div className="text-slate-400 text-[9px] mt-0.5 italic" title="原文与 qlib 表达式内容一致——说明你保存的「自定义公式」原文就是 qlib 表达式（直接复制粘贴保存）。把鼠标放到公式名上可看完整 expression">
-                              （原文即为 qlib 表达式）
-                            </div>
-                          ) : shownFormula ? (
-                            <div
-                              className="text-slate-400 font-mono text-[9px] truncate max-w-[160px]"
-                              title={shownFormula}
-                            >
-                              {shownFormula.length > 14 ? `${shownFormula.slice(0, 14)}…` : shownFormula}
-                            </div>
-                          ) : null}
                         </td>
                         <td className="text-right px-1 whitespace-nowrap text-slate-500">
                           {r.horizon ? `${r.horizon} 天` : '-'}

@@ -3,6 +3,12 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.9.4] - 2026-09-05
+
+### Fixed / Changed
+- **结果列因子底下不再常驻公式行**；鼠标放到因子名上 hover 显示用户保存的原文（`source_formula` 优先，回退到本地回查，再回退到 qlib 表达式）
+- **根因修复**：v1.9.2/v1.9.3 后源_formula 链路已建立，但面板 `useEffect` 同步自定义公式时漏注入 `original: f.text`，导致勾选 source_formula 一直 fallback 到 expression（编译后）；现补齐同步段
+
 ## [1.9.3] - 2026-09-05
 
 ### Fixed

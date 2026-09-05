@@ -3,5 +3,5 @@
 
 # 版本号（语义化版本 SemVer）。大版本更新时递增。
 # 前端可通过 GET /api/version 获取。
-__version__ = "1.9.3"
+__version__ = "1.9.4"
 VERSION = __version__
