@@ -44,24 +44,6 @@ export default function FormulaHandbookModal({ open, onClose, onInsert }: Formul
     // 插入后保持弹窗打开，便于连续插入；焦点回到编辑窗（由父组件处理）
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    // 列表内方向键移动选中 / Enter 插入
-    if (items.length === 0) return
-    const idx = items.findIndex((i) => i.name === cur?.name)
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      const n = items[Math.min(idx + 1, items.length - 1)]
-      setSelected(n.name)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      const n = items[Math.max(idx - 1, 0)]
-      setSelected(n.name)
-    } else if (e.key === 'Enter') {
-      e.preventDefault()
-      if (cur) insert(cur)
-    }
-  }
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
@@ -96,7 +78,7 @@ export default function FormulaHandbookModal({ open, onClose, onInsert }: Formul
         <div className="flex-1 min-h-0 flex">
           {/* 两列表格 */}
           <div className="w-1/2 border-r overflow-y-auto">
-            <table className="w-full border-collapse" onKeyDown={handleKeyDown}>
+            <table className="w-full border-collapse">
               <thead className="sticky top-0 bg-slate-100 dark:bg-slate-700 z-10">
                 <tr className="text-slate-500">
                   <th className="text-left px-3 py-1 font-medium">函数/字段</th>
@@ -154,7 +136,7 @@ export default function FormulaHandbookModal({ open, onClose, onInsert }: Formul
               )}
             </div>
             <div className="px-3 py-1 border-t text-slate-400 bg-slate-50 dark:bg-slate-900">
-              双击插入 · ↑↓ 选择 · Enter 插入 · Esc 关闭
+              单击选中查看说明 · 双击插入 · Esc 关闭
             </div>
           </div>
         </div>
