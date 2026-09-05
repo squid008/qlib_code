@@ -1,4 +1,6 @@
+import { useRef, useState } from 'react'
 import type { CustomFormula } from '../api'
+import FormulaHandbookModal from './FormulaHandbookModal'
 
 interface FormulaPanelProps {
   customFormulas: CustomFormula[]
@@ -38,6 +40,32 @@ export default function FormulaPanel({
   onCancelEdit,
   onRemove,
 }: FormulaPanelProps) {
+  // 函数手册弹窗（弹窗开关/选中均为本组件局部 UI 状态，不进 App）
+  const [handbookOpen, setHandbookOpen] = useState(false)
+  const newAreaRef = useRef<HTMLTextAreaElement | null>(null)
+  const editAreaRef = useRef<HTMLTextAreaElement | null>(null)
+  const lastFocusRef = useRef<'new' | 'edit'>('new')
+
+  // 双击手册函数/字段 → 插入到最近聚焦的公式编辑框光标处（编辑中默认插编辑框）
+  const insertToken = (token: string) => {
+    const target: 'new' | 'edit' =
+      editingId != null && lastFocusRef.current === 'edit' ? 'edit' : 'new'
+    const area = target === 'edit' ? editAreaRef.current : newAreaRef.current
+    const cur = target === 'edit' ? editingText : formulaInput
+    const onChange = target === 'edit' ? onEditingTextChange : onInputChange
+    const start = area?.selectionStart ?? cur.length
+    const end = area?.selectionEnd ?? start
+    onChange(cur.slice(0, start) + token + cur.slice(end))
+    // 恢复焦点与光标到插入点之后
+    requestAnimationFrame(() => {
+      if (!area) return
+      area.focus()
+      lastFocusRef.current = target
+      const pos = start + token.length
+      area.setSelectionRange(pos, pos)
+    })
+  }
+
   return (
     <div className="mt-2 border rounded p-3 bg-slate-50 dark:bg-slate-900 text-xs">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -51,13 +79,25 @@ export default function FormulaPanel({
             <code className="text-[10px]">A:=MA(CLOSE,5); 长期线:A+100;</code>
           </p>
           <textarea
+            ref={newAreaRef}
             value={formulaInput}
             onChange={(e) => onInputChange(e.target.value)}
+            onFocus={() => {
+              lastFocusRef.current = 'new'
+            }}
             rows={5}
             placeholder="如：A:=MA(CLOSE,5); 长期线:A+100;"
             className="w-full border rounded px-2 py-1 font-mono text-[11px] bg-white dark:bg-slate-800"
           />
           <div className="flex items-center gap-2 mt-1.5">
+            <button
+              type="button"
+              onClick={() => setHandbookOpen(true)}
+              title="函数/字段手册：双击函数名插入到公式光标处"
+              className="px-2 py-1 rounded border text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
+            >
+              插入函数
+            </button>
             <button
               type="button"
               onClick={onAdd}
@@ -95,8 +135,12 @@ export default function FormulaPanel({
                     {editingId === f.id ? (
                       <div>
                         <textarea
+                          ref={editAreaRef}
                           value={editingText}
                           onChange={(e) => onEditingTextChange(e.target.value)}
+                          onFocus={() => {
+                            lastFocusRef.current = 'edit'
+                          }}
                           rows={5}
                           className="w-full border rounded px-2 py-1 font-mono text-[11px] bg-white dark:bg-slate-800"
                         />
@@ -168,6 +212,12 @@ export default function FormulaPanel({
           )}
         </div>
       </div>
+      {/* 函数手册弹窗（独立小组件）：双击函数/字段名插入到最近聚焦的公式编辑框 */}
+      <FormulaHandbookModal
+        open={handbookOpen}
+        onClose={() => setHandbookOpen(false)}
+        onInsert={insertToken}
+      />
     </div>
   )
 }

@@ -19,10 +19,11 @@ BUILTIN_FUNCS = {
     "FILTER", "HHVALL", "LLVALL", "HHVBARS", "LLVBARS", "BARSLAST",
     "BARSSINCE", "BARSSINCEN", "BARSCOUNT", "DMA", "ALL", "ANY", "LAST",
     # 自定义外挂算子（app/factors/ops_ext.py），需同时在 codegen 中映射
-    "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM",
-    "CROSS", "IF", "IFS", "BETWEEN", "RANGE", "LONGCROSS",
+    "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM", "EMA_TDX", "SGN", "SIGN", "INT", "BETWEEN",
+    "CROSS", "IF", "IFS", "RANGE", "LONGCROSS",
+    "DELTA", "MEAN", "MED",
     "ABS", "SQRT", "LOG", "LN", "EXP", "POW", "MAX", "MIN", "MOD",
-    "INT", "CEILING", "FLOOR", "SGN", "SIGN",
+    "CEILING", "FLOOR",
     "STD", "STDP", "VAR", "VARP", "AVEDEV", "SLOPE", "FORCAST", "DEVSQ",
     # Level2（留接口：语法支持，计算层待数据）
     "BIGORDER", "ORDER", "ORDERAMT", "ORDERNUM", "ORDERNWP", "ORDERVOL",

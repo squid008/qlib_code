@@ -37,6 +37,7 @@ __all__ = [
     "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM",
     "SR",
     "EMA_TDX",
+    "SGN", "TRUNC", "BETWEEN",
     "ensure_ops_registered",
 ]
 
@@ -369,6 +370,109 @@ class EMA_TDX(_QLIB_EMA):
         return series.ewm(alpha=2.0 / (self.N + 1), adjust=False, min_periods=1).mean()
 
 
+# ---------------- SGN / INT(TRUNC) / BETWEEN：通达信基础函数 ----------------
+
+class SGN(ExpressionOps):
+    """SGN(X)：取符号。X>0→1，X<0→-1，X=0→0；NaN（停牌）保持 NaN。"""
+
+    def __init__(self, feature):
+        self.feature = feature
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        return pd.Series(np.sign(series.to_numpy(dtype=float)), index=series.index)
+
+    def __str__(self):
+        return "SGN({})".format(self.feature)
+
+    def get_longest_back_rolling(self):
+        return self.feature.get_longest_back_rolling()
+
+    def get_extended_window_size(self):
+        return self.feature.get_extended_window_size()
+
+
+class TRUNC(ExpressionOps):
+    """TRUNC(X)（通达信 INT 函数）：向零方向截断取整（X 的整数部分）。
+    np.trunc：3.7→3、-3.7→-3；NaN 保持 NaN。"""
+
+    def __init__(self, feature):
+        self.feature = feature
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        return pd.Series(np.trunc(series.to_numpy(dtype=float)), index=series.index)
+
+    def __str__(self):
+        return "TRUNC({})".format(self.feature)
+
+    def get_longest_back_rolling(self):
+        return self.feature.get_longest_back_rolling()
+
+    def get_extended_window_size(self):
+        return self.feature.get_extended_window_size()
+
+
+class BETWEEN(ExpressionOps):
+    """BETWEEN(X,A,B)：X 是否介于 A 与 B 之间（含边界；A、B 大小任意 → min/max 语义）。
+    条件成立=1，否则=0；X 为 NaN（停牌）保持 NaN。"""
+
+    def __init__(self, feature_x, feature_a, feature_b):
+        self.feature_x = feature_x
+        self.feature_a = feature_a
+        self.feature_b = feature_b
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        def _load(f):
+            if isinstance(f, Expression):
+                return f.load(instrument, start_index, end_index, *args)
+            return f
+
+        x = _load(self.feature_x)
+        a = _load(self.feature_a)
+        b = _load(self.feature_b)
+
+        def _arr(v):
+            if isinstance(v, (pd.Series, np.ndarray)):
+                return np.asarray(v, dtype=float)
+            return np.full(1, float(v), dtype=float) if np.ndim(v) == 0 else np.asarray(v, dtype=float)
+
+        xv = _arr(x)
+        av = _arr(a)
+        bv = _arr(b)
+        # A/B 为常量时广播
+        av = np.broadcast_to(av, xv.shape) if av.size == 1 else av
+        bv = np.broadcast_to(bv, xv.shape) if bv.size == 1 else bv
+        lo = np.minimum(av, bv)
+        hi = np.maximum(av, bv)
+        cond = (xv >= lo) & (xv <= hi)
+        res = np.where(np.isnan(xv), np.nan, cond.astype(float))
+        idx = x.index if isinstance(x, pd.Series) else None
+        return pd.Series(res, index=idx)
+
+    def __str__(self):
+        return "BETWEEN({},{},{})".format(self.feature_x, self.feature_a, self.feature_b)
+
+    def get_longest_back_rolling(self):
+        out = 0
+        for f in (self.feature_x, self.feature_a, self.feature_b):
+            if isinstance(f, Expression):
+                out = max(out, f.get_longest_back_rolling())
+        return out
+
+    def get_extended_window_size(self):
+        lft = rght = 0
+        for f in (self.feature_x, self.feature_a, self.feature_b):
+            if isinstance(f, Expression):
+                l, r = f.get_extended_window_size()
+                lft = max(lft, l)
+                rght = max(rght, r)
+        return lft, rght
+
+
 # ---------------- 注册机制 ----------------
 
 _ALL_OPS = [
@@ -376,6 +480,7 @@ _ALL_OPS = [
     DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM,
     SR,
     EMA_TDX,
+    SGN, TRUNC, BETWEEN,
 ]
 
 _registered = False

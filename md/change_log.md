@@ -3,6 +3,21 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.8.0] - 2026-09-05
+
+### Added
+- **公式编辑器新增"插入函数"手册弹窗**（前端）：
+  - 公式编辑区新增 **"插入函数"** 按钮 → 打开 `FormulaHandbookModal` 弹窗，内置 `formulaHandbook.ts` 手册数据（函数/字段按分类展示 + 关键字搜索，清单与翻译器白名单对齐）
+  - **双击手册条目** → 将函数/字段名插入到公式光标处（新建公式框 / 编辑中的公式框均支持，跟随最近聚焦，插入后恢复光标）
+- **四个通达信函数补齐实现，公式可直接写且真实可算**：
+  - `EMA_TDX(X,N)`：通达信递归式 EMA（`ewm(adjust=False)`，Y_t=(2X_t+(N-1)Y_{t-1})/(N+1)）；此前只能靠翻译层全局开关 `EMA_SEMANTICS="tdx"` 让 `EMA` 生效，现公式里可显式直接写
+  - `SGN(X)`（别名 `SIGN`）：取符号（X>0→1，X<0→-1，X=0→0）→ 外挂算子 `SGN`
+  - `INT(X)`：向零方向截断取整（3.7→3，-3.7→-3）→ 外挂算子 `TRUNC`
+  - `BETWEEN(X,A,B)`：X 是否介于 A、B 之间（含边界；A、B 大小任意，内部取 min/max）→ 外挂算子 `BETWEEN`
+  - `ops_ext.py` 注册 `SGN/TRUNC/BETWEEN` 三个新算子；`codegen.py` 补齐 `FUNC_QLIB` 映射 + 参数个数校验（友好报错）；`semantic.py` 白名单补齐（顺带去重）
+  - 翻译器单测新增 `TestBasicExtFuncs`（生成断言 + 参数错误用例）；各算子已过 qlib 端到端执行验证（SGN 输出 {-1,0,1}、TRUNC==np.trunc、BETWEEN 输出 0/1 且停牌 NaN 保留）
+- 前端公式手册补充 `EMA_TDX/BETWEEN/SGN/INT` 条目；手册所列函数至此已**全部实测"可翻译 + 可计算"**
+
 ## [1.7.1] - 2026-09-05
 
 ### Added

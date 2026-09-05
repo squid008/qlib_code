@@ -187,6 +187,34 @@ class TestMoneyflowL2:
             translate_formula("OUT:L2_VOL(0,X);")        # 方向非法
 
 
+class TestBasicExtFuncs:
+    """EMA_TDX / SGN / SIGN / INT / BETWEEN（外挂算子 SGN/TRUNC/BETWEEN + EMA_TDX）。"""
+
+    def test_ema_tdx(self):
+        assert translate_formula("OUT:EMA_TDX(CLOSE,5);").expression == "EMA_TDX($close,5)"
+        assert translate_formula("OUT:MA(EMA_TDX(CLOSE,4),3);").expression == "Mean(EMA_TDX($close,4),3)"
+
+    def test_sgn_sign(self):
+        assert translate_formula("OUT:SGN(CLOSE-OPEN);").expression == "SGN(Sub($close,$open))"
+        assert translate_formula("OUT:SIGN(CLOSE);").expression == "SGN($close)"  # SIGN 是 SGN 别名
+
+    def test_int(self):
+        assert translate_formula("OUT:INT(CLOSE/2);").expression == "TRUNC(Div($close,2))"
+
+    def test_between(self):
+        assert translate_formula("OUT:BETWEEN(CLOSE,10,20);").expression == "BETWEEN($close,10,20)"
+
+    def test_arg_errors(self):
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:SGN();")
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:INT(CLOSE,2);")
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:BETWEEN(CLOSE,10);")  # 缺第 3 参
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:EMA_TDX(CLOSE);")    # 缺 N
+
+
 class TestSyntax:
     def test_parse_error(self):
         """语法错误报 ParseError。"""

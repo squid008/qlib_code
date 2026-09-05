@@ -174,6 +174,12 @@ FUNC_QLIB = {
     "BARSLAST": "BARSLAST",
     "BARSCOUNT": "BARSCOUNT",
     "BARSSINCEN": "BARSSINCEN",
+    # 通达信基础函数：EMA_TDX 外挂算子（qlib 内建 EMA 是 adjust=True 口径，公式显式用
+    # EMA_TDX 即通达信递归式）；SGN/SIGN 取符号；INT 向零截断取整；BETWEEN 区间判定
+    "EMA_TDX": "EMA_TDX",
+    "SGN": "SGN", "SIGN": "SGN",
+    "INT": "TRUNC",
+    "BETWEEN": "BETWEEN",
     # 动态窗口外挂算子（用户也可直接调用 DYN_MIN/MAX/COUNT/REF/SUM）
     "DYN_MIN": "DYN_MIN",
     "DYN_MAX": "DYN_MAX",
@@ -355,6 +361,19 @@ class CodeGen:
             q = FUNC_QLIB[name]
             inner = ",".join(self._g(a) for a in e.args)
             return f"{q}({inner})"
+        # SGN/SIGN/INT/BETWEEN/EMA_TDX：参数个数校验（错误提示友好）
+        if name in ("SGN", "SIGN"):
+            if len(e.args) != 1:
+                raise CodeGenError(f"{name} 需要 1 个参数：{name}(X)，取 X 的符号（X>0→1，X<0→-1，X=0→0）")
+        elif name == "INT":
+            if len(e.args) != 1:
+                raise CodeGenError("INT 需要 1 个参数：INT(X)，返回 X 的整数部分（向零截断）")
+        elif name == "BETWEEN":
+            if len(e.args) != 3:
+                raise CodeGenError("BETWEEN 需要 3 个参数：BETWEEN(X,A,B)，X 在 A 与 B 之间（含边界）为真")
+        elif name == "EMA_TDX":
+            if len(e.args) != 2:
+                raise CodeGenError("EMA_TDX 需要 2 个参数：EMA_TDX(X,N)，通达信递归语义的指数移动平均")
         # 直接映射
         if name in FUNC_QLIB:
             q = _ema_op_name() if name == "EMA" else FUNC_QLIB[name]
