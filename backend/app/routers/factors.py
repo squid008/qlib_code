@@ -423,6 +423,23 @@ def single_factor_test_cancel(task_id: str):
     return {"ok": True, "message": "已请求取消，正在终止..."}
 
 
+@router.post("/single-factor-test/clear", summary="清理已结束的单因子测试任务与结果（释放内存）")
+def single_factor_test_clear():
+    """删除全部已结束（success/failed/cancelled）任务的记录并释放其 result 内存。
+
+    运行中 / 排队中 / 已请求取消但未结束的任务保留（前端仍轮询其进度）；之后新任务照常记录。
+    供前端"清理结果（释放内存）"按钮调用——展示保留到用户主动清理，不随收起丢失。
+    """
+    with _SFT_LOCK:
+        done_keys = [
+            k for k, v in _SFT_TASKS.items()
+            if v.get("status") in ("success", "failed", "cancelled")
+        ]
+        for k in done_keys:
+            _SFT_TASKS.pop(k, None)
+    return {"ok": True, "cleared": len(done_keys)}
+
+
 @router.get("/single-factor-test/tasks", summary="列出最近的单因子测试任务")
 def single_factor_test_tasks(limit: int = 20):
     """列出最近提交的单因子测试任务（含 running，按时间倒序）。

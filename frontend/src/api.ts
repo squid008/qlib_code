@@ -317,6 +317,13 @@ export interface SingleFactorTestTaskInfo {
   ts: number
   cancel_requested: boolean
 }
+export async function clearSingleFactorTest(): Promise<{ ok: boolean; cleared: number }> {
+  // 删除后端已完成的单因子测试任务/结果（释放进程内存）；运行中任务保留
+  const { data } = await http.post<{ ok: boolean; cleared: number }>(
+    '/factors/single-factor-test/clear',
+  )
+  return data
+}
 export async function getSingleFactorTestTasks(
   limit?: number,
 ): Promise<{ tasks: SingleFactorTestTaskInfo[] }> {

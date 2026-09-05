@@ -1129,19 +1129,18 @@ export default function App() {
             />
           )}
 
-          {/* 单因子测试面板（独立整行）：勾选自定义公式/Alpha158/Alpha360 因子，逐个诊断 */}
-          {showSingleTestPanel && (
-            <div id="single-factor-test-panel">
-              <SingleFactorTestPanel
-                customFormulas={customFormulas}
-                defaultUniverse={form.universe}
-                defaultStartDate={form.start_date}
-                defaultEndDate={form.end_date}
-                defaultLabelHorizon={form.label_horizon}
-                onCapacityChange={refreshCapacity}
-              />
-            </div>
-          )}
+          {/* 单因子测试面板（独立整行）：收起=CSS 隐藏而非卸载——结果/勾选/运行中任务都保留，
+              再次展开时上次展示仍在；需要彻底清空时用面板内"清理结果"按钮 */}
+          <div id="single-factor-test-panel" className={showSingleTestPanel ? '' : 'hidden'}>
+            <SingleFactorTestPanel
+              customFormulas={customFormulas}
+              defaultUniverse={form.universe}
+              defaultStartDate={form.start_date}
+              defaultEndDate={form.end_date}
+              defaultLabelHorizon={form.label_horizon}
+              onCapacityChange={refreshCapacity}
+            />
+          </div>
 
           <ModelParamsForm
             model={form.model}

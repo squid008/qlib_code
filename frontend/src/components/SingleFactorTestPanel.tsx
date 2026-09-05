@@ -4,6 +4,7 @@ import {
   getSingleFactorTestProgress,
   cancelSingleFactorTest,
   getSingleFactorTestTasks,
+  clearSingleFactorTest,
   getFactorCatalog,
 } from '../api'
 import type { CustomFormula, SingleFactorTestResult } from '../api'
@@ -115,6 +116,7 @@ export default function SingleFactorTestPanel({
   const [results, setResults] = useState<TestResult[]>([])
   const [error, setError] = useState('')
   const [cancelling, setCancelling] = useState(false)
+  const [clearing, setClearing] = useState(false)
   const taskIdRef = useRef<string | null>(null)
   const pollTimerRef = useRef<number | null>(null)
 
@@ -367,6 +369,20 @@ export default function SingleFactorTestPanel({
     return m
   }, [groups])
 
+  // 清理结果（释放内存）：删除后端已完成的测试任务/结果，并清空本次展示。运行中任务不受影响。
+  const handleClear = async () => {
+    setClearing(true)
+    try {
+      await clearSingleFactorTest()
+      setResults([])
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setError(`清理失败：${msg}`)
+    } finally {
+      setClearing(false)
+    }
+  }
+
   // 百分比口径：×100 显示（覆盖率 / 收益 / 差值）
   const fmt = (v: number | null | undefined, digits = 4, suffix = '') =>
     v === null || v === undefined || Number.isNaN(v) ? '-' : `${(v * 100).toFixed(digits)}${suffix}`
@@ -618,6 +634,21 @@ export default function SingleFactorTestPanel({
       {/* 取消提示 */}
       {!running && !error && progressMsg === '已取消' && (
         <p className="mb-2 text-amber-600 text-[11px]">测试已取消，未生成结果。</p>
+      )}
+
+      {/* 清理入口：展示保留到用户主动清理（收起/展开不丢结果）；清理后才清空展示并释放后端内存 */}
+      {results.length > 0 && (
+        <div className="flex items-center justify-end mb-2">
+          <button
+            type="button"
+            onClick={handleClear}
+            disabled={clearing}
+            title="删除后端已完成的单因子测试任务与结果（释放进程内存），并清空下方本次展示；运行中的任务不受影响"
+            className="px-2 py-1 rounded border text-[11px] text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50"
+          >
+            {clearing ? '清理中...' : '清理结果（释放内存）'}
+          </button>
+        </div>
       )}
 
       {/* 结果表格 */}
