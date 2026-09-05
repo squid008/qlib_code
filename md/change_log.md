@@ -3,6 +3,11 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.10.9] - 2026-09-05
+
+### Changed
+- 回测（多因子训练）日期数字字号升一档到 `text-base`（16px），比 TopK 再大一号
+
 ## [1.10.8] - 2026-09-05
 
 ### Changed

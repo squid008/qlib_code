@@ -1014,7 +1014,7 @@ export default function App() {
               <DateInput
                 ref={startDateRef}
                 className="mt-1 w-full"
-                fontSize="text-sm"
+                fontSize="text-base"
                 value={form.start_date}
                 onChange={(v) => update('start_date', v)}
                 onComplete={() => endDateRef.current?.focusYear()}
@@ -1023,7 +1023,7 @@ export default function App() {
 
             <label className="block">
               <span className="text-sm text-slate-500">结束日期</span>
-              <DateInput ref={endDateRef} className="mt-1 w-full" fontSize="text-sm" value={form.end_date} onChange={(v) => update('end_date', v)} />
+              <DateInput ref={endDateRef} className="mt-1 w-full" fontSize="text-base" value={form.end_date} onChange={(v) => update('end_date', v)} />
             </label>
 
             <label className="block">
