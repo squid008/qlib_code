@@ -45,11 +45,20 @@ class BoardAwareExchange(Exchange):
         *args: Any,
         avg_mode: Union[str, None] = None,
         price_adjust: str = "none",
+        exclude_st: bool = False,
+        exclude_stock_gem: bool = False,
+        exclude_stock_kcb: bool = False,
         **kwargs: Any,
     ) -> None:
         # 本项目扩展参数，父类不识别，需先取出
         self._avg_mode = avg_mode
         self._price_adjust = normalize_mode(price_adjust)
+        # 日截面剔除（调仓当日状态，无未来函数）：ST/退市整理按当日 is_st，创/科按代码恒定
+        self._exclude_st = bool(exclude_st)
+        self._exclude_gem = bool(exclude_stock_gem)
+        self._exclude_star = bool(exclude_stock_kcb)
+        self._exclude_any = self._exclude_st or self._exclude_gem or self._exclude_star
+        self._forbid_by_dt = None  # 调仓日 -> 该日各股是否禁买（由 _mark_forbidden 构建）
         super().__init__(*args, **kwargs)
 
     def _adjust_quote_prices(self) -> None:
@@ -101,6 +110,9 @@ class BoardAwareExchange(Exchange):
                 self.quote_df["$open"] + self.quote_df["$high"] + self.quote_df["$low"] + self.quote_df["$close"]
             ) / 4.0
             self.buy_price = self.sell_price = "$avg_ohlc"
+        # 日截面剔除掩码（需在 quote 列就绪后构建；依赖订阅字段含 $is_st，见 qlib_engine）
+        if self._exclude_any:
+            self._mark_forbidden()
 
     def _update_limit(self, limit_threshold: Union[tuple, float, None]) -> None:
         # 用户显式传表达式（tuple）或 None（不限涨跌停）时，维持父类行为
@@ -119,3 +131,51 @@ class BoardAwareExchange(Exchange):
         self.quote_df["limit_sell"] = mark_limit_down(
             self.quote_df, close_col, "$change", base=float(limit_threshold)
         ) | suspended
+        # 日截面剔除的股票买入侧直接禁（卖出不受限）：check_order BUY 会被拒
+        if "forbidden" in self.quote_df.columns:
+            self.quote_df["limit_buy"] = self.quote_df["limit_buy"] | self.quote_df["forbidden"]
+
+    # ------------------------------------------------------------------
+    # 日截面剔除：ST/退市整理（当日 is_st）+ 创业板 + 科创板
+    # 语义与单因子测试的"剔除 ST(T+1)/创/科"一致；回测以调仓当日状态为准。
+    # 除买入侧禁 buy 外，还为策略提供 get_forbidden_mask，让 TopK 候选直接剔除这些股，
+    # 避免 topk 位置被禁买股占据导致现金空转；已持仓的这类股票也会随调仓卖出。
+    # ------------------------------------------------------------------
+
+    def _mark_forbidden(self) -> None:
+        """在 quote 上构建 forbidden 列（当日是否被日截面剔除），并按调仓日分组缓存。"""
+        df = self.quote_df
+        forbid = pd.Series(False, index=df.index)
+        if self._exclude_st and "$is_st" in df.columns:
+            forbid = forbid | (df["$is_st"].fillna(0.0) > 0.5)
+        if self._exclude_gem or self._exclude_star:
+            codes = df.index.get_level_values(0).astype(str).str.upper()
+            if self._exclude_gem:
+                forbid = forbid | codes.str.startswith("SZ30")
+            if self._exclude_star:
+                forbid = forbid | codes.str.startswith("SH688")
+        df["forbidden"] = forbid
+        # 按调仓日分组：get_forbidden_mask 按日 O(1) 取当日禁买集合
+        groups = df["forbidden"].groupby(level=1)
+        self._forbid_by_dt = {k: v for k, v in groups}
+
+    def get_forbidden_mask(self, stock_ids, start_time, end_time=None):
+        """给定候选股票与调仓时间，返回当日是否被日截面剔除的 Series(bool)。
+
+        无剔除开关/无当日数据时返回全 False（不改变选股）；当日无该股行情视为禁（True），
+        由策略在取 TopK 前过滤候选。stock_ids 需与 quote 的 instrument 代码格式一致。
+        """
+        ids = list(stock_ids)
+        if not ids or not self._exclude_any or not self._forbid_by_dt:
+            return pd.Series(False, index=ids)
+        try:
+            dt = pd.Timestamp(start_time)
+        except Exception:
+            return pd.Series(False, index=ids)
+        col = self._forbid_by_dt.get(dt)
+        if col is None:
+            return pd.Series(False, index=ids)
+        try:
+            return col.reindex(ids, fill_value=True).astype(bool)
+        except Exception:
+            return pd.Series(False, index=ids)

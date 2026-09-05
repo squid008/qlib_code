@@ -84,6 +84,10 @@ class BacktestRequest(BaseModel):
         None, description="涨跌停限制（绝对值比例，如 0.095 = 涨跌停 9.5% 无法交易）。None 表示不设涨跌停"
     )
     trade_unit: Optional[int] = Field(None, description="每手股数（如 100）。None 表示不按手数取整")
+    # 日截面剔除（调仓当日状态判定，无未来函数；与单因子测试"剔除 ST(T+1)/创/科"同口径，回测以调仓当日为准）
+    exclude_st: bool = Field(False, description="剔除 ST/*ST/退市整理（调仓当日 is_st）")
+    exclude_stock_gem: bool = Field(False, description="剔除创业板（SZ30 号段）")
+    exclude_stock_kcb: bool = Field(False, description="剔除科创板（SH688）")
     # 训练/测试划分（滚动训练）
     split_mode: str = Field(
         "single", description="训练/测试划分方式：single=一次性训练(用回测前窗口)；custom=自定义滚动训练"

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import DateInput from './DateInput'
 import {
   createSingleFactorTest,
   getSingleFactorTestProgress,
@@ -426,13 +427,13 @@ export default function SingleFactorTestPanel({
             <option value="all">全部A股</option>
           </select>
         </label>
-        <label className="flex-1 flex flex-col min-w-[110px]">
+        <label className="flex-1 flex flex-col min-w-[150px]">
           <span className="text-slate-500 mb-1">开始日期</span>
-          <input type="date" className="border rounded px-2 py-1" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+          <DateInput className="mt-0.5" value={startDate} onChange={setStartDate} />
         </label>
-        <label className="flex-1 flex flex-col min-w-[110px]">
+        <label className="flex-1 flex flex-col min-w-[150px]">
           <span className="text-slate-500 mb-1">结束日期</span>
-          <input type="date" className="border rounded px-2 py-1" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+          <DateInput className="mt-0.5" value={endDate} onChange={setEndDate} />
         </label>
         <label className="flex-1 flex flex-col min-w-[120px]">
           <span className="text-slate-500 mb-1">预测周期(天)</span>

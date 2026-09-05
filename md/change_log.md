@@ -3,6 +3,15 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.10.0] - 2026-09-05
+
+### Added / Changed
+- **日期输入改为"年月日三段"键盘输入**（`DateInput` 组件）：单因子测试与回测的开始/结束日期共用；输入满 4 位年份自动跳到月份、满 2 位月份自动跳到日期，Backspace 空段回跳上一段，失焦自动补零，仅在年月日齐全合法时才提交（不再产生不完整日期）
+- **多因子训练回测新增"日截面剔除"**（交易设置区，"交易成本与成交设置"改名 **"交易设置"**）：
+  - 剔除ST/退市 / 剔除创业板(SZ30) / 剔除科创板(SH688) 三个勾选（默认关）
+  - 实现：`BoardAwareExchange` 订阅 `$is_st` 并构建当日 forbidden 掩码（ST 按当日状态、创/科按代码恒定），买入侧 `check_order` 直接禁 buy；`PeriodicTopKStrategy` 选 TopK 前调用 `exchange.get_forbidden_mask` 剔除候选（避免 topk 空位，已持有者随调仓卖出）；只动回测上层，不改 qlib 内核
+  - `BacktestRequest` 新增 `exclude_st/exclude_stock_gem/exclude_stock_kcb` 字段
+
 ## [1.9.4] - 2026-09-05
 
 ### Fixed / Changed

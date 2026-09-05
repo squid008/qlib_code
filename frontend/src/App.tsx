@@ -31,6 +31,7 @@ import HistoryPanel from './components/HistoryPanel'
 import FormulaPanel from './components/FormulaPanel'
 import FeatureSelectPanel from './components/FeatureSelectPanel'
 import SingleFactorTestPanel from './components/SingleFactorTestPanel'
+import DateInput from './components/DateInput'
 import ModelParamsForm from './components/ModelParamsForm'
 import TaskStatusPanel from './components/TaskStatusPanel'
 
@@ -60,6 +61,9 @@ export default function App() {
     volume_threshold: null,
     limit_threshold: 0.095,
     trade_unit: 100,
+    exclude_st: false,
+    exclude_stock_gem: false,
+    exclude_stock_kcb: false,
     split_mode: 'single',
     train_win: 12,
     train_unit: 'month',
@@ -269,7 +273,7 @@ export default function App() {
     }
   }, [])
 
-  const update = (k: keyof BacktestRequest, v: string | number | null) =>
+  const update = (k: keyof BacktestRequest, v: string | number | boolean | null) =>
     setForm((f) => ({ ...f, [k]: v as never }))
 
   // 更新单个模型超参（空字符串 → 移除该键，表示用默认值）
@@ -1004,22 +1008,12 @@ export default function App() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
             <label className="block">
               <span className="text-sm text-slate-500">开始日期</span>
-              <input
-                type="date"
-                className="mt-1 w-full border rounded px-2 py-1"
-                value={form.start_date}
-                onChange={(e) => update('start_date', e.target.value)}
-              />
+              <DateInput className="mt-1 w-full" value={form.start_date} onChange={(v) => update('start_date', v)} />
             </label>
 
             <label className="block">
               <span className="text-sm text-slate-500">结束日期</span>
-              <input
-                type="date"
-                className="mt-1 w-full border rounded px-2 py-1"
-                value={form.end_date}
-                onChange={(e) => update('end_date', e.target.value)}
-              />
+              <DateInput className="mt-1 w-full" value={form.end_date} onChange={(v) => update('end_date', v)} />
             </label>
 
             <label className="block">
@@ -1151,7 +1145,7 @@ export default function App() {
           {/* 交易成本与成交设置 */}
           <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-700">
             <h3 className="text-sm font-semibold text-slate-600 dark:text-slate-300 mb-3">
-              交易成本与成交设置
+              交易设置
             </h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <label className="block">
@@ -1280,6 +1274,34 @@ export default function App() {
                 />
               </label>
             </div>
+
+            {/* 日截面剔除（调仓当日状态判定，无未来函数；与单因子测试"剔除ST(T+1)/创/科"同口径，
+                但回测以调仓当日为准） */}
+            <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
+              <span className="text-sm text-slate-500">日截面剔除：</span>
+              <label
+                className="flex items-center gap-1.5 text-sm cursor-pointer"
+                title="调仓当日处于 ST/*ST/退市整理的股票不买入（模型打分时直接剔除，已持有的也会随调仓卖出）"
+              >
+                <input type="checkbox" checked={!!form.exclude_st} onChange={(e) => update('exclude_st', e.target.checked)} />
+                <span>剔除ST/退市</span>
+              </label>
+              <label
+                className="flex items-center gap-1.5 text-sm cursor-pointer"
+                title="剔除创业板（SZ30 号段，20% 涨跌幅），全程不参与选股"
+              >
+                <input type="checkbox" checked={!!form.exclude_stock_gem} onChange={(e) => update('exclude_stock_gem', e.target.checked)} />
+                <span>剔除创业板</span>
+              </label>
+              <label
+                className="flex items-center gap-1.5 text-sm cursor-pointer"
+                title="剔除科创板（SH688，20% 涨跌幅），全程不参与选股"
+              >
+                <input type="checkbox" checked={!!form.exclude_stock_kcb} onChange={(e) => update('exclude_stock_kcb', e.target.checked)} />
+                <span>剔除科创板</span>
+              </label>
+            </div>
+
             <p className="mt-2 text-xs text-slate-400">
               提示：成交量限制填 0.25 表示单笔成交不超过当日成交量的 25%；留空表示不限量（理想成交）。
               涨跌停限制填 0.095 表示涨/跌停无法交易；留空表示不设涨跌停。

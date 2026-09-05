@@ -28,6 +28,10 @@ export interface BacktestRequest {
   volume_threshold?: number | null
   limit_threshold?: number | null
   trade_unit?: number | null
+  // 日截面剔除（调仓当日状态判定，无未来函数；与单因子测试同口径）
+  exclude_st?: boolean // 剔除 ST/*ST/退市整理
+  exclude_stock_gem?: boolean // 剔除创业板（SZ30）
+  exclude_stock_kcb?: boolean // 剔除科创板（SH688）
   // 训练/测试划分（滚动训练）
   split_mode: string
   train_win: number

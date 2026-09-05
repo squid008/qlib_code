@@ -81,6 +81,21 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
         cash = current_temp.get_cash()
         current_stock_list = current_temp.get_stock_list()
 
+        # 日截面剔除（ST/退市整理/创业板/科创板，开关在 exchange 上）：TopK 候选先剔除
+        # 调仓当日禁买股，避免 topk 位置被禁买股占据导致现金空转；已持有的这类股票
+        # 因不在新 topk 而随调仓卖出 → 持仓永不包含被剔除股票。
+        try:
+            forbid = self.trade_exchange.get_forbidden_mask(
+                pred_score.index, trade_start_time, trade_end_time
+            )
+            if forbid is not None and bool(forbid.any()):
+                pred_score = pred_score[~forbid]
+        except Exception:
+            # 旧 exchange/异常时退回原逻辑（不过滤），保证回测可跑
+            pass
+        if pred_score is None or len(pred_score) == 0:
+            return TradeDecisionWO([], self)
+
         # 目标组合：信号分数最高的 topk 只
         target_topk = list(pred_score.sort_values(ascending=False).index[: self.topk])
 

@@ -397,6 +397,10 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
     # 复权需订阅 $factor：qlib quote 价格列原生为后复权价（=真实价×$factor），
     # BoardAwareExchange 靠 factor 还原真实价 / 做前复权归一（见 adjust.py docstring）
     subscribe_fields = subscribe_fields + ["$factor"] if "$factor" not in subscribe_fields else subscribe_fields
+    # 日截面剔除（ST/退市整理/创业板/科创板）：开启时订阅 $is_st，Exchange 构建当日禁买掩码
+    if req.exclude_st or req.exclude_stock_gem or req.exclude_stock_kcb:
+        if "$is_st" not in subscribe_fields:
+            subscribe_fields.append("$is_st")
 
     exchange_kwargs = {
         "freq": "day",
@@ -413,6 +417,10 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
         "subscribe_fields": subscribe_fields,
         # 复权方式：none/forward/backward（BoardAwareExchange 在 quote 层调整价格）
         "price_adjust": getattr(req, "price_adjust", "none") or "none",
+        # 日截面剔除（调仓当日状态；模型打分阶段过滤 + 买入侧禁 buy）
+        "exclude_st": bool(req.exclude_st),
+        "exclude_stock_gem": bool(req.exclude_stock_gem),
+        "exclude_stock_kcb": bool(req.exclude_stock_kcb),
     }
     if avg_mode:
         exchange_kwargs["avg_mode"] = avg_mode
