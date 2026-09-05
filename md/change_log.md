@@ -3,6 +3,18 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.10.10] - 2026-09-05
+
+### Added
+- 单因子测试新增 **"价格整分"** 开关（位于"停牌删行"旁，默认勾选）：真实价按分取整（round 2 位）参与因子计算，与益盟/聚宽（整分原始价）指标口径对齐；仅"不复权"模式生效
+  - 动机：后复权 float32 bin ÷ factor 还原的浮点尾差，会把"恰等于阈值"的指标值（如短期线 5.00/15.00）推过判定边界，产生与聚宽触发日差一天的样本
+  - 实现：`ops_ext.py` 新增 `ROUND(X,N)` 算子；`adjust_expr(..., round_prices=True)` 在 none 模式下把 `$close/$open/$high/$low/$vwap` 替换为 `ROUND((price/$factor),2)`（`single_test.run_single_factor_test`/`SingleFactorTestRequest` 新增 `price_round`，前端面板同步）
+  - 效果（"趋势顶底离开底部"20 日全A 2021-01-01~2026-03-01，与聚宽对账）：触发边界样本 190→33（仅Qlib 106→10 / 仅聚宽 84→23）
+
+### Fixed
+- **无涨跌停限制日被误判涨停剔除（新股上市首 5 日）**：rq bundle 在无涨跌停日的 `limit_up/limit_down` 标签为 **0**，`mark_limit_up/down` 原先直接 `close >= limit_up` 比较 → `close >= 0` 恒真，把所有上市初期触发当涨停剔除（也影响回测成交判定）。修复：标签 **≤0 / NaN 视为该日无涨跌停限制**，不判涨停/跌停（`limits.py`）
+- 修复后与聚宽最终对齐：触发数 **25,427 vs 25,422**（差 5），触发组日截面 **1.036% vs 1.0395%**（差 0.004pp），整体均值 3.317% vs 3.322%；EMA 两侧已同用 `ewm(span=4, adjust=True)`（非差异来源）
+
 ## [数据包] data-2026-09-05（非代码版本，A股 qlib 数据交付）
 
 - 发布 `cn_data` 全量数据包分卷：`qlib_cn_1.tar.gz`（987.5 MB）+ `qlib_cn_2.tar.gz`（1289.1 MB）

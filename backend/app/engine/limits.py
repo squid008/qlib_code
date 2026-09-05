@@ -128,7 +128,11 @@ def mark_limit_up(
     tag = _limit_tag(s, close_col, "LIMIT_UP")
     if tag is not None:
         close = _as_price(s[close_col])
-        return (close >= s[tag] - 1e-6).fillna(False)
+        up = s[tag]
+        # 无涨跌停限制日（新股上市首 5 日等）交易所标签为 0/NaN：
+        # close >= 0 会把任意收盘误判成涨停，必须排除（0/NaN → 不设涨停）
+        free = up.notna() & (up > 0)
+        return ((close >= up - 1e-6) & free).fillna(False)
     codes = _codes(s)
     ratios = pd.Series([limit_ratio(c, base) for c in codes], index=s.index)
     close = _as_price(s[close_col])
@@ -149,7 +153,11 @@ def mark_limit_down(
     tag = _limit_tag(s, close_col, "LIMIT_DOWN")
     if tag is not None:
         close = _as_price(s[close_col])
-        return (close <= s[tag] + 1e-6).fillna(False)
+        down = s[tag]
+        # 无涨跌停限制日（新股上市首 5 日等）标签为 0/NaN：close <= 0 会把任意收盘
+        # 误判成跌停，必须排除（0/NaN → 不设跌停）
+        free = down.notna() & (down > 0)
+        return ((close <= down + 1e-6) & free).fillna(False)
     codes = _codes(s)
     ratios = pd.Series([limit_ratio(c, base) for c in codes], index=s.index)
     close = _as_price(s[close_col])

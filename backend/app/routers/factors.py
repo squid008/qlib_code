@@ -164,6 +164,7 @@ class SingleFactorTestRequest(BaseModel):
     price_adjust: str = "forward"         # 复权方式：none/forward/backward（与回测对齐，默认前复权）
     freeze_suspended_price: bool = True   # 停牌日价格冻结计入未来收益（对齐聚宽口径 B）
     suspend_remove: bool = True           # 信号停牌行语义：True=SR删行(益盟/回测一致)；False=NaN占位(聚宽口径)
+    price_round: bool = True              # 真实价按分取整参与因子计算（仅不复权生效，默认开；与益盟/聚宽对齐）
 
 
 # ---------- 单因子测试异步任务：POST 提交返回 task_id，GET 轮询进度/结果 ----------
@@ -343,6 +344,7 @@ def single_factor_test(req: SingleFactorTestRequest):
                         price_adjust=req.price_adjust,
                         freeze_suspended_price=req.freeze_suspended_price,
                         suspend_remove=req.suspend_remove,
+                        price_round=req.price_round,
                     )
                     with lock:
                         per_h[h] = items

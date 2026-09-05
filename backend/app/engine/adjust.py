@@ -47,12 +47,18 @@ def normalize_mode(mode: str) -> str:
     return m if m in VALID_MODES else "none"
 
 
-def adjust_expr(expr: str, mode: str) -> str:
+def adjust_expr(expr: str, mode: str, round_prices: bool = False) -> str:
     """把表达式中的价格字段替换为指定口径的价格表达式。
 
     例（mode=none）：`Mean($close, 20)` → `Mean(($close/$factor), 20)`
     mode=forward/backward：返回原表达式（$close 原生即后复权价；
     前/后复权对比率类表达式等价，见模块 docstring）。
+
+    round_prices=True（仅 none 生效）：真实价进一步按分取整，
+    `$close` → `ROUND(($close/$factor), 2)`。A 股价格本为整分，round 抹掉
+    后复权 float32 bin ÷ factor 还原的浮点尾差，与益盟/聚宽（整分原始价）
+    的指标口径完全对齐（消除阈值边界触发日差一天）。forward/backward 用
+    后复权原生价，round 无整分语义、忽略该参数。
 
     说明：表达式统一基于同一份数据内部的配套因子，无论数据新旧都自洽；
     forward 的前复权观感归一只在回测 quote / K 线展示层做（见 board_exchange.py）。
@@ -64,7 +70,10 @@ def adjust_expr(expr: str, mode: str) -> str:
     for f in PRICE_FIELDS:
         # 只匹配独立字段 token（前/后都不是字母数字下划线），避免误伤 Ref/Mean 等算子名
         pat = re.compile(r"(?<![0-9A-Za-z_])" + re.escape(f) + r"(?![0-9A-Za-z_])")
-        out = pat.sub("(%s/$factor)" % f, out)
+        if round_prices:
+            out = pat.sub("ROUND((%s/$factor),2)" % f, out)
+        else:
+            out = pat.sub("(%s/$factor)" % f, out)
     return out
 
 

@@ -38,6 +38,7 @@ __all__ = [
     "SR",
     "EMA_TDX",
     "SGN", "TRUNC", "BETWEEN",
+    "ROUND",
     "ensure_ops_registered",
 ]
 
@@ -473,6 +474,38 @@ class BETWEEN(ExpressionOps):
         return lft, rght
 
 
+class ROUND(ExpressionOps):
+    """ROUND(X, N)：四舍五入到 N 位小数（np.round，IEEE 五舍六入对整分价格无差）。
+
+    用于"真实价按分取整"（ROUND(($close/$factor), 2)）：A 股价格本为整分，
+    后复权 float32 bin ÷ factor 还原会引入 ~1e-4 元浮点尾差，在指标阈值
+    （如短期线<5/<15）边界会把本应恰为 5.00/15.00 的值推过阈值，导致触发日
+    差一天。round 到分后与益盟/聚宽（整分原始价）完全对齐。
+    """
+
+    def __init__(self, feature, ndigits=0):
+        self.feature = feature
+        self.ndigits = int(ndigits)
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        vals = series.to_numpy(dtype=float)
+        with np.errstate(invalid="ignore"):
+            out = np.round(vals, self.ndigits)
+        return pd.Series(out, index=series.index)
+
+    def __str__(self):
+        # 缓存 key 必须带子表达式与位数（同 BARSLAST 的说明）
+        return "ROUND({},{})".format(self.feature, self.ndigits)
+
+    def get_longest_back_rolling(self):
+        return self.feature.get_longest_back_rolling()
+
+    def get_extended_window_size(self):
+        return self.feature.get_extended_window_size()
+
+
 # ---------------- 注册机制 ----------------
 
 _ALL_OPS = [
@@ -481,6 +514,7 @@ _ALL_OPS = [
     SR,
     EMA_TDX,
     SGN, TRUNC, BETWEEN,
+    ROUND,
 ]
 
 _registered = False

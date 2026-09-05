@@ -96,6 +96,8 @@ export default function SingleFactorTestPanel({
   // 信号停牌行语义：勾选=SR删行（益盟/通达信"无停牌行"，与回测特征一致，默认）；
   // 取消=停牌日保留 NaN 占位（qlib 官方/聚宽 notebook 口径，对账时用）
   const [suspendRemove, setSuspendRemove] = useState(true)
+  // 价格整分：真实价按分取整参与因子计算（仅不复权生效，默认开；与益盟/聚宽整分口径对齐）
+  const [priceRound, setPriceRound] = useState(true)
 
   // 三个因子来源
   const [groups, setGroups] = useState<SourceGroup[]>([
@@ -334,6 +336,7 @@ export default function SingleFactorTestPanel({
         exclude_stock_gem: excludeGem,
         exclude_stock_kcb: excludeKcb,
         suspend_remove: suspendRemove,
+        price_round: priceRound,
         price_adjust: priceAdjust,
       })
       const task_id = resp?.task_id
@@ -560,6 +563,17 @@ export default function SingleFactorTestPanel({
             onChange={(e) => setSuspendRemove(e.target.checked)}
           />
           <span>停牌删行</span>
+        </label>
+        <label
+          className="flex items-center gap-1 cursor-pointer"
+          title="价格整分：真实价按分取整（ROUND 2 位）参与因子计算。A 股价格本为整分，可消除『后复权价÷复权因子』还原的浮点尾差在指标阈值（如 5/15）边界导致的触发误判，与益盟/聚宽（整分原始价）口径一致。仅『不复权』模式下生效"
+        >
+          <input
+            type="checkbox"
+            checked={priceRound}
+            onChange={(e) => setPriceRound(e.target.checked)}
+          />
+          <span>价格整分</span>
         </label>
         <label
           className="flex items-center gap-1 cursor-pointer"

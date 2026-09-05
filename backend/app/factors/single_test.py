@@ -450,6 +450,9 @@ def run_single_factor_test(
     #   用 T+1 当日状态判定可买，无未来函数；源 bundle st_stock_days）
     exclude_stock_gem: bool = False,       # 剔除创业板（SZ30 段，20% 涨跌幅）
     exclude_stock_kcb: bool = False,       # 剔除科创板（SH688，20% 涨跌幅）
+    price_round: bool = True,              # 真实价按分取整参与因子计算（仅不复权模式生效）：
+    #   A 股价格本为整分，round(2) 抹掉后复权 float32 bin ÷ factor 还原的浮点尾差，
+    #   与益盟/聚宽（整分原始价）指标口径对齐，消除阈值边界触发日差一天的样本
 ) -> List[dict]:
     """执行单因子测试，返回每个因子的测试结果列表。
 
@@ -542,9 +545,11 @@ def run_single_factor_test(
     # label / 涨停停牌判定元数据（CLOSE/CHANGE/T1_*）不包——它们必须保留停牌 NaN 行
     # （T1 为 NaN = 成交日停牌，是剔除/涨停判断的依据，删行会破坏该逻辑）。
     if suspend_remove:
-        adj_exprs = [_sr_wrap_expr(adjust_expr(e, pa)) for e in ordered_exprs]
+        adj_exprs = [_sr_wrap_expr(adjust_expr(e, pa, round_prices=price_round))
+                     for e in ordered_exprs]
     else:
-        adj_exprs = [adjust_expr(e, pa) for e in ordered_exprs]
+        adj_exprs = [adjust_expr(e, pa, round_prices=price_round)
+                     for e in ordered_exprs]
     # 交易所标签字段（涨跌停价 / ST）：本机数据有 dump 才加载（dump_states.py）；
     # 缺失时自动降级不崩——涨停/跌停判定回退"昨收×板块幅度"倒推，ST 剔除开关因无列自动失效。
     base_fields = ["$close/$factor", "$change", "Ref($close/$factor, -1)", "Ref($change, -1)"]
