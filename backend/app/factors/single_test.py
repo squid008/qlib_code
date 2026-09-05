@@ -20,7 +20,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from ..engine.limits import mark_limit_up
+from ..engine.limits import mark_limit_up, field_bin_available
 from ..engine.adjust import adjust_expr, normalize_mode
 from ..engine.feature_cache import _sr_wrap_expr
 
@@ -383,8 +383,10 @@ def _test_one(
         try:
             if cancelled is not None and cancelled():
                 raise FactorTestCancelled()
-            meta = df.loc[sub.index, ["CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE",
-                                      "LIMIT_UP", "T1_LIMIT_UP", "IS_ST", "T1_IS_ST"]]
+            meta_cols = [c for c in ("CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE",
+                                     "LIMIT_UP", "T1_LIMIT_UP", "IS_ST", "T1_IS_ST")
+                         if c in df.columns]
+            meta = df.loc[sub.index, meta_cols]
             excl = pd.Series(False, index=sub.index)
             if exclude_limit_up_signal:
                 excl = excl | mark_limit_up(meta, "CLOSE", "CHANGE")
@@ -392,8 +394,8 @@ def _test_one(
                 excl = excl | mark_limit_up(meta, "T1_CLOSE", "T1_CHANGE")
             if exclude_suspended:
                 excl = excl | meta["T1_CLOSE"].isna()
-            # ST/板块剔除（与触发/非触发组同口径，见 _exclude）
-            if exclude_st_t1:
+            # ST/板块剔除（与触发/非触发组同口径，见 _exclude）；无 is_st 标签时自动跳过
+            if exclude_st_t1 and "T1_IS_ST" in meta.columns:
                 excl = excl | (meta["T1_IS_ST"] > 0.5)
             if exclude_stock_gem or exclude_stock_kcb:
                 codes = _inst_codes(meta)
@@ -543,17 +545,20 @@ def run_single_factor_test(
         adj_exprs = [_sr_wrap_expr(adjust_expr(e, pa)) for e in ordered_exprs]
     else:
         adj_exprs = [adjust_expr(e, pa) for e in ordered_exprs]
-    fields = (
-        adj_exprs
-        + [label_expr]
-        + ["$close/$factor", "$change", "Ref($close/$factor, -1)", "Ref($change, -1)",
-           # 交易所涨跌停价与 ST 状态标签（真实价，日级；T1_ = 成交日 T+1 的未来一日标签）：
-           # 涨停/ST 判定直接读标签（自动覆盖 ST 5% / 退市整理 10% / 创业科创 20% / 北交 30%）
-           "$limit_up", "$limit_down", "$is_st",
-           "Ref($limit_up, -1)", "Ref($limit_down, -1)", "Ref($is_st, -1)"]
-    )
-    col_names = col_names + ["LABEL", "CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE",
-                             "LIMIT_UP", "LIMIT_DOWN", "IS_ST", "T1_LIMIT_UP", "T1_LIMIT_DOWN", "T1_IS_ST"]
+    # 交易所标签字段（涨跌停价 / ST）：本机数据有 dump 才加载（dump_states.py）；
+    # 缺失时自动降级不崩——涨停/跌停判定回退"昨收×板块幅度"倒推，ST 剔除开关因无列自动失效。
+    base_fields = ["$close/$factor", "$change", "Ref($close/$factor, -1)", "Ref($change, -1)"]
+    base_names = ["LABEL", "CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]
+    tag_fields: List[str] = []
+    tag_names: List[str] = []
+    if field_bin_available("limit_up") and field_bin_available("limit_down"):
+        tag_fields += ["$limit_up", "$limit_down", "Ref($limit_up, -1)", "Ref($limit_down, -1)"]
+        tag_names += ["LIMIT_UP", "LIMIT_DOWN", "T1_LIMIT_UP", "T1_LIMIT_DOWN"]
+    if field_bin_available("is_st"):
+        tag_fields += ["$is_st", "Ref($is_st, -1)"]
+        tag_names += ["IS_ST", "T1_IS_ST"]
+    fields = tuple(adj_exprs) + (label_expr,) + tuple(base_fields) + tuple(tag_fields)
+    col_names = col_names + base_names + tag_names
     batch_size = 2
     frames = []
     try:

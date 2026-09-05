@@ -239,6 +239,18 @@ def single_factor_test(req: SingleFactorTestRequest):
     parallel = bool(req.parallel) and len(horizons) > 1
     n_h = len(horizons)
 
+    # ST 剔除依赖 is_st 标签（tools/dump_states.py 从 E:/rq bundle 同步）：本机无 dump 时明确报错，
+    # 避免"勾了但没剔除"的静默错误（涨停/跌停判定无标签时自动回退倒推，不受影响）
+    if req.exclude_st_t1:
+        from ..engine.limits import field_bin_available
+        if not field_bin_available("is_st"):
+            raise HTTPException(
+                status_code=400,
+                detail='勾选了"剔除ST(T+1)"，但本机 Qlib 数据没有 is_st 标签'
+                "（需先执行 tools/dump_states.py 从 E:/rq bundle 同步）。"
+                "取消勾选即可继续（涨停/跌停判定会自动回退倒推口径）",
+            )
+
     task_id = uuid.uuid4().hex[:12]
     state: dict = {
         "task_id": task_id,

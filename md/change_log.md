@@ -3,6 +3,15 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.10.1] - 2026-09-05
+
+### Fixed
+- **无标签 dump 的机器自动降级，不再崩溃**（如同事 pull 后没跑 `tools/dump_states.py`）：
+  - 新增标签数据可用性探测 `field_bin_available`（缓存）；单因子测试的 `$limit_up/$limit_down/$is_st` 字段改为**按可用性动态加载**——缺标签时涨跌停判定自动回退"昨收×板块幅度"倒推、ST 剔除开关因无列自动失效（不崩、可正常跑）
+  - 回测 quote 的 `$is_st/$limit_up/$limit_down` 订阅全部按可用性门控；勾选"剔除ST/退市"但本机无 `is_st` 标签时**明确报错**（提示先执行 dump_states.py），避免"勾了但没剔除"的静默错误
+- **补齐回测涨跌停的交易所标签接入**（此前单因子已用标签、回测仍走倒推）：
+  - `BoardAwareExchange` 开启涨停限制时订阅 `$limit_up/$limit_down`，`mark_limit_up/down` 支持 `$` 前缀列名 → 回测涨/跌停同样按交易所标签判定（ST 5% / 退市整理 10% / 创业科创 20% / 北交 30% 自动正确）
+
 ## [1.10.0] - 2026-09-05
 
 ### Added / Changed

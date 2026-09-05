@@ -17,6 +17,8 @@
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Union
 
 import numpy as np
@@ -62,11 +64,50 @@ def _as_price(s: pd.Series) -> pd.Series:
     return s.round(2)
 
 
+_tag_field_cache: dict = {}
+
+
+def field_bin_available(field: str) -> bool:
+    """探测 qlib 数据里是否存在 {field}.day.bin（如 limit_up/limit_down/is_st）。
+
+    用于无 dump 标签的机器（如同事 pull 后没有 E:/rq 同步数据）自动降级：
+    缺标签时不再加载这些字段（涨停/跌停回退倒推、ST 剔除提示），避免 D.features/quote 崩。
+    结果缓存；探测 qlib 数据根下任一股票目录存在该 bin 即认为全量可用（dump 是全量写入）。
+    """
+    if field in _tag_field_cache:
+        return _tag_field_cache[field]
+    ok = False
+    try:
+        from ..config import QLIB_PROVIDER_URI
+        root = QLIB_PROVIDER_URI or ""
+        feat = Path(root) / "features" if root else None
+        if feat is not None and feat.is_dir():
+            for d in os.scandir(feat):
+                if d.is_dir() and (Path(d.path) / f"{field}.day.bin").exists():
+                    ok = True
+                    break
+    except Exception:
+        ok = False
+    _tag_field_cache[field] = ok
+    return ok
+
+
 def _limit_tag(s: pd.DataFrame, close_col: str, tag_kind: str):
-    """返回 (标签列名, 是否存在)。"""
-    prefix = "T1_" if str(close_col).startswith("T1") else ""
-    col = f"{prefix}{tag_kind}"
-    return col, col in s.columns
+    """返回与 close_col 同口径的交易所涨跌停标签列（不存在返回 None）。
+
+    tag_kind: 'LIMIT_UP'/'LIMIT_DOWN'。支持的列名（按优先级）：
+      - 单因子当日报表列：LIMIT_UP / LIMIT_DOWN
+      - qlib 订阅原始名（回测 quote）：$limit_up / $limit_down
+    close_col 以 T1_ 开头时优先取 T1_<kind>（成交日 T+1 的标签）。
+    """
+    if str(close_col).startswith("T1"):
+        candidates = [f"T1_{tag_kind}", f"${tag_kind.lower()}", tag_kind]
+    else:
+        candidates = [tag_kind, f"${tag_kind.lower()}"]
+    for col in candidates:
+        if col in s.columns:
+            return col
+    return None
 
 
 def mark_limit_up(
@@ -84,8 +125,8 @@ def mark_limit_up(
     """
     if s is None or len(s) == 0:
         return pd.Series(dtype=bool)
-    tag, has_tag = _limit_tag(s, close_col, "LIMIT_UP")
-    if has_tag:
+    tag = _limit_tag(s, close_col, "LIMIT_UP")
+    if tag is not None:
         close = _as_price(s[close_col])
         return (close >= s[tag] - 1e-6).fillna(False)
     codes = _codes(s)
@@ -105,8 +146,8 @@ def mark_limit_down(
     """收盘是否封死跌停（优先交易所标签列，口径与 mark_limit_up 对称）。NaN 返回 False。"""
     if s is None or len(s) == 0:
         return pd.Series(dtype=bool)
-    tag, has_tag = _limit_tag(s, close_col, "LIMIT_DOWN")
-    if has_tag:
+    tag = _limit_tag(s, close_col, "LIMIT_DOWN")
+    if tag is not None:
         close = _as_price(s[close_col])
         return (close <= s[tag] + 1e-6).fillna(False)
     codes = _codes(s)
