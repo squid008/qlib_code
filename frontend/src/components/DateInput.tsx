@@ -8,12 +8,14 @@ import {
 } from 'react'
 
 // 年月日三段数字输入 + 日历按钮（外观接近原生 date 输入框）。
+// 实现：三段为【非受控输入 + refs 直接读写 DOM value】——每段输入即时反映，不依赖 state
+// 中间态，杜绝"快速输入时某段少一位/变 00/01 串位"问题。
 // - 输入满 4 位年份自动跳到月份、满 2 位月份自动跳到日期；Backspace 空段跳回上一段
-// - 失焦只对"单数字月/日"补零（1→01），年不足 4 位不补（避免出现 0202 这类假值）
-// - 编辑期间不受外部 value 重置干扰；日期完整合法才对外回调完整 YYYY-MM-DD
-// - 右侧日历按钮弹出月历：切换年/月、点日期直接选定并回调
-// - onComplete：某次把日期"填到完整"时触发（日输入满 2 位或日历选定），供父组件跨框跳转
-// - 暴露 focusYear()：让"结束日期"的年份框聚焦（开始日期输完 → 自动跳过来）
+// - 失焦只对"单数字月/日"补零（1→01），年不足 4 位不补（避免出现 0202）
+// - 外部 value 变化（复用历史/日历选定）在非编辑态同步写回三段
+// - 右侧日历按钮：弹出月历，点日期直接选定
+// - onComplete：日期"填到完整"时触发（日输入满 2 位或日历选定），供父组件跳到下一个日期框
+// - 暴露 focusYear()：让"结束日期"的年份框聚焦
 export interface DateInputHandle {
   focusYear: () => void
 }
@@ -38,11 +40,11 @@ function joinParts(p: string[]): string {
     : ''
 }
 
-function isValidDate(y: string, mo: string, d: string): boolean {
-  const yy = +y
-  const mm = +mo
-  const dd = +d
-  return yy >= 1900 && yy <= 2100 && mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31
+function validDate(y: string, m: string, d: string): boolean {
+  const Y = +y
+  const M = +m
+  const D = +d
+  return Y >= 1900 && Y <= 2100 && M >= 1 && M <= 12 && D >= 1 && D <= 31
 }
 
 const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput(
@@ -54,18 +56,25 @@ const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput
     useRef<HTMLInputElement>(null),
     useRef<HTMLInputElement>(null),
   ]
-  const [parts, setParts] = useState<string[]>(() => splitValue(value))
+  const wrapRef = useRef<HTMLSpanElement>(null)
   const [editing, setEditing] = useState(false)
   const [showCal, setShowCal] = useState(false)
   const [cal, setCal] = useState(() => calOf(value))
-  const wrapRef = useRef<HTMLSpanElement>(null)
 
-  // 编辑过程中外部 value 变化不覆盖正在输入的三段；失焦后再与外部值保持同步
+  const setSeg = (i: number, v: string) => {
+    const el = refs[i].current
+    if (el) el.value = v
+  }
+  const readParts = (): string[] =>
+    refs.map((r) => (r.current ? r.current.value : ''))
+
+  // 编辑过程中外部 value 变化不覆盖正在输入的三段；否则（外部重置/日历选定/复用历史）同步写回
   useEffect(() => {
-    if (!editing) setParts(splitValue(value))
+    if (editing) return
+    splitValue(value).forEach((v, i) => setSeg(i, v))
   }, [value, editing])
 
-  // 点击组件外部时关闭日历弹层
+  // 点击组件外部关闭日历
   useEffect(() => {
     if (!showCal) return
     const h = (e: MouseEvent) => {
@@ -81,19 +90,18 @@ const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput
 
   const emit = (p: string[]) => {
     const v = joinParts(p)
-    if (v && isValidDate(p[0], p[1], p[2])) onChange(v)
+    if (v && validDate(p[0], p[1], p[2])) onChange(v)
   }
 
   const changeAt = (i: number, raw: string) => {
     const s = raw.replace(/\D/g, '').slice(0, LENS[i])
-    const p = parts.map((x, k) => (k === i ? s : x))
-    setParts(p)
+    setSeg(i, s) // 直接写 DOM，即时生效
     if (s.length === LENS[i]) {
       if (i < 2) {
         refs[i + 1].current?.focus() // 年满4→月；月满2→日
       } else {
-        emit(p) // 日满2 → 完整提交
-        onComplete?.() // 供父组件把焦点跳到下一个日期框
+        emit(readParts()) // 日满2 → 完整提交（读各段最新 DOM 值）
+        onComplete?.()
       }
     }
   }
@@ -106,17 +114,19 @@ const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput
 
   const onBlur = () => {
     setEditing(false)
-    // 月/日单数字补零（1→01）；年必须是完整 4 位，不足不补（避免补出 0202 等假值）
-    const p = parts.map((x, i) => {
+    // 月/日单数字补零（1→01）；年必须是完整 4 位，不足不补（避免 0202 等假值）
+    const norm = (x: string, i: number) => {
       if (!x) return x
       if (i === 0) return x.length === 4 ? x : x
       return x.length === 1 ? `0${x}` : x
-    })
-    setParts(p)
+    }
+    const p = readParts().map(norm)
+    p.forEach((v, i) => setSeg(i, v))
     emit(p)
   }
 
   const pickDate = (dStr: string) => {
+    splitValue(dStr).forEach((v, i) => setSeg(i, v))
     onChange(dStr)
     onComplete?.()
     setShowCal(false)
@@ -134,18 +144,19 @@ const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput
       return `${cy}-${String(cm).padStart(2, '0')}-${d}`
     }),
   ]
-  const currentFull = joinParts(parts)
+  const currentFull = joinParts(readParts())
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
 
   return (
     <span
       ref={wrapRef}
       className={`relative inline-flex items-center border rounded px-1.5 py-1 bg-white dark:bg-slate-900 ${className}`}
     >
-      {parts.map((p, i) => (
+      {[0, 1, 2].map((i) => (
         <span key={i} className="inline-flex items-center">
           <input
             ref={refs[i]}
-            value={p}
+            defaultValue=""
             inputMode="numeric"
             placeholder={['YYYY', 'MM', 'DD'][i]}
             onChange={(e) => changeAt(i, e.target.value)}
@@ -166,9 +177,9 @@ const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput
       <button
         type="button"
         title="选择日期"
-        onMouseDown={(e) => e.preventDefault()} // 避免抢走输入框焦点
+        onMouseDown={(e) => e.preventDefault()}
         onClick={() => {
-          setCal(calOf(currentFull || value))
+          setCal(calOf(joinParts(readParts()) || value))
           setShowCal((s) => !s)
         }}
         className="ml-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 px-0.5"
@@ -221,7 +232,7 @@ const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput
                   className={`py-0.5 rounded hover:bg-blue-100 dark:hover:bg-blue-900/40 ${
                     c === currentFull
                       ? 'bg-blue-600 text-white hover:bg-blue-600'
-                      : c === `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+                      : c === todayStr
                         ? 'text-blue-600 dark:text-blue-300 font-semibold'
                         : 'text-slate-600 dark:text-slate-300'
                   }`}
