@@ -12,7 +12,6 @@ interface FormulaHandbookModalProps {
 export default function FormulaHandbookModal({ open, onClose, onInsert }: FormulaHandbookModalProps) {
   const [kw, setKw] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
-  const [lastFocus, setLastFocus] = useState<'list' | 'input'>('input')
 
   const items = useMemo(() => filterHandbook(kw), [kw])
 
@@ -21,7 +20,6 @@ export default function FormulaHandbookModal({ open, onClose, onInsert }: Formul
     if (open) {
       setKw('')
       setSelected(null)
-      setLastFocus('input')
     }
   }, [open])
 
@@ -97,7 +95,7 @@ export default function FormulaHandbookModal({ open, onClose, onInsert }: Formul
         {/* 主体：左列表 + 右详情 */}
         <div className="flex-1 min-h-0 flex">
           {/* 两列表格 */}
-          <div className="w-1/2 border-r overflow-y-auto" onMouseDown={() => setLastFocus('list')}>
+          <div className="w-1/2 border-r overflow-y-auto">
             <table className="w-full border-collapse" onKeyDown={handleKeyDown}>
               <thead className="sticky top-0 bg-slate-100 dark:bg-slate-700 z-10">
                 <tr className="text-slate-500">
@@ -121,10 +119,7 @@ export default function FormulaHandbookModal({ open, onClose, onInsert }: Formul
                           ? 'bg-emerald-50 dark:bg-emerald-900/40'
                           : 'hover:bg-slate-50 dark:hover:bg-slate-700/60'
                       }`}
-                      onMouseDown={() => {
-                        setSelected(it.name)
-                        setLastFocus('list')
-                      }}
+                      onMouseDown={() => setSelected(it.name)}
                       onDoubleClick={() => insert(it)}
                       title={it.desc}
                     >
