@@ -23,6 +23,79 @@ interface SingleFactorTestPanelProps {
 
 type TestResult = SingleFactorTestResult
 
+// 结论判定（与表格"结论"列同源，导出复用，避免两处口径漂移）：
+// 按渲染列的判定顺序给出 kind；布尔字段供表格样式分支使用。
+type VerdictKind = 'conflicting' | 'good' | 'goodReverse' | 'timeConcentrated' | 'watch'
+const VERDICT_LABEL: Record<VerdictKind, string> = {
+  conflicting: '方向矛盾',
+  good: '有效✓',
+  goodReverse: '有效(反向)✓',
+  timeConcentrated: '时间集中',
+  watch: '待观察',
+}
+interface VerdictStats {
+  significant: boolean
+  goodBase: boolean
+  conflicting: boolean
+  goodReverseBase: boolean
+  dT: number | null
+  stable: boolean
+  good: boolean
+  goodReverse: boolean
+  kind: VerdictKind
+}
+function verdictOf(r: TestResult): VerdictStats {
+  const significant = r.p_value !== null && r.p_value < 0.05
+  const goodBase =
+    r.error == null && r.diff !== null && r.diff > 0 && (!r.is_binary || significant)
+  // 方向矛盾：IC 与触发收益差方向相反且 ICIR 稳定（|ICIR|>=0.05，即×100后>=5）
+  const conflicting =
+    r.error == null &&
+    r.ic !== null &&
+    r.icir !== null &&
+    Math.abs(r.icir) >= 0.05 &&
+    r.diff !== null &&
+    ((r.ic < 0 && r.diff > 0) || (r.ic > 0 && r.diff < 0))
+  // 反向有效：连续因子高分位组收益显著更低（diff<0），且 IC/ICIR 稳定为负（方向一致）
+  const goodReverseBase =
+    r.error == null &&
+    !r.is_binary &&
+    significant &&
+    r.ic !== null &&
+    r.ic < 0 &&
+    r.icir !== null &&
+    Math.abs(r.icir) >= 0.05 &&
+    r.diff !== null &&
+    r.diff < 0
+  const dT = r.daily_t_hac ?? r.daily_t
+  const stable =
+    dT === null ||
+    dT === undefined ||
+    (Math.abs(dT) >= 2 &&
+      ((r.diff ?? 0) >= 0 ? (r.daily_win ?? 0) >= 0.5 : (r.daily_win ?? 0) <= 0.5))
+  const good = goodBase && stable
+  const goodReverse = goodReverseBase && stable
+  let kind: VerdictKind = 'watch'
+  if (conflicting) kind = 'conflicting'
+  else if (good) kind = 'good'
+  else if (goodReverse) kind = 'goodReverse'
+  else if ((goodBase || goodReverseBase) && !stable) kind = 'timeConcentrated'
+  return { significant, goodBase, conflicting, goodReverseBase, dT, stable, good, goodReverse, kind }
+}
+
+// 导出工作表1"因子指标"表头（列口径与界面表格一致：覆盖率/收益/差值/胜率/Q组 = ×100 百分数，IC/RankIC/ICIR/t = 原始小数）
+// Q1~Q5 收益：仅连续因子有（日截面 5 组分位收益）；"触发组日均/未触发组日均"：仅 0/1 信号有（对应界面"分位收益"列的双柱，
+// 即触发组 vs 未触发组的逐日截面收益均值）。两类分组口径不同故不混填 Q 列，避免"触发组与最低值组同列"的误读。
+const EXPORT_HEADERS = [
+  '因子', '来源', '周期(天)', '公式', '覆盖率(%)', '信号', '触发数', '触发收益(%)', '未触发数', '未触发收益(%)',
+  '差值(%)', '日差值(%)', 't(HAC)', '胜率(%)', '配对日数', 'p值',
+  'Q1收益(%)', 'Q2收益(%)', 'Q3收益(%)', 'Q4收益(%)', 'Q5收益(%)',
+  '触发组日均(%)', '未触发组日均(%)',
+  'IC', 'RankIC', 'ICIR', '结论',
+]
+// 导出工作表2"因子与公式"表头
+const EXPORT_FORMULA_HEADERS = ['因子', '来源', '公式（用户保存原文 / 目录表达式）']
+
 // 解析批量预测周期输入：单值 / 逗号枚举(1,2,3,5) / range 区间(1:5:20 = 起点:步长:终点，含终点)。
 // 值范围 1~250（后端同样校验兜底）。返回去重后的周期列表，非法时带中文错误。
 function parseHorizons(text: string): { horizons: number[]; error?: string } {
@@ -123,6 +196,7 @@ export default function SingleFactorTestPanel({
   const [error, setError] = useState('')
   const [cancelling, setCancelling] = useState(false)
   const [clearing, setClearing] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const taskIdRef = useRef<string | null>(null)
   const pollTimerRef = useRef<number | null>(null)
 
@@ -417,6 +491,92 @@ export default function SingleFactorTestPanel({
           ? `${v.toExponential(2)}${v < 0.05 ? '*' : ''}`
           : `${v.toFixed(4)}${v < 0.05 ? '*' : ''}`
 
+  // 导出当前展示结果到 Excel（一个文件两个工作表，纯前端生成不占后端）：
+  //   Sheet1 "因子指标"：与界面表格一致的指标（含 error 行，错误信息放"结论"列）
+  //   Sheet2 "因子与公式"：因子名 + 用户保存公式/目录表达式（按 因子×来源 去重，仅首个周期行）
+  // xlsx 用动态 import（点击才加载）：同事 pull 后未 npm install 时其余功能不受影响，导出给出明确提示；
+  // 同时把 ~200KB 的 xlsx 移出首屏包，仅导出时按需下载该 chunk。
+  const handleExport = async () => {
+    if (results.length === 0) return
+    setExporting(true)
+    setError('')
+    try {
+      // CJS 模块的 namespace 兼容 default / 具名两种形态（不同打包/预构建环境下取 utils 都可靠）
+      const mod: any = await import('xlsx')
+      const XLSX = mod.default ?? mod
+      const aoa: (string | number)[][] = [EXPORT_HEADERS]
+      for (const r of results) {
+        const formula = r.source_formula || srcByKey.get(`${r.source}:${r.id}`) || r.expression || ''
+        const horizon = r.horizon != null ? String(r.horizon) : '-'
+        const dash = '-'
+        if (r.error) {
+          aoa.push([
+            r.name, r.source, horizon, formula,
+            dash, dash, dash, dash, dash, dash, dash, dash, dash, dash, dash, dash,
+            dash, dash, dash, dash, dash, dash, dash, dash, dash, dash,
+            `错误：${r.error}`,
+          ])
+          continue
+        }
+        const q = r.quintile_ret ?? []
+        const qCells = [dash, dash, dash, dash, dash]
+        for (const g of q) if (g.quantile >= 1 && g.quantile <= 5) qCells[g.quantile - 1] = fmt(g.mean_ret, 3)
+        // 0/1 信号的触发组/未触发组逐日截面收益均值（对应界面"分位收益"列双柱），连续因子无此分组故留空
+        const dayPair = r.is_binary
+          ? [fmt(r.daily_trig_mean, 3), fmt(r.daily_not_mean, 3)]
+          : [dash, dash]
+        const v = verdictOf(r)
+        aoa.push([
+          r.name,
+          r.source,
+          horizon,
+          formula,
+          fmt(r.coverage, 2),
+          r.is_binary ? '0/1' : '连续',
+          r.trigger?.count != null ? String(r.trigger.count) : dash,
+          fmt(r.trigger?.mean_ret, 3),
+          r.not_trigger?.count != null ? String(r.not_trigger.count) : dash,
+          fmt(r.not_trigger?.mean_ret, 3),
+          fmt(r.diff, 3),
+          fmt(r.daily_diff, 3),
+          fmtRaw(v.dT, 2),
+          fmt(r.daily_win, 1),
+          r.daily_n != null ? String(r.daily_n) : dash,
+          r.p_value == null ? dash : fmtP(r.p_value),
+          ...qCells,
+          ...dayPair,
+          fmtRaw(r.ic, 4),
+          fmtRaw(r.rank_ic, 4),
+          fmtRaw(r.icir, 3),
+          VERDICT_LABEL[v.kind],
+        ])
+      }
+      const seen = new Set<string>()
+      const fAoa: (string | number)[][] = [EXPORT_FORMULA_HEADERS]
+      for (const r of results) {
+        const key = `${r.source}:${r.id}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        fAoa.push([r.name, r.source, r.source_formula || srcByKey.get(key) || r.expression || ''])
+      }
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '因子指标')
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(fAoa), '因子与公式')
+      const now = new Date()
+      const pad = (n: number) => String(n).padStart(2, '0')
+      XLSX.writeFile(
+        wb,
+        `单因子测试结果_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.xlsx`,
+      )
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // 动态 import 失败（同事未 npm install）时 e.message 为依赖解析错误，直接提示可操作步骤
+      setError(`导出失败：${msg}。若提示缺少 xlsx，请在 frontend 目录执行 npm install 后重试`)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <div className="mt-2 border rounded p-3 bg-slate-50 dark:bg-slate-900 text-xs">
       <div className="flex items-center justify-between mb-2">
@@ -673,7 +833,16 @@ export default function SingleFactorTestPanel({
 
       {/* 清理入口：展示保留到用户主动清理（收起/展开不丢结果）；清理后才清空展示并释放后端内存 */}
       {results.length > 0 && (
-        <div className="flex items-center justify-end mb-2">
+        <div className="flex items-center justify-end gap-2 mb-2">
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting}
+            title="导出当前展示结果到 Excel（.xlsx，纯前端生成）：工作表1「因子指标」含每行指标与结论；工作表2「因子与公式」为各因子与其保存公式"
+            className="px-2 py-1 rounded border text-[11px] text-blue-600 border-blue-300 hover:bg-blue-50 dark:text-blue-400 dark:border-blue-700 dark:hover:bg-blue-950 disabled:opacity-50"
+          >
+            {exporting ? '导出中...' : '导出结果'}
+          </button>
           <button
             type="button"
             onClick={handleClear}
@@ -716,42 +885,9 @@ export default function SingleFactorTestPanel({
                 // 只在 hover 公式名时显示——因子列底下不再常驻公式行。
                 const hoverFormula =
                   r.source_formula || srcByKey.get(`${r.source}:${r.id}`) || r.expression
-                const significant = r.p_value !== null && r.p_value < 0.05
-                const goodBase =
-                  r.error == null && r.diff !== null && r.diff > 0 && (!r.is_binary || significant)
-                // 方向矛盾：IC 与触发收益差方向相反且 ICIR 稳定（|ICIR|>=0.05，即×100后>=5）
-                // 说明"触发后收益"由少数触发日主导，逐日横截面方向相反，不能仅凭 diff 下结论
-                // （对连续因子同样成立，不限于 0/1 信号）
-                const conflicting =
-                  r.error == null &&
-                  r.ic !== null &&
-                  r.icir !== null &&
-                  Math.abs(r.icir) >= 0.05 &&
-                  r.diff !== null &&
-                  ((r.ic < 0 && r.diff > 0) || (r.ic > 0 && r.diff < 0))
-                // 反向有效：连续因子高分位组收益显著更低（diff<0），且 IC/ICIR 稳定为负（方向一致）→ 因子需反向使用（低值组买入）
-                const goodReverseBase =
-                  r.error == null &&
-                  !r.is_binary &&
-                  significant &&
-                  r.ic !== null &&
-                  r.ic < 0 &&
-                  r.icir !== null &&
-                  Math.abs(r.icir) >= 0.05 &&
-                  r.diff !== null &&
-                  r.diff < 0
-                // 按日稳定性：|t|>=2 且胜率方向与 diff 一致。diff 是观测加权平均，若触发样本集中
-                // 在少数暴涨/暴跌日，观测平均会被拉高而逐日并无稳定超额（如暴跌抄底类信号），
-                // 此时 t≈0、胜率≈50%，不得判定为有效。t 优先用 HAC 稳健 t（修正自相关/异方差），
-                // 旧结果无 HAC 字段则回退普通 t。
-                const dT = r.daily_t_hac ?? r.daily_t
-                const stable =
-                  dT === null ||
-                  dT === undefined ||
-                  (Math.abs(dT) >= 2 &&
-                    ((r.diff ?? 0) >= 0 ? (r.daily_win ?? 0) >= 0.5 : (r.daily_win ?? 0) <= 0.5))
-                const good = goodBase && stable
-                const goodReverse = goodReverseBase && stable
+                // 结论判定统一收敛到模块级 verdictOf（表格"结论"列与导出文件口径一致）
+                const { goodBase, conflicting, goodReverseBase, dT, stable, good, goodReverse } =
+                  verdictOf(r)
                 const qr = r.quintile_ret ?? []
                 const maxAbs = qr.length > 0 ? Math.max(...qr.map((g) => Math.abs(g.mean_ret))) : 0
                 // 分位收益悬停：直接展示 5 组日截面收益（一行一组），最后一行汇总配对日数
