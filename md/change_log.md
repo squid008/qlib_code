@@ -3,6 +3,16 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.14.0] - 2026-09-07
+
+### Added
+- **信号后处理（Signal Post-Processing，默认关=现状零影响）**：主模型训练后、回测前可选的"信号合成"层，支持两档（可独立/组合开启，仅**一次性训练 single** 模式；滚动 custom 模式会明确报错提示），实现在 `backend/app/engine/signal_compose.py`：
+  - **Meta-Gate（回测请求 `meta_gate` / `meta_gate_opts`）**：在主模型 topK 候选内训练一个二分类 gate（LightGBM binary，学"未来 5 日收益>0"，标签可选绝对/截面相对、样本可选全量/主模型看多子集），预测 gate 概率 z，**逐日把 topK 内 z 最低 `reject_ratio`（默认 25%）的候选剔除**后再回测。排序仍由主模型 score 决定，gate 只做"该不该买"的风控闸门——用于把原型验证的"候选内拒尾"语义固化进真实回测。
+  - **触发叠加（`trigger_overlay_opts`，默认不传/None）**：`{enabled, formula(触发因子 qlib 表达式), topk(默认5), weight(默认0.2)}`。引擎把触发公式列算出（`D.features` + 老股过滤/名称级对齐），在其触发样本子集上训练"触发专用模型"（binary），每日从当日触发池选 z 最高的 M 只作为主池外小仓位，与主池合成逐日目标权重 `target_w`（主池 `(1-weight)` 等权 + 触发池 `weight` 等权，逐日归一）进回测。
+- **权重目标策略**：`PeriodicTopKStrategy` 新增 `weight_col`（回测引擎恒传 `target_w`）；当预测信号含该列时按权重整体换仓（卖出不在目标权重集合的旧仓、买入目标内新仓按权重预算配资金），**不含该列时完全走旧的等权 topk 路径**（向后兼容，S0 行为不变）。
+- 引擎接线：`_run_single` 在主模型 `SignalRecord` 后调用 `compose_final_signal` 覆盖回测 signal（IC/分层仍按主模型诊断）；失败自动回退主信号不阻塞回测。产物/训练签名已覆盖参数，便于 A/B 与追溯。
+- 说明：两档能力来自当日 AI 原型的实证研究（Meta-Labeling 方法综述已收进 `md/研报集合.md` 研报 3；`ai_test/meta_*.py` 记录了原型与诊断）。**当前为默认关的可选能力，不做默认行为改变**；真实回测增益需跨池/跨区间 A/B 证据积累后再决定默认策略，勿以单区间数字定论。
+
 ## [1.13.0] - 2026-09-07
 
 ### Added

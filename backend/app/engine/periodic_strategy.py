@@ -38,9 +38,13 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
         only_tradable=False,
         forbid_all_trade_at_limit=True,
         rebalance_base=None,
+        weight_col=None,
         **kwargs,
     ):
         super().__init__(risk_degree=risk_degree, **kwargs)
+        # 权重目标模式（S2 触发叠加）：signal 提供 target_w 列（>0 进入目标组合，值=资金占比，
+        # 逐日已归一≈1）。None=旧路径（等权 topk）。weight_col 非 None 且 signal 含该列时启用。
+        self.weight_col = weight_col
         self.topk = int(topk)
         self.n_days_hold = max(1, int(n_days_hold))
         self.only_tradable = only_tradable
@@ -70,9 +74,14 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
                     return TradeDecisionWO([], self)
 
         # 调仓日：获取当前信号
-        pred_score = self.signal.get_signal(start_time=pred_start_time, end_time=pred_end_time)
-        if isinstance(pred_score, pd.DataFrame):
-            pred_score = pred_score.iloc[:, 0]
+        raw_sig = self.signal.get_signal(start_time=pred_start_time, end_time=pred_end_time)
+        if raw_sig is None or (hasattr(raw_sig, "empty") and raw_sig.empty):
+            return TradeDecisionWO([], self)
+        # 权重目标模式（S2）：signal 为多列 DataFrame 且含 weight_col → 按权重下单
+        if (self.weight_col is not None and isinstance(raw_sig, pd.DataFrame)
+                and self.weight_col in raw_sig.columns):
+            return self._rebalance_weighted(raw_sig, trade_start_time, trade_end_time)
+        pred_score = raw_sig.iloc[:, 0] if isinstance(raw_sig, pd.DataFrame) else raw_sig
         if pred_score is None or len(pred_score) == 0:
             return TradeDecisionWO([], self)
 
@@ -163,5 +172,102 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
             logger.info(
                 "Rebalance at step %s: sell %d, buy %d",
                 trade_step, len(sell_order_list), len(buy_order_list),
+            )
+        return TradeDecisionWO(orders, self)
+
+    def _rebalance_weighted(self, sig, trade_start_time, trade_end_time):
+        """按 target_w 权重目标整体重建（S2 触发叠加）。
+
+        sig: 当日 signal DataFrame（含 weight_col）。>0 的行 = 目标组合，权重=该列值
+        （逐日已归一≈1，主层+触发层）。语义与等权路径一致：
+        卖出不在目标的旧仓、买入目标内未持有的新仓（按权重预算资金），已持有的目标仓不动。
+        """
+        w = sig[self.weight_col].astype(float)
+        try:
+            forbid = self.trade_exchange.get_forbidden_mask(
+                sig.index, trade_start_time, trade_end_time
+            )
+            if forbid is not None and bool(forbid.any()):
+                w = w[~forbid]
+        except Exception:
+            pass
+        w = w[w > 0].dropna()
+        if w is None or len(w) == 0:
+            return TradeDecisionWO([], self)
+        total_w = float(w.sum())
+        if total_w <= 0:
+            return TradeDecisionWO([], self)
+
+        current_temp = copy.deepcopy(self.trade_position)
+        cash = current_temp.get_cash()
+        current_stock_list = current_temp.get_stock_list()
+        target_codes = set(w.index)
+
+        # 卖出：当前持仓不在目标权重集合的（整体卖出）
+        sell_order_list = []
+        for code in current_stock_list:
+            if code in target_codes:
+                continue
+            if self.only_tradable and not self.trade_exchange.is_stock_tradable(
+                stock_id=code, start_time=trade_start_time, end_time=trade_end_time,
+                direction=None if self.forbid_all_trade_at_limit else Order.SELL,
+            ):
+                continue
+            sell_amount = current_temp.get_stock_amount(code=code)
+            if not sell_amount or sell_amount <= 0:
+                continue
+            order = Order(
+                stock_id=code,
+                amount=sell_amount,
+                start_time=trade_start_time,
+                end_time=trade_end_time,
+                direction=Order.SELL,
+            )
+            if self.trade_exchange.check_order(order):
+                sell_order_list.append(order)
+                trade_val, trade_cost, _ = self.trade_exchange.deal_order(order, position=current_temp)
+                cash += trade_val - trade_cost
+
+        # 买入：目标集合中未持有的，按权重预算分配
+        budget = cash * self.risk_degree
+        buy_order_list = []
+        for code, wt in w.items():
+            if code in current_stock_list:
+                continue
+            if self.only_tradable and not self.trade_exchange.is_stock_tradable(
+                stock_id=code, start_time=trade_start_time, end_time=trade_end_time,
+                direction=None if self.forbid_all_trade_at_limit else Order.BUY,
+            ):
+                continue
+            buy_price = self.trade_exchange.get_deal_price(
+                stock_id=code, start_time=trade_start_time, end_time=trade_end_time, direction=Order.BUY
+            )
+            if not buy_price or buy_price <= 0:
+                continue
+            share = budget * (wt / total_w)
+            if share <= 0:
+                continue
+            amount = self.trade_exchange.round_amount_by_trade_unit(
+                share / buy_price,
+                self.trade_exchange.get_factor(stock_id=code, start_time=trade_start_time,
+                                               end_time=trade_end_time),
+            )
+            if not amount or amount <= 0:
+                continue
+            buy_order_list.append(
+                Order(
+                    stock_id=code,
+                    amount=amount,
+                    start_time=trade_start_time,
+                    end_time=trade_end_time,
+                    direction=Order.BUY,
+                )
+            )
+        self._last_rebalance_step = self.trade_calendar.get_trade_step()
+        orders = sell_order_list + buy_order_list
+        if orders:
+            logger.info(
+                "Rebalance(weighted) at step %s: sell %d, buy %d",
+                self._last_rebalance_step, len(sell_order_list), len(buy_order_list),
             )
         return TradeDecisionWO(orders, self)

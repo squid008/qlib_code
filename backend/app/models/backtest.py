@@ -106,6 +106,26 @@ class BacktestRequest(BaseModel):
     load_model_task_id: Optional[str] = Field(
         None, description="复用某次回测训练好的模型权重（跳过训练，直接预测回测）。填该任务的 task_id"
     )
+    # Meta-Gate（R3，默认关）：主模型 score 负责 topk 排序；gate 二分类在 topk 候选内
+    # 按日拒 z 最低 reject_ratio（详见 app/engine/signal_compose.py）。false=现状零影响。
+    meta_gate: bool = Field(False, description="开启 Meta-Gate 信号后处理（默认关=现状）")
+    meta_gate_opts: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Meta-Gate 参数：{scope: all|positive(默认 all), ydef: abs|cross(默认 abs), "
+            "reject_ratio: 候选内拒 z 最低比例 默认0.25}"
+        ),
+    )
+    trigger_overlay_opts: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "触发叠加（S2，默认关=不传/None）："
+            "{enabled: true, formula: 触发因子 qlib 表达式, topk: 每日最多叠加只数默认5, "
+            "weight: 叠加总权重默认0.2}。"
+            "开启后主池(1-weight) + 触发专用模型选出的触发股(weight) 合成 target_w 权重进回测；"
+            "底仓是否再经 meta_gate 拒尾由 meta_gate 开关决定"
+        ),
+    )
     resume_task_id: Optional[str] = Field(
         None, description="断点续跑：从该任务（未完成的滚动回测）继续，复用其 artifacts 目录并跳过已完成段"
     )

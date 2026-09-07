@@ -1,6 +1,6 @@
 # Qlib 量化回测平台
 
-> **当前版本：v1.13.0**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+> **当前版本：v1.14.0**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
 >
 > 各版本更新记录见 **[`md/change_log.md`](./md/change_log.md)**（按 Keep a Changelog 规范）。
 
@@ -152,6 +152,10 @@ npm run dev
 - 涨跌停：**按板块区分**（主板 10% / 创业板、科创板 20% / 北交所 30%，`BoardAwareExchange`，外挂实现不改 qlib 内核）
 - 特征缓存：同参数复用回测时，特征计算走磁盘缓存（`workdir/feature_cache/`），复用回测大幅加速
 - 流程：数据 → 特征 → 训练 → 滚动预测 → 回测 → 风险指标（年化收益、夏普、最大回撤、胜率、净值曲线）+ IC / 分层分析
+- **信号后处理（v1.14.0，默认关，零影响）**：主模型训练后可选的"信号合成"（`app/engine/signal_compose.py`，仅一次性 single 模式）：
+  - `Meta-Gate`：在主模型 topK 候选内训练一个二分类 gate（学"未来收益>0"），按日把 gate 概率最低 `reject_ratio`（默认 25%）的候选剔除后再进回测（预测排序不变，纯风控闸门）
+  - `触发叠加`：把触发型 0/1 公式（如冰谷火焰）作为特征列，在其触发样本上训练"触发专用模型"，每日从触发池选出 z 最高的 M 只（默认 5），作为主池外的 `weight`（默认 20%）小仓位叠加（`target_w` 权重进策略；`PeriodicTopKStrategy` 支持权重目标，无权重列自动回退等权 topk）
+  - 二者可独立或组合开启；IC/分层仍按主模型诊断。默认关闭即完全复现旧行为（详见 `md/change_log.md` v1.14.0）
 
 ### 关键踩坑记录
 1. **mlflow 文件存储维护模式**：需设置 `MLFLOW_ALLOW_FILE_STORE=true` 并使用 sqlite 实验追踪后端
