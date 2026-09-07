@@ -188,7 +188,10 @@ class TestDataGolden:
         assert np.isnan(plain)  # 官方补 NaN 行语义：复牌首日 Ref 仍断
 
     def test_moneyflow_field_value(self):
-        """资金流 bin 数值 golden：平安银行 2024-01-02 主力净占比 -14.20、超大单净额 -18361。"""
+        """资金流 bin 数值 golden：平安银行 2024-01-02 主力净占比 -15.11、超大单净额 -19304.05。
+
+        （2026-09-07 重刷：moneyflow 源更新后同一天值由 -14.20/-18361.23 变为当前值）
+        """
         from app.config import QLIB_PROVIDER_URI
 
         mf_bin = os.path.join(QLIB_PROVIDER_URI, "features", "sz000001", "mf_pct_main.day.bin")
@@ -205,5 +208,5 @@ class TestDataGolden:
             start_time="2024-01-02",
             end_time="2024-01-02",
         )
-        assert df["$mf_pct_main"].iloc[0] == pytest.approx(-14.20, abs=0.02)
-        assert df["$mf_amount_xl"].iloc[0] == pytest.approx(-18361.23, abs=1.0)
+        assert df["$mf_pct_main"].iloc[0] == pytest.approx(-15.112272, abs=0.02)
+        assert df["$mf_amount_xl"].iloc[0] == pytest.approx(-19304.050781, abs=1.0)
