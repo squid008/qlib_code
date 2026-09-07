@@ -39,6 +39,7 @@ __all__ = [
     "EMA_TDX",
     "SGN", "TRUNC", "BETWEEN",
     "ROUND",
+    "FILTER", "SMA", "BARSSINCE", "HHVBARS", "LLVBARS",
     "ensure_ops_registered",
 ]
 
@@ -506,6 +507,192 @@ class ROUND(ExpressionOps):
         return self.feature.get_extended_window_size()
 
 
+# ---------------- 通达信有状态算子（FILTER/SMA/BARSSINCE/HHVBARS/LLVBARS） ----------------
+
+class FILTER(ExpressionOps):
+    """FILTER(X, N)：信号过滤。条件 X 成立输出 1 后，其后 N-1 个周期不再输出（抑制）。
+
+    通达信语义：X 触发一次只记一次，随后 N 周期内过滤掉重复触发，
+    下次可输出要等到距本次触发 >= N 个周期（且 X 再次成立）。X 为 NaN/0 视为未触发。
+    """
+
+    def __init__(self, feature, N):
+        self.feature = feature
+        self.N = int(N)
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        vals = series.to_numpy(dtype=float)
+        n = len(vals)
+        N = max(1, self.N)
+        out = np.zeros(n, dtype=float)
+        reopen = 0  # 下一次允许输出的绝对索引
+        with np.errstate(invalid="ignore"):
+            for i in range(n):
+                v = vals[i]
+                if v != 0 and not np.isnan(v):
+                    if i >= reopen:
+                        out[i] = 1.0
+                        reopen = i + N  # 其后 N-1 个周期抑制
+        return pd.Series(out, index=series.index)
+
+    def __str__(self):
+        return "FILTER({},{})".format(self.feature, self.N)
+
+    def get_longest_back_rolling(self):
+        return self.feature.get_longest_back_rolling()
+
+    def get_extended_window_size(self):
+        return self.feature.get_extended_window_size()
+
+
+class SMA(ExpressionOps):
+    """SMA(X, N, M)：通达信递归加权均线（非简单平均 MA）。
+
+    Y_t = (M·X_t + (N-M)·Y_{t-1}) / N   →   ewm(alpha=M/N, adjust=False)，
+    初值 Y_1 = X_1。N 为平滑周期，M 为权重（1<=M<=N；M=1 时对 X 平滑，越小越平滑）。
+    """
+
+    def __init__(self, feature, N, M):
+        self.feature = feature
+        self.N = int(N)
+        self.M = int(M)
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        N = max(1, self.N)
+        M = max(0, min(self.M, N))
+        if N == 0 or M == 0:
+            return series * np.nan
+        return pd.Series(
+            series.ewm(alpha=M / N, adjust=False, min_periods=1).mean(),
+            index=series.index)
+
+    def __str__(self):
+        return "SMA({},{},{})".format(self.feature, self.N, self.M)
+
+    def get_longest_back_rolling(self):
+        return self.feature.get_longest_back_rolling()
+
+    def get_extended_window_size(self):
+        return self.feature.get_extended_window_size()
+
+
+class BARSSINCE(ExpressionOps):
+    """BARSSINCE(X)：X 第一次成立到当前的周期数（不限窗口，与 BARSLAST 相对）。
+
+    BARSLAST(X)=距最近一次成立；BARSSINCE(X)=距最早一次成立（数据起点起首个成立）；
+    从未成立返回 0。
+    """
+
+    def __init__(self, feature):
+        self.feature = feature
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        vals = series.to_numpy(dtype=float)
+        n = len(vals)
+        out = np.zeros(n, dtype=float)
+        first = -1
+        with np.errstate(invalid="ignore"):
+            for i in range(n):
+                v = vals[i]
+                if v != 0 and not np.isnan(v):
+                    if first < 0:
+                        first = i
+                if first >= 0:
+                    out[i] = i - first
+        return pd.Series(out, index=series.index)
+
+    def __str__(self):
+        return "BARSSINCE({})".format(self.feature)
+
+    def get_longest_back_rolling(self):
+        return self.feature.get_longest_back_rolling()
+
+    def get_extended_window_size(self):
+        return self.feature.get_extended_window_size()
+
+
+class HHVBARS(ExpressionOps):
+    """HHVBARS(X, N)：距 N 周期内最高值所在位置的周期数（含当日，当日为最高 → 0）。
+
+    多日同为最高时取最近一日（越近越小）；X 为 NaN（停牌）当日输出 NaN。
+    单调队列 O(n)，窗口内值递减、等值保留新索引。
+    """
+
+    def __init__(self, feature, N):
+        self.feature = feature
+        self.N = int(N)
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        vals = series.to_numpy(dtype=float)
+        return pd.Series(self._bars(vals, self.N, is_max=True), index=series.index)
+
+    @staticmethod
+    def _bars(vals, N, is_max):
+        from collections import deque
+        n = len(vals)
+        N = max(1, N)
+        res = np.full(n, np.nan, dtype=float)
+        dq = deque()  # 存索引；值严格递减（等值保留新的→最近）
+        for i in range(n):
+            v = vals[i]
+            if not np.isnan(v):
+                if is_max:
+                    while dq and vals[dq[-1]] <= v:
+                        dq.pop()
+                else:
+                    while dq and vals[dq[-1]] >= v:
+                        dq.pop()
+                dq.append(i)
+            lo = i - N + 1
+            while dq and dq[0] < lo:
+                dq.popleft()
+            if not np.isnan(v) and dq:
+                res[i] = i - dq[0]
+        return res
+
+    def __str__(self):
+        return "HHVBARS({},{})".format(self.feature, self.N)
+
+    def get_longest_back_rolling(self):
+        return self.feature.get_longest_back_rolling() + self.N - 1
+
+    def get_extended_window_size(self):
+        lft, rght = self.feature.get_extended_window_size()
+        return lft + self.N - 1, rght
+
+
+class LLVBARS(ExpressionOps):
+    """LLVBARS(X, N)：距 N 周期内最低值所在位置的周期数（含当日，当日为最低 → 0）。"""
+
+    def __init__(self, feature, N):
+        self.feature = feature
+        self.N = int(N)
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        vals = series.to_numpy(dtype=float)
+        return pd.Series(HHVBARS._bars(vals, self.N, is_max=False), index=series.index)
+
+    def __str__(self):
+        return "LLVBARS({},{})".format(self.feature, self.N)
+
+    def get_longest_back_rolling(self):
+        return self.feature.get_longest_back_rolling() + self.N - 1
+
+    def get_extended_window_size(self):
+        lft, rght = self.feature.get_extended_window_size()
+        return lft + self.N - 1, rght
+
+
 # ---------------- 注册机制 ----------------
 
 _ALL_OPS = [
@@ -515,6 +702,7 @@ _ALL_OPS = [
     EMA_TDX,
     SGN, TRUNC, BETWEEN,
     ROUND,
+    FILTER, SMA, BARSSINCE, HHVBARS, LLVBARS,
 ]
 
 _registered = False

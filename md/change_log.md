@@ -3,6 +3,17 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.13.0] - 2026-09-07
+
+### Added
+- **M3 有状态算子落地（非未来函数部分）**，自定义公式可直接使用（`ops_ext.py` 新增 5 算子 + 注册，`codegen.py` 移出占位进映射，前端"插入函数"手册同步，单测新增 15 条）：
+  - `FILTER(X,N)`：信号过滤——条件成立输出 1 后，其后 N-1 个周期抑制不再输出（距上次触发 ≥N 且条件再成立才再输出）
+  - `SMA(X,N,M)`：通达信递归加权均线 `Y=(M·X+(N−M)·Y前)/N`（非简单平均 MA，M 越小越平滑）
+  - `BARSSINCE(X)`：数据起点起条件**首次**成立到当前的周期数（与 `BARSLAST` 相对；从未成立返回 0）
+  - `HHVBARS(X,N)` / `LLVBARS(X,N)`：距 N 周期内最高/最低值所在位置的周期数（含当日→0；多日同极值取最近；单调队列 O(n)）
+- **未来函数类明确不支持**：`BACKSET/ZIG/PEAK/TROUGH/SAR` 涉及未来数据确认，从设计上不做（翻译报"不支持的函数"），避免信号前视
+- 冒烟验证：`SMA/FILTER/BARSSINCE/HHVBARS/LLVBARS` 在真实 qlib 数据上求值语义正确（FILTER 抑制、BARSINCE 递增、HHVBARS/LLVBARS 0~9 范围）
+
 ## [1.12.0] - 2026-09-06
 
 ### Added

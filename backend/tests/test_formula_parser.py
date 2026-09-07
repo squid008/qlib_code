@@ -116,16 +116,14 @@ class TestOperatorMapping:
 
 
 class TestPatchedOps:
-    def test_filter_default_error(self):
-        """FILTER 默认报错（需外挂）。"""
-        with pytest.raises(CodeGenError):
-            translate_formula("OUT:FILTER(CLOSE>OPEN,5);")
-
-    def test_filter_patchable_placeholder(self):
-        """FILTER patchable=True 时生成占位。"""
-        r = translate_formula("OUT:FILTER(CLOSE>OPEN,5);", patchable=True)
-        assert r.expression.startswith("PATCH:FILTER(")
-        assert r.has_patch is True
+    def test_future_func_default_error(self):
+        """未来函数类（BACKSET/ZIG 等）不进入语义白名单 → 直接报错：本项目不支持未来函数。"""
+        with pytest.raises(SemanticError):
+            translate_formula("OUT:BACKSET(CLOSE>OPEN,5);")
+        with pytest.raises(SemanticError):
+            translate_formula("OUT:ZIG(CLOSE,5);")
+        with pytest.raises(SemanticError):
+            translate_formula("OUT:SAR(CLOSE,5,2,10);")
 
 
 class TestLevel2:
@@ -213,6 +211,42 @@ class TestBasicExtFuncs:
             translate_formula("OUT:BETWEEN(CLOSE,10);")  # 缺第 3 参
         with pytest.raises(CodeGenError):
             translate_formula("OUT:EMA_TDX(CLOSE);")    # 缺 N
+
+
+class TestStatefulOps:
+    """M3 有状态算子（M3 已落地，均过去数据、无未来函数）：FILTER/SMA/BARSSINCE/HHVBARS/LLVBARS。"""
+
+    def test_filter(self):
+        r = translate_formula("OUT:FILTER(CLOSE>OPEN,5);")
+        assert r.expression == "FILTER(Gt($close,$open),5)"
+
+    def test_sma(self):
+        assert translate_formula("OUT:SMA(CLOSE,5,1);").expression == "SMA($close,5,1)"
+        assert translate_formula("OUT:SMA(MA(CLOSE,5),10,2);").expression == "SMA(Mean($close,5),10,2)"
+
+    def test_barssince(self):
+        r = translate_formula("OUT:BARSSINCE(CLOSE>MA(CLOSE,20));")
+        assert r.expression == "BARSSINCE(Gt($close,Mean($close,20)))"
+
+    def test_hhvbars_llvbars(self):
+        assert translate_formula("OUT:HHVBARS(CLOSE,34);").expression == "HHVBARS($close,34)"
+        assert translate_formula("OUT:LLVBARS(LOW,10);").expression == "LLVBARS($low,10)"
+
+    def test_arg_errors(self):
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:FILTER(CLOSE>OPEN);")       # 缺 N
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:FILTER(CLOSE>OPEN,5,1);")   # 参数过多
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:SMA(CLOSE,5);")             # 缺 M
+        with pytest.raises(SemanticError):
+            translate_formula("OUT:SMA(CLOSE,5,X);")           # M 是未定义变量 → 语义层拦截
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:BARSSINCE();")              # 缺条件
+        with pytest.raises(CodeGenError):
+            translate_formula("OUT:HHVBARS(CLOSE);")           # 缺 N
+        with pytest.raises(SemanticError):
+            translate_formula("OUT:LLVBARS(CLOSE,X);")         # N 是未定义变量 → 语义层拦截
 
 
 class TestSyntax:

@@ -60,6 +60,11 @@ export const FORMULA_HANDBOOK: HandbookEntry[] = [
   { name: 'BARSLAST', abbr: '上次条件距今', kind: 'func', desc: '上一次条件成立距当前的周期数。\n用法:\n BARSLAST(条件)\n 数据起点起从未成立返回 0。\n例:\n BARSLAST(CLOSE/REF(CLOSE,1)>=1.1)' },
   { name: 'BARSCOUNT', abbr: '有效数据周期数', kind: 'func', desc: '第一个有效数据到当前的周期数。\n用法:\n BARSCOUNT(X)\n 返回 X 从上市/数据起点起累计有效值个数。\n注意:判断范围为指标计算时公式使用的数据。' },
   { name: 'BARSSINCEN', abbr: '周期内首次距今', kind: 'func', desc: 'N 周期内第一次条件成立到当前的周期数。\n用法:\n BARSSINCEN(条件,N)\n N 周期内从未成立返回 0。' },
+  { name: 'BARSSINCE', abbr: '最早成立距今', kind: 'func', desc: '数据起点起条件第一次成立到当前的周期数。\n用法:\n BARSSINCE(条件)\n 与 BARSLAST(最近一次)相对；从未成立返回 0。' },
+  { name: 'FILTER', abbr: '信号过滤', kind: 'func', desc: '过滤连续触发信号。\n用法:\n FILTER(条件,N)\n 条件成立输出 1 后，其后 N-1 个周期抑制不再输出；距本次触发≥N 个周期后若条件再成立才再次输出。\n例:\n FILTER(CROSS(MA(CLOSE,5),MA(CLOSE,20)),5)' },
+  { name: 'SMA', abbr: '通达信递归均线', kind: 'func', desc: '通达信递归加权均线（不是简单平均 MA）。\n用法:\n SMA(X,N,M)\n Y=(M·X+(N-M)·Y前)/N；N 平滑周期、M 权重(1≤M≤N，M 越小越平滑)。\n例:\n SMA(CLOSE,5,1)' },
+  { name: 'HHVBARS', abbr: '距N周期高点', kind: 'func', desc: '距 N 周期内最高值所在位置的周期数（含当日，当日最高→0）。\n用法:\n HHVBARS(X,N)\n 多日同为最高取最近一日。' },
+  { name: 'LLVBARS', abbr: '距N周期低点', kind: 'func', desc: '距 N 周期内最低值所在位置的周期数（含当日，当日最低→0）。\n用法:\n LLVBARS(X,N)' },
 
   // ---------------- 注：绘图/颜色类（STICKLINE/DRAWICON/COLORRED...）不生成因子，未列入手册 ----------------
 ]

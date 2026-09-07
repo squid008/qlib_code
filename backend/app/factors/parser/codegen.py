@@ -186,6 +186,12 @@ FUNC_QLIB = {
     "DYN_COUNT": "DYN_COUNT",
     "DYN_REF": "DYN_REF",
     "DYN_SUM": "DYN_SUM",
+    # 通达信有状态算子（M3，ops_ext.py 注册；均为过去数据计算，无未来函数）：
+    "FILTER": "FILTER",        # 信号过滤：成立输出 1 后 N-1 周期抑制
+    "SMA": "SMA",              # 通达信递归均线 SMA(X,N,M)
+    "BARSSINCE": "BARSSINCE",  # 自首次成立到当前的周期数
+    "HHVBARS": "HHVBARS",      # 距 N 周期最高点的周期数
+    "LLVBARS": "LLVBARS",      # 距 N 周期最低点的周期数
 }
 
 # ---- 支持动态窗口的函数：窗口参数为表达式（变量）时改用 DYN_* 外挂算子 ----
@@ -217,15 +223,12 @@ def _expand_sign(args: List[Expr], code) -> str:
     return f"Sign({code(args[0])})"
 
 
-# ---- 需外挂的有状态算子（M3 再实现，这里给出明确提示）----
+# ---- 未来函数/高级摆动算子（涉及未来数据，本项目不支持，给出明确提示）----
 PATCHED_OPS = {
-    "FILTER": "FILTER（信号过滤）",
-    "SMA": "SMA（通达信递归均线）",
-    "BARSSINCE": "BARSSINCE",
     "BACKSET": "BACKSET（未来函数）",
-    "ZIG": "ZIG（摆动指标）",
-    "PEAK": "PEAK", "TROUGH": "TROUGH", "SAR": "SAR",
-    "HHVBARS": "HHVBARS", "LLVBARS": "LLVBARS",
+    "ZIG": "ZIG（摆动指标，含未来确认）",
+    "PEAK": "PEAK（含未来确认）", "TROUGH": "TROUGH（含未来确认）",
+    "SAR": "SAR（含未来确认）",
 }
 
 # ---- Level2 深度函数（留接口，暂不可用）----
@@ -346,6 +349,25 @@ class CodeGen:
                 raise CodeGenError("BARSSINCEN 需要 2 个参数：BARSSINCEN(条件, 周期)，例如 BARSSINCEN(HIGH>10,10)")
             if not isinstance(e.args[1], Num):
                 raise CodeGenError("BARSSINCEN 的第 2 个参数 N 必须为常量整数（如 10）")
+        elif name == "BARSSINCE":
+            if len(e.args) != 1:
+                raise CodeGenError("BARSSINCE 需要 1 个参数：BARSSINCE(条件)，例如 BARSSINCE(CLOSE>MA(CLOSE,20))")
+        elif name == "FILTER":
+            if len(e.args) != 2:
+                raise CodeGenError("FILTER 需要 2 个参数：FILTER(条件, N)，例如 FILTER(CROSS(MA(CLOSE,5),MA(CLOSE,20)),5)")
+            if not isinstance(e.args[1], Num):
+                raise CodeGenError("FILTER 的第 2 个参数 N 必须为常量整数（如 5）")
+        elif name == "SMA":
+            if len(e.args) != 3:
+                raise CodeGenError("SMA 需要 3 个参数：SMA(X,N,M)，通达信递归均线，例如 SMA(CLOSE,5,1)")
+            for idx, lbl in ((1, "N"), (2, "M")):
+                if not isinstance(e.args[idx], Num):
+                    raise CodeGenError(f"SMA 的第 {idx + 1} 个参数 {lbl} 必须为常量整数")
+        elif name in ("HHVBARS", "LLVBARS"):
+            if len(e.args) != 2:
+                raise CodeGenError(f"{name} 需要 2 个参数：{name}(X, N)，例如 {name}(CLOSE,34)")
+            if not isinstance(e.args[1], Num):
+                raise CodeGenError(f"{name} 的第 2 个参数 N 必须为常量整数（如 34）")
         # 动态窗口：HHV/LLV/COUNT/REF/SUM 窗口参数为表达式（变量）→ DYN_* 外挂算子
         if name in _DYN_WINDOW_OPS:
             if len(e.args) != 2:
