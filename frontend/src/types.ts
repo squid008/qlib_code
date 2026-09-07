@@ -32,6 +32,20 @@ export interface BacktestRequest {
   exclude_st?: boolean // 剔除 ST/*ST/退市整理
   exclude_stock_gem?: boolean // 剔除创业板（SZ30）
   exclude_stock_kcb?: boolean // 剔除科创板（SH688）
+  // 信号后处理（v1.14，均默认关/空=不启用；仅一次性训练 single）
+  meta_gate?: boolean
+  meta_gate_opts?: { scope?: string; ydef?: string; reject_ratio?: number | null } | null
+  trigger_overlay_opts?: {
+    enabled?: boolean
+    formula?: string
+    topk?: number
+    weight?: number
+  } | null
+  hard_filters?: {
+    min_mktcap_bn?: number | null // 市值下限（亿元）
+    max_mktcap_bn?: number | null // 市值上限（亿元）
+    min_price?: number | null // 真实股价下限（元）
+  } | null
   // 训练/测试划分（滚动训练）
   split_mode: string
   train_win: number

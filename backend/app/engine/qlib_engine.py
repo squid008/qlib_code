@@ -265,8 +265,9 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
     split_mode = (req.split_mode or "single").lower()
     _ovl_cfg = getattr(req, "trigger_overlay_opts", None) or {}
     _ovl_on = bool(getattr(req, "trigger_overlay_opts", None)) and bool(_ovl_cfg.get("enabled"))
-    if (getattr(req, "meta_gate", False) or _ovl_on) and split_mode == "custom":
-        raise ValueError("Meta-Gate/触发叠加 当前仅支持一次性训练（single），滚动回测暂不支持，请改用 single 或关闭开关")
+    _hard_on = bool(getattr(req, "hard_filters", None))
+    if (getattr(req, "meta_gate", False) or _ovl_on or _hard_on) and split_mode == "custom":
+        raise ValueError("Meta-Gate/触发叠加/硬规则闸门 当前仅支持一次性训练（single），滚动回测暂不支持，请改用 single 或关闭开关")
 
     if split_mode != "custom":
         # 一次性训练（single）：用回测前 train 窗口训练，整个回测区间测试
@@ -548,8 +549,8 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
         # （只影响回测选股/权重；IC/分层仍按主模型诊断）。仅 single 模式，见 run_backtest 校验。
         _ovl_cfg2 = getattr(req, "trigger_overlay_opts", None) or {}
         _ovl_on2 = bool(getattr(req, "trigger_overlay_opts", None)) and bool(_ovl_cfg2.get("enabled"))
-        if getattr(req, "meta_gate", False) or _ovl_on2:
-            _report(68, "信号合成（gate 风控 / 触发叠加）...")
+        if getattr(req, "meta_gate", False) or _ovl_on2 or getattr(req, "hard_filters", None):
+            _report(68, "信号合成（硬规则闸门 / gate 风控 / 触发叠加）...")
             _check_cancel()
             from .signal_compose import compose_final_signal
             try:
@@ -1183,6 +1184,7 @@ def _model_config(model_name: str, req: BacktestRequest) -> Dict[str, Any]:
                 "gamma": "gamma",
                 "reg_alpha": "reg_alpha",
                 "reg_lambda": "reg_lambda",
+                "seed": "seed",
             }),
         }
         return cfg
@@ -1192,9 +1194,11 @@ def _model_config(model_name: str, req: BacktestRequest) -> Dict[str, Any]:
             "module_path": "qlib.contrib.model.linear",
             "kwargs": {"fit_intercept": True},
         }
-    # 默认 LightGBM（使用 qlib 标准 GBDT 超参）
+    # 默认 LightGBM（使用 qlib 标准 GBDT 超参；seed=0 固定随机种子保证同参可复现，
+    # 用户可通过 model_params.seed 覆盖；多 seed 稳健性研究可改不同正整数）
     kwargs: Dict[str, Any] = {
         "loss": "mse",
+        "seed": 0,
         "colsample_bytree": 0.8879,
         "learning_rate": 0.0421,
         "subsample": 0.8789,
@@ -1215,6 +1219,7 @@ def _model_config(model_name: str, req: BacktestRequest) -> Dict[str, Any]:
         "colsample_bytree": "colsample_bytree",
         "reg_alpha": "reg_alpha",
         "reg_lambda": "reg_lambda",
+        "seed": "seed",
     }.items():
         v = user_params.get(front_key)
         if v is not None and v != "":

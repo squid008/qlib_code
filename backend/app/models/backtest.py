@@ -116,6 +116,14 @@ class BacktestRequest(BaseModel):
             "reject_ratio: 候选内拒 z 最低比例 默认0.25}"
         ),
     )
+    hard_filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "硬规则闸门（确定性过滤，作用于预测候选，默认关=None）："
+            "{min_mktcap_bn: 市值下限(亿元), max_mktcap_bn: 市值上限(亿元), "
+            "min_price: 真实股价下限(元)}。启用任一即把不满足的候选从回测信号中剔除"
+        ),
+    )
     trigger_overlay_opts: Optional[Dict[str, Any]] = Field(
         None,
         description=(

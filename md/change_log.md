@@ -3,6 +3,15 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.15.0] - 2026-09-07
+
+### Added
+- **硬规则闸门（确定性过滤，`hard_filters`）**：`signal_compose` 增加 `apply_hard_filters`，在 gate/overlay 之前对预测候选做**确定性硬过滤**——支持 `min_mktcap_bn / max_mktcap_bn`（总市值上下限，亿元；数据 `$market_cap` 单位元×1e8）、`min_price`（真实股价下限，元= `$close/$factor`）；任一启用即把不满足（含 NaN）的候选从回测信号剔除。设计定位是"信号闸门/合成"基础设施的一类（硬规则消费者），未来财务规则（营收/净利/股价/市值）都走同一通道。
+- **随机种子可复现（v1.15）**：LightGBM 默认 `model_params.seed=0`（此前不固定、同参重跑结果不同，影响 A/B 可信）；`model_params` 白名单放行 `seed`，前端"模型超参"新增"随机种子 seed"（XGBoost 同步放行，多 seed 稳健性研究可填不同正整数）。
+- **前端"信号后处理"设置区（回测表单）**：可勾选 Meta-Gate（含候选内剔除比例）与硬规则闸门（市值上下/股价下限，留空不限）；滚动 custom 模式下禁用并提示（后端限制 single）。
+- `hard_filters` 与 seed 的引擎/字段/校验同步（`models/backtest.py`、`qlib_engine._run_single` 与 rolling 校验）。
+- 说明：硬规则闸门通过 1000 只均匀抽样池/2024-25 真实回测验证"过滤正确执行"（S3 结果与 S0 明确不同）。**S3 在该环境更差是大市值集中 vs 小盘相对强行的语义结果，不是实现问题**——硬过滤必须可配置、按环境选择。
+
 ## [1.14.0] - 2026-09-07
 
 ### Added

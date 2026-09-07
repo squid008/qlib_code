@@ -8,6 +8,7 @@ interface ModelParamField {
 // 各模型的超参表单字段定义（占位提示为对应模型的 Qlib/默认值）
 export const MODEL_PARAM_FIELDS: Record<string, ModelParamField[]> = {
   lightgbm: [
+    { key: 'seed', label: '随机种子 seed', placeholder: '固定=可复现（默认 0；多seed研究可换正整数）', step: 1 },
     { key: 'max_depth', label: '最大深度 max_depth', placeholder: 'Qlib默认 8' },
     { key: 'num_leaves', label: '叶子节点数 num_leaves', placeholder: 'Qlib默认 210' },
     { key: 'min_child_samples', label: '叶子最少样本 min_child_samples', placeholder: 'Qlib默认 20' },
@@ -19,6 +20,7 @@ export const MODEL_PARAM_FIELDS: Record<string, ModelParamField[]> = {
     { key: 'reg_lambda', label: 'L2正则 reg_lambda', placeholder: 'Qlib默认 580.98', step: 0.1 },
   ],
   xgboost: [
+    { key: 'seed', label: '随机种子 seed', placeholder: '固定=可复现（默认 0；多seed研究可换正整数）', step: 1 },
     { key: 'max_depth', label: '最大深度 max_depth', placeholder: 'XGBoost默认 6' },
     { key: 'learning_rate', label: '学习率 learning_rate', placeholder: 'XGBoost默认 0.3', step: 0.01 },
     { key: 'n_estimators', label: '树数量 n_estimators', placeholder: '默认 100（XGB用early_stopping截断）' },

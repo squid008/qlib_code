@@ -36,6 +36,53 @@ def align_trig(trig: pd.DataFrame, idx) -> pd.DataFrame:
     return pd.DataFrame(cols, index=idx)
 
 
+# ---------------------------------------------------------------------------
+# 硬规则闸门（确定性过滤：市值/股价等；财务类规则将来接入同款通道）
+# ---------------------------------------------------------------------------
+def _daily_series(score_idx, fields):
+    """按 score 的 codes/日期范围取日频字段并逐行对齐（未命中=NaN）。"""
+    from qlib.data import D
+    codes = sorted(set(score_idx.get_level_values("instrument").astype(str)))
+    dt0 = min(str(x)[:10] for x in score_idx.get_level_values("datetime"))
+    dt1 = max(str(x)[:10] for x in score_idx.get_level_values("datetime"))
+    df = D.features(codes, fields, start_time=dt0, end_time=dt1)
+    return align_trig(df, score_idx)
+
+
+def apply_hard_filters(score: pd.Series, req) -> pd.Series:
+    """确定性硬规则过滤：不满足任何启用条件的候选行置 -inf（不进回测候选）。
+
+    支持（单位已在字段说明标注）：
+      min_mktcap_bn / max_mktcap_bn : 总市值 亿元（数据 $market_cap 单位元）
+      min_price                    : 真实股价下限（真实价 = $close/$factor，元）
+    NaN（如停牌无市值/价格）在启用对应规则时视为不满足。
+    """
+    hf = getattr(req, "hard_filters", None) or {}
+    if not hf:
+        return score
+    lo_bn = hf.get("min_mktcap_bn")
+    hi_bn = hf.get("max_mktcap_bn")
+    min_px = hf.get("min_price")
+    if all(v is None for v in (lo_bn, hi_bn, min_px)):
+        return score
+    out = score.copy().astype(float)
+    daily = _daily_series(None, score.index, ["$market_cap", "$close", "$factor"])
+    keep = pd.Series(True, index=score.index)
+    if lo_bn is not None or hi_bn is not None:
+        mcap = daily["$market_cap"].astype(float)
+        bad = mcap.isna()
+        if lo_bn is not None:
+            bad |= (mcap < float(lo_bn) * 1e8)
+        if hi_bn is not None:
+            bad |= (mcap > float(hi_bn) * 1e8)
+        keep &= ~bad
+    if min_px is not None:
+        rp = daily["$close"].astype(float) / daily["$factor"].astype(float)
+        keep &= rp.notna() & (rp >= float(min_px))
+    out[~keep] = -np.inf
+    return out
+
+
 def _features(dataset, seg):
     from qlib.data.dataset import DataHandlerLP
     return dataset.prepare(seg, col_set="feature", data_key=DataHandlerLP.DK_I)
@@ -216,6 +263,11 @@ def compose_final_signal(dataset, model, req) -> pd.DataFrame:
     p_test = model.predict(dataset, segment="test")
     score = p_test.astype(float)
     info = {}
+    # 硬规则闸门：确定性过滤先于一切（市值/股价等）
+    rule_on = bool(getattr(req, "hard_filters", None))
+    if rule_on:
+        score = apply_hard_filters(score, req)
+        info["hard"] = "applied"
     gate_on = bool(getattr(req, "meta_gate", False))
     ovl_cfg = getattr(req, "trigger_overlay_opts", None) or {}
     ovl_on = bool(ovl_cfg.get("enabled", False)) if isinstance(ovl_cfg, dict) else False
@@ -252,7 +304,7 @@ def compose_final_signal(dataset, model, req) -> pd.DataFrame:
         frame["target_w"] = w.reindex(score.index)
         if trig_col is not None:
             frame["trig"] = trig_col.reindex(score.index)
-    # gate 单独开：被拒(-inf)行直接从候选剔除，策略对余下行按 score topk（旧等权路径）
-    if gate_on:
+    # gate 拒尾 / 硬规则过滤：被拒(-inf)行直接从候选剔除，策略对余下行按 score topk（旧等权路径）
+    if gate_on or rule_on:
         frame = frame.loc[frame["score"] != -np.inf]
     return frame, info

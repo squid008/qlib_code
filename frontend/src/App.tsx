@@ -64,6 +64,11 @@ export default function App() {
     exclude_st: false,
     exclude_stock_gem: false,
     exclude_stock_kcb: false,
+    // 信号后处理（默认关）
+    meta_gate: false,
+    meta_gate_opts: { reject_ratio: 0.25 },
+    trigger_overlay_opts: null,
+    hard_filters: {},
     split_mode: 'single',
     train_win: 12,
     train_unit: 'month',
@@ -278,6 +283,18 @@ export default function App() {
 
   const update = (k: keyof BacktestRequest, v: string | number | boolean | null) =>
     setForm((f) => ({ ...f, [k]: v as never }))
+
+  // 信号后处理：meta_gate_opts / hard_filters 字段更新（强类型、避免 index signature）
+  const setGateRatio = (v: number) =>
+    setForm((f) => ({ ...f, meta_gate_opts: { ...(f.meta_gate_opts || {}), reject_ratio: v } }))
+  const setHard = (k: 'min_mktcap_bn' | 'max_mktcap_bn' | 'min_price', v: number | null) =>
+    setForm((f) => {
+      const hf = { ...(f.hard_filters || {}) }
+      if (k === 'min_mktcap_bn') hf.min_mktcap_bn = v
+      else if (k === 'max_mktcap_bn') hf.max_mktcap_bn = v
+      else hf.min_price = v
+      return { ...f, hard_filters: hf }
+    })
 
   // 更新单个模型超参（空字符串 → 移除该键，表示用默认值）
   const updateModelParam = (k: string, v: string) => {
@@ -1315,6 +1332,64 @@ export default function App() {
               提示：成交量限制填 0.25 表示单笔成交不超过当日成交量的 25%；留空表示不限量（理想成交）。
               涨跌停限制填 0.095 表示涨/跌停无法交易；留空表示不设涨跌停。
             </p>
+          </div>
+
+          {/* 信号后处理（v1.14：硬规则闸门 / Meta-Gate 风控；仅一次性训练 single） */}
+          <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-700">
+            <h3 className="text-sm font-semibold text-slate-600 dark:text-slate-300 mb-1">
+              信号后处理 <span className="font-normal text-slate-400">（一次性训练可用；默认全部关闭=复现旧行为）</span>
+            </h3>
+            <div className={form.split_mode === 'custom' ? 'opacity-50 pointer-events-none' : ''}>
+              {/* 硬规则闸门（确定性过滤） */}
+              <div className="mt-2">
+                <span className="text-sm text-slate-500">硬规则闸门：只允许满足以下条件的股票进入候选（留空=不限）</span>
+                <div className="mt-1 flex flex-wrap gap-x-5 gap-y-2">
+                  <label className="block">
+                    <span className="text-sm text-slate-500">市值下限(亿)</span>
+                    <input
+                      type="number" min={0} className="mt-1 w-28 border rounded px-2 py-1"
+                      value={(form.hard_filters as any)?.min_mktcap_bn ?? ''}
+                      onChange={(e) => setHard('min_mktcap_bn', e.target.value === '' ? null : Number(e.target.value))}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-sm text-slate-500">市值上限(亿)</span>
+                    <input
+                      type="number" min={0} className="mt-1 w-28 border rounded px-2 py-1"
+                      value={(form.hard_filters as any)?.max_mktcap_bn ?? ''}
+                      onChange={(e) => setHard('max_mktcap_bn', e.target.value === '' ? null : Number(e.target.value))}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-sm text-slate-500">股价下限(元)</span>
+                    <input
+                      type="number" min={0} step={0.01} className="mt-1 w-28 border rounded px-2 py-1"
+                      value={(form.hard_filters as any)?.min_price ?? ''}
+                      onChange={(e) => setHard('min_price', e.target.value === '' ? null : Number(e.target.value))}
+                    />
+                  </label>
+                </div>
+              </div>
+              {/* Meta-Gate 概率风控 */}
+              <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
+                <label className="flex items-center gap-1.5 text-sm cursor-pointer"
+                       title="主模型 topK 候选内训练二分类 gate（学'未来收益>0'），按日剔除 gate 概率最低的 reject_ratio 比例后回测。排序仍由主模型决定，gate 只做风控闸门">
+                  <input type="checkbox" checked={!!form.meta_gate} onChange={(e) => update('meta_gate', e.target.checked)} />
+                  <span>Meta-Gate 风控</span>
+                </label>
+                {form.meta_gate && (
+                  <label className="block">
+                    <span className="text-sm text-slate-500">候选内剔除比例</span>
+                    <input
+                      type="number" min={0} max={0.9} step={0.05} className="mt-1 w-24 border rounded px-2 py-1"
+                      value={(form.meta_gate_opts as any)?.reject_ratio ?? 0.25}
+                      onChange={(e) =>
+                        setGateRatio(e.target.value === '' ? 0.25 : Math.min(0.9, Math.max(0, Number(e.target.value))))}
+                    />
+                  </label>
+                )}
+              </div>
+            </div>
           </div>
 
           {/* 训练/测试划分（滚动训练） */}
