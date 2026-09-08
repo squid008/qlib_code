@@ -295,6 +295,21 @@ export default function App() {
       else hf.min_price = v
       return { ...f, hard_filters: hf }
     })
+  // Gate 附加特征：勾选已保存公式 → 存其 qlib 表达式进 meta_gate_opts.extra_features
+  const toggleGateExtra = (id: string) => {
+    const fm = customFormulas.find((x) => x.id === id)
+    if (!fm) return
+    setForm((f) => {
+      const cur = f.meta_gate_opts?.extra_features || []
+      const next = cur.includes(fm.expression)
+        ? cur.filter((e) => e !== fm.expression)
+        : [...cur, fm.expression]
+      return {
+        ...f,
+        meta_gate_opts: { ...(f.meta_gate_opts || {}), extra_features: next.length ? next : null },
+      }
+    })
+  }
 
   // 更新单个模型超参（空字符串 → 移除该键，表示用默认值）
   const updateModelParam = (k: string, v: string) => {
@@ -1373,7 +1388,7 @@ export default function App() {
               {/* Meta-Gate 概率风控 */}
               <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
                 <label className="flex items-center gap-1.5 text-sm cursor-pointer"
-                       title="主模型 topK 候选内训练二分类 gate（学'未来收益>0'），按日剔除 gate 概率最低的 reject_ratio 比例后回测。排序仍由主模型决定，gate 只做风控闸门">
+                       title="主模型 topK 候选内训练二分类 gate（学'未来收益>0'），按日剔除 gate 概率最低的 reject_ratio 比例后回测。排序仍由主模型决定，gate 只做风控闸门。注意：gate 与具体触发因子无关（0/1 触发请走'触发叠加'通道）；若需让 gate 学习多个 01 因子，用 meta_gate_opts.extra_features 传入 qlib 表达式">
                   <input type="checkbox" checked={!!form.meta_gate} onChange={(e) => update('meta_gate', e.target.checked)} />
                   <span>Meta-Gate 风控</span>
                 </label>
@@ -1387,6 +1402,24 @@ export default function App() {
                         setGateRatio(e.target.value === '' ? 0.25 : Math.min(0.9, Math.max(0, Number(e.target.value))))}
                     />
                   </label>
+                )}
+                {form.meta_gate && customFormulas.length > 0 && (
+                  <div className="mt-2 w-full">
+                    <span className="text-sm text-slate-500">
+                      Gate 附加特征（已保存公式；机器会用 feature importance 自动挑选，建议 0/1 触发类）
+                    </span>
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 max-h-44 overflow-y-auto">
+                      {customFormulas.map((fm) => {
+                        const sel = (form.meta_gate_opts?.extra_features || []).includes(fm.expression)
+                        return (
+                          <label key={fm.id} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                            <input type="checkbox" checked={sel} onChange={() => toggleGateExtra(fm.id)} />
+                            <span>{fm.name}</span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
                 )}
               </div>
             </div>

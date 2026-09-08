@@ -34,7 +34,12 @@ export interface BacktestRequest {
   exclude_stock_kcb?: boolean // 剔除科创板（SH688）
   // 信号后处理（v1.14，均默认关/空=不启用；仅一次性训练 single）
   meta_gate?: boolean
-  meta_gate_opts?: { scope?: string; ydef?: string; reject_ratio?: number | null } | null
+  meta_gate_opts?: {
+    scope?: string
+    ydef?: string
+    reject_ratio?: number | null
+    extra_features?: string[] | null // qlib 表达式（gate 附加输入特征，如多个 01 触发公式）
+  } | null
   trigger_overlay_opts?: {
     enabled?: boolean
     formula?: string

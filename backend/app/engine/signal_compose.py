@@ -97,15 +97,40 @@ def _labels(dataset, seg):
 # ---------------------------------------------------------------------------
 # S1 gate（从 signal_gate 平移，独立可复现）
 # ---------------------------------------------------------------------------
+def _codes_old(dataset):
+    """老股（train 起点前已上市）代码列表：次新股请求超窗会触发 qlib 扩展窗口 bug。"""
+    Xtr = _features(dataset, "train")
+    inst = Xtr.index.get_level_values("instrument")
+    dts = Xtr.index.get_level_values("datetime")
+    mindt = pd.Series([str(x)[:10] for x in dts], index=inst).groupby(level=0).min()
+    train_start = str(mindt.min())[:10]
+    return [c for c in sorted(set(inst.astype(str))) if str(mindt[c]) <= train_start]
+
+
+def _extra_cols(dataset, exprs, idx, buffer_days=120) -> pd.DataFrame:
+    """为 gate 附加的表达式特征（如若干 01 触发公式列）：D.features 计算并对齐到 idx。"""
+    from qlib.data import D
+    codes = _codes_old(dataset)
+    lo = min(str(x)[:10] for x in idx.get_level_values("datetime"))
+    hi = max(str(x)[:10] for x in idx.get_level_values("datetime"))
+    start = (pd.to_datetime(lo) - pd.Timedelta(days=buffer_days)).strftime("%Y-%m-%d")
+    df = D.features(codes, list(exprs), start_time=start, end_time=hi)
+    aligned = align_trig(df, idx).astype(float)
+    return aligned.fillna(0.0)
+
+
 def train_gate(dataset, model, opts=None):
     import lightgbm as lgb
-    o = dict(scope="all", ydef="abs", reject_ratio=0.25)
+    o = dict(scope="all", ydef="abs", reject_ratio=0.25, extra_features=[])
     if opts:
         o.update({k: v for k, v in opts.items() if v is not None})
     X = _features(dataset, "train").dropna()
     L = _labels(dataset, "train").reindex(X.index)
     p = model.predict(dataset, segment="train").reindex(X.index)
     X = X.join(p.rename("primary_p"), how="inner")
+    extra = o.get("extra_features") or []
+    if extra:
+        X = X.join(_extra_cols(dataset, extra, X.index), how="left").fillna(0.0)
     L = L.reindex(X.index)
     y = (L > 0).astype(int) if o["ydef"] == "abs" else \
         (L > L.groupby(level="datetime").transform("median")).astype(int)
@@ -128,9 +153,15 @@ def train_gate(dataset, model, opts=None):
                  "valid_auc": float(bst.best_score["valid_0"]["auc"])}
 
 
-def gate_z(dataset, bst, p_test: pd.Series) -> pd.Series:
+def gate_z(dataset, bst, p_test: pd.Series, opts=None) -> pd.Series:
+    o = dict(extra_features=[])
+    if opts:
+        o.update({k: v for k, v in opts.items() if v is not None})
     X = _features(dataset, "test").dropna()
     X = X.join(p_test.rename("primary_p"), how="inner")
+    extra = o.get("extra_features") or []
+    if extra:
+        X = X.join(_extra_cols(dataset, extra, X.index), how="left").fillna(0.0)
     return pd.Series(bst.predict(X.values, num_iteration=bst.best_iteration), index=X.index)
 
 
@@ -273,8 +304,9 @@ def compose_final_signal(dataset, model, req) -> pd.DataFrame:
     ovl_on = bool(ovl_cfg.get("enabled", False)) if isinstance(ovl_cfg, dict) else False
 
     if gate_on:
-        bst_g, gi = train_gate(dataset, model, getattr(req, "meta_gate_opts", None))
-        z = gate_z(dataset, bst_g, p_test)
+        gopts = getattr(req, "meta_gate_opts", None)
+        bst_g, gi = train_gate(dataset, model, gopts)
+        z = gate_z(dataset, bst_g, p_test, gopts)
         score = compose_gate_tail(score, z, req.topk, float(gi["reject_ratio"]))
         info["gate"] = gi
 

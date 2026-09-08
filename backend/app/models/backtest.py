@@ -113,7 +113,9 @@ class BacktestRequest(BaseModel):
         None,
         description=(
             "Meta-Gate 参数：{scope: all|positive(默认 all), ydef: abs|cross(默认 abs), "
-            "reject_ratio: 候选内拒 z 最低比例 默认0.25}"
+            "reject_ratio: 候选内拒 z 最低比例 默认0.25, "
+            "extra_features: [qlib 表达式] 可选——作为 gate 的附加输入特征（如若干 01 触发"
+            "公式列，机器用 feature importance 自动组合挑选）；gate 本身与具体触发因子无关}"
         ),
     )
     hard_filters: Optional[Dict[str, Any]] = Field(
