@@ -25,6 +25,9 @@ workdir/
 
 # 日志
 *.log
+# 重启轮转的旧日志（server.log.20260908-234728 之类）
+server.log.*
+server_err.log.*
 
 # 临时/测试文件
 test1.py

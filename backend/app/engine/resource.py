@@ -198,12 +198,31 @@ def task_jobs_for_active(active: int) -> int:
     return max(1, cpu_logical() // max(1, active))
 
 
+def _joblib_backend() -> str:
+    """qlib D.features 的并行后端。
+
+    默认 `loky`：joblib 会【复用进程池】，连续多次 D.features 只有首次付进程池启动
+    开销（实测 简单字段：第1次 ~8s、第2次起 ~0.4s），而 qlib 默认 `multiprocessing`
+    每次调用都新建进程池（Windows spawn + joblib 轮询 ≈ 每批固定 16s+ 固定开销，
+    与数据量无关，是"加载特征慢"的头号元凶）。
+
+    loky 与 multiprocessing 数值一致（实测 CWH 大公式全列 allclose），仅调度实现不同。
+    如需回退用环境变量 QLIB_JOBLIB_BACKEND=multiprocessing（如多进程隔离的服务器）。
+    """
+    env = os.environ.get("QLIB_JOBLIB_BACKEND")
+    if env:
+        return env
+    return "loky"
+
+
 def _apply_kernels(jobs: int) -> None:
-    """把 qlib 的并行 worker 数设置为 jobs（失败静默：未 init/低版本均容忍）。"""
+    """把 qlib 的并行 worker 数与并行后端设置为 jobs / loky（失败静默容忍）。"""
     try:
         from qlib.config import C
 
         C["kernels"] = jobs
+        # loky 自动复用进程池，消掉 D.features 每批新建进程池的固定开销
+        C["joblib_backend"] = _joblib_backend()
     except Exception:
         pass
 

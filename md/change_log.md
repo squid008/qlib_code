@@ -3,6 +3,13 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.16.6] - 2026-09-09
+
+### Changed
+- **qlib 并行取数后端 multiprocessing → loky（根治"加载特征慢"的每批固定开销）**：实验证实本机每次 `D.features` 调用都有与股票数/字段数几乎无关的 ~16s 固定开销，头号元凶是 qlib 默认用 joblib `multiprocessing` 后端——**每次调用都新建进程池**（Windows spawn + joblib 轮询 sleep 占 ~98% 时间）。`resource._apply_kernels` 现在同时设置 `C["joblib_backend"]=loky`（环境变量 `QLIB_JOBLIB_BACKEND` 可回退 multiprocessing）。loky 进程池**跨调用自动复用**：实测连续调用简单字段 第1次 ~8s → 第2次起 ~0.4s（此前每批固定 ~16s）；CWH 大公式 200 股 31.2s(mp) → 11.2s(loky 复用)；loky 与 multiprocessing 数值一致（CWH 含 DYN/BARSLAST 自定义算子全列 allclose）。
+- 验证：单因子真实场景 CWH_BREAK_WAIT20_F1 + csi300 + 8 周期并行 46.7s(mp) → **37.7s(loky)**；简单因子预期 ~16s → <1s（进程池已热）。
+- 版本 1.16.5→1.16.6。
+
 ## [1.16.5] - 2026-09-08
 
 ### Fixed
