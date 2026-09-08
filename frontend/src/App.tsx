@@ -1397,7 +1397,7 @@ export default function App() {
               {/* Meta-Gate 概率风控 */}
               <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
                 <label className="flex items-center gap-1.5 text-sm cursor-pointer"
-                       title="主模型 topK 候选内训练二分类 gate（学'未来收益>0'），按日剔除 gate 概率最低的 reject_ratio 比例后回测。排序仍由主模型决定，gate 只做风控闸门。注意：gate 与具体触发因子无关（0/1 触发请走'触发叠加'通道）；若需让 gate 学习多个 01 因子，用 meta_gate_opts.extra_features 传入 qlib 表达式">
+                       title="主模型 topK 候选内训练二分类 gate（学'未来收益>0'），按日剔除 gate 概率最低的 reject_ratio 比例后回测；排序仍由主模型决定，gate 只做风控闸门。勾选下方'Gate 附加特征'（已保存的 01 触发 / 连续公式）即可把它们作为 gate 输入特征，由模型 feature importance 自动学习挑选——多个 01 因子就是走这个通道（无需再单独传表达式）">
                   <input type="checkbox" checked={!!form.meta_gate} onChange={(e) => update('meta_gate', e.target.checked)} />
                   <span>Meta-Gate 风控</span>
                 </label>

@@ -121,8 +121,13 @@ class BoardAwareExchange(Exchange):
 
         # 涨跌停判定用【真实价】列 $close_real（= $close/$factor）与 $change（真实价涨跌幅），
         # 两者同源，除权日也精确（涨停价由交易所按真实价确定，与复权无关）。
-        # $close_real 缺失（该股无 factor）时回退用 $close。
-        close_col = "$close_real" if "$close_real" in self.quote_df.columns else "$close"
+        # 注意：本方法在 qlib 父类 __init__ 里先于 BoardAwareExchange.get_quote_from_qlib()
+        # 对 $close_real 的注入执行（super().get_quote_from_qlib() 内部触发），因此这里必须
+        # **自足注入真实价列**，否则会回退用后复权 $close 去比真实价涨跌停标签，
+        # 造成 limit_sell 近乎全 True（卖出全锁死）、limit_buy 近乎全 False（买入畅通）→ 只买不卖。
+        if "$close_real" not in self.quote_df.columns:
+            self.quote_df["$close_real"] = self.quote_df["$close"] / self.quote_df["$factor"].fillna(1.0)
+        close_col = "$close_real"
         # $close_real 为 NaN 表示停牌/无行情，不可交易（涨跌停判定对 NaN 返回 False，单独并上）
         suspended = self.quote_df[close_col].isna()
         self.quote_df["limit_buy"] = mark_limit_up(

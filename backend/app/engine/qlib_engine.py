@@ -51,6 +51,7 @@ from .metrics import (
     _aggregate_from_nav,
     _extract_result,
     _find_report_fallback,
+    normalize_benchmark_curve,
     _get_segment_end_account,
     _extract_trades,
     _extract_end_position,
@@ -615,6 +616,8 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
                 "merged_train": ic_train,
             }
 
+    # 基准曲线整条归一首点（与策略净值同起点），同步重算基准/超额指标
+    normalize_benchmark_curve(result)
     return result
 
 

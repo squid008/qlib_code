@@ -117,16 +117,20 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
 
         # 卖出：当前持仓中不在目标 topk 的（整体卖出）
         sell_order_list = []
+        n_in_target = n_tradable_sell_skip = n_amount_sell_skip = n_check_sell_skip = 0
         for code in current_stock_list:
             if code in target_topk:
+                n_in_target += 1
                 continue
             if self.only_tradable and not self.trade_exchange.is_stock_tradable(
                 stock_id=code, start_time=trade_start_time, end_time=trade_end_time,
                 direction=None if self.forbid_all_trade_at_limit else Order.SELL,
             ):
+                n_tradable_sell_skip += 1
                 continue
             sell_amount = current_temp.get_stock_amount(code=code)
             if not sell_amount or sell_amount <= 0:
+                n_amount_sell_skip += 1
                 continue
             order = Order(
                 stock_id=code,
@@ -135,10 +139,15 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
                 end_time=trade_end_time,
                 direction=Order.SELL,
             )
-            if self.trade_exchange.check_order(order):
-                sell_order_list.append(order)
-                trade_val, trade_cost, _ = self.trade_exchange.deal_order(order, position=current_temp)
-                cash += trade_val - trade_cost
+            # 可交易性预检交给 check_order（涨跌停/停牌判定）：
+            # 注意：若预检把卖单拦下说明当日确不可卖；若放行但 executor 仍拒成 0 成交，
+            # 则是卖单股数口径/整手问题（见 board 修复，勿删预检）。
+            if not self.trade_exchange.check_order(order):
+                n_check_sell_skip += 1
+                continue
+            sell_order_list.append(order)
+            trade_val, trade_cost, _ = self.trade_exchange.deal_order(order, position=current_temp)
+            cash += trade_val - trade_cost
 
         # 买入：目标 topk 中当前未持有的（整体买入）
         buy_order_list = []
@@ -181,8 +190,11 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
         orders = sell_order_list + buy_order_list
         if orders:
             logger.info(
-                "Rebalance at step %s: sell %d, buy %d",
-                trade_step, len(sell_order_list), len(buy_order_list),
+                "Rebalance %s: sell %d buy %d | 持仓%d 目标内%d "
+                "卖出跳过(不可交易%d 无仓%d 拒单%d) 买入跳过(不可交易%d 无价%d 手数0=%d)",
+                trade_step, len(sell_order_list), len(buy_order_list), len(current_stock_list),
+                n_in_target, n_tradable_sell_skip, n_amount_sell_skip, n_check_sell_skip,
+                n_tradable_skip, n_price_skip, n_amount_skip,
             )
         elif to_buy or current_stock_list:
             # 调仓日但零订单：打详细原因（候选/禁买/价格缺失/手数不足），便于诊断空仓净值=1

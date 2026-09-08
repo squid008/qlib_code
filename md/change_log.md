@@ -3,6 +3,18 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.16.1] - 2026-09-08
+
+### Fixed
+- **回测"只买不卖"持仓膨胀（影响所有带涨跌停限制的历史回测）**：`BoardAwareExchange._update_limit` 的涨跌停判定执行早于真实价列 `$close_real` 注入，回退用**后复权 `$close`** 与**真实价涨跌停标签**（`$limit_up/$limit_down`）比较 → `limit_sell` 近乎全 True（卖出全被锁死）、`limit_buy` 近乎全 False（买入畅通）→ 每个调仓日只买不卖、持仓膨胀到 topk 的 2-3 倍，净值失真。修复：`_update_limit` 内**自足注入 `$close_real = $close/$factor`**。验证：修复后卖出/买入对称成交、持仓恒定 topk、零拒单（60 池 short：此前 annual 15.5% 失真口径 → 修复后 25.3%）。
+- **日截面剔除静默失效**：`BoardAwareExchange.get_forbidden_mask` 方法签名（def 行）曾丢失，导致剔除逻辑挂到相邻方法、exclude 开关静默不生效。已恢复。
+- **基准曲线起点比净值早一天**：qlib 基准日收益首行含"窗口首日相对前收"的段外收益（如 2025-01-02 的 -2.91%），导致基准曲线从 0.97 起步、与策略净值（1.0）不同起点。修复：`metrics.normalize_benchmark_curve` 在**整条曲线拼接完成后**统一除以首点归一到 1.0（rolling 不可在段内归一，否则丢段首收益），并同步重算 `benchmark_return` / 年化超额，single 与 rolling 出口均接入。验证：基准首点 0.9709 → 1.0。
+
+### Changed
+- **策略调仓诊断日志**：`PeriodicTopKStrategy` 调仓日输出 sell/buy 数量与明细（持仓数、目标内、各跳过原因计数；零订单时打完整原因），便于审计"净值=1 / 持仓膨胀"类问题。
+- **Meta-Gate 提示文案**：更新为"勾选下方'Gate 附加特征'（已保存公式）即可让 gate 自动学习多个 01 因子"（前端无触发叠加入口，旧"0/1 请走触发叠加"文案删除）。
+- 版本 1.16.0→1.16.1。
+
 ## [1.16.0] - 2026-09-08
 
 ### Added

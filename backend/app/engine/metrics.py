@@ -10,6 +10,47 @@ from typing import Optional
 from ..models.backtest import BacktestResult
 
 
+def normalize_benchmark_curve(result) -> None:
+    """把 result.nav 的整条基准曲线归一：首个有效点=1.0（与策略净值同起点）。
+
+    qlib 基准日收益首行含"窗口首日相对前收"的段外收益（如首日 -2.91% → 曲线从 0.97 起）。
+    这里在【整条拼接完成】后统一等比缩放（除以首点），只调整起点观感、不改逐日收益；
+    仅当首点明显偏离 1.0 时生效，并同步重算 benchmark_return / annualized_excess_return，
+    保证指标与展示曲线口径一致。rolling 与 single 出口都应调用本函数。
+    """
+    nav = result.nav if result is not None else None
+    if not nav:
+        return
+    first = None
+    for p in nav:
+        b = p.get("benchmark")
+        if b is not None:
+            first = float(b)
+            break
+    if first is None or first <= 0 or abs(first - 1.0) < 1e-9:
+        return
+    for p in nav:
+        b = p.get("benchmark")
+        if b is not None:
+            p["benchmark"] = round(float(b) / first, 6)
+    last = None
+    for p in reversed(nav):
+        b = p.get("benchmark")
+        if b is not None:
+            last = float(b)
+            break
+    if last is not None:
+        result.benchmark_return = last - 1.0
+        if getattr(result, "annualized_return", None) is not None:
+            n_days = sum(1 for p in nav if p.get("benchmark") is not None)
+            years = n_days / 252.0
+            if years > 0:
+                result.annualized_excess_return = (
+                    result.annualized_return
+                    - (float((1 + result.benchmark_return) ** (1 / years) - 1))
+                )
+
+
 def _aggregate_from_nav(all_nav: list, seg_results: list) -> BacktestResult:
     """根据拼接的全局净值曲线与各段结果，汇总最终指标。"""
     import pandas as pd
@@ -52,6 +93,8 @@ def _aggregate_from_nav(all_nav: list, seg_results: list) -> BacktestResult:
             )
 
     result.nav = all_nav[:2000]
+    # 整条基准曲线归一首点（与策略净值同起点），并重算基准/超额指标
+    normalize_benchmark_curve(result)
     # 备注滚动段数（用 report_df 附带，避免改动模型字段）
     try:
         result.report_df = {"rolling_segments": len(seg_results)}
@@ -161,6 +204,9 @@ def _extract_result(par, recorder, initial_account: Optional[float] = None) -> B
 
                 if bench is not None:
                     bench = bench.astype(float)
+                    # 注意：不做"首点归 1"——qlib 基准日收益首行是"窗口首日相对前收"的段外收益。
+                    # 对 rolling 每段必须保留（段与段间连续），只能在整条曲线拼接完后统一归一
+                    # （见 normalize_benchmark_curve）。
                     bench_cum = (1 + bench).cumprod()
                     result.benchmark_return = float(bench_cum.iloc[-1] - 1) if len(bench_cum) else None
                     if result.benchmark_return is not None and result.total_return is not None \
