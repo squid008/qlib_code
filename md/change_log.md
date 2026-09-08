@@ -3,6 +3,12 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.16.5] - 2026-09-08
+
+### Fixed
+- **单因子测试结果含 NaN/Inf 时 progress/result 接口 500，任务 UI 看起来"卡死"**：并行多周期（如 CWH_BREAK_WAIT20_F1 + 1..60 日 8 周期）下，某周期统计可能产生非有限 float（极端样本：60 日收益、0/0 比值、触发组样本过小、HAC 方差钳制等），starlette `json.dumps` 抛 `Out of range float values are not JSON compliant` → 前端轮询永远 500 → 画面停在最后一次成功进度（"测试因子 1/1，已完成 7"），误以为任务卡在加载/统计。修复：`factors.py` 新增 `_json_safe` 递归把结果中非有限 float（NaN/±Inf）替换为 `null`，`progress` 端点返回 result 前应用。任务实际早已 success，仅结果回传失败。
+- 版本 1.16.4→1.16.5。
+
 ## [1.16.4] - 2026-09-08
 
 ### Changed

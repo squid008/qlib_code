@@ -206,6 +206,24 @@ def _sft_get(task_id: str):
         return _SFT_TASKS.get(task_id)
 
 
+def _json_safe(o):
+    """递归把非有限 float（NaN/±Inf）替换为 None，保证 JSON 序列化不 500。
+
+    单因子统计在极端样本下（如 60 日收益、触发组样本过小、0/0 比值、HAC 方差钳制等）
+    可能天然产生 NaN/Inf——这些字段应传给前端展示为 null，而不是让整个任务
+    progress/result 接口抛 "Out of range float values are not JSON compliant"（表现为任务卡死）。
+    """
+    if isinstance(o, float):
+        if o != o or o in (float("inf"), float("-inf")):
+            return None
+        return o
+    if isinstance(o, dict):
+        return {k: _json_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_json_safe(v) for v in o]
+    return o
+
+
 def _sft_render_view(state: dict) -> tuple:
     """读侧统一渲染 (progress, message)：消息只在这里合成，杜绝多线程抢写 message。
 
@@ -506,12 +524,15 @@ def single_factor_test_progress(task_id: str):
     if state is None:
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
     progress, message = _sft_render_view(state)
+    result = state.get("result")
+    # 防御：统计结果可能含 NaN/Inf（极端样本），清洗为 null 避免整个接口 500
+    result = _json_safe(result) if result is not None else None
     return {
         "task_id": task_id,
         "status": state["status"],
         "progress": progress,
         "message": message,
-        "result": state.get("result"),
+        "result": result,
         "error": state.get("error"),
     }
 
