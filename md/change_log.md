@@ -3,6 +3,14 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.16.7] - 2026-09-09
+
+### Changed
+- **DYN/BARSLAST 系列有状态算子从 Python 逐行循环改为 numpy 全向量化（巨型公式提速 ~20%，全 A 单次 CWH ~190s → ~152s）**：`ops_ext.py` 的 `BARSLAST` / `BARSSINCEN` / `DYN_MIN` / `DYN_MAX` / `DYN_COUNT` / `DYN_REF` / `DYN_SUM` 原实现逐位置 for 循环（CWH_BREAK_WAIT20_F1 这类 4 万字符公式里这类算子出现几十次，每只股票每处都跑一遍 Python 循环是热点）。重写为全向量化：BARSLAST/BARSSINCE 用"满足位前缀最大 + 下标差"；DYN_MIN/MAX 用稀疏表 RMQ 按窗口长度分桶批量查询；DYN_COUNT/SUM 用前缀和数组广播；DYN_REF 用 fancy indexing。
+- 对拍验证：新增 `tests/test_ops_ext_vec.py`（26 用例），把向量化实现与朴素逐行参考在含 NaN/0/负窗口/超大窗口截断边界的随机序列上逐位比对，全部一致（rtol=atol=0、equal_nan）；全部单测 161 passed。
+- 复验（真实数据）：csi300 CWH_BREAK_WAIT20_F1 冷启动 12.7s / loky 热池 7.7s；全 A 5260 只单次 ~152s（向量化前 ~190s）。
+- 版本 1.16.6→1.16.7。
+
 ## [1.16.6] - 2026-09-09
 
 ### Changed

@@ -91,16 +91,13 @@ class BARSLAST(ExpressionOps):
     def _load_internal(self, instrument, start_index, end_index, *args):
         series = self.feature.load(instrument, start_index, end_index, *args)
         vals = series.to_numpy(dtype=float)
+        # 全向量化：mask → 最近满足位前缀最大 → i - last
+        # （原逐行循环 last 扫描等价；无满足期输出 0）
         n = len(vals)
-        out = np.zeros(n, dtype=float)
-        last = -1
-        with np.errstate(invalid="ignore"):
-            for i in range(n):
-                v = vals[i]
-                if v != 0 and not np.isnan(v):
-                    last = i
-                if last >= 0:
-                    out[i] = i - last
+        mask = (vals != 0) & ~np.isnan(vals)
+        idx = np.where(mask, np.arange(n), -1)
+        last = np.maximum.accumulate(idx)  # 每个位置最近满足的绝对下标（-1=从未满足）
+        out = np.where(last >= 0, np.arange(n) - last, 0.0)
         return pd.Series(out, index=series.index)
 
     def get_longest_back_rolling(self):
@@ -129,18 +126,18 @@ class BARSSINCEN(ExpressionOps):
     def _load_internal(self, instrument, start_index, end_index, *args):
         series = self.feature.load(instrument, start_index, end_index, *args)
         vals = series.to_numpy(dtype=float)
-        N = self.N
+        N = max(1, self.N)
         n = len(vals)
+        mask = (vals != 0) & ~np.isnan(vals)
+        pos = np.flatnonzero(mask)  # 所有满足位（升序）
         out = np.zeros(n, dtype=float)
-        with np.errstate(invalid="ignore"):
-            for i in range(n):
-                lo = max(0, i - N + 1)
-                win = vals[lo : i + 1]
-                mask = (win != 0) & ~np.isnan(win)
-                idx = np.flatnonzero(mask)
-                if len(idx):
-                    out[i] = (i - lo) - int(idx[0])  # 最早满足距当前的天数
-                # 窗口内无满足 → 0
+        if pos.size:
+            lo = np.maximum(0, np.arange(n) - N + 1)  # 各位置窗口左边界
+            j = np.searchsorted(pos, lo, side="left")  # 窗口内（>=lo）首个满足位
+            in_win = j < pos.size
+            earliest = np.where(in_win, pos[np.minimum(j, pos.size - 1)], n + 1)
+            ok = in_win & (earliest <= np.arange(n))  # 该满足位落在窗口右端（i）内
+            out = np.where(ok, np.arange(n) - earliest, 0.0)
         return pd.Series(out, index=series.index)
 
     def get_longest_back_rolling(self):
@@ -170,11 +167,42 @@ def _build_sparse(vals: np.ndarray, func) -> list:
     return st
 
 
-def _rmq(st: list, l: int, r: int, func) -> float:
-    """稀疏表区间最值查询（闭区间 [l, r]）。"""
-    length = r - l + 1
-    j = int(np.log2(length))
-    return float(func(st[j][l], st[j][r - (1 << j) + 1]))
+def _win_lens_vec(nvals: np.ndarray) -> np.ndarray:
+    """把动态窗口序列向量化规整为 int 数组（等价逐元素 _win_len）：
+
+    NaN → 1；<1 → 1；其余 int(v)（正数向零截断 = floor）。
+    """
+    nv = np.where(np.isnan(nvals), 1.0, nvals)
+    n = np.floor(nv).astype(np.int64)
+    return np.maximum(n, 1)
+
+
+def _dyn_rmq_vec(vals: np.ndarray, nvals: np.ndarray, func) -> np.ndarray:
+    """动态窗口最值的全向量化版本（等价逐行 _rmq 循环）。
+
+    每个位置的窗口为 [i-N_i+1, i]（N_i 由 nvals 给出）。RMQ 层级 j 随窗口长度
+    而异，按层级分组后每层一次批量查询（总 O(n·log n) 的向量化实现，消灭
+    逐位置 Python 循环）。
+    """
+    n = len(vals)
+    if n == 0:
+        return np.zeros(0, dtype=float)
+    st = _build_sparse(vals, func)
+    Ns = _win_lens_vec(nvals)
+    lens = np.minimum(Ns, np.arange(1, n + 1))  # 窗口实际长度（截到数组起点）
+    js = np.floor(np.log2(lens)).astype(np.int64)
+    idx = np.arange(n)
+    l_arr = idx - lens + 1
+    out = np.full(n, np.nan, dtype=float)
+    for k, layer in enumerate(st):
+        sel = js == k
+        if not sel.any():
+            continue
+        span = 1 << k
+        lk = l_arr[sel]
+        rk = idx[sel]
+        out[sel] = func(layer[lk], layer[rk - span + 1])
+    return out
 
 
 class _DynWindowOp(ExpressionOps):
@@ -200,13 +228,8 @@ class _DynWindowOp(ExpressionOps):
         ns = self.N_expr.load(instrument, start_index, end_index, *args)
         return series.to_numpy(dtype=float), ns.to_numpy(dtype=float), series.index
 
-    @staticmethod
-    def _win_len(v: float) -> int:
-        if v is None or (isinstance(v, float) and np.isnan(v)):
-            return 1
-        n = int(v)
-        return n if n >= 1 else 1
-
+    # 逐元素窗口规整语义（NaN→1、<1→1、int 截断）已向量化为 _win_lens_vec；
+    # 各 DYN_* 的 _load_internal 直接使用 _win_lens_vec。
     def get_longest_back_rolling(self):
         return np.inf
 
@@ -215,78 +238,63 @@ class _DynWindowOp(ExpressionOps):
 
 
 class DYN_MIN(_DynWindowOp):
-    """动态窗口最小值（LLV(X, 变量)）：稀疏表 RMQ，O(1) 查询。"""
+    """动态窗口最小值（LLV(X, 变量)）：稀疏表 RMQ，全向量化。"""
 
     def _load_internal(self, instrument, start_index, end_index, *args):
         vals, nvals, idx = self._load_both(instrument, start_index, end_index, *args)
-        n = len(vals)
-        st = _build_sparse(vals, np.fmin)
-        out = np.full(n, np.nan, dtype=float)
-        for i in range(n):
-            N = self._win_len(nvals[i])
-            out[i] = _rmq(st, max(0, i - N + 1), i, np.fmin)
+        out = _dyn_rmq_vec(vals, nvals, np.fmin)
         return pd.Series(out, index=idx)
 
 
 class DYN_MAX(_DynWindowOp):
-    """动态窗口最大值（HHV(X, 变量)）：稀疏表 RMQ，O(1) 查询。"""
+    """动态窗口最大值（HHV(X, 变量)）：稀疏表 RMQ，全向量化。"""
 
     def _load_internal(self, instrument, start_index, end_index, *args):
         vals, nvals, idx = self._load_both(instrument, start_index, end_index, *args)
-        n = len(vals)
-        st = _build_sparse(vals, np.fmax)
-        out = np.full(n, np.nan, dtype=float)
-        for i in range(n):
-            N = self._win_len(nvals[i])
-            out[i] = _rmq(st, max(0, i - N + 1), i, np.fmax)
+        out = _dyn_rmq_vec(vals, nvals, np.fmax)
         return pd.Series(out, index=idx)
 
 
 class DYN_COUNT(_DynWindowOp):
-    """动态窗口计数（COUNT(条件, 变量)）：前缀和，O(1) 查询。"""
+    """动态窗口计数（COUNT(条件, 变量)）：前缀和，全向量化。"""
 
     def _load_internal(self, instrument, start_index, end_index, *args):
         vals, nvals, idx = self._load_both(instrument, start_index, end_index, *args)
         n = len(vals)
         mask = (vals != 0) & ~np.isnan(vals)
         pre = np.concatenate([[0.0], np.cumsum(mask.astype(float))])
-        out = np.zeros(n, dtype=float)
-        for i in range(n):
-            N = self._win_len(nvals[i])
-            lo = max(0, i - N + 1)
-            out[i] = pre[i + 1] - pre[lo]
+        Ns = _win_lens_vec(nvals)
+        lo = np.maximum(0, np.arange(n) - Ns + 1)
+        out = pre[np.arange(n) + 1] - pre[lo]
         return pd.Series(out, index=idx)
 
 
 class DYN_REF(_DynWindowOp):
-    """动态前移（REF(X, 变量)）：取 N 天前的值，O(1)。"""
+    """动态前移（REF(X, 变量)）：取 N 天前的值，全向量化。"""
 
     def _load_internal(self, instrument, start_index, end_index, *args):
         vals, nvals, idx = self._load_both(instrument, start_index, end_index, *args)
         n = len(vals)
+        # 原语义 int(nv)（向零截断）；NaN → 0
+        nv = np.where(np.isnan(nvals), 0.0, np.trunc(nvals))
+        j = np.arange(n) - nv.astype(np.int64)
         out = np.full(n, np.nan, dtype=float)
-        for i in range(n):
-            nv = nvals[i]
-            N = int(nv) if not np.isnan(nv) else 0
-            j = i - N
-            if 0 <= j < n:
-                out[i] = vals[j]
+        ok = (j >= 0) & (j < n)
+        out[ok] = vals[j[ok]]
         return pd.Series(out, index=idx)
 
 
 class DYN_SUM(_DynWindowOp):
-    """动态窗口求和（SUM(X, 变量)）：前缀和，O(1) 查询。"""
+    """动态窗口求和（SUM(X, 变量)）：前缀和，全向量化。"""
 
     def _load_internal(self, instrument, start_index, end_index, *args):
         vals, nvals, idx = self._load_both(instrument, start_index, end_index, *args)
         n = len(vals)
         v = np.nan_to_num(vals, nan=0.0)
         pre = np.concatenate([[0.0], np.cumsum(v)])
-        out = np.full(n, np.nan, dtype=float)
-        for i in range(n):
-            N = self._win_len(nvals[i])
-            lo = max(0, i - N + 1)
-            out[i] = pre[i + 1] - pre[lo]
+        Ns = _win_lens_vec(nvals)
+        lo = np.maximum(0, np.arange(n) - Ns + 1)
+        out = pre[np.arange(n) + 1] - pre[lo]
         return pd.Series(out, index=idx)
 
 
