@@ -642,3 +642,201 @@ def run_single_factor_test(
     if progress_cb:
         progress_cb(100, "测试完成")
     return results
+
+
+def run_single_factor_tests(
+    label_horizons,
+    universe: str,
+    start_date: str,
+    end_date: str,
+    factors: List[dict] = None,
+    progress_cb=None,
+    cancelled=None,  # 取消检查回调：返回 True 表示用户已取消
+    exclude_limit_up_signal: bool = True,
+    exclude_limit_up_trade: bool = True,
+    exclude_suspended: bool = True,
+    price_adjust: str = "none",
+    freeze_suspended_price: bool = True,
+    suspend_remove: bool = True,
+    exclude_st_t1: bool = False,
+    exclude_stock_gem: bool = False,
+    exclude_stock_kcb: bool = False,
+    price_round: bool = True,
+) -> Dict[int, list]:
+    """多预测周期单因子测试：所有周期【共享一次特征加载】，再逐周期分别统计。
+
+    背景：此前并行多周期时每个周期各自调一次 run_single_factor_test → 各自做一遍
+    D.features 全量加载（实测每次调用有 ~16s 与字段/股票数基本无关的固定开销），
+    8 个周期=8 份固定开销 + 相同因子表达式算 8 遍，大公式下"加载半天"。
+
+    本实现把 F0..Fn（因子去重）+ 每个周期的 LABEL_{h} 列 + base/tag 一次合并进
+    同一个 D.features 调用（固定开销只付 1 次），随后逐周期在共享面板上取对应
+    label 列做 _test_one 统计（统计阶段对内存中 DataFrame 操作，不触发 qlib 加载）。
+
+    进度：progress_cb 约定为 progress_cb(h, p, msg)。
+      - h=None：整体阶段（解析股票池/共享特征加载），p 为整体 0-100，供整体进度条直接使用；
+      - h=int：该预测周期统计阶段内部 0-100。
+    返回 {label_horizon: [因子结果]}。
+    """
+    horizons = sorted({max(1, int(h or 2)) for h in (label_horizons or [])})
+    if not horizons or not factors:
+        return {h: [] for h in horizons}
+    _ensure_qlib_init()
+
+    if progress_cb:
+        progress_cb(None, 2.0, "解析股票池成分股...")
+
+    pa = normalize_mode(price_adjust)
+    # 各周期 label 表达式列（LABEL_{h}），一次 D.features 全部算出
+    label_exprs = {
+        h: adjust_expr(f"Ref($close, -{h + 1})/Ref($close, -1) - 1", pa) for h in horizons
+    }
+    load_end = end_date
+    if freeze_suspended_price:
+        n_max = max(horizons)
+        try:
+            from qlib.data import D as _D
+            cal = _D.calendar()
+            cal_ts = pd.to_datetime(cal)
+            pos = int((cal_ts <= pd.Timestamp(end_date)).sum())
+            load_end = str(cal_ts[min(pos + n_max + 3, len(cal_ts) - 1)].date())
+        except Exception:
+            load_end = end_date
+
+    # 因子去重编号
+    ordered_exprs: List[str] = []
+    factor_cols: List[str] = []
+    col_map: List[str] = []
+    seen = {}
+    for f in factors:
+        e = f.get("expression", "")
+        if not e:
+            col_map.append(None)
+            continue
+        if e not in seen:
+            seen[e] = len(ordered_exprs)
+            ordered_exprs.append(e)
+            factor_cols.append(f"F{len(ordered_exprs) - 1}")
+        col_map.append(factor_cols[seen[e]])
+
+    if not ordered_exprs:
+        err = [{**_test_one(pd.DataFrame(), f, ""), "error": "因子表达式为空"} for f in factors]
+        return {h: err for h in horizons}
+
+    from qlib.data import D
+
+    try:
+        instruments = _resolve_instruments(universe, start_date)
+    except Exception as e:
+        err = [{**_test_one(pd.DataFrame(), f, ""), "error": f"股票池解析失败: {e}"} for f in factors]
+        return {h: err for h in horizons}
+    if not instruments:
+        err = [{**_test_one(pd.DataFrame(), f, ""), "error": "股票池为空（无成分股）"} for f in factors]
+        return {h: err for h in horizons}
+
+    if progress_cb:
+        progress_cb(None, 4.0, f"股票池 {len(instruments)} 只，计算特征数据...")
+
+    # 因子 + 各周期 label + 基础字段（真实价行情） + 涨跌停/ST 标签，全部一次加载
+    if suspend_remove:
+        adj_exprs = [_sr_wrap_expr(adjust_expr(e, pa, round_prices=price_round)) for e in ordered_exprs]
+    else:
+        adj_exprs = [adjust_expr(e, pa, round_prices=price_round) for e in ordered_exprs]
+    base_fields = ["$close/$factor", "$change", "Ref($close/$factor, -1)", "Ref($change, -1)"]
+    base_names = ["CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]
+    tag_fields: List[str] = []
+    tag_names: List[str] = []
+    if field_bin_available("limit_up") and field_bin_available("limit_down"):
+        tag_fields += ["$limit_up", "$limit_down", "Ref($limit_up, -1)", "Ref($limit_down, -1)"]
+        tag_names += ["LIMIT_UP", "LIMIT_DOWN", "T1_LIMIT_UP", "T1_LIMIT_DOWN"]
+    if field_bin_available("is_st"):
+        tag_fields += ["$is_st", "Ref($is_st, -1)"]
+        tag_names += ["IS_ST", "T1_IS_ST"]
+    label_cols = {h: f"LABEL_{h}" for h in horizons}
+    fields = tuple(adj_exprs) + tuple(label_exprs.values()) + tuple(base_fields) + tuple(tag_fields)
+    all_cols = factor_cols + list(label_cols.values()) + base_names + tag_names
+
+    frames = []
+    try:
+        batch_size = max(1, min(len(fields), 32))
+        for k in range(0, len(fields), batch_size):
+            if progress_cb:
+                done = min(k + batch_size, len(fields))
+                progress_cb(None, 5 + 25 * (done / len(fields)), f"加载特征数据 {done}/{len(fields)}...")
+            part = D.features(instruments, list(fields[k:k + batch_size]), start_time=start_date, end_time=load_end)
+            frames.append(part)
+    except FactorTestCancelled:
+        raise
+    except Exception as e:
+        _dump_sft_error(e)
+        err = [{**_test_one(pd.DataFrame(), f, ""), "error": f"特征计算失败: {e}"} for f in factors]
+        return {h: err for h in horizons}
+
+    if not frames or all(f is None or len(f) == 0 for f in frames):
+        err = [{**_test_one(pd.DataFrame(), f, ""), "error": "特征计算无数据"} for f in factors]
+        return {h: err for h in horizons}
+
+    raw = frames[0] if len(frames) == 1 else pd.concat(frames, axis=1)
+    df = raw.copy()
+    df.columns = all_cols
+
+    # 冻结价 label 兜底：CLOSE ffill 一次，各周期按各自 h 做 shift 修正 label 列
+    if freeze_suspended_price:
+        try:
+            inst_lv = df.index.names.index("instrument")
+            dt_lv = df.index.names.index("datetime")
+            cf = df.groupby(level=inst_lv)["CLOSE"].ffill()
+            last_c = cf.groupby(level=inst_lv).transform("last")
+            for h in horizons:
+                exit_px = cf.groupby(level=inst_lv).shift(-(h + 1))
+                exit_px = exit_px.where(exit_px.notna(), last_c)
+                entry_px = cf.groupby(level=inst_lv).shift(-1)
+                label_ff = exit_px / entry_px - 1
+                df[label_cols[h]] = df[label_cols[h]].where(df[label_cols[h]].notna(), label_ff)
+            sig_end = pd.Timestamp(end_date)
+            df = df[df.index.get_level_values(dt_lv) <= sig_end]
+        except Exception as e:
+            _dump_sft_error(e)
+            err = [{**_test_one(pd.DataFrame(), f, ""), "error": f"冻结价 label 计算失败: {e}"} for f in factors]
+            return {h: err for h in horizons}
+
+    out: Dict[int, list] = {}
+    for h in horizons:
+        lc = label_cols[h]
+        if lc not in df.columns:
+            out[h] = [{**_test_one(pd.DataFrame(), f, ""), "error": "label 列缺失"} for f in factors]
+            continue
+        if progress_cb:
+            progress_cb(h, 0.0, f"统计 {h} 日周期...")
+        # 只保留该周期需要的列，避免每周期持有全量面板
+        need = [c for c in (factor_cols + base_names + tag_names + [lc]) if c in df.columns]
+        sub = df[need].copy()
+        sub.rename(columns={lc: "LABEL"}, inplace=True)
+        results = []
+        total = len(factors)
+        for i, (f, col_name) in enumerate(zip(factors, col_map), start=1):
+            if progress_cb:
+                progress_cb(h, 100.0 * ((i - 1) / total), f"测试因子 {i}/{total}: {f.get('name') or f.get('id')}")
+            if cancelled is not None and cancelled():
+                raise FactorTestCancelled()
+            if col_name is None:
+                results.append({**_test_one(pd.DataFrame(), f, ""), "error": "因子表达式为空"})
+            else:
+                results.append(
+                    _test_one(
+                        sub,
+                        f,
+                        col_name,
+                        exclude_limit_up_signal=exclude_limit_up_signal,
+                        exclude_limit_up_trade=exclude_limit_up_trade,
+                        exclude_suspended=exclude_suspended,
+                        exclude_st_t1=exclude_st_t1,
+                        exclude_stock_gem=exclude_stock_gem,
+                        exclude_stock_kcb=exclude_stock_kcb,
+                        cancelled=cancelled,
+                    )
+                )
+        out[h] = results
+        if progress_cb:
+            progress_cb(h, 100.0, f"{h} 日周期完成")
+    return out

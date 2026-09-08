@@ -25,7 +25,7 @@ from ..services.custom_formulas import (
 )
 from .. import config
 from ..engine.task_manager import get_task_manager
-from ..factors.single_test import FactorTestCancelled, run_single_factor_test
+from ..factors.single_test import FactorTestCancelled, run_single_factor_tests
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
 
@@ -209,9 +209,11 @@ def _sft_get(task_id: str):
 def _sft_render_view(state: dict) -> tuple:
     """读侧统一渲染 (progress, message)：消息只在这里合成，杜绝多线程抢写 message。
 
-    - 运行中：整体进度 = (已完成周期×100 + 运行中周期内部进度) / 总周期数；
-      message 按状态分层（排队中 → 正在并行跑哪些周期及其内部进度），
-      随运行集合/进度变化而稳定更新，不再在"排队文案"与"周期进度文案"间来回横跳。
+    进度模型（共享特征加载 → 逐周期统计，保证单调不回跳）：
+      - 排队等待并发单元：0
+      - 共享加载/解析：0-30（load_prog）
+      - 周期统计：30 + 70×(已完成周期数 + 当前周期内部进度/100) / 总周期数
+      message 按状态分层（排队中 → 共享加载中 → 正在统计哪些周期及其内部进度）。
     - 终态：直接使用存储的终态 message。
     """
     status = state.get("status")
@@ -225,36 +227,43 @@ def _sft_render_view(state: dict) -> tuple:
         per_prog = dict(state.get("per_h_prog") or {})
         per_msg = dict(state.get("per_h_msg") or {})
         cancelled = bool(state.get("cancel_requested"))
+        load_prog = float(state.get("load_prog") or 0.0)
+        load_msg = state.get("load_msg") or ""
         ts = state.get("ts", 0.0)
     n_h = max(1, len(horizons))
 
     if cancelled:
         return 0.0, "正在取消..."  # 终态由 worker 主线程统一收尾写 "已取消"
 
-    running_prog = sum(float(per_prog.get(h, 0.0)) for h in running)
-    overall = round((done_n * 100.0 + running_prog) / n_h, 1)
+    # 排队中（尚未获得并发单元）
+    if queued and not running and done_n == 0:
+        qs = "、".join(str(x) for x in queued[:6])
+        tail = "等" if len(queued) > 6 else ""
+        return 0.0, f"排队等待并发单元（预测周期 {qs} 日{tail}，与回测/训练共用配额）..."
 
-    # message 分层：全部排队中 → 无文案冲突；有运行周期 → 列出各周期及其内部进度
-    if not running:
+    # 共享加载/解析阶段（尚无周期进入统计）：直接用加载进度 0-30
+    if not running and done_n == 0:
+        if load_msg:
+            return round(load_prog, 1), load_msg
+        return 0.0, "等待调度..."
+
+    # 统计阶段：30 + 70 × 完成占比（已完成周期计 100%，运行中按内部进度）
+    running_prog = sum(float(per_prog.get(h, 0.0)) for h in running) / 100.0
+    done_frac = (done_n + running_prog) / n_h
+    overall = round(30 + 70 * done_frac, 1)
+
+    parts = []
+    for h in running:
+        inner = per_msg.get(h, "")
+        parts.append(f"[{h}日] {inner}" if inner else f"[{h}日] 统计中")
+    msg = "；".join(parts)
+    if n_h > 1:
+        msg = f"{msg}（运行 {len(running)}/{n_h} 周期"
+        if done_n:
+            msg += f"，已完成 {done_n}"
         if queued:
-            qs = "、".join(str(x) for x in queued[:6])
-            tail = "等" if len(queued) > 6 else ""
-            msg = f"排队等待并发单元（预测周期 {qs} 日{tail}，与回测/训练共用配额）..."
-        else:
-            msg = "等待调度..."
-    else:
-        parts = []
-        for h in running:
-            inner = per_msg.get(h, "")
-            parts.append(f"[{h}日] {inner}" if inner else f"[{h}日] 运行中")
-        msg = "；".join(parts)
-        if n_h > 1:
-            msg = f"{msg}（运行 {len(running)}/{n_h} 周期"
-            if done_n:
-                msg += f"，已完成 {done_n}"
-            if queued:
-                msg += f"，{len(queued)} 个排队"
-            msg += "）"
+            msg += f"，{len(queued)} 个排队"
+        msg += "）"
     return overall, msg
 
 
@@ -312,9 +321,10 @@ def single_factor_test(req: SingleFactorTestRequest):
 
     task_id = uuid.uuid4().hex[:12]
     # 结构化运行态（读侧渲染 message/progress，杜绝多线程抢写 message 造成文案来回跳）：
-    #   running_h / queued_h：正在运行 / 排队等槽的预测周期
-    #   per_h_prog / per_h_msg：各周期内部进度 0-100 / 内部最新进度文案
-    #   done_n：已完成的周期数（整体进度 = (完成周期×100 + 运行周期内部进度) / 总周期数）
+    #   running_h / queued_h：正在统计运行 / 排队等并发单元的预测周期
+    #   per_h_prog / per_h_msg：各周期统计内部进度 0-100 / 内部最新进度文案
+    #   done_n：已完成统计的周期数
+    #   load_prog / load_msg：共享特征加载阶段整体进度 0-30 / 文案（读侧映射：加载 0-30 → 统计 30-100）
     state: dict = {
         "task_id": task_id,
         "status": "running",
@@ -330,6 +340,8 @@ def single_factor_test(req: SingleFactorTestRequest):
         "done_n": 0,
         "per_h_prog": {},
         "per_h_msg": {},
+        "load_prog": 0.0,
+        "load_msg": "",
     }
     _sft_store(task_id, state)
 
@@ -353,108 +365,96 @@ def single_factor_test(req: SingleFactorTestRequest):
             return
 
         lock = threading.Lock()
-        queue = list(horizons)            # 待跑周期队列（升序，worker 弹队首）
         per_h: dict[int, list] = {}       # 周期 -> 该周期全部因子的结果
-        fatal: dict[int, str] = {}        # 周期 -> 致命错误（异常抛出时记录）
-        done = 0                          # 已完成的周期数（用于最终结果组装，非并发写）
+        fatal_all: str = ""               # 致命错误（共享执行体整体异常）
+        done_set: set = set()             # 已完成的预测周期
 
-        def _worker() -> None:
-            nonlocal done
-            while True:
+        def _run_shared() -> None:
+            """多周期共享一次特征加载的单执行体（根治"并行多周期各自重复加载"）。
+
+            占 1 个并发槽（而不是每周期各占一个）：特征加载只做一次，逐周期统计在
+            内存 DataFrame 上进行（不再触发 qlib D.features）。排队/取消语义与原来一致：
+            拿不到槽则阻塞排队，cancel_requested 时立即退出。
+            """
+            nonlocal fatal_all
+            # 排队中：所有周期登记为 queued（读侧渲染"排队等待并发单元"）
+            with lock:
+                state["queued_h"] = list(horizons)
+            got = manager.external_wait_slot(
+                task_id, cancel_check=lambda: bool(state.get("cancel_requested"))
+            )
+            if not got:
                 with lock:
-                    if not queue:
-                        return
-                    h = queue.pop(0)
-                # 该周期进入"等待并发单元"状态（宏观可见，读侧渲染文案）
-                with lock:
-                    if h not in state["queued_h"]:
-                        state["queued_h"] = sorted(state["queued_h"] + [h])
-                acquired = False
-                try:
-                    # 与回测/训练共用并发配额：每周期各占一个并发单元，拿不到就阻塞排队。
-                    # 取消（cancel_requested）时立即退出排队；不忙轮询、不写 message，
-                    # 排队/运行文案统一由读侧 _sft_render_view 合成，避免来回跳。
-                    got = manager.external_wait_slot(
-                        task_id, cancel_check=lambda: bool(state.get("cancel_requested"))
-                    )
-                    if not got:
-                        with lock:
-                            if h in state["queued_h"]:
-                                state["queued_h"].remove(h)
-                        return  # 排队期间被取消：终态由主线程统一收尾
-                    acquired = True
+                    state["queued_h"] = []
+                return  # 排队期间被取消：终态由主线程统一收尾
+            with lock:
+                state["queued_h"] = []
+            manager.unregister_external_queued(task_id)
+            try:
+                def _cb(h, p: float, m: str) -> None:
+                    # h 维度进度：结构化解耦，读侧合成整体 progress/message。
+                    # h=None → 共享加载/解析阶段整体进度（0-30）；h=int → 该周期统计内部进度。
                     with lock:
-                        if h in state["queued_h"]:
-                            state["queued_h"].remove(h)
-                        if h not in state["running_h"]:
-                            state["running_h"] = sorted(state["running_h"] + [h])
-                    # 该任务已有周期真正开跑：取消"整体排队"登记（queued 统计不再计入）
-                    manager.unregister_external_queued(task_id)
-
-                    def _cb(p: float, m: str) -> None:
-                        # 只更新结构化进度字段，由读侧合成整体进度与文案
-                        with lock:
-                            state["per_h_prog"][h] = float(p)
-                            state["per_h_msg"][h] = m
-                        if state.get("cancel_requested"):
-                            raise FactorTestCancelled()
-
-                    if state.get("cancel_requested"):
-                        raise FactorTestCancelled()
-                    items = run_single_factor_test(
-                        universe=req.universe,
-                        start_date=req.start_date,
-                        end_date=req.end_date,
-                        label_horizon=h,
-                        factors=[f.model_dump() for f in req.factors],
-                        progress_cb=_cb,
-                        cancelled=lambda: bool(state.get("cancel_requested")),
-                        exclude_limit_up_signal=req.exclude_limit_up_signal,
-                        exclude_limit_up_trade=req.exclude_limit_up_trade,
-                        exclude_suspended=req.exclude_suspended,
-                        exclude_st_t1=req.exclude_st_t1,
-                        exclude_stock_gem=req.exclude_stock_gem,
-                        exclude_stock_kcb=req.exclude_stock_kcb,
-                        price_adjust=req.price_adjust,
-                        freeze_suspended_price=req.freeze_suspended_price,
-                        suspend_remove=req.suspend_remove,
-                        price_round=req.price_round,
-                    )
-                    with lock:
-                        per_h[h] = items
-                        done += 1
-                        state["done_n"] = done
-                        state["per_h_prog"].pop(h, None)  # 完成即从"运行中进度"移除
-                        state["per_h_msg"].pop(h, None)
-                except FactorTestCancelled:
-                    pass  # 终态由主线程统一收尾（不在 worker 内写 status，避免竞争覆盖）
-                except Exception as e:
-                    with lock:
-                        fatal[h] = str(e)
-                finally:
-                    if acquired:
-                        with lock:
-                            if h in state["running_h"]:
-                                state["running_h"].remove(h)
+                        p = float(p)
+                        if h is None:
+                            state["load_prog"] = p
+                            state["load_msg"] = m
+                        elif p >= 100.0 and h not in done_set:
+                            done_set.add(h)
+                            state["done_n"] = len(done_set)
+                            state["running_h"] = [x for x in state["running_h"] if x != h]
                             state["per_h_prog"].pop(h, None)
                             state["per_h_msg"].pop(h, None)
-                        manager.release_slot(task_id)
+                        else:
+                            if h not in state["running_h"]:
+                                state["running_h"] = sorted(state["running_h"] + [h])
+                            state["per_h_prog"][h] = p
+                            state["per_h_msg"][h] = m
+                    if state.get("cancel_requested"):
+                        raise FactorTestCancelled()
 
-        # 并行 worker 数 = min(周期数, 外部软上限)：worker 完成一个周期会继续弹下一个，
-        # 因此启动超过软上限的 worker 只会让它们在等待队列里空等（不占配额、不制造噪音）。
-        # 串行 = 1 个 worker 顺序跑完所有周期。
-        if parallel:
-            try:
-                n_worker = min(n_h, max(1, manager.external_soft_cap()))
-            except Exception:
-                n_worker = min(n_h, 2)
-        else:
-            n_worker = 1
-        threads = [threading.Thread(target=_worker, daemon=True) for _ in range(n_worker)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+                res = run_single_factor_tests(
+                    label_horizons=horizons,
+                    universe=req.universe,
+                    start_date=req.start_date,
+                    end_date=req.end_date,
+                    factors=[f.model_dump() for f in req.factors],
+                    progress_cb=_cb,
+                    cancelled=lambda: bool(state.get("cancel_requested")),
+                    exclude_limit_up_signal=req.exclude_limit_up_signal,
+                    exclude_limit_up_trade=req.exclude_limit_up_trade,
+                    exclude_suspended=req.exclude_suspended,
+                    exclude_st_t1=req.exclude_st_t1,
+                    exclude_stock_gem=req.exclude_stock_gem,
+                    exclude_stock_kcb=req.exclude_stock_kcb,
+                    price_adjust=req.price_adjust,
+                    freeze_suspended_price=req.freeze_suspended_price,
+                    suspend_remove=req.suspend_remove,
+                    price_round=req.price_round,
+                )
+                with lock:
+                    for h, rows in (res or {}).items():
+                        per_h[h] = rows
+                        if h not in done_set:
+                            done_set.add(h)
+                    state["done_n"] = len(done_set)
+                    state["running_h"] = []
+            except FactorTestCancelled:
+                pass  # 终态由主线程统一收尾
+            except Exception as e:
+                import traceback
+                from ..logger import get_logger
+                get_logger("factors").error("单因子共享执行失败: %s\n%s", e, traceback.format_exc())
+                with lock:
+                    fatal_all = str(e)
+            finally:
+                manager.release_slot(task_id)
+
+        # 单执行体占 1 槽完成全部预测周期（共享一次特征加载）。
+        # parallel 仅保留前端语义（不再每周期各占一并发单元），加载共享后无需多槽。
+        t = threading.Thread(target=_run_shared, daemon=True)
+        t.start()
+        t.join()
 
         with lock:
             # 取消优先（排队中或运行中被取消都汇聚到这里统一收尾，保证只写一次终态）
@@ -464,9 +464,9 @@ def single_factor_test(req: SingleFactorTestRequest):
                 manager.unregister_external_queued(task_id)
                 _sft_trim_results()
                 return
-            if fatal:
-                errs = "; ".join(f"{h} 日: {e}" for h, e in sorted(fatal.items()))
-                state.update(status="failed", progress=100.0, message=f"单因子测试失败: {errs}", error=errs, ts=time.time())
+            if fatal_all:
+                state.update(status="failed", progress=100.0, message=f"单因子测试失败: {fatal_all}",
+                             error=fatal_all, ts=time.time())
                 manager.unregister_external_queued(task_id)
                 _sft_trim_results()
                 return
