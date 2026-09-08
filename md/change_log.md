@@ -3,6 +3,17 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.15.3] - 2026-09-08
+
+### Fixed
+- **回测"日截面剔除"开关（`exclude_st` / `exclude_stock_gem` / `exclude_stock_kcb`）开启时净值恒 1、零成交**：`BoardAwareExchange._mark_forbidden` 按调仓日分组的掩码 Series 未去掉 datetime 层（index 仍是 `(instrument, datetime)` 双层），策略 `get_forbidden_mask` 用单层股票代码 reindex 全部落空 → `fill_value=True` 把所有候选判为"禁买"清空 → 每个调仓日空仓。修复：分组后 `droplevel` 掉 datetime 层（按 index 名定位，兼容顺序）。此开关在真实回测里此前从未被验证过（历史成功任务均为关闭），现全配置复验通过：mixed+自定义公式+Meta-Gate+01 Gate 特征+剔除开关（主板 400/2025-2026）年化 20.8%、累计 33.9%、329 笔 vs 关闭剔除同池 14.9%。
+- **Meta-Gate 的 `extra_features`（01 触发公式等）导致 gate 训练失败并静默回退主信号**：`D.features` 列名是表达式原文（含 `( ) , /` 等特殊 JSON 字符），LightGBM 报 `Do not support special JSON characters in feature name`。修复：`signal_compose._extra_cols` 对齐后统一重命名为 `extra_feature_0/1/...`（train/test 同序，按位置对齐）。
+
+### Changed
+- **回测并发上限动态化**：`task_manager` 原先在进程启动时按当时内存/CPU 一次性探测并固定（启动时被其他训练进程占用内存 → 上限被压到 1 且内存释放后不恢复，需重启）。改为动态配额：每次准入/展示按当前 `resource.max_concurrent()` 实时探测（`QLIB_MAX_CONCURRENT` 环境变量可固定），排队任务用条件变量唤醒；内存恢复后自动放宽，无需重启。
+- **调仓日"零订单"诊断日志**：`PeriodicTopKStrategy` 在调仓日生成 0 单时输出原始候选/禁买/过滤后/目标/待买及各跳过原因计数，便于定位"净值恒 1"类问题（此前空仓无任何日志）。
+- 版本 1.15.2→1.15.3。
+
 ## [1.15.2] - 2026-09-08
 
 ### Changed

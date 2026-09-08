@@ -155,9 +155,18 @@ class BoardAwareExchange(Exchange):
             if self._exclude_star:
                 forbid = forbid | codes.str.startswith("SH688")
         df["forbidden"] = forbid
-        # 按调仓日分组：get_forbidden_mask 按日 O(1) 取当日禁买集合
-        groups = df["forbidden"].groupby(level=1)
-        self._forbid_by_dt = {k: v for k, v in groups}
+        # 按调仓日分组：get_forbidden_mask 按日 O(1) 取当日禁买集合。
+        # 注意分组后每组 Series 的 index 仍是 (instrument, datetime) 双层，须去掉 datetime 层，
+        # 否则 get_forbidden_mask 用单层 instrument 代码 reindex 全部 miss → fill_value=True 全禁 → 空仓。
+        lvl_dt = None
+        for i, nm in enumerate(df.index.names):
+            if nm == "datetime":
+                lvl_dt = i
+                break
+        groups = df["forbidden"].groupby(level=lvl_dt if lvl_dt is not None else -1)
+        self._forbid_by_dt = {
+            k: (v.droplevel(lvl_dt) if lvl_dt is not None else v) for k, v in groups
+        }
 
     def get_forbidden_mask(self, stock_ids, start_time, end_time=None):
         """给定候选股票与调仓时间，返回当日是否被日截面剔除的 Series(bool)。

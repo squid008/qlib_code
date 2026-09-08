@@ -108,7 +108,12 @@ def _codes_old(dataset):
 
 
 def _extra_cols(dataset, exprs, idx, buffer_days=120) -> pd.DataFrame:
-    """为 gate 附加的表达式特征（如若干 01 触发公式列）：D.features 计算并对齐到 idx。"""
+    """为 gate 附加的表达式特征（如若干 01 触发公式列）：D.features 计算并对齐到 idx。
+
+    注意：D.features 的列名是表达式原文（含 ( ) , / 等特殊字符），LightGBM 不接受
+    作为 feature name（报 "Do not support special JSON characters"），统一重命名为
+    extra_feature_0/1/...（train/test 顺序一致，predict 按位置即可对齐）。
+    """
     from qlib.data import D
     codes = _codes_old(dataset)
     lo = min(str(x)[:10] for x in idx.get_level_values("datetime"))
@@ -116,6 +121,7 @@ def _extra_cols(dataset, exprs, idx, buffer_days=120) -> pd.DataFrame:
     start = (pd.to_datetime(lo) - pd.Timedelta(days=buffer_days)).strftime("%Y-%m-%d")
     df = D.features(codes, list(exprs), start_time=start, end_time=hi)
     aligned = align_trig(df, idx).astype(float)
+    aligned.columns = ["extra_feature_%d" % i for i in range(aligned.shape[1])]
     return aligned.fillna(0.0)
 
 
