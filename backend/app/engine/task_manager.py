@@ -299,6 +299,22 @@ class TaskManager:
         """
         return self.running_count() + self.external_running() < self.current_limit()
 
+    def external_soft_cap(self) -> int:
+        """单因子等外部(共享配额)任务合计可占用的最大槽位数。
+
+        默认 = 当前最大并发 - 1：始终为回测保留至少 1 个槽，避免单因子并行测试
+        （每个预测周期各占一个槽）一次吃光全部并发导致回测长期排队。
+        可通过环境变量 QLIB_RESERVED_BACKTEST_SLOTS 调整"预留给回测的槽数"。
+        """
+        reserve = 1
+        env = os.environ.get("QLIB_RESERVED_BACKTEST_SLOTS")
+        if env:
+            try:
+                reserve = max(0, int(env))
+            except ValueError:
+                pass
+        return max(1, self.current_limit() - reserve)
+
     def try_acquire_slot(self, external_id: Optional[str] = None) -> bool:
         """尝试占用一个并发配额（不阻塞，按当前动态上限判断）。
 
@@ -306,8 +322,13 @@ class TaskManager:
         配额满时返回 False（需排队等待），配合 release_slot() 成对使用。
         external_id 非空时登记"持有配额"（计数 +1，同一任务可多次 acquire 占多个
         slot，如单因子测试并行模式每个预测周期各占一个），计入并发统计（running）。
+        带 external_id 的占用还受 external_soft_cap() 限制（默认留 1 槽给回测）。
         """
         with self._lock:
+            if external_id:
+                ext = sum(self._external.values())
+                if ext >= self.external_soft_cap():
+                    return False
             if self._hold_slots >= self.current_limit():
                 return False
             self._hold_slots += 1

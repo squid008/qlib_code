@@ -286,6 +286,7 @@ def single_factor_test(req: SingleFactorTestRequest):
         prog: dict[int, float] = {}       # 周期 -> 该周期内部进度 0-100（用于汇总整体进度）
         fatal: dict[int, str] = {}        # 周期 -> 致命错误（异常抛出时记录）
         done = 0                          # 已完成的周期数（progress 文案用）
+        running_h: set = set()            # 正在运行的预测周期（占槽中；用于排队提示聚合视图）
 
         def _worker() -> None:
             nonlocal done
@@ -296,19 +297,32 @@ def single_factor_test(req: SingleFactorTestRequest):
                     h = queue.pop(0)
                 acquired = False
                 try:
-                    # 与回测/训练共用并发配额：并行下每周期各占一个并发单元，拿不到就排队
-                    # （排队中每秒检查一次取消）——回测占用多时自动少跑，释放后自动顶上
+                    # 与回测/训练共用并发配额：每周期各占一个并发单元，拿不到就排队
+                    # （排队中每秒检查一次取消）——回测占用多时自动少跑，释放后自动顶上。
+                    # 排队提示用聚合视图：能显示"哪些周期正在跑、完成的进度"，避免只显示
+                    # 干巴巴的"排队等待"让人误以为卡死。
                     while not manager.try_acquire_slot(task_id):
                         if state.get("cancel_requested"):
                             state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
                             return
                         if state.get("status") == "running":
-                            state.update(
-                                message=f"排队等待并发单元（预测周期 {h} 日，与回测共用配额）...",
-                                ts=time.time(),
-                            )
+                            with lock:
+                                rr = sorted(running_h)
+                            if rr:
+                                state.update(
+                                    message=("并行测试中：%d/%d 周期运行(%s)；等待并发单元（%d 日）..."
+                                             % (len(rr), n_h, ",".join(str(x) for x in rr[:4]), h)),
+                                    ts=time.time(),
+                                )
+                            else:
+                                state.update(
+                                    message=f"排队等待并发单元（预测周期 {h} 日，与回测共用配额）...",
+                                    ts=time.time(),
+                                )
                         time.sleep(1)
                     acquired = True
+                    with lock:
+                        running_h.add(h)
                     manager.unregister_external_queued(task_id)
 
                     def _cb(p: float, m: str) -> None:
@@ -360,10 +374,20 @@ def single_factor_test(req: SingleFactorTestRequest):
                     return
                 finally:
                     if acquired:
+                        with lock:
+                            running_h.discard(h)
                         manager.release_slot(task_id)
 
-        # 并行 = 每个周期一个 worker（内部排队等 slot）；串行 = 1 个 worker 顺序跑完所有周期
-        n_worker = n_h if parallel else 1
+        # 并行 worker 数 = min(周期数, 外部软上限)：worker 完成一个周期会继续弹下一个，
+        # 因此启动超过软上限的 worker 只会让它们在 acquire 上空转排队（白白制造"排队中"噪音）。
+        # 串行 = 1 个 worker 顺序跑完所有周期。
+        if parallel:
+            try:
+                n_worker = min(n_h, max(1, manager.external_soft_cap()))
+            except Exception:
+                n_worker = min(n_h, 2)
+        else:
+            n_worker = 1
         threads = [threading.Thread(target=_worker, daemon=True) for _ in range(n_worker)]
         for t in threads:
             t.start()

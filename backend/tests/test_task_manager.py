@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """任务管理器并发限制的单元测试（纯逻辑，不起真实回测线程）。"""
+import pytest
+
 from app.engine.task_manager import TaskManager, current_max_concurrent
 
 
@@ -32,6 +34,21 @@ class TestConcurrencyLimit:
 
         # 清理，避免计数泄漏
         manager.release_slot()
+
+    def test_external_soft_cap_reserves_backtest_slot(self):
+        """外部任务（单因子）合计最多占 max_concurrent-1，给回测留 1 槽。"""
+        manager = TaskManager(work_dir=None)
+        n = manager.current_limit()
+        if n <= 1:
+            pytest.skip("并发上限为 1，无预留空间")
+        cap = manager.external_soft_cap()
+        assert cap == max(1, n - 1)
+        for _ in range(cap):
+            assert manager.try_acquire_slot(external_id="e1")
+        # 单因子（external）继续占应被软上限拒绝
+        assert not manager.try_acquire_slot(external_id="e2")
+        # 但回测（无 external_id）仍可占用剩余槽 → 预留 1 槽生效
+        assert manager.try_acquire_slot()
 
     def test_concurrency_info_fields(self):
         """并发信息包含 max_concurrent / running / queued / available / resource。"""
