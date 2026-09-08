@@ -86,6 +86,19 @@ class TaskManager:
             self._hold_slots = max(0, self._hold_slots - 1)
             self._cond.notify_all()
 
+    def _has_pending_backtests_locked(self) -> bool:
+        """（调用方需已持有 self._lock）是否存在排队等待配额的回测任务。"""
+        return any(t.status == "pending" for t in self._tasks.values())
+
+    def has_pending_backtests(self) -> bool:
+        """是否存在排队等待配额的回测任务（pending）。
+
+        并发协调用：回测排队中时，外部任务（单因子等）不再新增占用配额，
+        把并发让给回测，避免单因子并行把排队回测饿死。
+        """
+        with self._lock:
+            return self._has_pending_backtests_locked()
+
     def _reserve_blocking(self, task_id: str) -> bool:
         """回测任务阻塞式申请配额：配额满时在此等待（保持 pending 排队）。
 
@@ -93,6 +106,10 @@ class TaskManager:
         """
         with self._lock:
             while self._hold_slots >= self.current_limit():
+                if task_id in self._cancel_flags:
+                    # 排队期间被取消：cancel() 已 notify_all 唤醒本等待者，
+                    # 这里直接退出（不再占配额），由 _run 统一标记 cancelled。
+                    return False
                 self._cond.wait()
             self._hold_slots += 1
         if self.is_cancelled(task_id):
@@ -101,13 +118,18 @@ class TaskManager:
         return True
 
     def cancel(self, task_id: str) -> bool:
-        """请求取消任务。返回是否成功标记（任务存在且未结束）。"""
+        """请求取消任务。返回是否成功标记（任务存在且未结束）。
+
+        若任务正排队等待配额（pending），notify_all 唤醒其等待线程，
+        使其立刻退出排队（此前 cancel 后要等到有槽释放才会响应）。
+        """
         with self._lock:
             t = self._tasks.get(task_id)
             if t is None or t.status in ("success", "failed", "cancelled"):
                 return False
             self._cancel_flags.add(task_id)
             t.status = "cancelling"  # 正在取消中
+            self._cond.notify_all()  # 唤醒排队中的等待者（含 pending 回测自身）
             return True
 
     def is_cancelled(self, task_id: str) -> bool:
@@ -323,9 +345,16 @@ class TaskManager:
         external_id 非空时登记"持有配额"（计数 +1，同一任务可多次 acquire 占多个
         slot，如单因子测试并行模式每个预测周期各占一个），计入并发统计（running）。
         带 external_id 的占用还受 external_soft_cap() 限制（默认留 1 槽给回测）。
+
+        协调规则（回测优先）：存在排队等待配额的回测任务（pending）时，
+        外部任务不再新增占用——把释放出来的槽优先让给排队回测，避免单因子
+        并行（每周期一槽）把用户提交的回测长期饿在队列里。
         """
         with self._lock:
             if external_id:
+                # 回测在排队：外部不抢新槽（已持有的槽继续跑，释放后回测先得）
+                if self._has_pending_backtests_locked():
+                    return False
                 ext = sum(self._external.values())
                 if ext >= self.external_soft_cap():
                     return False
@@ -337,6 +366,46 @@ class TaskManager:
             with self._lock:
                 self._external[external_id] = self._external.get(external_id, 0) + 1
         return True
+
+    def external_wait_slot(self, external_id: str, cancel_check=None) -> bool:
+        """外部任务（单因子）阻塞式等待一个配额（取代 sleep 忙轮询）。
+
+        与 try_acquire_slot 同条件；拿不到时在条件变量上挂起，由释放/取消方
+        notify_all 唤醒后重新竞争。cancel_check 可传可调用对象，每次被唤醒时
+        检查：返回 True 表示已请求取消 → 立即放弃返回 False（不再排队空等）。
+
+        返回 True=已占用一个槽（调用方需在结束时 release_slot(external_id)）；
+        False=排队期间被取消。
+        """
+        with self._lock:
+            while True:
+                if cancel_check is not None and cancel_check():
+                    return False
+                ok = True
+                if self._has_pending_backtests_locked():
+                    ok = False  # 回测在排队：让位（不抢新槽）
+                if ok:
+                    ext = sum(self._external.values())
+                    if ext >= self.external_soft_cap():
+                        ok = False
+                if ok and self._hold_slots >= self.current_limit():
+                    ok = False
+                if ok:
+                    self._hold_slots += 1
+                    break
+                # 挂起等待（最长 1s 自醒一次，兜底感知取消/上限变化）：
+                # 释放槽 / cancel() / wake_external_waiters() 会 notify_all 提前唤醒
+                self._cond.wait(timeout=1.0)
+        resource.acquire_task_jobs()
+        with self._lock:
+            self._external[external_id] = self._external.get(external_id, 0) + 1
+        return True
+
+    def wake_external_waiters(self) -> None:
+        """唤醒全部排队等待配额的外部任务（如取消单因子测试时调用，使排队中的
+        worker 立刻醒来感知取消退出，不必等到下一次自醒/释放）。"""
+        with self._lock:
+            self._cond.notify_all()
 
     def release_slot(self, external_id: Optional[str] = None) -> None:
         """归还一个并发配额（与 try_acquire_slot 成对），并注销持有登记（计数 -1，归零移除）。"""

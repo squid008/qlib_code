@@ -530,9 +530,11 @@ def run_single_factor_test(
     # 加载全部因子（去重）+ label + 涨停/停牌判断所需基础字段。
     # 列名用唯一编号 F0..Fn / LABEL / CLOSE / CHANGE（信号日 T）/ T1_CLOSE / T1_CHANGE（成交日 T+1）。
     # T1 行情用 Ref 取未来一天（与 label 买入价 Ref($close,-1) 同源），成交日停牌时 T1_CLOSE 为 NaN。
-    # 分小批加载（每批 2 个表达式），批间回调进度并检查"取消"。
-    # 注意：D.features 单批内部不可中断，批越小取消响应越快（此前 5 个一批时，
-    # 大股票池全区间的一批可能算很久，导致"取消半天没反应"）。
+    # 尽量一次全载所有字段：实测 D.features 存在与字段数基本无关的固定开销
+    # （300~1500 股、2~21 个字段单次调用均 ~16s，字段计算本身几乎不耗时），
+    # 拆小批会让固定开销乘批次数（此前每批 2 个、12 字段=6 批 ≈96s，慢的元凶）。
+    # 仅在字段超多（>32）时兜底拆批防内存峰值；单批内部不可中断，全载也仅需
+    # 一次 16s 左右，取消响应反而优于拆批。
     # 复权（2026-09-02 修正，见 engine/adjust.py docstring）：
     #   数据 $close 原生为【后复权价】(=真实价×$factor)。因子表达式与 label 按复权模式
     #   计算（none→真实价 close/$factor；forward/backward→原生后复权价 close，比率等价）。
@@ -564,7 +566,8 @@ def run_single_factor_test(
         tag_names += ["IS_ST", "T1_IS_ST"]
     fields = tuple(adj_exprs) + (label_expr,) + tuple(base_fields) + tuple(tag_fields)
     col_names = col_names + base_names + tag_names
-    batch_size = 2
+    # 一次全载（固定开销只付 1 次）；字段超 32 才兜底拆批（防超大字段集内存峰值）
+    batch_size = max(1, min(len(fields), 32))
     frames = []
     try:
         for k in range(0, len(fields), batch_size):

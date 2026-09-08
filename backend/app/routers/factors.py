@@ -206,6 +206,64 @@ def _sft_get(task_id: str):
         return _SFT_TASKS.get(task_id)
 
 
+def _sft_render_view(state: dict) -> tuple:
+    """读侧统一渲染 (progress, message)：消息只在这里合成，杜绝多线程抢写 message。
+
+    - 运行中：整体进度 = (已完成周期×100 + 运行中周期内部进度) / 总周期数；
+      message 按状态分层（排队中 → 正在并行跑哪些周期及其内部进度），
+      随运行集合/进度变化而稳定更新，不再在"排队文案"与"周期进度文案"间来回横跳。
+    - 终态：直接使用存储的终态 message。
+    """
+    status = state.get("status")
+    if status in ("success", "failed", "cancelled"):
+        return float(state.get("progress", 100.0)), state.get("message", status)
+    with _SFT_LOCK:
+        horizons = list((state.get("config") or {}).get("horizons") or [])
+        running = sorted(state.get("running_h") or [])
+        queued = sorted(state.get("queued_h") or [])
+        done_n = int(state.get("done_n") or 0)
+        per_prog = dict(state.get("per_h_prog") or {})
+        per_msg = dict(state.get("per_h_msg") or {})
+        cancelled = bool(state.get("cancel_requested"))
+        ts = state.get("ts", 0.0)
+    n_h = max(1, len(horizons))
+
+    if cancelled:
+        return 0.0, "正在取消..."  # 终态由 worker 主线程统一收尾写 "已取消"
+
+    running_prog = sum(float(per_prog.get(h, 0.0)) for h in running)
+    overall = round((done_n * 100.0 + running_prog) / n_h, 1)
+
+    # message 分层：全部排队中 → 无文案冲突；有运行周期 → 列出各周期及其内部进度
+    if not running:
+        if queued:
+            qs = "、".join(str(x) for x in queued[:6])
+            tail = "等" if len(queued) > 6 else ""
+            msg = f"排队等待并发单元（预测周期 {qs} 日{tail}，与回测/训练共用配额）..."
+        else:
+            msg = "等待调度..."
+    else:
+        parts = []
+        for h in running:
+            inner = per_msg.get(h, "")
+            parts.append(f"[{h}日] {inner}" if inner else f"[{h}日] 运行中")
+        msg = "；".join(parts)
+        if n_h > 1:
+            msg = f"{msg}（运行 {len(running)}/{n_h} 周期"
+            if done_n:
+                msg += f"，已完成 {done_n}"
+            if queued:
+                msg += f"，{len(queued)} 个排队"
+            msg += "）"
+    return overall, msg
+
+
+def _sft_touch(state: dict) -> None:
+    """写侧标记时间戳（供 tasks 列表按活动排序；不写 message——消息统一读侧渲染）。"""
+    with _SFT_LOCK:
+        state["ts"] = time.time()
+
+
 @router.post("/single-factor-test", summary="单因子测试（不训练模型，异步提交）")
 def single_factor_test(req: SingleFactorTestRequest):
     """提交单因子测试任务，后台线程逐个因子快速诊断，返回 task_id。
@@ -253,6 +311,10 @@ def single_factor_test(req: SingleFactorTestRequest):
             )
 
     task_id = uuid.uuid4().hex[:12]
+    # 结构化运行态（读侧渲染 message/progress，杜绝多线程抢写 message 造成文案来回跳）：
+    #   running_h / queued_h：正在运行 / 排队等槽的预测周期
+    #   per_h_prog / per_h_msg：各周期内部进度 0-100 / 内部最新进度文案
+    #   done_n：已完成的周期数（整体进度 = (完成周期×100 + 运行周期内部进度) / 总周期数）
     state: dict = {
         "task_id": task_id,
         "status": "running",
@@ -263,8 +325,18 @@ def single_factor_test(req: SingleFactorTestRequest):
         "cancel_requested": False,
         "ts": time.time(),
         "config": {"horizons": horizons, "parallel": parallel},
+        "running_h": [],
+        "queued_h": [],
+        "done_n": 0,
+        "per_h_prog": {},
+        "per_h_msg": {},
     }
     _sft_store(task_id, state)
+
+    def _set_cancel(state: dict) -> None:
+        """标记任务已取消（仅当仍在运行中；避免覆盖 failed/success）。"""
+        if state.get("status") == "running":
+            state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
 
     def _run() -> None:
         manager = get_task_manager(config.WORK_DIR)
@@ -283,10 +355,8 @@ def single_factor_test(req: SingleFactorTestRequest):
         lock = threading.Lock()
         queue = list(horizons)            # 待跑周期队列（升序，worker 弹队首）
         per_h: dict[int, list] = {}       # 周期 -> 该周期全部因子的结果
-        prog: dict[int, float] = {}       # 周期 -> 该周期内部进度 0-100（用于汇总整体进度）
         fatal: dict[int, str] = {}        # 周期 -> 致命错误（异常抛出时记录）
-        done = 0                          # 已完成的周期数（progress 文案用）
-        running_h: set = set()            # 正在运行的预测周期（占槽中；用于排队提示聚合视图）
+        done = 0                          # 已完成的周期数（用于最终结果组装，非并发写）
 
         def _worker() -> None:
             nonlocal done
@@ -295,49 +365,39 @@ def single_factor_test(req: SingleFactorTestRequest):
                     if not queue:
                         return
                     h = queue.pop(0)
+                # 该周期进入"等待并发单元"状态（宏观可见，读侧渲染文案）
+                with lock:
+                    if h not in state["queued_h"]:
+                        state["queued_h"] = sorted(state["queued_h"] + [h])
                 acquired = False
                 try:
-                    # 与回测/训练共用并发配额：每周期各占一个并发单元，拿不到就排队
-                    # （排队中每秒检查一次取消）——回测占用多时自动少跑，释放后自动顶上。
-                    # 排队提示用聚合视图：能显示"哪些周期正在跑、完成的进度"，避免只显示
-                    # 干巴巴的"排队等待"让人误以为卡死。
-                    while not manager.try_acquire_slot(task_id):
-                        if state.get("cancel_requested"):
-                            state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
-                            return
-                        if state.get("status") == "running":
-                            with lock:
-                                rr = sorted(running_h)
-                            if rr:
-                                state.update(
-                                    message=("并行测试中：%d/%d 周期运行(%s)；等待并发单元（%d 日）..."
-                                             % (len(rr), n_h, ",".join(str(x) for x in rr[:4]), h)),
-                                    ts=time.time(),
-                                )
-                            else:
-                                state.update(
-                                    message=f"排队等待并发单元（预测周期 {h} 日，与回测共用配额）...",
-                                    ts=time.time(),
-                                )
-                        time.sleep(1)
+                    # 与回测/训练共用并发配额：每周期各占一个并发单元，拿不到就阻塞排队。
+                    # 取消（cancel_requested）时立即退出排队；不忙轮询、不写 message，
+                    # 排队/运行文案统一由读侧 _sft_render_view 合成，避免来回跳。
+                    got = manager.external_wait_slot(
+                        task_id, cancel_check=lambda: bool(state.get("cancel_requested"))
+                    )
+                    if not got:
+                        with lock:
+                            if h in state["queued_h"]:
+                                state["queued_h"].remove(h)
+                        return  # 排队期间被取消：终态由主线程统一收尾
                     acquired = True
                     with lock:
-                        running_h.add(h)
+                        if h in state["queued_h"]:
+                            state["queued_h"].remove(h)
+                        if h not in state["running_h"]:
+                            state["running_h"] = sorted(state["running_h"] + [h])
+                    # 该任务已有周期真正开跑：取消"整体排队"登记（queued 统计不再计入）
                     manager.unregister_external_queued(task_id)
 
                     def _cb(p: float, m: str) -> None:
-                        # 汇总整体进度：各周期进度等权平均；取消时抛异常终止（因子间/批间检查点）
+                        # 只更新结构化进度字段，由读侧合成整体进度与文案
                         with lock:
-                            prog[h] = float(p)
-                            overall = sum(prog.values()) / n_h
-                            n_done = done
-                        msg = f"[周期 {h} 日] {m}" if n_h > 1 else m
-                        if n_h > 1 and n_done:
-                            msg = f"{msg}（{n_done}/{n_h} 周期完成）"
+                            state["per_h_prog"][h] = float(p)
+                            state["per_h_msg"][h] = m
                         if state.get("cancel_requested"):
                             raise FactorTestCancelled()
-                        if state.get("status") == "running":
-                            state.update(progress=round(overall, 1), message=msg, ts=time.time())
 
                     if state.get("cancel_requested"):
                         raise FactorTestCancelled()
@@ -363,23 +423,25 @@ def single_factor_test(req: SingleFactorTestRequest):
                     with lock:
                         per_h[h] = items
                         done += 1
+                        state["done_n"] = done
+                        state["per_h_prog"].pop(h, None)  # 完成即从"运行中进度"移除
+                        state["per_h_msg"].pop(h, None)
                 except FactorTestCancelled:
-                    with lock:
-                        if state.get("status") == "running":
-                            state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
-                    return
+                    pass  # 终态由主线程统一收尾（不在 worker 内写 status，避免竞争覆盖）
                 except Exception as e:
                     with lock:
                         fatal[h] = str(e)
-                    return
                 finally:
                     if acquired:
                         with lock:
-                            running_h.discard(h)
+                            if h in state["running_h"]:
+                                state["running_h"].remove(h)
+                            state["per_h_prog"].pop(h, None)
+                            state["per_h_msg"].pop(h, None)
                         manager.release_slot(task_id)
 
         # 并行 worker 数 = min(周期数, 外部软上限)：worker 完成一个周期会继续弹下一个，
-        # 因此启动超过软上限的 worker 只会让它们在 acquire 上空转排队（白白制造"排队中"噪音）。
+        # 因此启动超过软上限的 worker 只会让它们在等待队列里空等（不占配额、不制造噪音）。
         # 串行 = 1 个 worker 顺序跑完所有周期。
         if parallel:
             try:
@@ -395,6 +457,9 @@ def single_factor_test(req: SingleFactorTestRequest):
             t.join()
 
         with lock:
+            # 取消优先（排队中或运行中被取消都汇聚到这里统一收尾，保证只写一次终态）
+            if state.get("cancel_requested") and state.get("status") == "running":
+                _set_cancel(state)
             if state.get("status") == "cancelled":
                 manager.unregister_external_queued(task_id)
                 _sft_trim_results()
@@ -433,15 +498,19 @@ def single_factor_test(req: SingleFactorTestRequest):
 
 @router.get("/single-factor-test/progress/{task_id}", summary="查询单因子测试任务进度")
 def single_factor_test_progress(task_id: str):
-    """轮询单因子测试任务：status running/success/failed/cancelled，progress 0-100，success 时附带 result。"""
+    """轮询单因子测试任务：status running/success/failed/cancelled，progress 0-100，success 时附带 result。
+
+    progress/message 由 _sft_render_view 读侧统一合成（多 worker 不写 message）。
+    """
     state = _sft_get(task_id)
     if state is None:
         raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    progress, message = _sft_render_view(state)
     return {
         "task_id": task_id,
         "status": state["status"],
-        "progress": state["progress"],
-        "message": state["message"],
+        "progress": progress,
+        "message": message,
         "result": state.get("result"),
         "error": state.get("error"),
     }
@@ -449,7 +518,8 @@ def single_factor_test_progress(task_id: str):
 
 @router.post("/single-factor-test/cancel/{task_id}", summary="取消单因子测试任务")
 def single_factor_test_cancel(task_id: str):
-    """请求取消正在运行的单因子测试任务：设置取消标记，后台线程在下一个进度点终止。
+    """请求取消正在运行的单因子测试任务：设置取消标记，并唤醒排队等待配额的任务线程
+    （否则 worker 阻塞等槽时无法及时感知取消），后台线程在下一进度点/下次唤醒终止。
 
     返回 {ok, message}；任务已结束（success/failed/cancelled）时 ok=False 且不改变状态。
     """
@@ -459,6 +529,12 @@ def single_factor_test_cancel(task_id: str):
     if state.get("status") != "running":
         return {"ok": False, "message": f"任务已{state.get('message', '结束')}，无需取消"}
     state["cancel_requested"] = True
+    # 唤醒阻塞在 external_wait_slot 的排队 worker（无槽可释放时也能立即响应取消）
+    try:
+        manager = get_task_manager(config.WORK_DIR)
+        manager.wake_external_waiters()
+    except Exception:
+        pass
     return {"ok": True, "message": "已请求取消，正在终止..."}
 
 
@@ -487,16 +563,17 @@ def single_factor_test_tasks(limit: int = 20):
     """
     with _SFT_LOCK:
         tasks = sorted(_SFT_TASKS.values(), key=lambda v: v.get("ts", 0), reverse=True)
-    return {
-        "tasks": [
+    out = []
+    for t in tasks[: max(1, min(int(limit or 20), 100))]:
+        progress, message = _sft_render_view(t)
+        out.append(
             {
                 "task_id": t["task_id"],
                 "status": t["status"],
-                "progress": t["progress"],
-                "message": t["message"],
+                "progress": progress,
+                "message": message,
                 "ts": t.get("ts", 0),
                 "cancel_requested": t.get("cancel_requested", False),
             }
-            for t in tasks[: max(1, min(int(limit or 20), 100))]
-        ]
-    }
+        )
+    return {"tasks": out}

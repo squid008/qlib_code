@@ -3,6 +3,17 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.16.3] - 2026-09-08
+
+### Fixed
+- **单因子测试"加载特征数据"巨慢（长期卡 2/12 不动、取消半天无反应）**：实测本机每次 `D.features` 调用存在与股票数/字段数基本无关的 ~16s 固定开销（300~1500 只、2~21 个字段单次均 ~16s，二次调用亦无缓存）。`single_test` 原 `batch_size=2` 将 12 个字段拆 6 批调用 → 固定开销乘 6（约 96s+，字段越多越慢）。修复：**一次全载全部字段**（`batch_size = min(len(fields), 32)`，超 32 仅防内存峰值兜底拆批）。验证：csi300（338 只，2025-01~2026-08）单因子任务提交到完成 **23.3s**（旧逻辑光加载 ~96s）。全 A 5260×12 字段单次 32.9s / 0.32GB 可接受。
+- **并发协调"回测优先"引入的锁内重入死锁（后端所有 API 卡死）**：`try_acquire_slot` / `external_wait_slot` 在持有 `self._lock` 时又调用 `has_pending_backtests()`（内部再次 `with self._lock`），`threading.Lock` 不可重入 → 线程永久卡在锁上、健康检查与全部接口超时。修复：锁内改用 `_has_pending_backtests_locked()` 私有方法。
+
+### Changed
+- **并发协调语义（回测优先 + 阻塞等槽）**：`TaskManager` 新增——存在排队等待配额的回测任务（pending）时，外部任务（单因子并行等）不再新增占用配额，把释放的槽优先让给排队回测，避免单因子把回测饿在队列；新增 `external_wait_slot`（外部任务**阻塞式**等待配额，条件变量唤醒，取代逐秒 `sleep` 忙轮询；支持 `cancel_check` 回调，取消排队中的单因子立即退出）与 `wake_external_waiters`（取消时唤醒排队 worker）。
+- **排队/进度提示读侧统一合成**：单因子任务 worker 线程不再各自写 `state["message"]`（多 worker 竞争写同一字段是"排队文案/周期进度文案来回跳"根源），只维护结构化字段（`running_h` / `queued_h` / `done_n` / `per_h_prog` / `per_h_msg`）；对外 `progress`/`message` 由 `_sft_render_view` 在读取时统一合成（整体进度 = 已完成周期×100 + 运行中周期内部进度的均值），文案稳定不横跳。progress / tasks / cancel 端点均接入。
+- 版本 1.16.2→1.16.3。
+
 ## [1.16.2] - 2026-09-08
 
 ### Changed
