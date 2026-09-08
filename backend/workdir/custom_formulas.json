@@ -78,5 +78,13 @@
     "expression": "And(And(Gt($mf_amount_main,Mean($mf_amount_main,20)),Gt(Mean($mf_amount_main,20),0)),Gt(Mean($mf_amount_main,20),Ref(Mean($mf_amount_main,20),1)))",
     "created_at": "2026-09-05 14:08:13",
     "updated_at": "2026-09-05 14:08:13"
+  },
+  {
+    "id": "4016a51d586a",
+    "name": "选股",
+    "text": "N:=120; \n\n杯底价:=LLV(L,N);\n杯底位置:=BARSLAST(L=杯底价);\n左侧高点:=HHV(H,杯底位置);\n右侧高点:=HHV(H,杯底位置); \n右侧位置:=BARSLAST(H=右侧高点);\n柄部低点:=LLV(L,右侧位置);\n\n杯深:=(左侧高点-杯底价)/左侧高点;\nCON1:=杯深>0.1 AND 杯深<0.5;\n\nCON2:=右侧高点>=0.85*左侧高点;\n\nCON3:=(右侧高点-柄部低点)/右侧高点<0.2 AND 柄部低点>杯底价;\n\nCON4:=右侧位置>=3;\n\n突破信号:=CROSS(C,右侧高点) AND V>=REF(V,1)*1.5;\n\ncon5:=ref(c,30)<ref(ma(c,250),30);\n\n选股:CON1 AND CON2 AND CON3 AND CON4 AND 突破信号;",
+    "expression": "And(And(And(And(And(Gt(Div(Sub(DYN_MAX($high,BARSLAST(Eq($low,Min($low,120)))),Min($low,120)),DYN_MAX($high,BARSLAST(Eq($low,Min($low,120))))),0.1),Lt(Div(Sub(DYN_MAX($high,BARSLAST(Eq($low,Min($low,120)))),Min($low,120)),DYN_MAX($high,BARSLAST(Eq($low,Min($low,120))))),0.5)),Ge(DYN_MAX($high,BARSLAST(Eq($low,Min($low,120)))),Mul(0.85,DYN_MAX($high,BARSLAST(Eq($low,Min($low,120))))))),And(Lt(Div(Sub(DYN_MAX($high,BARSLAST(Eq($low,Min($low,120)))),DYN_MIN($low,BARSLAST(Eq($high,DYN_MAX($high,BARSLAST(Eq($low,Min($low,120)))))))),DYN_MAX($high,BARSLAST(Eq($low,Min($low,120))))),0.2),Gt(DYN_MIN($low,BARSLAST(Eq($high,DYN_MAX($high,BARSLAST(Eq($low,Min($low,120))))))),Min($low,120)))),Ge(BARSLAST(Eq($high,DYN_MAX($high,BARSLAST(Eq($low,Min($low,120)))))),3)),And(And(Gt($close,DYN_MAX($high,BARSLAST(Eq($low,Min($low,120))))),Le(Ref($close,1),Ref(DYN_MAX($high,BARSLAST(Eq($low,Min($low,120)))),1))),Ge($volume,Mul(Ref($volume,1),1.5))))",
+    "created_at": "2026-09-08 14:53:44",
+    "updated_at": "2026-09-08 14:53:55"
   }
 ]
