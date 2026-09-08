@@ -263,11 +263,9 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
 
     # 判断训练/测试划分模式
     split_mode = (req.split_mode or "single").lower()
-    _ovl_cfg = getattr(req, "trigger_overlay_opts", None) or {}
-    _ovl_on = bool(getattr(req, "trigger_overlay_opts", None)) and bool(_ovl_cfg.get("enabled"))
-    _hard_on = bool(getattr(req, "hard_filters", None))
-    if (getattr(req, "meta_gate", False) or _ovl_on or _hard_on) and split_mode == "custom":
-        raise ValueError("Meta-Gate/触发叠加/硬规则闸门 当前仅支持一次性训练（single），滚动回测暂不支持，请改用 single 或关闭开关")
+    # 信号后处理（Meta-Gate/触发叠加/硬规则）在 single 与滚动（custom）均可用：
+    # 滚动模式下每个 segment 在其训练窗上独立训练门控/叠加模型并覆盖该段回测信号，
+    # 与主模型"每段重训"语义一致（见 _run_rolling 内 _maybe_compose_signal 调用）。
 
     if split_mode != "custom":
         # 一次性训练（single）：用回测前 train 窗口训练，整个回测区间测试
@@ -485,6 +483,34 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
 # 分层回测与 IC 计算已拆分到 .analysis 模块（见文件顶部 from .analysis import ...）
 
 
+def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str = None) -> None:
+    """信号合成（硬规则闸门 / Meta-Gate / 触发叠加，默认全关）：训练后覆盖该 recorder 的回测信号。
+
+    single 与滚动（rolling，每段）共用：主模型 SignalRecord.generate() 之后调用。
+    - 只影响回测选股/权重；IC/分层仍按主模型诊断（sr 原始预测，未被覆盖）。
+    - 失败不阻塞回测：记录 warning 并回退主信号（pred.pkl 保持 sr 保存的主分）。
+    """
+    _ovl_cfg = getattr(req, "trigger_overlay_opts", None) or {}
+    _ovl_on = bool(getattr(req, "trigger_overlay_opts", None)) and bool(_ovl_cfg.get("enabled"))
+    if not (getattr(req, "meta_gate", False) or _ovl_on or getattr(req, "hard_filters", None)):
+        return
+    _report(68, "信号合成（%s）..." % ("滚动%s" % seg_label if seg_label else "一次性"))
+    _check_cancel()
+    from .signal_compose import compose_final_signal
+    try:
+        frame, sinfo = compose_final_signal(dataset, model, req)
+        recorder.save_objects(**{"pred.pkl": frame})
+        _summ = " | ".join(
+            "%s(n=%d auc=%.3f)" % (k, v.get("n", 0), v.get("valid_auc", 0))
+            for k, v in sinfo.items()) or "ok"
+        _report(69, "信号合成完成：%s" % _summ)
+    except Exception as e:  # 失败不阻塞回测：记录并回退主信号（pred.pkl 仍是 sr 保存的主分）
+        import logging
+        import traceback
+        traceback.print_exc()
+        logging.getLogger("qlib_engine.signal_compose").warning("信号合成失败已回退主信号：%r", e)
+
+
 def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> BacktestResult:
     """一次性训练回测：用回测前 train 窗口训练，整个回测区间测试。"""
     import qlib
@@ -545,26 +571,9 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
         sr = SignalRecord(model, dataset, recorder)
         sr.generate()
 
-        # 信号合成（S1 Meta-Gate / S2 触发叠加，默认都关）：训练后覆盖回测信号
-        # （只影响回测选股/权重；IC/分层仍按主模型诊断）。仅 single 模式，见 run_backtest 校验。
-        _ovl_cfg2 = getattr(req, "trigger_overlay_opts", None) or {}
-        _ovl_on2 = bool(getattr(req, "trigger_overlay_opts", None)) and bool(_ovl_cfg2.get("enabled"))
-        if getattr(req, "meta_gate", False) or _ovl_on2 or getattr(req, "hard_filters", None):
-            _report(68, "信号合成（硬规则闸门 / gate 风控 / 触发叠加）...")
-            _check_cancel()
-            from .signal_compose import compose_final_signal
-            try:
-                frame, sinfo = compose_final_signal(dataset, model, req)
-                recorder.save_objects(**{"pred.pkl": frame})
-                _summ = " | ".join(
-                    "%s(n=%d auc=%.3f)" % (k, v.get("n", 0), v.get("valid_auc", 0))
-                    for k, v in sinfo.items()) or "ok"
-                _report(69, "信号合成完成：%s" % _summ)
-            except Exception as e:  # 失败不阻塞回测：记录并回退主信号（pred.pkl 仍是 sr 保存的主分）
-                import logging
-                import traceback
-                traceback.print_exc()
-                logging.getLogger("qlib_engine.signal_compose").warning("信号合成失败已回退主信号：%r", e)
+        # 信号合成（S1 Meta-Gate / S2 触发叠加 / 硬规则，默认都关）：训练后覆盖回测信号
+        # （只影响回测选股/权重；IC/分层仍按主模型诊断）。single 与 rolling 共用本 helper。
+        _maybe_compose_signal(req, dataset, model, recorder)
 
         # 分层回测 + IC 分析（single 模式只有一段，段标签=段1）
         _report(68, "计算分层回测与 IC 分析...")
@@ -964,6 +973,11 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             _check_cancel()  # 预测前检查
             sr = SignalRecord(model, dataset, recorder)
             sr.generate()
+
+            # 信号合成（S1 Meta-Gate / S2 触发叠加 / 硬规则，默认都关）：每段在本段 train 窗上
+            # 训练门控/叠加模型并覆盖本段回测信号（回退逻辑见 _maybe_compose_signal）
+            _maybe_compose_signal(req, dataset, model, recorder,
+                                  seg_label="段%d" % seg_no if seg_no else None)
 
             # 分层回测 + IC 分析（段标签从"段1"开始）
             _report(25 + int(60 * (idx + 1) / total), "段%d/%d: 计算分层与IC..." % (seg_no, total))

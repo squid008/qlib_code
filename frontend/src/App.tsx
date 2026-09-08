@@ -1358,12 +1358,12 @@ export default function App() {
             </p>
           </div>
 
-          {/* 信号后处理（v1.14：硬规则闸门 / Meta-Gate 风控；仅一次性训练 single） */}
+          {/* 信号后处理（v1.14：硬规则闸门 / Meta-Gate 风控；v1.16 起 single 与滚动逐段均可用） */}
           <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-700">
             <h3 className="text-sm font-semibold text-slate-600 dark:text-slate-300 mb-1">
-              信号后处理 <span className="font-normal text-slate-400">（一次性训练可用；默认全部关闭=复现旧行为）</span>
+              信号后处理 <span className="font-normal text-slate-400">（默认全部关闭=复现旧行为）</span>
             </h3>
-            <div className={form.split_mode === 'custom' ? 'opacity-50 pointer-events-none' : ''}>
+            <div>
               {/* 硬规则闸门（确定性过滤） */}
               <div className="mt-2">
                 <span className="text-sm text-slate-500">硬规则闸门：只允许满足以下条件的股票进入候选（留空=不限）</span>
@@ -1527,11 +1527,17 @@ export default function App() {
               )}
             </div>
             {form.split_mode === 'custom' && (
-              <p className="mt-2 text-xs text-slate-400">
-                滚动训练：每个测试窗口开始时，用「测试窗口起点往前 N 单位」的最新数据重新训练模型，
-                再预测并回测该测试窗口。各段账户资金连续，净值曲线无缝衔接。训练集只使用当时已发生的数据，
-                避免未来数据泄漏。
-              </p>
+              <>
+                <p className="mt-2 text-xs text-slate-400">
+                  滚动训练：每个测试窗口开始时，用「测试窗口起点往前 N 单位」的最新数据重新训练模型，
+                  再预测并回测该测试窗口。各段账户资金连续，净值曲线无缝衔接。训练集只使用当时已发生的数据，
+                  避免未来数据泄漏。
+                </p>
+                <p className="mt-1 text-xs text-slate-400">
+                  滚动模式下信号后处理（硬规则闸门 / Meta-Gate 风控）可用：会在每个测试段用
+                  「该段训练窗」重新训练门控模型后应用（与主模型同段重训），而非一次性模型套全程。
+                </p>
+              </>
             )}
           </div>
 

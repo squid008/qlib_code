@@ -32,7 +32,7 @@ export interface BacktestRequest {
   exclude_st?: boolean // 剔除 ST/*ST/退市整理
   exclude_stock_gem?: boolean // 剔除创业板（SZ30）
   exclude_stock_kcb?: boolean // 剔除科创板（SH688）
-  // 信号后处理（v1.14，均默认关/空=不启用；仅一次性训练 single）
+  // 信号后处理（v1.14；v1.16 起 single 与滚动 custom 均可，默认关/空=不启用）
   meta_gate?: boolean
   meta_gate_opts?: {
     scope?: string
