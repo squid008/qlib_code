@@ -3,6 +3,15 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.15.2] - 2026-09-08
+
+### Changed
+- **三处因子/特征多选统一支持搜索过滤**（数百个也能快速定位）：
+  - 特征选择面板（`FeatureSelectPanel`）：按特征名过滤，命中组保留、无匹配给出提示；组结构/悬停查看不变
+  - 自定义公式面板（`FormulaPanel`）：右侧公式列表按"公式名或原文"过滤
+  - Meta-Gate"Gate 附加特征"（App）：新增搜索框 + 已选计数 + 全选/清空
+- 版本 1.15.1→1.15.2。
+
 ## [1.15.1] - 2026-09-08
 
 ### Added

@@ -296,6 +296,7 @@ export default function App() {
       return { ...f, hard_filters: hf }
     })
   // Gate 附加特征：勾选已保存公式 → 存其 qlib 表达式进 meta_gate_opts.extra_features
+  const [gateExtraQuery, setGateExtraQuery] = useState('')
   const toggleGateExtra = (id: string) => {
     const fm = customFormulas.find((x) => x.id === id)
     if (!fm) return
@@ -310,6 +311,14 @@ export default function App() {
       }
     })
   }
+  const setGateExtraAll = (select: boolean) =>
+    setForm((f) => ({
+      ...f,
+      meta_gate_opts: {
+        ...(f.meta_gate_opts || {}),
+        extra_features: select ? customFormulas.map((x) => x.expression) : null,
+      },
+    }))
 
   // 更新单个模型超参（空字符串 → 移除该键，表示用默认值）
   const updateModelParam = (k: string, v: string) => {
@@ -1405,19 +1414,44 @@ export default function App() {
                 )}
                 {form.meta_gate && customFormulas.length > 0 && (
                   <div className="mt-2 w-full">
-                    <span className="text-sm text-slate-500">
-                      Gate 附加特征（已保存公式；机器会用 feature importance 自动挑选，建议 0/1 触发类）
-                    </span>
-                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 max-h-44 overflow-y-auto">
-                      {customFormulas.map((fm) => {
-                        const sel = (form.meta_gate_opts?.extra_features || []).includes(fm.expression)
-                        return (
-                          <label key={fm.id} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                            <input type="checkbox" checked={sel} onChange={() => toggleGateExtra(fm.id)} />
-                            <span>{fm.name}</span>
-                          </label>
-                        )
-                      })}
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm text-slate-500">
+                        Gate 附加特征（已选{' '}
+                        {(form.meta_gate_opts?.extra_features || []).length} / {customFormulas.length}，机器用
+                        importance 自动挑选，建议 0/1 触发类）
+                      </span>
+                      <span className="space-x-1">
+                        <button type="button" onClick={() => setGateExtraAll(true)} className="text-blue-600 hover:underline text-sm">
+                          全选
+                        </button>
+                        <span className="text-slate-300">|</span>
+                        <button type="button" onClick={() => setGateExtraAll(false)} className="text-blue-600 hover:underline text-sm">
+                          清空
+                        </button>
+                      </span>
+                    </div>
+                    <input
+                      type="text"
+                      value={gateExtraQuery}
+                      onChange={(e) => setGateExtraQuery(e.target.value)}
+                      placeholder="搜索公式名…（多公式快速定位）"
+                      className="w-full mb-1 border rounded px-2 py-1 text-xs"
+                    />
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 max-h-44 overflow-y-auto pr-1">
+                      {customFormulas
+                        .filter((fm) => {
+                          const q = gateExtraQuery.trim().toLowerCase()
+                          return !q || fm.name.toLowerCase().includes(q)
+                        })
+                        .map((fm) => {
+                          const sel = (form.meta_gate_opts?.extra_features || []).includes(fm.expression)
+                          return (
+                            <label key={fm.id} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                              <input type="checkbox" checked={sel} onChange={() => toggleGateExtra(fm.id)} />
+                              <span>{fm.name}</span>
+                            </label>
+                          )
+                        })}
                     </div>
                   </div>
                 )}

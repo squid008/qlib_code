@@ -42,6 +42,7 @@ export default function FormulaPanel({
 }: FormulaPanelProps) {
   // 函数手册弹窗（弹窗开关/选中均为本组件局部 UI 状态，不进 App）
   const [handbookOpen, setHandbookOpen] = useState(false)
+  const [listQuery, setListQuery] = useState('')
   const newAreaRef = useRef<HTMLTextAreaElement | null>(null)
   const editAreaRef = useRef<HTMLTextAreaElement | null>(null)
   const lastFocusRef = useRef<'new' | 'edit'>('new')
@@ -129,9 +130,24 @@ export default function FormulaPanel({
                   </button>
                 </span>
               </div>
+              <input
+                type="text"
+                value={listQuery}
+                onChange={(e) => setListQuery(e.target.value)}
+                placeholder="搜索公式名/原文…（多因子快速定位）"
+                className="w-full mb-1 border rounded px-2 py-1 text-xs bg-white dark:bg-slate-800"
+              />
               <ul className="space-y-1 max-h-72 overflow-y-auto pr-1">
-                {customFormulas.map((f) => (
-                  <li key={f.id} className="border rounded px-2 py-1 bg-white dark:bg-slate-800">
+                {customFormulas
+                  .filter((f) => {
+                    const q = listQuery.trim().toLowerCase()
+                    if (!q) return true
+                    return (
+                      f.name.toLowerCase().includes(q) || f.text.toLowerCase().includes(q)
+                    )
+                  })
+                  .map((f) => (
+                    <li key={f.id} className="border rounded px-2 py-1 bg-white dark:bg-slate-800">
                     {editingId === f.id ? (
                       <div>
                         <textarea
