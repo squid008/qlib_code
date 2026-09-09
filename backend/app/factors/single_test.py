@@ -199,7 +199,8 @@ def _test_one(
         "daily_t": None,
         "daily_win": None,
         "daily_n": 0,
-        # 逐日截面均值：信号组/非信号组各自逐日(触发组均值/未触发组均值)的日均未来收益
+        # 逐日截面均值：信号组/非信号组各自"配对日"（两组同日都有样本）日均未来收益，
+        # 与 daily_diff 同集合自洽（daily_diff = daily_trig_mean - daily_not_mean）。
         # （用于 0/1 信号的"信号组 vs 非信号组"日截面双柱展示，区别于整体观测加权 mean_ret）
         "daily_trig_mean": None,
         "daily_not_mean": None,
@@ -339,9 +340,20 @@ def _test_one(
             dt_pos = sub.index.names.index("datetime")
             daily_trig = trig.groupby(level=dt_pos)["LABEL"].mean()
             daily_not = not_trig.groupby(level=dt_pos)["LABEL"].mean()
-            result["daily_trig_mean"] = round(float(daily_trig.mean()), 6)
-            result["daily_not_mean"] = round(float(daily_not.mean()), 6)
             daily = (daily_trig - daily_not).dropna()
+            # 口径统一为"配对日"：触发/非触发组的日截面均值只在配对日集合上计算
+            # （当天两组都有样本的日子）。否则 daily_not_mean 会把大量无触发信号的
+            # 平淡交易日也平均进来，而 daily_trig_mean 只统计有信号的日子，两者分母
+            # 不同、直接相减无意义（如触发集中在普涨日时，非触发组全期均值被稀释到
+            # 接近 0，daily_trig_mean - daily_not_mean 会高估信号能力）。统一到配对日
+            # 后三者自洽：daily_diff == daily_trig_mean - daily_not_mean。
+            _pair = daily.index
+            if len(_pair) > 0:
+                result["daily_trig_mean"] = round(float(daily_trig.reindex(_pair).mean()), 6)
+                result["daily_not_mean"] = round(float(daily_not.reindex(_pair).mean()), 6)
+            else:
+                result["daily_trig_mean"] = round(float(daily_trig.mean()), 6)
+                result["daily_not_mean"] = round(float(daily_not.mean()), 6)
             if len(daily) >= 2:
                 from scipy.stats import ttest_1samp
 
