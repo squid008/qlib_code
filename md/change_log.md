@@ -3,6 +3,19 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.16.8] - 2026-09-09
+
+### Added
+- **面板级表达式求值器 `app/factors/panel_expr.py`（做法2 第一版，替换单因子测试特征加载）**：自研递归下降解析器 + `PanelEvaluator` 在整块 MultiIndex(instrument, datetime) 面板上用 pandas groupby-rolling/shift 向量化求值（跨股票结果拼成一面板，公共子式按 str 缓存只算一次）。目标：绕过 qlib 逐股票拆 job 调度（实测全 A 边际 ~30ms/只 × 5260 只），把 CWH 这类巨型公式全 A 从 ~152s 级降到 10~20s 级。
+- SR 语义对齐 qlib（2026-09-09 实证）：SR = 剔停牌(NaN)行后在"有效行压缩序列"上求值，出口 scatter 回全日历（停牌日 NaN）；非 SR 字段在全日历普通求值（停牌日保留前值）。含字段覆盖并集 union index、窗口预热 read_start 前移，与 qlib 行集/数值逐位对齐（rtol=1e-4 对拍通过）。
+- `tests/test_panel_expr.py` 新增 10 用例（解析重建 / SR 语义合成验证 / datareq 真实对拍 ×2：无 SR CWH + SR 连续因子）。
+
+### Changed
+- `single_test._load_feature_panel`：特征加载改走面板求值器，失败自动回退 qlib D.features（环境变量 `QLIB_SFT_PANEL=0` 强制 qlib）。
+- **池子规模阈值（v1.16.8 实测定标）**：面板为单进程求值器，中小池（实测 ≤1000 只：1000 只 CWH+字段组 19.3s vs qlib 52.3s，快 2.7×）占优；**全 A 超大池 qlib loky 8-worker 并行反而更快**（5399 只 ~300s vs 152s），且面板节点全量缓存会顶高内存 → `>1000 只自动回退 qlib`（`QLIB_SFT_PANEL_MAX` 可调）。全 A 并行化留待 v1.16.9。
+- `ops_ext.py` 有状态算子提取共享纯函数（barslast_vec/dyn_*_vec），类实现与面板共用单一数值源。
+- 版本 1.16.7→1.16.8。
+
 ## [1.16.7] - 2026-09-09
 
 ### Changed

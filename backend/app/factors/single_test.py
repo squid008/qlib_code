@@ -644,6 +644,47 @@ def run_single_factor_test(
     return results
 
 
+def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
+                        freeze_suspended_price, end_date, cancelled, progress_cb, factors):
+    """面板级特征加载（panel_expr 求值器，替代 qlib D.features）。
+
+    成功返回与 D.features 输出结构一致的 DataFrame（MultiIndex 全历 × all_cols）；
+    失败（含 panel 不支持的算子 / 数据异常）返回 None，由调用方回退 qlib。
+    进度：面板求值一次性完成，进度回调给 5（解析）→ 30（就绪）；取消在求值期间
+    无法中断（面板单批计算），接受此局限（求值远快于 qlib，等待显著缩短）。
+    """
+    import os
+
+    # 面板求值器开关（默认开；QLIB_SFT_PANEL=0 强制回退 qlib）
+    if os.environ.get("QLIB_SFT_PANEL", "1") == "0":
+        return None
+    # 池子规模阈值：面板为单进程求值器，中小池（实测 ≤1000 只）快于 qlib loky 并行；
+    # 全 A 等超大池 qlib 8-worker 并行反而占优（且面板节点全量缓存会顶高内存）→ 自动回退。
+    # 可用 QLIB_SFT_PANEL_MAX 覆盖（如 ="0" 等价关面板，="999999" 强制全走面板）。
+    _max_stocks = int(os.environ.get("QLIB_SFT_PANEL_MAX", "1000"))
+    if _max_stocks >= 0 and len(instruments) > _max_stocks:
+        return None
+    try:
+        from .panel_expr import panel_features
+
+        if progress_cb:
+            progress_cb(None, 6.0, f"计算特征数据（面板 {len(instruments)} 只）...")
+        pdf = panel_features(instruments, list(zip(fields, all_cols)),
+                             start_date, load_end)
+        if pdf is None or len(pdf) == 0:
+            return None
+        pdf = pdf.copy()
+        pdf.columns = all_cols
+        # 对齐列顺序（panel_features 顺序与 fields/all_cols 一致，此处兜底）
+        pdf = pdf[list(all_cols)]
+        if progress_cb:
+            progress_cb(None, 30.0, "特征数据就绪")
+        return pdf
+    except Exception as e:
+        _dump_sft_error(e)
+        return None
+
+
 def run_single_factor_tests(
     label_horizons,
     universe: str,
@@ -756,29 +797,37 @@ def run_single_factor_tests(
     fields = tuple(adj_exprs) + tuple(label_exprs.values()) + tuple(base_fields) + tuple(tag_fields)
     all_cols = factor_cols + list(label_cols.values()) + base_names + tag_names
 
-    frames = []
-    try:
-        batch_size = max(1, min(len(fields), 32))
-        for k in range(0, len(fields), batch_size):
-            if progress_cb:
-                done = min(k + batch_size, len(fields))
-                progress_cb(None, 5 + 25 * (done / len(fields)), f"加载特征数据 {done}/{len(fields)}...")
-            part = D.features(instruments, list(fields[k:k + batch_size]), start_time=start_date, end_time=load_end)
-            frames.append(part)
-    except FactorTestCancelled:
-        raise
-    except Exception as e:
-        _dump_sft_error(e)
-        err = [{**_test_one(pd.DataFrame(), f, ""), "error": f"特征计算失败: {e}"} for f in factors]
-        return {h: err for h in horizons}
+    df = _load_feature_panel(
+        instruments, fields, all_cols, start_date, load_end,
+        freeze_suspended_price=freeze_suspended_price, end_date=end_date,
+        cancelled=cancelled, progress_cb=progress_cb, factors=factors,
+    )
+    if df is None:
+        # 面板加载失败（不支持的算子/数据异常）→ 回退 qlib D.features
+        frames = []
+        try:
+            batch_size = max(1, min(len(fields), 32))
+            for k in range(0, len(fields), batch_size):
+                if progress_cb:
+                    done = min(k + batch_size, len(fields))
+                    progress_cb(None, 5 + 25 * (done / len(fields)), f"加载特征数据 {done}/{len(fields)}...")
+                part = D.features(instruments, list(fields[k:k + batch_size]),
+                                  start_time=start_date, end_time=load_end)
+                frames.append(part)
+        except FactorTestCancelled:
+            raise
+        except Exception as e:
+            _dump_sft_error(e)
+            err = [{**_test_one(pd.DataFrame(), f, ""), "error": f"特征计算失败: {e}"} for f in factors]
+            return {h: err for h in horizons}
 
-    if not frames or all(f is None or len(f) == 0 for f in frames):
-        err = [{**_test_one(pd.DataFrame(), f, ""), "error": "特征计算无数据"} for f in factors]
-        return {h: err for h in horizons}
+        if not frames or all(f is None or len(f) == 0 for f in frames):
+            err = [{**_test_one(pd.DataFrame(), f, ""), "error": "特征计算无数据"} for f in factors]
+            return {h: err for h in horizons}
 
-    raw = frames[0] if len(frames) == 1 else pd.concat(frames, axis=1)
-    df = raw.copy()
-    df.columns = all_cols
+        raw = frames[0] if len(frames) == 1 else pd.concat(frames, axis=1)
+        df = raw.copy()
+        df.columns = all_cols
 
     # 冻结价 label 兜底：CLOSE ffill 一次，各周期按各自 h 做 shift 修正 label 列
     if freeze_suspended_price:
