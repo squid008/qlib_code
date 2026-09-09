@@ -658,19 +658,42 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
     # 面板求值器开关（默认开；QLIB_SFT_PANEL=0 强制回退 qlib）
     if os.environ.get("QLIB_SFT_PANEL", "1") == "0":
         return None
-    # 池子规模阈值：面板为单进程求值器，中小池（实测 ≤1000 只）快于 qlib loky 并行；
-    # 全 A 等超大池 qlib 8-worker 并行反而占优（且面板节点全量缓存会顶高内存）→ 自动回退。
+    # 池子规模阈值：中小池走单进程面板；超大池（全 A）走并行面板（v1.16.9）。
     # 可用 QLIB_SFT_PANEL_MAX 覆盖（如 ="0" 等价关面板，="999999" 强制全走面板）。
     _max_stocks = int(os.environ.get("QLIB_SFT_PANEL_MAX", "1000"))
-    if _max_stocks >= 0 and len(instruments) > _max_stocks:
-        return None
-    try:
-        from .panel_expr import panel_features
+    _force_single = _max_stocks == 0  # 兼容旧值：0 = 强制全部单进程面板
+    if _force_single or len(instruments) <= max(_max_stocks, 1):
+        try:
+            from .panel_expr import panel_features
 
+            if progress_cb:
+                progress_cb(None, 6.0, f"计算特征数据（面板 {len(instruments)} 只）...")
+            pdf = panel_features(instruments, list(zip(fields, all_cols)),
+                                 start_date, load_end)
+        except Exception as e:
+            _dump_sft_error(e)
+            return None
+        if pdf is None or len(pdf) == 0:
+            return None
+        pdf = pdf.copy()
+        pdf.columns = all_cols
+        # 对齐列顺序（panel_features 顺序与 fields/all_cols 一致，此处兜底）
+        pdf = pdf[list(all_cols)]
         if progress_cb:
-            progress_cb(None, 6.0, f"计算特征数据（面板 {len(instruments)} 只）...")
-        pdf = panel_features(instruments, list(zip(fields, all_cols)),
-                             start_date, load_end)
+            progress_cb(None, 30.0, "特征数据就绪")
+        return pdf
+
+    # 超大池（> _max_stocks）：并行面板（按股票切块多进程）；失败回退 qlib
+    try:
+        from .panel_expr import panel_features_parallel
+
+        n_jobs = int(os.environ.get("QLIB_SFT_PANEL_JOBS", "0")) or None
+        if progress_cb:
+            progress_cb(None, 6.0, f"计算特征数据（面板并行 {len(instruments)} 只，切块求值中）...")
+        # 并行求值按块回报进度：progress_cb(h=None, pct, msg) 驱动加载阶段 6→30 平滑推进
+        pdf = panel_features_parallel(instruments, list(zip(fields, all_cols)),
+                                      start_date, load_end, n_jobs=n_jobs,
+                                      progress_cb=lambda p, m: progress_cb(None, p, m) if progress_cb else None)
         if pdf is None or len(pdf) == 0:
             return None
         pdf = pdf.copy()

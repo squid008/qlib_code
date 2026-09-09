@@ -22,6 +22,7 @@ CWH + label/base/tag 实际用到的全部算子。
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
@@ -39,6 +40,21 @@ if sys.getrecursionlimit() < 20000:
 # ===========================================================================
 
 _CAL: Optional[pd.DatetimeIndex] = None
+_FEATURE_DIR: Optional[str] = None
+
+
+def set_panel_runtime(calendar=None, feature_dir=None):
+    """免 qlib.init 的运行时注入（供并行 worker/外部直接使用）。
+
+    面板求值唯一依赖 qlib 的是全局交易日历 _calendar()。子进程（ProcessPool
+    worker）不执行 qlib.init，调用本函数注入 calendar（pd.DatetimeIndex）即可；
+    feature_dir 默认从 app.config.QLIB_PROVIDER_URI 解析，无需注入。
+    """
+    global _CAL, _FEATURE_DIR
+    if calendar is not None:
+        _CAL = pd.to_datetime(calendar)
+    if feature_dir is not None:
+        _FEATURE_DIR = feature_dir
 
 
 def _calendar() -> pd.DatetimeIndex:
@@ -51,6 +67,9 @@ def _calendar() -> pd.DatetimeIndex:
 
 
 def _feature_dir() -> str:
+    global _FEATURE_DIR
+    if _FEATURE_DIR:
+        return _FEATURE_DIR
     try:
         from app.config import QLIB_PROVIDER_URI
 
@@ -510,12 +529,14 @@ def _roll(s: pd.Series, func: str, N: int, sr: bool) -> pd.Series:
         valid = s[s.notna()]
         if valid.empty:
             return pd.Series(np.nan, index=s.index, dtype=np.float64)
-        r = getattr(valid.groupby(level=0).rolling(N, min_periods=1), func)()
+        r = getattr(valid.groupby(level=0, sort=False).rolling(N, min_periods=1), func)()
         out = pd.Series(np.nan, index=s.index, dtype=np.float64)
-        # groupby-rolling 输出 index 比 valid 多一层组 key：用位置赋值规避
+        # groupby-rolling 输出 index 比 valid 多一层组 key：用位置赋值规避。
+        # 必须 sort=False：rolling 默认按组字典序排序，组输入顺序非字典序时
+        # 按位置 to_numpy 回填会整池错位（跨股票窗口混算，实测 csi300+BJ 复现）。
         out.loc[valid.index] = r.to_numpy(dtype=np.float64)
         return out
-    r = getattr(s.groupby(level=0).rolling(N, min_periods=1), func)()
+    r = getattr(s.groupby(level=0, sort=False).rolling(N, min_periods=1), func)()
     # groupby-rolling 对 Series 输出会保留原 MultiIndex + 组前缀；
     # 位置与 s 对齐时直接取数值回填，保证 index = s.index
     if len(r) == len(s):
@@ -656,3 +677,129 @@ def _collect_field_names(fields) -> tuple:
     if not out:
         out = ["close"]
     return tuple(out)
+
+
+# ===========================================================================
+# 4) 并行版（v1.16.9：全 A 大池。面板求值跨股票独立 → 按股票切块多进程并行）
+# ===========================================================================
+
+def _worker_init(calendar, feature_dir):
+    """子进程初始化：注入日历与数据目录（免 qlib.init）。"""
+    set_panel_runtime(calendar=calendar, feature_dir=feature_dir)
+
+
+def _panel_features_chunk(payload):
+    """子进程执行体：对一份股票子集跑 panel_features。payload: (insts, fields, start, end)。"""
+    insts, fields, start, end = payload
+    return panel_features(insts, fields, start, end)
+
+
+@contextlib.contextmanager
+def _nowin_spawn():
+    """Windows 下让 multiprocessing spawn 的 python 子进程不弹黑色控制台窗口。
+
+    根因：后端若以无控制台方式运行（如被 DETACHED_PROCESS 启动），spawn 的
+    python.exe（console 子系统）子进程会被 Windows 分配【各自新的控制台窗口】
+    → 用户看到弹出多个黑色命令行窗口。解法：把 spawn 的可执行文件临时切成
+    同目录 pythonw.exe（GUI 子系统、天然无控制台），池用完即还原。
+
+    仅影响 multiprocessing.spawn._python_exe（ProcessPoolExecutor 走这里）；
+    qlib loky 用自己的 _python_exe（joblib externals loky.backend.spawn），互不影响。
+    非 Windows 平台为空操作。
+    """
+    if os.name != "nt":
+        yield
+        return
+    import sys as _sys
+
+    old = None
+    pythonw = None
+    try:
+        pythonw = os.path.join(os.path.dirname(_sys.executable), "pythonw.exe")
+        if os.path.exists(pythonw):
+            import multiprocessing.spawn as _sp
+
+            old = _sp._python_exe
+            _sp.set_executable(pythonw)
+        yield
+    finally:
+        if old is not None and pythonw is not None:
+            import multiprocessing.spawn as _sp
+
+            _sp._python_exe = old
+
+
+def _panel_executor(max_workers, initializer, initargs):
+    """构造 ProcessPoolExecutor（Windows 下在 _nowin_spawn 上下文内创建/使用，免弹窗）。"""
+    import concurrent.futures as cf
+
+    return cf.ProcessPoolExecutor(max_workers=max_workers, initializer=initializer, initargs=initargs)
+
+
+def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[str, str]],
+                            start_time: str, end_time: str,
+                            n_jobs: Optional[int] = None,
+                            progress_cb=None,
+                            progress_lo: float = 6.0, progress_hi: float = 30.0) -> pd.DataFrame:
+    """并行面板求值（替代 panel_features 用于大池）。
+
+    panel_features 的计算对每只股票独立（rolling/shift 按 instrument 分组、字段各读各的
+    bin），因此把 instruments 切成 n_jobs 块后每块在独立进程求值，concat 结果等价于
+    单块整体求值——但每进程只持有 1/n_jobs 的面板，内存与墙钟都大幅下降（全 A 实测
+    单进程 ~300s / 8.6GB；12 核并行预期 ~20-40s / 单进程内存 1/12）。
+
+    worker 进程通过 _worker_init 注入 calendar（免 qlib.init，calendar 与
+    D.calendar() 完全一致：6455 行 2000-01-04 ~ 2026-08-21）。
+    Windows 子进程用 pythonw.exe spawn，不弹黑色命令行窗口（_panel_executor）。
+
+    progress_cb: 可选回调 progress_cb(pct, msg)。每完成一块报一次，pct 从
+    progress_lo 线性推进到 progress_hi（默认 6→30，对应 single_test 的加载阶段
+    0-30 进度）。回调只在主进程收集结果时触发，不进入子进程计算路径，不拖慢求值。
+    """
+    import concurrent.futures as cf
+    import math
+
+    n = len(instruments)
+    if n == 0:
+        return pd.DataFrame()
+    if n_jobs is None:
+        n_jobs = min(12, max(1, math.ceil(n / 300)))  # 每块 ≥300 只，避免小池切太碎
+    n_jobs = max(1, min(n_jobs, n))
+    if n_jobs == 1 or n <= 1000:
+        # 小池/单块：直接单进程（避免进程池固定开销）
+        return panel_features(instruments, fields, start_time, end_time)
+
+    cal = _calendar()
+    fdir = _feature_dir()
+
+    # 切块：把 instruments 均分成 n_jobs 份
+    chunk_size = math.ceil(n / n_jobs)
+    chunks = [instruments[i:i + chunk_size] for i in range(0, n, chunk_size)]
+    n_chunk = len(chunks)
+    payloads = [(c, fields, start_time, end_time) for c in chunks]
+
+    parts: dict = {}
+    done = 0
+    with _nowin_spawn():
+        with _panel_executor(
+            len(chunks),
+            _worker_init,
+            (cal, fdir),
+        ) as ex:
+            futs = {ex.submit(_panel_features_chunk, p): i for i, p in enumerate(payloads)}
+            for fut in cf.as_completed(futs):
+                i = futs[fut]
+                r = fut.result()
+                if r is not None and len(r):
+                    parts[i] = r
+                done += 1
+                if progress_cb:
+                    # 线性映射 lo→hi；msg 显示已完块数（真实计算进度，非字节/耗时估算）
+                    pct = progress_lo + (progress_hi - progress_lo) * (done / n_chunk)
+                    progress_cb(pct, f"计算特征数据（面板并行，{done}/{n_chunk} 块完成）...")
+    if not parts:
+        return pd.DataFrame()
+    # 每块 panel_features 已自行裁剪到该块股票的 union index（字段覆盖 ∩ [start,end]），
+    # 跨块股票不重叠 → concat + sort 即完整（无需全局 reindex）。
+    ordered = [parts[i] for i in range(n_chunk) if i in parts]
+    return pd.concat(ordered).sort_index()

@@ -3,6 +3,18 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.16.9] - 2026-09-09
+
+### Changed
+- **面板级执行器全 A 并行化（v1.16.9，全 A 单因子 300s → ~20-40s / 较 qlib loky 快 7 倍+）**：`panel_expr.panel_features_parallel` 按股票切块、多进程并行（每块独立跑 `panel_features`，跨股天然独立、结果 concat 等价）。实测全 A 5854 只 CWH+字段组 **37.5s vs qlib 275s vs 旧单进程面板 300s+**；端到端全 A 5260 只单因子 API 任务 ~21s success。>1000 只自动走并行（`QLIB_SFT_PANEL_MAX`/`QLIB_SFT_PANEL_JOBS` 可调），≤1000 保持单进程。
+- **修复隐蔽跨股票污染 BUG（`groupby-rolling` 组排序错位）**：`groupby(level=0).rolling` 默认 `sort=True` 按股票字典序输出，而代码按位置 `to_numpy` 回填 → 输入顺序非字典序（如 csi300 后接 BJ 新股）时窗口混入他股数据、整池错位。修复 = rolling 全部加 `sort=False`（此前 csi300 对拍通过仅因代码恰好字典序掩盖，并行混池 datareq 测试抓出）。
+- **并行子进程不弹黑色命令行窗口**：ProcessPoolExecutor spawn 的 python.exe 在无控制台后端下每个都新建 console 窗口 → 新增 `_nowin_spawn()` context manager 把 `multiprocessing.spawn._python_exe` 临时切到 pythonw.exe（GUI 子系统无 console），池用完还原；已验证子进程确用 pythonw、求值逐位一致。qlib loky 用自己的 `_python_exe` 不受影响。
+- **特征计算阶段按块进度显示（单因子测试加载 6→30 平滑推进，不拖慢）**：`panel_features_parallel` 新增 `progress_cb`（默认 6→30 线性、每完成一块报"面板并行，k/n 块完成"）；回调只在主进程 `as_completed` 收结果时触发（微秒级），不进入子进程计算路径。端到端实测进度 6→14→30 平滑。
+- **前端移除"并行测试"死选项**（后端早已单执行体共享加载，`parallel` 仅保留前端语义不再生效，UI 勾选误导）：`SingleFactorTestPanel.tsx` 删 state/提交参数/勾选框。
+- **重启后端进程规范**：DETACHED 无控制台环境下 spawn cmd.exe 会弹可见窗口 → 统一用可执行文件直启（python/node）不经 cmd，加 `CREATE_NO_WINDOW`。
+- 验证：新增 `test_panel_parallel_matches_single`（1100 只混池并行 vs 单进程逐位一致 + 行集对齐 qlib）；全量单测 172 passed。
+- 版本 1.16.8→1.16.9。
+
 ## [1.16.8] - 2026-09-09
 
 ### Added

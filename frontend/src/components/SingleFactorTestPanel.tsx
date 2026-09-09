@@ -151,8 +151,6 @@ export default function SingleFactorTestPanel({
   const [labelHorizonText, setLabelHorizonText] = useState<string>(
     String(Number.isFinite(defaultLabelHorizon) ? defaultLabelHorizon : 2),
   )
-  // 并行测试：多个预测周期各占一个共享并发单元同时跑（与回测/训练共用并发配额，自动排队）
-  const [parallel, setParallel] = useState(false)
   // 日期三段输入：开始日期填完整后自动跳到结束日期年份
   const startDateRef = useRef<DateInputHandle>(null)
   const endDateRef = useRef<DateInputHandle>(null)
@@ -401,7 +399,6 @@ export default function SingleFactorTestPanel({
         end_date: endDate,
         label_horizon: parsed.horizons[0], // 兼容旧后端（单周期）
         label_horizons: parsed.horizons,
-        parallel,
         factors,
         exclude_limit_up_signal: excludeLimitUpSignal,
         exclude_limit_up_trade: excludeLimitUpTrade,
@@ -738,13 +735,6 @@ export default function SingleFactorTestPanel({
             onChange={(e) => setPriceRound(e.target.checked)}
           />
           <span>价格整分</span>
-        </label>
-        <label
-          className="flex items-center gap-1 cursor-pointer"
-          title="多个预测周期并行：每个周期各占一个共享并发单元同时跑（与回测/训练共用并发上限；回测占用多时自动排队少跑，占用释放后自动顶上）。仅单个周期时无效果"
-        >
-          <input type="checkbox" checked={parallel} onChange={(e) => setParallel(e.target.checked)} />
-          <span className="text-emerald-600">并行测试</span>
         </label>
       </div>
 

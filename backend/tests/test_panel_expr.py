@@ -210,3 +210,58 @@ def test_panel_matches_qlib_sr_continuous():
         assert n_bad == 0, (f"列 {name}: {n_bad}/{int(both.sum())} 差异超 rtol=1e-4"
                             f"（max {diff.max():.2e}）")
     assert worst < 1e-4
+
+
+@pytest.mark.datareq
+def test_panel_parallel_matches_single():
+    """并行面板（按股票切块多进程）与单进程面板逐位一致 + 行集对齐 qlib。
+
+    用 >1000 只（csi300 + 追加全 A 前段补足 1100）触发并行分支；数值上并行版与
+    单进程版必须完全一致（同字段同读盘，仅求值进程不同），行数与 qlib 一致。
+    """
+    from qlib.config import C as _C
+    from qlib.data import D as _D
+
+    from app.engine.qlib_engine import _ensure_qlib_init
+    from app.engine.utils import _default_qlib_uri
+    from app.engine.adjust import adjust_expr, normalize_mode
+    from app.engine.feature_cache import _sr_wrap_expr
+    from app.factors.panel_expr import panel_features, panel_features_parallel
+
+    _ensure_qlib_init(_default_qlib_uri())
+    _C["joblib_backend"] = "loky"
+    _C["kernels"] = 8
+
+    base = [str(i).upper()
+            for i in _D.list_instruments(_D.instruments("csi300"), start_time="2025-01-01", as_list=True)]
+    extra = [str(i).upper()
+             for i in _D.list_instruments(_D.instruments("all"), start_time="2025-01-01", as_list=True)
+             if str(i).upper() not in set(base)][:800]
+    insts = (base + extra)[:1100]
+    assert len(insts) > 1000
+    START, END = "2025-01-01", "2026-08-31"
+
+    pa = normalize_mode("none")
+    exprs = [
+        "Div(Sub($close,Mean($close,20)),Mean($close,20))",
+        "If(Gt(Sub(Div($close,Ref($close,20)),1),0.1),1,0)",
+    ]
+    fields = [(_sr_wrap_expr(adjust_expr(e, pa, round_prices=True)), f"F{i}")
+              for i, e in enumerate(exprs)]
+    fields += [("$close/$factor", "CLOSE"), ("$change", "CHANGE")]
+    names = [n for _, n in fields]
+
+    single = panel_features(insts, fields, START, END)
+    par = panel_features_parallel(insts, fields, START, END, n_jobs=4)
+    assert len(par) == len(single), (len(par), len(single))
+    full = par.index.union(single.index)
+    for name in names:
+        a = par[name].reindex(full).to_numpy(dtype=np.float64)
+        b = single[name].reindex(full).to_numpy(dtype=np.float64)
+        both = ~(np.isnan(a) | np.isnan(b))
+        d = np.abs(a[both] - b[both])
+        assert int((d > 0).sum()) == 0, f"列 {name}: 并行与单进程不一致 {int((d > 0).sum())} 处"
+
+    q = _D.features(insts, [e for e, _ in fields], start_time=START, end_time=END)
+    q.columns = names
+    assert len(par) == len(q), (len(par), len(q))
