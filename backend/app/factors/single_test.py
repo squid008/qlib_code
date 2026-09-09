@@ -341,12 +341,16 @@ def _test_one(
             daily_trig = trig.groupby(level=dt_pos)["LABEL"].mean()
             daily_not = not_trig.groupby(level=dt_pos)["LABEL"].mean()
             daily = (daily_trig - daily_not).dropna()
-            # 口径统一为"配对日"：触发/非触发组的日截面均值只在配对日集合上计算
-            # （当天两组都有样本的日子）。否则 daily_not_mean 会把大量无触发信号的
-            # 平淡交易日也平均进来，而 daily_trig_mean 只统计有信号的日子，两者分母
-            # 不同、直接相减无意义（如触发集中在普涨日时，非触发组全期均值被稀释到
-            # 接近 0，daily_trig_mean - daily_not_mean 会高估信号能力）。统一到配对日
-            # 后三者自洽：daily_diff == daily_trig_mean - daily_not_mean。
+            # 口径 = 配对日（科学口径）：触发/非触发组的日截面均值都只在"当天两组都有
+            # 样本"的配对日上计算。若按各自独立全集（daily_trig 只统计有触发的日、
+            # daily_not 统计≈全部交易日），分母不同、两值直接相减无意义——这正是用户
+            # 最初困惑"触发 0.717% − 非触发 0.037% ≠ 配对差 0.221%"的来源：0.037% 是
+            # 被大量无信号平淡日稀释的全期非触发均值，而触发信号集中发生在非触发组
+            # 当天也普涨的日子（同日非触发实际 ~0.5%）。统一到配对日后三者自洽且公平：
+            #   daily_diff == daily_trig_mean - daily_not_mean（同一日期集合的线性平均）。
+            # 注：早期对账脚本（jq notebook）的 daily_not 用全部交易日 → 数值更大
+            # （如趋势顶底 0.9594% vs 配对日 0.871%），那是分母含无信号日的口径，作为
+            # "触发 vs 非触发 同日净超额"的参照并不严谨；本处采用更科学的配对口径。
             _pair = daily.index
             if len(_pair) > 0:
                 result["daily_trig_mean"] = round(float(daily_trig.reindex(_pair).mean()), 6)
@@ -670,16 +674,17 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
     # 面板求值器开关（默认开；QLIB_SFT_PANEL=0 强制回退 qlib）
     if os.environ.get("QLIB_SFT_PANEL", "1") == "0":
         return None
-    # 含 EMA/EMA_TDX 的字段走 qlib 兜底（默认开）。面板 EMA 求值器已修复嵌套固定窗口
-    # 的 read_start 递归（_tree_ext_days），单进程面板与 qlib 逐位对齐；但"全 A 并行
-    # 面板 + 含 EMA 公式"的端到端数值仍有待复验（trend 类日截面差 ~0.02pp 待查）——
-    # 在查清前含 EMA 公式保持回退 qlib（与 v1.17.0 行为一致、数值稳定），仅无 EMA
-    # 公式（CWH 等）走面板提速。QLIB_SFT_PANEL_EMA=0 可强制含 EMA 也走面板。
+    # 含 EMA/EMA_TDX/SMA 的字段默认回退 qlib。面板均线求值虽在小池对拍与 qlib 0 差
+    # （嵌套窗口 read_start 递归 _tree_ext_days + float64 + SMA），但【全 A 端到端】
+    # 实测仍 1.0589/25444 vs qlib 1.0355/25427（用户 UI 复测确认）——差异只出现在全 A
+    # 规模、小样本对拍无法覆盖 → 在真正定位前含 EMA 公式保持走 qlib（数值稳定与
+    # v1.11.10 对齐），仅无 EMA 公式（CWH 等）走面板提速。QLIB_SFT_PANEL_EMA=0 可强制
+    # 含 EMA/SMA 走面板（实验用）。
     if os.environ.get("QLIB_SFT_PANEL_EMA", "1") != "0":
         try:
             for _f in fields:
                 _e = _f if isinstance(_f, str) else _f[0]
-                if ("EMA(" in _e) or ("EMA_TDX(" in _e):
+                if ("EMA(" in _e) or ("EMA_TDX(" in _e) or ("SMA(" in _e):
                     return None
         except Exception:
             pass

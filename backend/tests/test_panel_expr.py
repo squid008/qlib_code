@@ -320,6 +320,113 @@ def test_panel_matches_qlib_ema():
 
 
 @pytest.mark.datareq
+def test_panel_matches_qlib_sma():
+    """SMA(X,N,M)（通达信递归均线）panel vs qlib 逐位对齐。
+
+    SMA 的 qlib 扩展语义与 EMA 不同：ops_ext.SMA.get_extended_window_size 只透传
+    子特征（自身不额外扩展，非 Rolling），面板 _expr_ext_days 对 SMA 落"组合取 max"
+    分支恰好等于子树扩展 → 无需特殊 ext 规则，但 SMA 字段须与 EMA 一样进精确分组
+    （多读 warm 会让起点敏感递归偏）。覆盖：裸 SMA / 不同 N,M / 嵌套窗口 / 双线差。
+    """
+    from qlib.config import C as _C
+    from qlib.data import D as _D
+
+    from app.engine.qlib_engine import _ensure_qlib_init
+    from app.engine.utils import _default_qlib_uri
+    from app.factors.panel_expr import panel_features
+
+    _ensure_qlib_init(_default_qlib_uri())
+    _C["joblib_backend"] = "loky"
+    _C["kernels"] = 8
+
+    insts = [str(i).upper()
+             for i in _D.list_instruments(_D.instruments("csi300"), start_time="2025-01-01", as_list=True)]
+    START, END = "2025-01-01", "2026-08-31"
+    exprs = [
+        "SMA($close, 5, 1)",
+        "SMA($close, 10, 2)",
+        "SMA(Max($high, 34), 5, 1)",
+        "Sub(SMA($close, 5, 1), SMA($close, 20, 1))",
+    ]
+    fields = [(e, f"F{i}") for i, e in enumerate(exprs)]
+    names = [n for _, n in fields]
+    p = panel_features(insts, fields, START, END)
+    q = _D.features(insts, [e for e, _ in fields], start_time=START, end_time=END)
+    q.columns = names
+    assert len(p) == len(q), (len(p), len(q))
+    full = p.index.union(q.index)
+    worst = 0.0
+    for name in names:
+        a = p[name].reindex(full).to_numpy(dtype=np.float64)
+        b = q[name].reindex(full).to_numpy(dtype=np.float64)
+        both = ~(np.isnan(a) | np.isnan(b))
+        if not both.any():
+            continue
+        ok = np.isclose(a[both], b[both], rtol=1e-4, atol=1e-6, equal_nan=True)
+        n_bad = int((~ok).sum())
+        diff = np.abs(a[both] - b[both])
+        worst = max(worst, float(diff.max()))
+        assert n_bad == 0, (f"列 {name}: {n_bad}/{int(both.sum())} 差异超 rtol=1e-4"
+                            f"（max {diff.max():.2e}）")
+    assert worst < 1e-4
+
+
+@pytest.mark.datareq
+def test_panel_matches_qlib_bars():
+    """HHVBARS/LLVBARS（固定窗口 + DYN 变量窗口，杯柄形态公式核心）panel vs qlib 逐位对齐。
+
+    回归锚点：同事"杯柄突破"大公式大量使用 HHVBARS/LLVBARS 及变量周期写法
+    DYN_HHVBARS(X, AT+1)（qlib 侧 v1.17.3 才支持）；此前面板不支持这些算子 → 整批
+    回退 qlib（csi300 ~90s、全 A ~300s）。本测试覆盖固定窗口 / 短窗口 / 动态嵌套
+    动态 / 阈值判定，面板与 qlib 逐位一致（固定窗口走统一 warm、动态走按组 dyn 核）。
+    """
+    from qlib.config import C as _C
+    from qlib.data import D as _D
+
+    from app.engine.qlib_engine import _ensure_qlib_init
+    from app.engine.utils import _default_qlib_uri
+    from app.factors.panel_expr import panel_features
+
+    _ensure_qlib_init(_default_qlib_uri())
+    _C["joblib_backend"] = "loky"
+    _C["kernels"] = 8
+
+    insts = [str(i).upper()
+             for i in _D.list_instruments(_D.instruments("csi300"), start_time="2025-01-01", as_list=True)]
+    START, END = "2025-01-01", "2026-08-31"
+    exprs = [
+        "HHVBARS($high, 120)",                            # 固定窗口（杯柄左肩/右峰）
+        "LLVBARS($low, 120)",
+        "Sub(HHVBARS($high, 120), LLVBARS($low, 120))",   # 组合
+        "DYN_HHVBARS($high, Add(HHVBARS($high, 120), 1))",  # 变量窗口 HHVBARS(L, AT+1)
+        "DYN_LLVBARS($low, Add(HHVBARS($high, 120), 1))",
+        "DYN_HHVBARS($high, Add(DYN_LLVBARS($low, Add(HHVBARS($high, 120), 1)), 1))",  # 嵌套动态
+        "Gt(DYN_LLVBARS($low, Add(HHVBARS($high, 120), 1)), 4)",  # 阈值判定
+    ]
+    fields = [(e, f"F{i}") for i, e in enumerate(exprs)]
+    names = [n for _, n in fields]
+    p = panel_features(insts, fields, START, END)
+    q = _D.features(insts, [e for e, _ in fields], start_time=START, end_time=END)
+    q.columns = names
+    assert len(p) == len(q), (len(p), len(q))
+    full = p.index.union(q.index)
+    worst = 0.0
+    for name in names:
+        a = p[name].reindex(full).to_numpy(dtype=np.float64)
+        b = q[name].reindex(full).to_numpy(dtype=np.float64)
+        both = ~(np.isnan(a) | np.isnan(b))
+        if not both.any():
+            continue
+        ok = np.isclose(a[both], b[both], rtol=1e-4, atol=1e-6, equal_nan=True)
+        n_bad = int((~ok).sum())
+        diff = np.abs(a[both] - b[both])
+        worst = max(worst, float(diff.max()))
+        assert n_bad == 0, (f"列 {name}: {n_bad}/{int(both.sum())} 差异超 rtol=1e-4"
+                            f"（max {diff.max():.2e}）")
+    assert worst < 1e-4
+
+
+@pytest.mark.datareq
 def test_panel_matches_qlib_ema_nested():
     """嵌套固定窗口的 EMA（趋势顶底类）panel vs qlib 逐位对齐。
 

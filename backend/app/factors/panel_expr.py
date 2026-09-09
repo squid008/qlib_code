@@ -428,6 +428,11 @@ class PanelEvaluator:
                 raise ValueError(f"{op} 首参不能是常量")
             # EMA 非固定窗口（指数递归），逐股 ewm（sr=True 时 active 已是压缩序列）
             return _ema(s, float(N), tdx=(op == "EMA_TDX"), sr=sr)
+        if op == "SMA":
+            s, N, M = args[0], args[1], args[2]
+            if s is None:
+                raise ValueError("SMA 首参不能是常量")
+            return _sma(s, float(N), float(M), sr=sr)
         if op in _BIN_ELEM or op in _BIN_CMP:
             a, b = args
             template = a if isinstance(a, pd.Series) else b
@@ -492,7 +497,9 @@ class PanelEvaluator:
             b = _as_series(b, tpl).fillna(0.0)
             a, b = _align(a, b)
             return ((a != 0) | (b != 0)).astype(np.float64)
-        if op in ("BARSLAST", "BARSSINCEN", "DYN_REF", "DYN_MIN", "DYN_MAX", "DYN_SUM", "DYN_COUNT"):
+        if op in ("BARSLAST", "BARSSINCEN", "HHVBARS", "LLVBARS",
+                  "DYN_REF", "DYN_MIN", "DYN_MAX", "DYN_SUM", "DYN_COUNT",
+                  "DYN_HHVBARS", "DYN_LLVBARS"):
             return _panel_dyn(op, args, self)
         raise ValueError(f"panel_expr 不支持算子 {op}")
 
@@ -589,6 +596,19 @@ def _ema_apply_series(x: pd.Series, N, tdx: bool) -> pd.Series:
     return x.ewm(span=n, min_periods=1).mean()
 
 
+def _sma_apply_series(x: pd.Series, N, M) -> pd.Series:
+    """单股通达信 SMA：Y_t = (M·X_t + (N−M)·Y_{t−1}) / N → ewm(alpha=M/N, adjust=False)。
+
+    与 ops_ext.SMA 逐位一致：ewm(alpha=M/N, adjust=False, min_periods=1)，起点敏感
+    （从序列首值起递归）。N/M 为常量（codegen 已校验）。M 越接近 N 越贴近原值。
+    """
+    n = max(1, int(N))
+    m = max(0, min(int(M), n))
+    if n == 0 or m == 0:
+        return x * np.nan
+    return x.ewm(alpha=m / n, adjust=False, min_periods=1).mean()
+
+
 def _ema(s: pd.Series, N, tdx: bool, sr: bool) -> pd.Series:
     """EMA(X, N) / EMA_TDX(X, N) 面板实现。
 
@@ -600,6 +620,11 @@ def _ema(s: pd.Series, N, tdx: bool, sr: bool) -> pd.Series:
       scatter 回全日历由 eval_expr 出口统一处理（此处直接按组返回即可）。
     """
     return _by_group(s, None, lambda v: _ema_apply_series(pd.Series(v), N, tdx).to_numpy(dtype=np.float64))
+
+
+def _sma(s: pd.Series, N, M, sr: bool) -> pd.Series:
+    """SMA(X, N, M) 面板实现（逐股 ewm alpha=M/N adjust=False；语义同 _ema 的分组处理）。"""
+    return _by_group(s, None, lambda v: _sma_apply_series(pd.Series(v), N, M).to_numpy(dtype=np.float64))
 
 
 def _panel_dyn(op: str, args, ev: PanelEvaluator) -> pd.Series:
@@ -616,11 +641,19 @@ def _panel_dyn(op: str, args, ev: PanelEvaluator) -> pd.Series:
         if not isinstance(s, pd.Series):
             raise ValueError("BARSSINCEN 首参不能是常量")
         return _by_group(s, None, lambda v: ops_ext.barsincen_vec(v, N))
+    if op in ("HHVBARS", "LLVBARS"):
+        s, N = args[0], int(args[1])
+        if not isinstance(s, pd.Series):
+            raise ValueError(f"{op} 首参不能是常量")
+        is_max = op == "HHVBARS"
+        return _by_group(s, None,
+                         lambda v: ops_ext.HHVBARS._bars(v, N, is_max=is_max))
     s, ns = args
     if not isinstance(s, pd.Series) or not isinstance(ns, pd.Series):
         raise ValueError(f"{op} 参数须为序列")
     kind = {"DYN_REF": "ref", "DYN_MIN": "min", "DYN_MAX": "max",
-            "DYN_SUM": "sum", "DYN_COUNT": "count"}[op]
+            "DYN_SUM": "sum", "DYN_COUNT": "count",
+            "DYN_HHVBARS": "hhvbars", "DYN_LLVBARS": "llvbars"}[op]
     return _by_group(s, ns, lambda v, w: _dyn_kernel(kind, v, w, ops_ext))
 
 
@@ -635,6 +668,10 @@ def _dyn_kernel(kind, vals, nvals, ops_ext):
         return ops_ext.dyn_window_sum_vec(vals, nvals)
     if kind == "count":
         return ops_ext.dyn_window_count_vec(vals, nvals)
+    if kind == "hhvbars":
+        return ops_ext.dyn_bars_vec(vals, nvals, True)
+    if kind == "llvbars":
+        return ops_ext.dyn_bars_vec(vals, nvals, False)
     raise ValueError(kind)
 
 
@@ -671,8 +708,8 @@ def _warm_days(exprs) -> int:
     max_k = 0
     for expr in exprs:
         e = str(expr)
-        # 固定窗口算子 + Ref/EMA 的第二参（窗口/前移天数）
-        for m in re.finditer(r"(?:Ref|Mean|Max|Min|Sum|Std|Var|Abs|Sqrt|EMA|EMA_TDX)\([^,]+,\s*(-?\d+)", e):
+        # 固定窗口算子 + Ref/EMA 的第二参（窗口/前移天数）；HHVBARS/LLVBARS 亦固定窗口
+        for m in re.finditer(r"(?:Ref|Mean|Max|Min|Sum|Std|Var|Abs|Sqrt|EMA|EMA_TDX|HHVBARS|LLVBARS)\([^,]+,\s*(-?\d+)", e):
             try:
                 max_k = max(max_k, abs(int(m.group(1))))
             except ValueError:
@@ -708,7 +745,7 @@ def _tree_ext_days(node) -> int:
     if op in ("field", "const"):
         return 0
     args = node.args or []
-    if op in _ROLL_FUNC or op in ("EMA", "EMA_TDX"):
+    if op in _ROLL_FUNC or op in ("EMA", "EMA_TDX", "HHVBARS", "LLVBARS"):
         base = _tree_ext_days(args[0]) if args else 0
         try:
             n = float(args[1].raw) if len(args) > 1 and getattr(args[1], "op", None) == "const" else 0.0
@@ -792,16 +829,20 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
         e = str(expr).strip()
         if not e or e.lower() in ("", "none", "nan"):
             continue
-        if "SR(" in e or not re.search(r"\b(?:EMA|EMA_TDX)\(", e):
-            # 含 SR 的字段：read_start 由 SR 前移主导（lookback 250），EMA 在其中
+        if "SR(" in e or not re.search(r"\b(?:EMA|EMA_TDX|SMA)\(", e):
+            # 含 SR 的字段：read_start 由 SR 前移主导（lookback 250），EMA/SMA 在其中
             # 从更早收敛点起算，与 qlib 一致（实测 SR(EMA) 全对）→ 归普通组。
             normal_fields.setdefault(warm, []).append((e, name))
         else:
-            ext = max(1, _expr_ext_days(e))
+            ext = _expr_ext_days(e)
+            # EMA/EMA_TDX 是 Rolling 起点敏感（扩展>=N-1>=1）；SMA 的 qlib 扩展 =
+            # 子特征透传（可为 0，如 SMA($close,5,1) 扩展为 0）→ 不强制 >=1。
+            if ext < 1 and not re.search(r"\bSMA\(", e):
+                ext = max(1, ext)
             # 该字段的精确起点 = 统一 warm 与"精确 N-1"的交集？不：qlib 只前移
             # N-1，故此处 read_start 前移量直接取 ext（比 warm 更晚），让 EMA
             # 恰好从 qlib 的冷启动点起算。
-            sensitive_fields.setdefault(ext, []).append((e, name))
+            sensitive_fields.setdefault(int(ext), []).append((e, name))
 
     cols = {}
     # 普通组：统一 read_start（保持原语义，含 SR/固定窗口）

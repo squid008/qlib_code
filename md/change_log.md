@@ -3,6 +3,44 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.17.5] - 2026-09-09
+
+### Added
+- **面板执行器补齐均线/极值算子**（`panel_expr.py`），让含这些算子的自定义公式可走面板
+  并行提速（此前遇 SMA/HHVBARS/LLVBARS 直接整批回退 qlib）：
+  - `SMA(X,N,M)`：通达信递归均线 `ewm(alpha=M/N, adjust=False)`，与 qlib `ops_ext.SMA`
+    逐位一致；含 SMA 字段进"精确起点"分组（qlib SMA 扩展=子特征透传、可为 0，非 Rolling）。
+  - `HHVBARS(X,N)` / `LLVBARS(X,N)`：固定窗口距最近极值天数，复用 qlib `HHVBARS._bars`
+    单调队列按组求值。
+  - `DYN_HHVBARS` / `DYN_LLVBARS`：变量窗口（N 为序列，如 `LLVBARS(L,AT+1)`）走
+    `dyn_bars_vec`。
+  - `_warm_days`/`_tree_ext_days` 纳入 HHVBARS/LLVBARS 固定窗口（N-1）扩展。
+- 新增 datareq 对拍单测 `test_panel_matches_qlib_sma` / `test_panel_matches_qlib_bars`：
+  csi300 真实数据 panel vs qlib 逐位对齐（裸 SMA/嵌套窗口/动态嵌套动态/阈值判定 0 差）。
+
+### Changed
+- **含 EMA/EMA_TDX/SMA 字段默认回退 qlib**（`QLIB_SFT_PANEL_EMA` 默认 "1"）。面板均线
+  求值虽在小池对拍与 qlib 0 差（`_tree_ext_days` 嵌套窗口递归 + float64），但全 A 端到端
+  实测仍差（趋势顶底 25444/1.0589 vs qlib 25427/1.0355，用户 UI 复测确认）——差异只出现在
+  全 A 规模、小样本对拍无法覆盖；在定位前含 EMA 公式保持走 qlib 保证对账稳定（与 v1.11.10
+  一致）。仅无 EMA 公式（CWH 等）走面板提速。`=0` 可强制走面板（实验用）。
+- 配对日口径注释完善（触发/非触发日截面均值只在"两组同日都有样本"的配对日上计算，
+  保证 `daily_diff == daily_trig_mean - daily_not_mean` 自洽；避免对账脚本用全部交易日
+  稀释未触发组的误导）。
+- 版本 1.17.4 → 1.17.5（后端 `backend/app/__init__.py` / README 顶部）。
+
+## [1.17.4] - 2026-09-09
+
+### Fixed
+- **配对日口径**：`daily_trig_mean`/`daily_not_mean` 统一在配对日集合（触发组与非触发组
+  同日都有样本）上计算。旧逻辑 `daily_not_mean` 对全部有非触发样本的交易日平均（非触发组
+  几乎天天有样本 → 分母含大量无信号平淡日），与只统计触发日的 `daily_trig_mean` 分母不同，
+  直接相减无意义（触发集中在普涨日时未触发组全期均值被稀释，高估信号能力）。统一后
+  `daily_diff == daily_trig_mean - daily_not_mean` 严格自洽（构造数据验证）。
+
+### Changed
+- 版本 1.17.3 → 1.17.4。
+
 ## [1.17.3] - 2026-09-09
 
 ### Added
