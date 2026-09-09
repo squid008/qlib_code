@@ -3,6 +3,15 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.2] - 2026-09-10
+
+### Fixed
+- **面板并行求值「取消后内存不释放」根治**（全 A 多公式场景用户实证：点取消后 worker 仍 100% CPU + 峰值内存驻留 **7 分钟不减**、系统可用内存跌破 1GB；`panel_expr.py`）：
+  - 原取消路径（异常分支）仅 `shutdown(wait=False, cancel_futures=True)`——只能停主进程收块/取消**未派发**任务，**已派发给 worker 的大块无法中途取消**，worker 跑完当前块才退出（全 A 大公式单块可跑数分钟）
+  - 新增 `_force_terminate_executor()`：取消/异常分支先 terminate 进程池全部 worker（executor 私有 `_processes`），OS **立即回收 worker 内存**；executor 随即不再使用（调用方已中止），安全。正常求值路径零改动
+  - 实测（全 A 5854 只 × 趋势顶底大公式 × 2 字段、4 worker）：取消瞬间 n=4 rss=1043MB 在跑 → 异常抛出后 worker 全灭、内存全释放（<0.3s 确认）；修复前同场景 7 分钟不减。panel/ops 回归 41 全绿 + 非数据单测 168 全绿
+- 版本 1.18.1 → 1.18.2（后端 `backend/app/__init__.py` / README 顶部）。
+
 ## [1.18.1] - 2026-09-10
 
 ### Fixed

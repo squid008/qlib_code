@@ -1287,6 +1287,28 @@ def _panel_executor(max_workers, initializer, initargs):
     return cf.ProcessPoolExecutor(max_workers=max_workers, initializer=initializer, initargs=initargs)
 
 
+def _force_terminate_executor(ex):
+    """取消兜底：强杀进程池所有 worker（含在跑块），立即归还内存。
+
+    ProcessPoolExecutor.shutdown(wait=False, cancel_futures=True) 只能让主进程不再等待
+    ——已派发给 worker 的块无法中途取消，worker 会跑完当前块才退出。全 A 大公式单块可跑
+    数分钟，仅 shutdown 时取消后 worker 仍 100% CPU + 峰值内存驻留。这里直接 terminate
+    全部 worker 进程（executor 私有 API `_processes`，CPython 3.7+ 稳定存在；terminate
+    后 OS 立即回收 worker 内存）。仅供取消/异常路径使用：executor 随后不再 submit/收块。
+    """
+    try:
+        procs = getattr(ex, "_processes", None)
+        if procs:
+            for p in list(procs.values()):
+                try:
+                    if p.is_alive():
+                        p.terminate()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
 def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[str, str]],
                             start_time: str, end_time: str,
                             n_jobs: Optional[int] = None,
@@ -1385,8 +1407,13 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
                         pct = progress_lo + (progress_hi - progress_lo) * (done / n_chunk)
                         progress_cb(pct, f"计算特征数据（面板并行，{done}/{n_chunk} 块完成）...")
         except BaseException:
-            # 取消（异常路径）：不等在跑块、只取消未开始任务，立即返回让取消生效。
-            # 在跑 worker 会自行跑完当前块后退出（长驻后端下由 GC/进程结束回收，无害）。
+            # 取消（异常路径）：强杀全部 worker 立即释放内存，不等在跑块。
+            # 仅 shutdown(wait=False, cancel_futures=True) 只能停主进程收块——已派发的
+            # 块无法取消，worker 会跑完当前块才退出（全 A 大公式单块可跑数分钟，取消后
+            # worker 仍 100% CPU + 峰值内存驻留，全 A 多公式场景实测取消 7 分钟内存不减、
+            # 接近 OOM）。terminate 后 OS 立即回收 worker 内存；executor 随即不再使用
+            # （调用方已中止），安全。
+            _force_terminate_executor(ex)
             ex.shutdown(wait=False, cancel_futures=True)
             raise
         else:
