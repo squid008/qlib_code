@@ -232,6 +232,19 @@ class TestStatefulOps:
         assert translate_formula("OUT:HHVBARS(CLOSE,34);").expression == "HHVBARS($close,34)"
         assert translate_formula("OUT:LLVBARS(LOW,10);").expression == "LLVBARS($low,10)"
 
+    def test_hhvbars_llvbars_dynamic_window(self):
+        """HHVBARS/LLVBARS 第 2 参为变量（窗口随行变化）→ DYN_HHVBARS/DYN_LLVBARS。
+
+        通达信允许 HHVBARS(X, AT+1) 这类写法（同事"杯柄突破"公式用 BT:=LLVBARS(L,AT+1)
+        等），N 是变量序列时每个位置窗口不同。修复 = ops_ext 新增 DYN_HHVBARS/
+        DYN_LLVBARS，codegen 的 _DYN_WINDOW_OPS 纳入 HHVBARS/LLVBARS（常量仍走固定版）。
+        """
+        r = translate_formula("A:=HHVBARS(HIGH,120);B:=LLVBARS(LOW,A+1);OUT:B;")
+        assert "DYN_LLVBARS" in r.expression
+        assert "HHVBARS($high,120)" in r.expression  # 常量 N 仍用固定算子
+        # 变量窗口包裹形态：DYN_LLVBARS($low, Add(HHVBARS(...), 1))
+        assert r.expression.startswith("DYN_LLVBARS($low,Add(")
+
     def test_arg_errors(self):
         with pytest.raises(CodeGenError):
             translate_formula("OUT:FILTER(CLOSE>OPEN);")       # 缺 N

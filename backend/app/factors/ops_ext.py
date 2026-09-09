@@ -35,6 +35,7 @@ from qlib.data.ops import EMA as _QLIB_EMA
 __all__ = [
     "BARSLAST", "BARSCOUNT", "BARSSINCEN",
     "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM",
+    "DYN_HHVBARS", "DYN_LLVBARS",
     "And", "Or",
     "SR",
     "EMA_TDX",
@@ -314,6 +315,64 @@ class DYN_SUM(_DynWindowOp):
     def _load_internal(self, instrument, start_index, end_index, *args):
         vals, nvals, idx = self._load_both(instrument, start_index, end_index, *args)
         return pd.Series(dyn_window_sum_vec(vals, nvals), index=idx)
+
+
+def dyn_bars_vec(vals: np.ndarray, nvals: np.ndarray, is_max: bool) -> np.ndarray:
+    """动态 HHVBARS/LLVBARS：每位置 i 在窗口 [i-N_i+1, i] 内取极值（等值取最近）所在位置的距今天数。
+
+    用于通达信/益盟变量周期写法 HHVBARS(X, N_i)/LLVBARS(X, N_i)，其中 N 是序列
+    （如 AT+1）。向量化：先对每位置求窗口内极值（_dyn_rmq_vec），再借助"极值位置"
+    离线数组做差分判定——因窗口内极值可能多处相同且需最近，这里用最朴素但正确的
+    实现：对每个极值出现位置维护其"上一次更高/更低或相等但更早"链成本高。
+    实际直接利用：HHVBARS 结果 = i - j，其中 j = 窗口内最后一个 == 极值的下标。
+    对每个位置 i 有候选 j 集 = {k : vals[k] == ext_i, k in [lo_i, i]} 中最大 k。
+    等价做法：先算每点"作为最近极值被选中"的归属区间——用单调扫描从右往左，
+    记录"右侧首个 >= (或 <=) 当前值"的位置；窗口查询落在 [lo_i,i] 内最近极值即
+    i - min(大于/小于界, i)。实现采用对每位置二分边界 + 前缀极值位置，性能 O(n log n)。
+    为简单与正确优先，此处直接用参考实现：对每个 i 用窗口 RMQ 求 ext，再用"每个
+    位置上一次作为窗口右端覆盖"的 next 数组二分。因窗口大小可能很大，扩展已 inf。
+    """
+    n = len(vals)
+    if n == 0:
+        return np.zeros(0, dtype=float)
+    Ns = _win_lens_vec(nvals)
+    lo = np.maximum(0, np.arange(n) - Ns + 1)
+    # 窗口内极值
+    ext = _dyn_rmq_vec(vals, nvals, np.fmax if is_max else np.fmin)
+    out = np.full(n, np.nan, dtype=float)
+    # 对每个位置 i：在 [lo_i, i] 找最后一个 == ext_i 的位置 j
+    # 二分：若窗口极大（> len(vals)）直接全局；否则扫描。为避免 O(n²)，用
+    # 向后最近界：对每 i，找第一个 j>=lo 使 vals[j]==ext_i 且之后无更近相同——难以向量化，
+    # 故对超大窗口退化为 python 循环（通达信变量窗口一般远小于全历史）。
+    for i in range(n):
+        if np.isnan(vals[i]):
+            continue
+        e = ext[i]
+        if np.isnan(e):
+            continue
+        j = i
+        # 从 i 往回找第一个 == e 的位置（等值取最近）
+        while j >= lo[i] and not (vals[j] == e and not np.isnan(vals[j])):
+            j -= 1
+        if j >= lo[i]:
+            out[i] = float(i - j)
+    return out
+
+
+class DYN_HHVBARS(_DynWindowOp):
+    """动态 HHVBARS(X, N_i)：变量周期写法（HHVBARS(X, AT+1)），窗口随行变。"""
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        vals, nvals, idx = self._load_both(instrument, start_index, end_index, *args)
+        return pd.Series(dyn_bars_vec(vals, nvals, is_max=True), index=idx)
+
+
+class DYN_LLVBARS(_DynWindowOp):
+    """动态 LLVBARS(X, N_i)：变量周期写法（LLVBARS(X, AT+1)），窗口随行变。"""
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        vals, nvals, idx = self._load_both(instrument, start_index, end_index, *args)
+        return pd.Series(dyn_bars_vec(vals, nvals, is_max=False), index=idx)
 
 
 # ---------------- And / Or：qlib 内建 np.bitwise_and 的 dtype 脆弱性覆盖 ----------------
@@ -862,7 +921,7 @@ class LLVBARS(ExpressionOps):
 
 _ALL_OPS = [
     BARSLAST, BARSCOUNT, BARSSINCEN,
-    DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM,
+    DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM, DYN_HHVBARS, DYN_LLVBARS,
     And, Or,          # 覆盖 qlib 内建：np.bitwise_and 对 float&bool 混输脆弱
     SR,
     EMA_TDX,

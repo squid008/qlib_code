@@ -197,15 +197,17 @@ FUNC_QLIB = {
 }
 
 # ---- 支持动态窗口的函数：窗口参数为表达式（变量）时改用 DYN_* 外挂算子 ----
-# 通达信/益盟允许 LLV(X,N)/HHV(X,N)/COUNT(X,N)/REF(X,N)/SUM(X,N) 的 N 是变量，
-# 每个位置用该位置的 N 值作为窗口大小。常量窗口走标准 qlib 算子（性能好），
-# 变量窗口走 DYN_* 逐位置计算。
+# 通达信/益盟允许 LLV(X,N)/HHV(X,N)/COUNT(X,N)/REF(X,N)/SUM(X,N)/HHVBARS(X,N)/
+# LLVBARS(X,N) 的 N 是变量，每个位置用该位置的 N 值作为窗口大小。常量窗口走
+# 标准 qlib 算子（性能好），变量窗口走 DYN_* 逐位置计算。
 _DYN_WINDOW_OPS = {
     "HHV": "DYN_MAX",
     "LLV": "DYN_MIN",
     "COUNT": "DYN_COUNT",
     "REF": "DYN_REF",
     "SUM": "DYN_SUM",
+    "HHVBARS": "DYN_HHVBARS",
+    "LLVBARS": "DYN_LLVBARS",
 }
 
 # ---- 函数 → 组合表达式（用已有算子展开）----
@@ -368,9 +370,9 @@ class CodeGen:
         elif name in ("HHVBARS", "LLVBARS"):
             if len(e.args) != 2:
                 raise CodeGenError(f"{name} 需要 2 个参数：{name}(X, N)，例如 {name}(CLOSE,34)")
-            if not isinstance(e.args[1], Num):
-                raise CodeGenError(f"{name} 的第 2 个参数 N 必须为常量整数（如 34）")
-        # 动态窗口：HHV/LLV/COUNT/REF/SUM 窗口参数为表达式（变量）→ DYN_* 外挂算子
+            # N 可为变量（通达信允许 HHVBARS(X, AT+1) 这类窗口随行变化的写法）→
+            # 交下方 _DYN_WINDOW_OPS 分支：常量用 HHVBARS/LLVBARS，变量用 DYN_HHVBARS/DYN_LLVBARS
+        # 动态窗口：HHV/LLV/COUNT/REF/SUM/HHVBARS/LLVBARS 窗口参数为表达式（变量）→ DYN_* 外挂算子
         if name in _DYN_WINDOW_OPS:
             if len(e.args) != 2:
                 raise CodeGenError(f"{name} 需要 2 个参数：{name}(X, 周期)")

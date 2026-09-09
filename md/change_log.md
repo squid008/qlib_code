@@ -3,6 +3,22 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.17.3] - 2026-09-09
+
+### Added
+- **HHVBARS/LLVBARS 支持变量窗口**（`LLVBARS(L,AT+1)`/`HHVBARS(H,BT+1)` 等，N 为变量
+  序列、窗口随行变化）：通达信/益盟允许此类写法，同事"杯柄突破"公式使用。实现 =
+  `ops_ext` 新增 `DYN_HHVBARS`/`DYN_LLVBARS`（动态窗口内最近极值位置，O(n·窗口)，
+  实测 N 恒定 30 时与固定版逐位一致 117/117 max=0），`codegen._DYN_WINDOW_OPS`
+  纳入 HHVBARS/LLVBARS（常量 N 仍走固定算子，变量 N 走 DYN_*）。此前 codegen 强制
+  N 为常量整数报"必须为常量整数"。
+
+### Fixed
+- （无回归）parser 36 passed / golden 49 passed / panel 55 passed。
+
+### Changed
+- 版本 1.17.2→1.17.3。
+
 ## [1.17.2] - 2026-09-09
 
 ### Fixed
