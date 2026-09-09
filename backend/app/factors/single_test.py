@@ -674,13 +674,15 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
     # 面板求值器开关（默认开；QLIB_SFT_PANEL=0 强制回退 qlib）
     if os.environ.get("QLIB_SFT_PANEL", "1") == "0":
         return None
-    # 含 EMA/EMA_TDX/SMA 的字段默认回退 qlib。面板均线求值虽在小池对拍与 qlib 0 差
-    # （嵌套窗口 read_start 递归 _tree_ext_days + float64 + SMA），但【全 A 端到端】
-    # 实测仍 1.0589/25444 vs qlib 1.0355/25427（用户 UI 复测确认）——差异只出现在全 A
-    # 规模、小样本对拍无法覆盖 → 在真正定位前含 EMA 公式保持走 qlib（数值稳定与
-    # v1.11.10 对齐），仅无 EMA 公式（CWH 等）走面板提速。QLIB_SFT_PANEL_EMA=0 可强制
-    # 含 EMA/SMA 走面板（实验用）。
-    if os.environ.get("QLIB_SFT_PANEL_EMA", "1") != "0":
+    # 含 EMA/EMA_TDX/SMA 的字段默认【走面板】（v1.17.6 放开，根因已定位修复）。
+    # 定位结论：面板求值本身与 qlib 逐位一致（小池 0 差、嵌套窗口 _tree_ext_days
+    # 递归 + float64 求值），全 A 端到端的零星触发差异（25444 vs 25427、~15 处）
+    # 来自【面板输出 float64 vs qlib D.features 输出 float32】→ CLOSE/CHANGE 等列
+    # ~4-8e-6 尾差传导到涨停/停牌剔除判定（mark_limit_up 的 close>=limit_up-1e-6
+    # 容差与尾差同量级）→ 边界触发翻面。修复：面板输出出口统一 cast float32
+    # （panel_expr._cast_output_f32，与 qlib 返回 dtype 对齐），实测逐列 0 差。
+    # 逃生口：QLIB_SFT_PANEL_EMA=1 可强制含 EMA/EMA_TDX/SMA 字段回退 qlib。
+    if os.environ.get("QLIB_SFT_PANEL_EMA", "0") != "0":
         try:
             for _f in fields:
                 _e = _f if isinstance(_f, str) else _f[0]

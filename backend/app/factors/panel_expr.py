@@ -867,7 +867,23 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
     # 不同 read_start 的列 index 覆盖范围不同 → 统一 reindex 到各列并集再裁剪
     df = df.reindex(df.index.union(full_out))
     df = df[df.index.get_level_values("datetime") >= pd.Timestamp(start_time)]
-    return df.reindex(full_out)
+    df = df.reindex(full_out)
+    return _cast_output_f32(df)
+
+
+def _cast_output_f32(df: pd.DataFrame) -> pd.DataFrame:
+    """把输出列统一 cast 到 float32——对齐 qlib D.features 的返回 dtype。
+
+    背景（v1.17.5 后全 A 复现定位）：qlib D.features 所有字段最终输出整列为
+    float32（内部 float64 求值、出口 cast，见 qlib data.py dtype=np.float32）；
+    而面板此前全程 float64 输出。两者对 CLOSE/CHANGE 等列存在 ~4~8e-6 尾差
+    （float32 ulp 级），本不影响因子值，但会传导到涨停/停牌剔除判定
+    （mark_limit_up 用 close >= limit_up - 1e-6 的 1e-6 容差与面板尾差同量级）
+    → 全 A 端到端触发集出现零星差异（实测 15 只各多/少 1 个触发、daily 差
+    ~0.002pp）。内部求值保持 float64（更精确、EMA 递归收敛一致），仅出口
+    cast float32 与 qlib 对齐后逐列 0 差（实测 base/tag 全部 cast 后 0 差）。
+    """
+    return df.astype(np.float32)
 
 
 def _collect_field_names(fields) -> tuple:

@@ -3,6 +3,22 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.17.6] - 2026-09-09
+
+### Fixed
+- **修复面板输出精度与 qlib 不一致导致的全 A 端到端零星触发差异，放开含 EMA 公式走面板**
+  （`panel_expr.py` / `single_test.py`）：
+  - 根因定位：面板求值内部全程 float64，而 qlib `D.features` 所有字段**最终输出整列
+    float32**（内部 float64 求值、出口 cast）。两者在 `CLOSE/CHANGE` 等列产生 ~4~8e-6
+    float32 ulp 级尾差，本不影响因子值，但会传导到涨停/停牌剔除判定
+    （`mark_limit_up` 的 `close >= limit_up - 1e-6` 容差与尾差同量级）→ 全 A 端到端
+    触发集零星翻面（"趋势顶底离开底部" 25444 vs 25427、约 15 处、daily ~0.002pp）。
+  - 修复：面板求值保持 float64（精度与 EMA 递归收敛不变），**出口统一 cast float32**
+    （新增 `panel_expr._cast_output_f32`）与 qlib 返回 dtype 对齐。实测触发集 0 差
+    （24128 == 24128、daily 0 差）、面板相关对拍单测全过。
+  - **放开含 EMA/EMA_TDX/SMA 字段默认走面板**（原 v1.17.5 因上述差异默认回退 qlib）；
+    保留逃生口 `QLIB_SFT_PANEL_EMA=1` 可强制回退 qlib。
+
 ## [1.17.5] - 2026-09-09
 
 ### Added
