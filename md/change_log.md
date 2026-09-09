@@ -3,6 +3,19 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.17.7] - 2026-09-09
+
+### Performance
+- **面板求值整链性能优化**（本机 profile 实测：CWH_BREAK_WAIT20_F1 4 万字符公式 300 只×2024-2025 **20.5s → 2.7s（warm，7.7×）**；CCCMA250 200 只×3 年 **9.9s → 1.9s（5.1×）**）：
+  - `panel_expr._read_field_bin` **进程级 LRU 读盘缓存**（mtime 失效、字节上限默认 768MB，`QLIB_PANEL_BIN_CACHE_MB` 可调，`clear_bin_cache()`）：同一 (股,字段) 在 union_index/多组 evaluator/字段加载间重复全量 `np.fromfile` 是原最大单点（占 20.5s 中 10.7s≈52%），命中即免读。
+  - `load_field_series` / `_union_index` **MultiIndex 构造批量化**：数千次"每股 from_arrays + concat/链式 append"→ 一次 `from_arrays`（消除 pandas factorize/categorical 构造链）。
+  - `_by_group` **组界 numpy 向量化 + 纯 numpy 切片**：取代逐行 `inst[i]` 与每股 `s.iloc[a:b]`（消除 322 万次 `Index.__getitem__`）。
+  - `ops_ext.dyn_bars_vec` **重写为真正 O(n·log n)**：新增 `_build_argmax_sparse` / `_dyn_arg_idx_vec`（稀疏表存"极值最右下标"，等值取更大下标），替换旧 O(n·w) 逐位 while 双循环（CCCMA 场景该函数 2.3s → 0.05s），注释声称的复杂度与实现终于一致。
+- 验证：`test_ops_ext_vec` 26（朴素参考逐位对拍）+ `test_panel_expr` 15（真实数据 panel vs qlib 逐位 0 差）+ `test_golden_regression` 14 全绿。
+
+### Fixed
+- `tests/test_panel_expr.py` 硬编码 `D:\quant\qlib_code`（公司 D 盘路径）导致非 D 盘机器该用例 FileNotFoundError → 改为仓库根相对解析（本机 E 盘通过）。
+
 ## [1.17.6] - 2026-09-09
 
 ### Fixed

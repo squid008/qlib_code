@@ -26,6 +26,7 @@ import contextlib
 import os
 import re
 import sys
+from collections import OrderedDict
 from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
@@ -41,6 +42,44 @@ if sys.getrecursionlimit() < 20000:
 
 _CAL: Optional[pd.DatetimeIndex] = None
 _FEATURE_DIR: Optional[str] = None
+
+# 进程级 .day.bin 读盘 LRU 缓存（v1.17.7 性能优化）：
+# profile（CWH_BREAK_WAIT20_F1 300 只 20.5s）显示 np.fromfile 占 10.66s≈52%——
+# 同一 (inst, field) 在一次 panel_features 内会被 union_index / 各 evaluator / 字段加载
+# 重复全量读多次。缓存以文件 mtime 为失效键（重 dump 后自动失效），按字节上限从最旧
+# 淘汰。容量默认 768MB（QLIB_PANEL_BIN_CACHE_MB 可调）。线程不安全但 GIL + 重复读
+# 无害（最多并发重复读一次）；子进程 worker 各自独立缓存。
+_BIN_CACHE_MAX_BYTES = int(os.environ.get("QLIB_PANEL_BIN_CACHE_MB", "768")) * 1024 * 1024
+_BIN_CACHE: "OrderedDict[Tuple[str, str], Tuple[int, int, np.ndarray]]" = OrderedDict()
+_BIN_CACHE_BYTES = 0
+
+
+def _entry_bytes(entry) -> int:
+    return entry[2].nbytes + 64
+
+
+def _evict_bin_cache(need: int) -> None:
+    global _BIN_CACHE_BYTES
+    while _BIN_CACHE_BYTES + need > _BIN_CACHE_MAX_BYTES and _BIN_CACHE:
+        _BIN_CACHE_BYTES -= _entry_bytes(_BIN_CACHE.popitem(last=False)[1])
+
+
+def _put_bin_cache(key: Tuple[str, str], mtime: int, start: int, vals: np.ndarray) -> None:
+    global _BIN_CACHE_BYTES
+    old = _BIN_CACHE.pop(key, None)
+    if old is not None:
+        _BIN_CACHE_BYTES -= _entry_bytes(old)
+    entry = (mtime, start, vals)
+    _evict_bin_cache(_entry_bytes(entry))
+    _BIN_CACHE[key] = entry
+    _BIN_CACHE_BYTES += _entry_bytes(entry)
+
+
+def clear_bin_cache() -> None:
+    """清空进程级 .bin 读盘缓存（数据重 dump 后调用；测试用）。"""
+    global _BIN_CACHE_BYTES
+    _BIN_CACHE.clear()
+    _BIN_CACHE_BYTES = 0
 
 
 def set_panel_runtime(calendar=None, feature_dir=None):
@@ -81,24 +120,47 @@ def _feature_dir() -> str:
 
 
 def _read_field_bin(inst: str, field: str):
-    """读 .day.bin → (start_idx, float64 数组)；缺失返回 None。"""
+    """读 .day.bin → (start_idx, float64 数组)；缺失返回 None。
+
+    命中进程级 LRU 缓存（_BIN_CACHE，mtime 校验）时跳过 np.fromfile；未命中读取
+    后写入缓存。语义与原实现完全一致，仅消除同一文件的重复全量读盘。
+    """
     p = os.path.join(_feature_dir(), inst, f"{field}.day.bin")
-    if not os.path.exists(p):
+    try:
+        st = os.stat(p)
+    except OSError:
         return None
+    mtime = st.st_mtime_ns
+    key = (inst, field)
+    hit = _BIN_CACHE.get(key)
+    if hit is not None and hit[0] == mtime:
+        _BIN_CACHE.move_to_end(key)  # LRU 刷新
+        return hit[1], hit[2]
     arr = np.fromfile(p, dtype="<f4")
     if arr.size < 2:
         return None
-    return int(arr[0]), arr[1:].astype(np.float64)
+    start = int(arr[0])
+    vals = arr[1:].astype(np.float64)
+    _put_bin_cache(key, mtime, start, vals)
+    return start, vals
 
 
 def load_field_series(instruments, field: str, start_time, end_time) -> pd.Series:
-    """读一字段为 MultiIndex(instrument, datetime) 全日历面板（各股行数=其有效日历）。"""
+    """读一字段为 MultiIndex(instrument, datetime) 全日历面板（各股行数=其有效日历）。
+
+    性能（v1.17.7）：原实现每股构造一个 MultiIndex+Series 再 concat（profile：数百~
+    数千次 pd.MultiIndex.from_arrays/factorize 占可观测时间）。改为收集 codes/dates/seg
+    三组数组后**一次** MultiIndex.from_arrays + Series 构造（顺序与原 concat 后
+    sort_index 完全一致）。
+    """
     cal = _calendar()
     t0 = pd.Timestamp(start_time)
     t1 = pd.Timestamp(end_time)
     req_lo = int(np.searchsorted(cal, t0, side="left"))
     req_hi = int(np.searchsorted(cal, t1, side="right")) - 1
-    parts = []
+    codes = []
+    dates_parts = []
+    seg_parts = []
     for inst in instruments:
         r = _read_field_bin(inst, field)
         if r is None:
@@ -110,13 +172,15 @@ def load_field_series(instruments, field: str, start_time, end_time) -> pd.Serie
             continue
         seg = vals[lo - start_idx : hi - start_idx + 1]
         dates = cal[lo : hi + 1]
-        parts.append(pd.Series(
-            seg, index=pd.MultiIndex.from_arrays(
-                [np.repeat(inst, len(dates)), dates],
-                names=["instrument", "datetime"])))
-    if not parts:
+        codes.append(np.repeat(inst, len(dates)))
+        dates_parts.append(dates)
+        seg_parts.append(seg)
+    if not codes:
         return pd.Series(dtype=np.float64)
-    return pd.concat(parts).sort_index()
+    index = pd.MultiIndex.from_arrays(
+        [np.concatenate(codes), np.concatenate(dates_parts)],
+        names=["instrument", "datetime"])
+    return pd.Series(np.concatenate(seg_parts), index=index).sort_index()
 
 
 def _union_index(instruments, start_time, end_time, fields=("close",)) -> pd.MultiIndex:
@@ -131,7 +195,10 @@ def _union_index(instruments, start_time, end_time, fields=("close",)) -> pd.Mul
     t1 = pd.Timestamp(end_time)
     req_lo = int(np.searchsorted(cal, t0, side="left"))
     req_hi = int(np.searchsorted(cal, t1, side="right")) - 1
-    parts = []
+    # 性能（v1.17.7）：原实现每股构造 MultiIndex 后链式 append（O(k²) 拷贝 + 数千次
+    # from_arrays/factorize）；改为收集 codes/dates 后一次 from_arrays，顺序等价。
+    codes = []
+    dates_parts = []
     fields = tuple(dict.fromkeys(fields))
     for inst in instruments:
         lo_max, hi_min = None, None
@@ -149,11 +216,13 @@ def _union_index(instruments, start_time, end_time, fields=("close",)) -> pd.Mul
         if lo_max is None or hi_min < lo_max:
             continue
         dates = cal[lo_max : hi_min + 1]
-        parts.append(pd.MultiIndex.from_arrays(
-            [np.repeat(inst, len(dates)), dates], names=["instrument", "datetime"]))
-    if not parts:
+        codes.append(np.repeat(inst, len(dates)))
+        dates_parts.append(dates)
+    if not codes:
         return pd.MultiIndex.from_arrays([[], []], names=["instrument", "datetime"])
-    return parts[0] if len(parts) == 1 else parts[0].append(parts[1:])
+    return pd.MultiIndex.from_arrays(
+        [np.concatenate(codes), np.concatenate(dates_parts)],
+        names=["instrument", "datetime"])
 
 
 # ===========================================================================
@@ -676,25 +745,39 @@ def _dyn_kernel(kind, vals, nvals, ops_ext):
 
 
 def _by_group(s: pd.Series, ns, fn) -> pd.Series:
-    """按组（股票）把 fn 应用到每个连续 segment（ns 可为 None）。"""
-    inst = s.index.get_level_values(0)
+    """按组（股票）把 fn 应用到每个连续 segment（ns 可为 None）。
+
+    性能（v1.17.7）：原实现逐行 `inst[i]` 判组界 + 每股 `s.iloc[a:b]` pandas 切片
+    （profile：322 万次 Index.__getitem__ + 数千次 MultiIndex _slice 是逐组执行层的
+    隐藏大头）。改为 numpy 向量化组界（level 数组一次 != 比较）+ 单次 to_numpy 后
+    的纯 numpy 切片，语义不变。
+    """
     idx = s.index
     n = len(s)
-    # 组界
-    starts = [0]
-    for i in range(1, n):
-        if inst[i] != inst[i - 1]:
-            starts.append(i)
-    starts.append(n)
+    if n == 0:
+        return pd.Series(dtype=np.float64, index=idx)
+    arr = s.to_numpy(dtype=np.float64)
+    if ns is None:
+        ns_arr = None
+    else:
+        ns_arr = ns.to_numpy(dtype=np.float64)
+    # 组界：level0 变化处（一次向量化比较，取代逐行 python）
+    lv = idx.get_level_values(0).to_numpy()
+    change = np.empty(n, dtype=bool)
+    change[0] = True
+    np.not_equal(lv[1:], lv[:-1], out=change[1:])
+    starts = np.flatnonzero(change)
+    bnd = np.empty(len(starts) + 1, dtype=np.int64)
+    bnd[:-1] = starts
+    bnd[-1] = n
     out = np.empty(n, dtype=np.float64)
-    for gi in range(len(starts) - 1):
-        a, b = starts[gi], starts[gi + 1]
-        v = s.iloc[a:b].to_numpy(dtype=np.float64)
-        if ns is None:
-            out[a:b] = fn(v)
+    for gi in range(len(starts)):
+        a = bnd[gi]
+        b = bnd[gi + 1]
+        if ns_arr is None:
+            out[a:b] = fn(arr[a:b])
         else:
-            w = ns.iloc[a:b].to_numpy(dtype=np.float64)
-            out[a:b] = fn(v, w)
+            out[a:b] = fn(arr[a:b], ns_arr[a:b])
     return pd.Series(out, index=idx)
 
 

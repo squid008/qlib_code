@@ -94,7 +94,13 @@ def test_panel_matches_qlib_cwh():
     C["joblib_backend"] = "loky"
     C["kernels"] = 8
 
-    j = json.load(open(r"D:\quant\qlib_code\backend\workdir\custom_formulas.json", encoding="utf-8"))
+    import os
+
+    # 仓库根 = tests 文件向上三级（本机可能在 E:\ 或 D:\，不能用写死盘符）
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    j = json.load(
+        open(os.path.join(root, "backend", "workdir", "custom_formulas.json"), encoding="utf-8")
+    )
 
     def find(o, name):
         if isinstance(o, dict):

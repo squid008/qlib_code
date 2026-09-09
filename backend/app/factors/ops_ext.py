@@ -317,46 +317,89 @@ class DYN_SUM(_DynWindowOp):
         return pd.Series(dyn_window_sum_vec(vals, nvals), index=idx)
 
 
+def _dyn_best_idx(ai: np.ndarray, bi: np.ndarray, vals: np.ndarray, is_max: bool) -> np.ndarray:
+    """稀疏表层合并：从两个候选"极值下标"中选更优（-1 = 无效/NaN）。
+
+    max：值更大者胜；min：值更小者胜；NaN 视为缺失（无效）；值相等 → 取更大下标
+    （等值取最近/最右，与 HHVBARS/LLVBARS 语义一致）。
+    """
+    a_ok = ai >= 0
+    b_ok = bi >= 0
+    av = np.where(a_ok, vals[np.maximum(ai, 0)], np.nan)
+    bv = np.where(b_ok, vals[np.maximum(bi, 0)], np.nan)
+    if is_max:
+        better = (av > bv) | (np.isnan(bv) & ~np.isnan(av))
+    else:
+        better = (av < bv) | (np.isnan(bv) & ~np.isnan(av))
+    tie = av == bv
+    b_wins = b_ok & ((~a_ok) | better | (tie & (bi > ai)))
+    return np.where(b_wins, bi, ai)
+
+
+def _build_argmax_sparse(vals: np.ndarray, is_max: bool) -> list:
+    """稀疏表（RMQ）变体：每层存"区间极值的最右下标"，同值取更右（等值取最近）。
+
+    与 _build_sparse（存极值）同构；层合并比较见 _dyn_best_idx。NaN 位用 -1 占位。
+    """
+    n = len(vals)
+    if n == 0:
+        return []
+    k = int(np.log2(n)) + 1
+    st = [np.where(np.isnan(vals), -1, np.arange(n))]
+    for j in range(1, k):
+        prev = st[-1]
+        half = 1 << (j - 1)
+        cur = np.empty(n, dtype=np.int64)
+        cur[: n - half] = _dyn_best_idx(prev[: n - half], prev[half:], vals, is_max)
+        cur[n - half :] = prev[n - half :]
+        st.append(cur)
+    return st
+
+
+def _dyn_arg_idx_vec(vals: np.ndarray, nvals: np.ndarray, is_max: bool) -> np.ndarray:
+    """动态窗口"最右极值下标"：每位置 i 返回窗口 [i-N_i+1, i] 内极值所在的最大下标。
+
+    与 _dyn_rmq_vec 同构的全向量化（按窗口长度分组、每层一次批量查询，O(n log n)）；
+    不同处是稀疏表存"极值下标"而非极值，直接给出 HHVBARS/LLVBARS 需要的 j。
+    """
+    n = len(vals)
+    if n == 0:
+        return np.zeros(0, dtype=np.int64)
+    st = _build_argmax_sparse(vals, is_max)
+    Ns = _win_lens_vec(nvals)
+    lens = np.minimum(Ns, np.arange(1, n + 1))
+    js = np.floor(np.log2(lens)).astype(np.int64)
+    idx = np.arange(n)
+    l_arr = idx - lens + 1
+    out = np.full(n, -1, dtype=np.int64)
+    for k, layer in enumerate(st):
+        sel = js == k
+        if not sel.any():
+            continue
+        span = 1 << k
+        lk = l_arr[sel]
+        rk = idx[sel]
+        out[sel] = _dyn_best_idx(layer[lk], layer[rk - span + 1], vals, is_max)
+    return out
+
+
 def dyn_bars_vec(vals: np.ndarray, nvals: np.ndarray, is_max: bool) -> np.ndarray:
     """动态 HHVBARS/LLVBARS：每位置 i 在窗口 [i-N_i+1, i] 内取极值（等值取最近）所在位置的距今天数。
 
     用于通达信/益盟变量周期写法 HHVBARS(X, N_i)/LLVBARS(X, N_i)，其中 N 是序列
-    （如 AT+1）。向量化：先对每位置求窗口内极值（_dyn_rmq_vec），再借助"极值位置"
-    离线数组做差分判定——因窗口内极值可能多处相同且需最近，这里用最朴素但正确的
-    实现：对每个极值出现位置维护其"上一次更高/更低或相等但更早"链成本高。
-    实际直接利用：HHVBARS 结果 = i - j，其中 j = 窗口内最后一个 == 极值的下标。
-    对每个位置 i 有候选 j 集 = {k : vals[k] == ext_i, k in [lo_i, i]} 中最大 k。
-    等价做法：先算每点"作为最近极值被选中"的归属区间——用单调扫描从右往左，
-    记录"右侧首个 >= (或 <=) 当前值"的位置；窗口查询落在 [lo_i,i] 内最近极值即
-    i - min(大于/小于界, i)。实现采用对每位置二分边界 + 前缀极值位置，性能 O(n log n)。
-    为简单与正确优先，此处直接用参考实现：对每个 i 用窗口 RMQ 求 ext，再用"每个
-    位置上一次作为窗口右端覆盖"的 next 数组二分。因窗口大小可能很大，扩展已 inf。
+    （如 AT+1）。全向量化实现：稀疏表 RMQ 存"极值最右下标"（_build_argmax_sparse /
+    _dyn_arg_idx_vec），每位置 O(log n) 内获得 j（窗口内最近极值下标），
+    HHVBARS = i - j；与 _dyn_rmq_vec 同构按窗口长度分组批量查询，总 O(n log n)、
+    无逐位置 Python 循环（旧版对每个 i 向后 while 扫描窗口，最坏 O(n×w)）。
+    语义与旧版完全一致：当日值 NaN → 当日 NaN；窗口全 NaN → NaN。
     """
     n = len(vals)
     if n == 0:
         return np.zeros(0, dtype=float)
-    Ns = _win_lens_vec(nvals)
-    lo = np.maximum(0, np.arange(n) - Ns + 1)
-    # 窗口内极值
-    ext = _dyn_rmq_vec(vals, nvals, np.fmax if is_max else np.fmin)
-    out = np.full(n, np.nan, dtype=float)
-    # 对每个位置 i：在 [lo_i, i] 找最后一个 == ext_i 的位置 j
-    # 二分：若窗口极大（> len(vals)）直接全局；否则扫描。为避免 O(n²)，用
-    # 向后最近界：对每 i，找第一个 j>=lo 使 vals[j]==ext_i 且之后无更近相同——难以向量化，
-    # 故对超大窗口退化为 python 循环（通达信变量窗口一般远小于全历史）。
-    for i in range(n):
-        if np.isnan(vals[i]):
-            continue
-        e = ext[i]
-        if np.isnan(e):
-            continue
-        j = i
-        # 从 i 往回找第一个 == e 的位置（等值取最近）
-        while j >= lo[i] and not (vals[j] == e and not np.isnan(vals[j])):
-            j -= 1
-        if j >= lo[i]:
-            out[i] = float(i - j)
-    return out
+    j = _dyn_arg_idx_vec(vals, nvals, is_max)
+    i = np.arange(n)
+    ok = (j >= 0) & ~np.isnan(vals)
+    return np.where(ok, (i - j).astype(float), np.nan)
 
 
 class DYN_HHVBARS(_DynWindowOp):
