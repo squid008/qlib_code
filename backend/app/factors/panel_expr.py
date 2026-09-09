@@ -545,6 +545,22 @@ class PanelEvaluator:
             if x.isna().any():
                 out = out.mask(x.isna())
             return out
+        if op in ("IdxMax", "IdxMin", "Rank", "Slope", "Rsquare", "Resi", "Quantile"):
+            # Alpha158 窗口类：逐股复刻 qlib Rolling 语义（min_periods=1），面板与 qlib 同源
+            s = args[0]
+            if s is None:
+                raise ValueError(f"{op} 首参不能是常量")
+            N = int(args[1])
+            q = args[2] if op == "Quantile" else None
+            return _by_group(s, None, lambda v: _seg_window_op(op, v, N, q))
+        if op == "Corr":
+            # Alpha158 相关：两序列逐股 rolling corr + std≈0 置 NaN（同 qlib Corr）
+            a, b = args[0], args[1]
+            N = int(args[2])
+            if not isinstance(a, pd.Series) or not isinstance(b, pd.Series):
+                raise ValueError("Corr 两参数须为序列")
+            a, b = _align(a, b)
+            return _corr_pair_panel(a, b, N)
         if op in _BIN_ELEM or op in _BIN_CMP:
             a, b = args
             template = a if isinstance(a, pd.Series) else b
@@ -793,6 +809,99 @@ def _bars_count_seg(v: np.ndarray) -> np.ndarray:
     return np.cumsum(~np.isnan(v)).astype(np.float64)
 
 
+# ---- Alpha158 窗口算子（逐股复刻 qlib Rolling 语义：rolling(N, min_periods=1)，
+# 直接复用同一 pandas / qlib _libs 内核，保证逐位一致）----
+
+def _seg_window_op(op: str, v: np.ndarray, N: int, q=None) -> np.ndarray:
+    """单股段内核：IdxMax/IdxMin/Quantile/Rank/Slope/Rsquare/Resi。N>0 用 rolling，N=0 用 expanding。"""
+    vv = np.asarray(v, dtype=np.float64)
+    s = pd.Series(vv)
+    if N <= 0:
+        rolling = s.expanding(min_periods=1)
+    else:
+        rolling = s.rolling(int(N), min_periods=1)
+    if op in ("IdxMax", "IdxMin"):
+        is_max = op == "IdxMax"
+        out = rolling.apply(lambda x: (x.argmax() if is_max else x.argmin()) + 1, raw=True)
+        return out.to_numpy(dtype=np.float64)
+    if op == "Quantile":
+        return rolling.quantile(float(q)).to_numpy(dtype=np.float64)
+    if op == "Rank":
+        if hasattr(rolling, "rank"):
+            return rolling.rank(pct=True).to_numpy(dtype=np.float64)
+        # 旧 pandas 回退（同 qlib）：窗口内非 NaN 的百分位
+        from scipy.stats import percentileofscore
+
+        n = len(vv)
+        nn = N if N > 0 else n
+        out = np.full(n, np.nan)
+        for i in range(n):
+            w = vv[max(0, i - nn + 1): i + 1]
+            wv = w[~np.isnan(w)]
+            if wv.size == 0 or np.isnan(wv[-1]):
+                continue
+            out[i] = percentileofscore(wv, wv[-1]) / 100.0
+        return out
+    if op in ("Slope", "Rsquare", "Resi"):
+        from qlib.data._libs.expanding import expanding_resi, expanding_rsquare, expanding_slope
+        from qlib.data._libs.rolling import rolling_resi, rolling_rsquare, rolling_slope
+
+        if N <= 0:
+            fn = {"Slope": expanding_slope, "Rsquare": expanding_rsquare, "Resi": expanding_resi}[op]
+            arr = np.asarray(fn(vv), dtype=np.float64)
+        else:
+            fn = {"Slope": rolling_slope, "Rsquare": rolling_rsquare, "Resi": rolling_resi}[op]
+            arr = np.asarray(fn(vv, int(N)), dtype=np.float64)
+        if op == "Rsquare":
+            # qlib Rsquare 额外置 NaN：窗口内 X 滚动 std ≈ 0（atol 2e-05）
+            sd = rolling.std().to_numpy(dtype=np.float64)
+            arr = arr.copy()
+            arr[np.isclose(sd, 0, atol=2e-05)] = np.nan
+        return arr
+    raise ValueError(f"panel_expr 不支持 {op}")
+
+
+def _pair_seg_corr(va: np.ndarray, vb: np.ndarray, N: int) -> np.ndarray:
+    """单股段相关：rolling/expanding corr(min_periods=1) + qlib Corr 的 std≈0 置 NaN。"""
+    sa = pd.Series(np.asarray(va, dtype=np.float64))
+    sb = pd.Series(np.asarray(vb, dtype=np.float64))
+    if N <= 0:
+        res = sa.expanding(min_periods=1).corr(sb)
+        std_a = sa.expanding(min_periods=1).std().to_numpy(dtype=np.float64)
+        std_b = sb.expanding(min_periods=1).std().to_numpy(dtype=np.float64)
+    else:
+        res = sa.rolling(int(N), min_periods=1).corr(sb)
+        std_a = sa.rolling(int(N), min_periods=1).std().to_numpy(dtype=np.float64)
+        std_b = sb.rolling(int(N), min_periods=1).std().to_numpy(dtype=np.float64)
+    out = res.to_numpy(dtype=np.float64)
+    out[np.isclose(std_a, 0, atol=2e-05) | np.isclose(std_b, 0, atol=2e-05)] = np.nan
+    return out
+
+
+def _corr_pair_panel(a: pd.Series, b: pd.Series, N: int) -> pd.Series:
+    """Corr(X, Y, N) 面板实现：按 instrument 分段逐段算（两序列须同 index 对齐）。"""
+    if len(a) == 0:
+        return a
+    idx = a.index
+    arr_a = a.to_numpy(dtype=np.float64)
+    arr_b = b.to_numpy(dtype=np.float64)
+    lv = idx.get_level_values(0).to_numpy()
+    n = len(a)
+    change = np.empty(n, dtype=bool)
+    change[0] = True
+    np.not_equal(lv[1:], lv[:-1], out=change[1:])
+    starts = np.flatnonzero(change)
+    bnd = np.empty(len(starts) + 1, dtype=np.int64)
+    bnd[:-1] = starts
+    bnd[-1] = n
+    out = np.empty(n, dtype=np.float64)
+    for gi in range(len(starts)):
+        s = bnd[gi]
+        e = bnd[gi + 1]
+        out[s:e] = _pair_seg_corr(arr_a[s:e], arr_b[s:e], N)
+    return pd.Series(out, index=idx)
+
+
 def _by_group(s: pd.Series, ns, fn) -> pd.Series:
     """按组（股票）把 fn 应用到每个连续 segment（ns 可为 None）。
 
@@ -840,10 +949,19 @@ def _warm_days(exprs) -> int:
     max_k = 0
     for expr in exprs:
         e = str(expr)
-        # 固定窗口算子 + Ref/EMA 的第二参（窗口/前移天数）；HHVBARS/LLVBARS 亦固定窗口
-        for m in re.finditer(r"(?:Ref|Mean|Max|Min|Sum|Std|Var|Abs|Sqrt|EMA|EMA_TDX|HHVBARS|LLVBARS)\([^,]+,\s*(-?\d+)", e):
+        # 固定窗口算子 + Ref/EMA 的第二参（窗口/前移天数）；HHVBARS/LLVBARS 亦固定窗口；
+        # Alpha158 窗口类（IdxMax/IdxMin/Rank/Slope/Rsquare/Resi 第二参、Quantile 第二参、
+        # Corr 第三参）同样前移 N-1。
+        for m in re.finditer(
+            r"(?:Ref|Mean|Max|Min|Sum|Std|Var|Abs|Sqrt|EMA|EMA_TDX|HHVBARS|LLVBARS|"
+            r"IdxMax|IdxMin|Rank|Slope|Rsquare|Resi|Quantile)\([^,]+,\s*(-?\d+)"
+            r"|Corr\([^,]+,[^,]+,\s*(-?\d+)",
+            e,
+        ):
             try:
-                max_k = max(max_k, abs(int(m.group(1))))
+                for g in m.groups():
+                    if g is not None:
+                        max_k = max(max_k, abs(int(g)))
             except ValueError:
                 pass
         if "SR(" in e:
@@ -877,7 +995,18 @@ def _tree_ext_days(node) -> int:
     if op in ("field", "const"):
         return 0
     args = node.args or []
-    if op in _ROLL_FUNC or op in ("EMA", "EMA_TDX", "HHVBARS", "LLVBARS"):
+    if op == "Corr":
+        # qlib PairRolling：扩展 = max(左右子 ext) + N-1
+        base = max(_tree_ext_days(a) for a in (args[0], args[1]) if hasattr(a, "op"))
+        try:
+            n = float(args[2].raw) if len(args) > 2 and getattr(args[2], "op", None) == "const" else 0.0
+        except Exception:
+            n = 0.0
+        if n >= 1:
+            return base + (int(n) - 1)
+        return base
+    if op in _ROLL_FUNC or op in ("EMA", "EMA_TDX", "HHVBARS", "LLVBARS",
+                                  "IdxMax", "IdxMin", "Rank", "Slope", "Rsquare", "Resi", "Quantile"):
         base = _tree_ext_days(args[0]) if args else 0
         try:
             n = float(args[1].raw) if len(args) > 1 and getattr(args[1], "op", None) == "const" else 0.0

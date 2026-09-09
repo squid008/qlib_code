@@ -3,6 +3,17 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.0] - 2026-09-10
+
+### Added
+- **Alpha158 缺失的 8 个窗口算子接入面板**（`panel_expr.py`），至此 Alpha158/Alpha360 目录全部算子均走面板，不再因"算子缺失"整批退化 qlib：
+  - `IdxMax` / `IdxMin` / `Quantile` / `Rank`：逐股复刻 qlib Rolling 语义（rolling/expanding，min_periods=1；Rank = pandas `rolling.rank(pct=True)`，旧 pandas 回退 percentileofscore）
+  - `Slope` / `Rsquare` / `Resi`：**直接复用 qlib `_libs` Cython** `rolling_*` / `expanding_*` 内核；Rsquare 附"窗口 std≈0（atol 2e-5）置 NaN"（同 qlib）
+  - `Corr(X,Y,N)`：新增 `_corr_pair_panel` / `_pair_seg_corr` 逐段双序列 rolling corr + 任一侧 std≈0 置 NaN（复刻 qlib PairRolling 行为）
+- `_warm_days` / `_tree_ext_days` 扩展窗口识别（纳入新算子，Corr 取第三参 N）；这些算子是固定窗口 → normal warm 组，无起点敏感问题
+- 验证：60 只 csi300 真实数据 15 列对拍 **13 列严格 0 差**、`Corr` 差 ≤5.5e-6（qlib 中间 float32 vs 面板 float64 的 ulp 级差）；panel/ops 回归 41 全绿
+- 版本 1.17.9 → 1.18.0（后端 `backend/app/__init__.py` / README 顶部）。
+
 ## [1.17.9] - 2026-09-10
 
 ### Added
