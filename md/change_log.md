@@ -3,6 +3,17 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.17.9] - 2026-09-10
+
+### Added
+- **面板补齐 5 个此前会整批退化到 qlib 的算子**（`ops_ext.py` + `panel_expr.py`）：
+  - `BARSCOUNT` / `BARSSINCE` / `FILTER`：抽取纯函数 `barsince_vec` / `filter_vec` 供 qlib 与面板共用同一数值源，面板经 `_by_group` 逐组调用
+  - `TRUNC` / `BETWEEN`：逐元素算子（np.trunc / 区间含边界，NaN 语义对齐）
+- **起点敏感状态算子精确分组**：修复"统一 warm 组多读历史"导致的系统性偏移（csi300 对拍 BARSCOUNT 差 32 / BARSSINCE 差 37 / FILTER 差 1）——BARSCOUNT/BARSSINCE/FILTER 按其 qlib 自身子树扩展（可为 0）进"精确起点"组（与 EMA 敏感组同机制）；分类重构对既有算子完全等价
+- 目录算子覆盖扫描：**alpha360 全支持**；Alpha158 仍缺 8 个窗口类算子（Corr/IdxMax/IdxMin/Quantile/Rank/Resi/Rsquare/Slope），列入待办
+- 验证：60 只 csi300 真实数据 panel vs qlib 逐位 0 差；panel/ops 回归 41 全绿
+- 版本 1.17.8 → 1.17.9（后端 `backend/app/__init__.py` / README 顶部）。
+
 ## [1.17.8] - 2026-09-10
 
 ### Fixed

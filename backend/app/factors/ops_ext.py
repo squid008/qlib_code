@@ -776,6 +776,23 @@ class ROUND(ExpressionOps):
 
 # ---------------- 通达信有状态算子（FILTER/SMA/BARSSINCE/HHVBARS/LLVBARS） ----------------
 
+def filter_vec(vals: np.ndarray, N: int) -> np.ndarray:
+    """FILTER(X, N) 纯向量实现（供 qlib/面板共用同一数值源）：条件成立输出 1 后，
+    其后 N-1 个周期抑制重复触发；X 为 NaN/0 视为未触发。"""
+    vals = np.asarray(vals, dtype=float)
+    n = len(vals)
+    Nn = max(1, int(N))
+    out = np.zeros(n, dtype=float)
+    reopen = 0  # 下一次允许输出的绝对索引
+    with np.errstate(invalid="ignore"):
+        for i in range(n):
+            v = vals[i]
+            if v != 0 and not np.isnan(v) and i >= reopen:
+                out[i] = 1.0
+                reopen = i + Nn  # 其后 N-1 个周期抑制
+    return out
+
+
 class FILTER(ExpressionOps):
     """FILTER(X, N)：信号过滤。条件 X 成立输出 1 后，其后 N-1 个周期不再输出（抑制）。
 
@@ -790,19 +807,7 @@ class FILTER(ExpressionOps):
 
     def _load_internal(self, instrument, start_index, end_index, *args):
         series = self.feature.load(instrument, start_index, end_index, *args)
-        vals = series.to_numpy(dtype=float)
-        n = len(vals)
-        N = max(1, self.N)
-        out = np.zeros(n, dtype=float)
-        reopen = 0  # 下一次允许输出的绝对索引
-        with np.errstate(invalid="ignore"):
-            for i in range(n):
-                v = vals[i]
-                if v != 0 and not np.isnan(v):
-                    if i >= reopen:
-                        out[i] = 1.0
-                        reopen = i + N  # 其后 N-1 个周期抑制
-        return pd.Series(out, index=series.index)
+        return pd.Series(filter_vec(series.to_numpy(dtype=float), self.N), index=series.index)
 
     def __str__(self):
         return "FILTER({},{})".format(self.feature, self.N)
@@ -847,6 +852,26 @@ class SMA(ExpressionOps):
         return self.feature.get_extended_window_size()
 
 
+def barsince_vec(vals: np.ndarray) -> np.ndarray:
+    """BARSSINCE(X) 纯向量实现（供 qlib/面板共用同一数值源）：距首次成立周期数。
+
+    数据起点前未成立返回 0；首成立位置记为 first 后，out[i] = i - first。
+    """
+    vals = np.asarray(vals, dtype=float)
+    n = len(vals)
+    out = np.zeros(n, dtype=float)
+    first = -1
+    with np.errstate(invalid="ignore"):
+        for i in range(n):
+            v = vals[i]
+            if v != 0 and not np.isnan(v):
+                if first < 0:
+                    first = i
+            if first >= 0:
+                out[i] = i - first
+    return out
+
+
 class BARSSINCE(ExpressionOps):
     """BARSSINCE(X)：X 第一次成立到当前的周期数（不限窗口，与 BARSLAST 相对）。
 
@@ -860,19 +885,7 @@ class BARSSINCE(ExpressionOps):
 
     def _load_internal(self, instrument, start_index, end_index, *args):
         series = self.feature.load(instrument, start_index, end_index, *args)
-        vals = series.to_numpy(dtype=float)
-        n = len(vals)
-        out = np.zeros(n, dtype=float)
-        first = -1
-        with np.errstate(invalid="ignore"):
-            for i in range(n):
-                v = vals[i]
-                if v != 0 and not np.isnan(v):
-                    if first < 0:
-                        first = i
-                if first >= 0:
-                    out[i] = i - first
-        return pd.Series(out, index=series.index)
+        return pd.Series(barsince_vec(series.to_numpy(dtype=float)), index=series.index)
 
     def __str__(self):
         return "BARSSINCE({})".format(self.feature)

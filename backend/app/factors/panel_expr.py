@@ -502,6 +502,49 @@ class PanelEvaluator:
             if s is None:
                 raise ValueError("SMA 首参不能是常量")
             return _sma(s, float(N), float(M), sr=sr)
+        if op == "BARSCOUNT":
+            # 自数据起点累计有效交易日（BARSCOUNT($close)）；面板与 qlib 同从各自
+            # read_start 起点累计 → 对齐。逐股内核 _bars_count_seg。
+            s = args[0]
+            if s is None:
+                raise ValueError("BARSCOUNT 首参不能是常量")
+            return _by_group(s, None, _bars_count_seg)
+        if op == "BARSSINCE":
+            # 距首次成立周期数（不限窗口）。面板与 qlib 共用 ops_ext.barsince_vec。
+            s = args[0]
+            if s is None:
+                raise ValueError("BARSSINCE 首参不能是常量")
+            from . import ops_ext
+
+            return _by_group(s, None, lambda v: ops_ext.barsince_vec(v))
+        if op == "FILTER":
+            # 信号抑制：成立输出 1 后 N-1 周期抑制重复。面板与 qlib 共用 ops_ext.filter_vec。
+            s, N = args[0], args[1]
+            if s is None:
+                raise ValueError("FILTER 首参不能是常量")
+            from . import ops_ext
+
+            return _by_group(s, None, lambda v: ops_ext.filter_vec(v, int(N)))
+        if op == "TRUNC":
+            # 向零截断取整（np.trunc；3.7→3、-3.7→-3），NaN 保持
+            s = args[0]
+            if s is None:
+                raise ValueError("TRUNC 参数不能是常量")
+            return np.trunc(s)
+        if op == "BETWEEN":
+            # BETWEEN(X,A,B)：X∈[min(A,B), max(A,B)] → 1 否则 0；X NaN 保持 NaN
+            x, a, b = args
+            tpl = x if isinstance(x, pd.Series) else (a if isinstance(a, pd.Series) else b)
+            x = _as_series(x, tpl)
+            a = _as_series(a, tpl)
+            b = _as_series(b, tpl)
+            a, b = _align(a, b)
+            lo = a.where(a <= b, b)
+            hi = a.where(a >= b, b)
+            out = ((x >= lo) & (x <= hi)).astype(np.float64)
+            if x.isna().any():
+                out = out.mask(x.isna())
+            return out
         if op in _BIN_ELEM or op in _BIN_CMP:
             a, b = args
             template = a if isinstance(a, pd.Series) else b
@@ -744,6 +787,12 @@ def _dyn_kernel(kind, vals, nvals, ops_ext):
     raise ValueError(kind)
 
 
+def _bars_count_seg(v: np.ndarray) -> np.ndarray:
+    """BARSCOUNT 单段内核：自数据起点累计非 NaN 交易日数（与 qlib notna().cumsum() 一致）。"""
+    v = np.asarray(v, dtype=float)
+    return np.cumsum(~np.isnan(v)).astype(np.float64)
+
+
 def _by_group(s: pd.Series, ns, fn) -> pd.Series:
     """按组（股票）把 fn 应用到每个连续 segment（ns 可为 None）。
 
@@ -909,17 +958,22 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
     # 对齐（实测 EMA(5) 前移 4 天才与 qlib 全对、前移 25/56 天都偏）；固定窗口算子
     # （Mean/Max/Min/Ref 等）多读无害，统一用 warm 即可。因此把字段按各自"精确
     # 扩展天数"分桶，每桶一个 PanelEvaluator（桶内共享读盘缓存），输出拼回。
+    # v1.17.8：起点敏感还包括"自起点状态类"算子（BARSCOUNT/BARSSINCE/FILTER）——
+    # 它们的值取决于起点前的历史（累计/首成立/信号抑制），若被统一 warm 组多读，会与
+    # qlib（自身扩展≈子树、多为 0）系统性偏移（实测 csi300 对拍差 32/37/1）→ 也走
+    # 精确起点组（ext 允许为 0 = 逻辑起点，不强制最小扩展）。
+    _STATE_START_OPS = ("BARSCOUNT(", "BARSSINCE(", "FILTER(")
     sensitive_fields = {}
     normal_fields = {}
     for expr, name in fields:
         e = str(expr).strip()
         if not e or e.lower() in ("", "none", "nan"):
             continue
-        if "SR(" in e or not re.search(r"\b(?:EMA|EMA_TDX|SMA)\(", e):
+        if "SR(" in e:
             # 含 SR 的字段：read_start 由 SR 前移主导（lookback 250），EMA/SMA 在其中
             # 从更早收敛点起算，与 qlib 一致（实测 SR(EMA) 全对）→ 归普通组。
             normal_fields.setdefault(warm, []).append((e, name))
-        else:
+        elif re.search(r"\b(?:EMA|EMA_TDX|SMA)\(", e):
             ext = _expr_ext_days(e)
             # EMA/EMA_TDX 是 Rolling 起点敏感（扩展>=N-1>=1）；SMA 的 qlib 扩展 =
             # 子特征透传（可为 0，如 SMA($close,5,1) 扩展为 0）→ 不强制 >=1。
@@ -929,6 +983,13 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
             # N-1，故此处 read_start 前移量直接取 ext（比 warm 更晚），让 EMA
             # 恰好从 qlib 的冷启动点起算。
             sensitive_fields.setdefault(int(ext), []).append((e, name))
+        elif any(_t in e for _t in _STATE_START_OPS):
+            # 起点敏感状态算子：qlib 扩展 = 自身子树（可为 0），不强制最小前移
+            ext = _expr_ext_days(e)
+            sensitive_fields.setdefault(int(ext), []).append((e, name))
+        else:
+            # 固定窗口/普通算子：多读无害，统一 warm 组
+            normal_fields.setdefault(warm, []).append((e, name))
 
     cols = {}
     # 普通组：统一 read_start（保持原语义，含 SR/固定窗口）
