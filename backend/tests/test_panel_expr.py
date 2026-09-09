@@ -265,3 +265,126 @@ def test_panel_parallel_matches_single():
     q = _D.features(insts, [e for e, _ in fields], start_time=START, end_time=END)
     q.columns = names
     assert len(par) == len(q), (len(par), len(q))
+
+
+@pytest.mark.datareq
+def test_panel_matches_qlib_ema():
+    """EMA / EMA_TDX（含裸 EMA 精确冷启动、SR+EMA、MACD 组合）panel vs qlib 逐位对齐。
+
+    回归锚点：EMA 是序列起点敏感的指数递归，qlib 逐字段只前移 N-1 天冷启动；
+    面板曾用统一 warm（max+30）让 EMA 从过早点起算 → 前段偏差。修复 = 面板按
+    字段精确扩展量分组建 evaluator（含 SR 走 250 主导、裸 EMA 精确 N-1）。
+    """
+    from qlib.config import C as _C
+    from qlib.data import D as _D
+
+    from app.engine.qlib_engine import _ensure_qlib_init
+    from app.engine.utils import _default_qlib_uri
+    from app.factors.panel_expr import panel_features
+
+    _ensure_qlib_init(_default_qlib_uri())
+    _C["joblib_backend"] = "loky"
+    _C["kernels"] = 8
+
+    insts = [str(i).upper()
+             for i in _D.list_instruments(_D.instruments("csi300"), start_time="2025-01-01", as_list=True)]
+    START, END = "2025-01-01", "2026-08-31"
+    exprs = [
+        "EMA($close, 5)",                       # 裸 EMA：精确 N-1 冷启动
+        "EMA($close, 12)",
+        "Sub(EMA($close, 12), EMA($close, 26))",  # MACD 快慢线差（不同 N 各自扩展）
+        "EMA(SR($close), 5)",                    # SR 场景（250 主导）
+        "Gt(EMA($close, 20), EMA($close, 60))",  # 均线多头（Gt 布尔）
+    ]
+    fields = [(e, f"F{i}") for i, e in enumerate(exprs)]
+    names = [n for _, n in fields]
+    p = panel_features(insts, fields, START, END)
+    q = _D.features(insts, [e for e, _ in fields], start_time=START, end_time=END)
+    q.columns = names
+    assert len(p) == len(q), (len(p), len(q))
+    full = p.index.union(q.index)
+    worst = 0.0
+    for name in names:
+        a = p[name].reindex(full).to_numpy(dtype=np.float64)
+        b = q[name].reindex(full).to_numpy(dtype=np.float64)
+        both = ~(np.isnan(a) | np.isnan(b))
+        if not both.any():
+            continue
+        ok = np.isclose(a[both], b[both], rtol=1e-4, atol=1e-6, equal_nan=True)
+        n_bad = int((~ok).sum())
+        diff = np.abs(a[both] - b[both])
+        worst = max(worst, float(diff.max()))
+        assert n_bad == 0, (f"列 {name}: {n_bad}/{int(both.sum())} 差异超 rtol=1e-4"
+                            f"（max {diff.max():.2e}）")
+    assert worst < 1e-4
+
+
+@pytest.mark.datareq
+def test_panel_matches_qlib_ema_nested():
+    """嵌套固定窗口的 EMA（趋势顶底类）panel vs qlib 逐位对齐。
+
+    回归锚点：EMA 输入链内嵌 Max/Min/Ref 等固定窗口算子时，qlib 的 extended
+    window 沿树递归累加（如 EMA(Max($high,34),4) = 33+3=36 天），面板 read_start
+    若只按最外层 EMA N-1 前移则 EMA 起点晚 33 天 → 整条序列永久偏移（实测同一日
+    值差 0.37，0/1 阈值比较翻面，趋势顶底离开底部全 A ~447 处）。修复 =
+    _expr_ext_days 递归整棵树（_tree_ext_days）。
+    """
+    from qlib.config import C as _C
+    from qlib.data import D as _D
+
+    from app.engine.qlib_engine import _ensure_qlib_init
+    from app.engine.utils import _default_qlib_uri
+    from app.engine.adjust import adjust_expr, normalize_mode
+    from app.engine.feature_cache import _sr_wrap_expr
+    from app.factors.panel_expr import panel_features
+
+    _ensure_qlib_init(_default_qlib_uri())
+    _C["joblib_backend"] = "loky"
+    _C["kernels"] = 8
+
+    insts = [str(i).upper()
+             for i in _D.list_instruments(_D.instruments("csi300"), start_time="2025-01-01", as_list=True)]
+    extra = [str(i).upper()
+             for i in _D.list_instruments(_D.instruments("all"), start_time="2025-01-01", as_list=True)
+             if str(i).upper() not in set(insts)][:100]
+    insts = insts + extra
+    START, END = "2025-01-01", "2026-08-31"
+
+    pa = normalize_mode("none")
+    exprs = [
+        # 嵌套 Max/Min 固定窗口 + EMA（趋势顶底离开底部核心子式）
+        "EMA(Add(Div(Mul(-100,Sub(Max($high,34),$close)),"
+        "Sub(Max($high,34),Min($low,34))),100),4)",
+        # 嵌套 Ref + EMA
+        "EMA(Div($close,Ref($close,20)),5)",
+        # SR 包裹叶子 + 嵌套窗口 EMA（真实 suspend_remove 链路形态）
+        "And(Eq(Ref(Sub(EMA(SR($close),4),SR($close)),1),0),"
+        "Gt(EMA(Add(Div(Mul(-100,Sub(Max(SR($high),34),SR($close))),"
+        "Sub(Max(SR($high),34),Min(SR($low),34))),100),4),0))",
+    ]
+    wrapped = [_sr_wrap_expr(adjust_expr(e, pa, round_prices=True))
+               for e in exprs[:2]]
+    # 第三个已手动含 SR（真实 suspend_remove 链路 = 叶子被 _sr_wrap 包裹的形态），
+    # 只做 adjust（_sr_wrap 会对已含 SR 的字段重复包裹，属另一场景）
+    wrapped.append(adjust_expr(exprs[2], pa, round_prices=True))
+    fields = [(w, f"F{i}") for i, w in enumerate(wrapped)]
+    names = [n for _, n in fields]
+
+    p = panel_features(insts, fields, START, END)
+    q = _D.features(insts, [e for e, _ in fields], start_time=START, end_time=END)
+    q.columns = names
+    full = p.index.union(q.index)
+    worst = 0.0
+    for name in names:
+        a = p[name].reindex(full).to_numpy(dtype=np.float64)
+        b = q[name].reindex(full).to_numpy(dtype=np.float64)
+        both = ~(np.isnan(a) | np.isnan(b))
+        if not both.any():
+            continue
+        ok = np.isclose(a[both], b[both], rtol=1e-4, atol=1e-6, equal_nan=True)
+        n_bad = int((~ok).sum())
+        diff = np.abs(a[both] - b[both])
+        worst = max(worst, float(diff.max()))
+        assert n_bad == 0, (f"列 {name}: {n_bad}/{int(both.sum())} 差异超 rtol=1e-4"
+                            f"（max {diff.max():.2e}）")
+    assert worst < 1e-4

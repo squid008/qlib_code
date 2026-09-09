@@ -215,6 +215,107 @@ def _joblib_backend() -> str:
     return "loky"
 
 
+_loky_patched = False
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _patch_loky_nowin() -> None:
+    """loky 子进程免弹黑色控制台窗口（Windows）。
+
+    后端若以无控制台方式运行（DETACHED_PROCESS），loky spawn 的 python.exe
+    （console 子系统）子进程会被 Windows 分配各自新 console → 用户看到一堆黑窗。
+    loky 子进程通过匿名管道通信，不能切 pythonw（stdio 句柄无效会崩 worker，已实测）；
+    正确解法 = monkey-patch loky 的 Popen.__init__：复制原实现、仅把 CreateProcess
+    的 flags 0 → CREATE_NO_WINDOW（0x08000000），worker 正常跑但不弹窗。
+    只做一次（幂等）。与 multiprocessing spawn（_nowin_spawn）互不影响。
+    """
+    global _loky_patched
+    if _loky_patched or os.name != "nt":
+        return
+    try:
+        import _winapi
+
+        # 绝对 import loky 内部（避免复制逻辑时相对路径错误）
+        from joblib.externals.loky.backend import popen_loky_win32 as _lp
+        from joblib.externals.loky.backend import spawn as _lspawn
+        from joblib.externals.loky.backend.popen_loky_win32 import (
+            _close_handles, _path_eq, get_command_line, WINENV,
+        )
+
+        _orig_init = _lp.Popen.__init__
+
+        def _patched_init(self, process_obj):
+            # 与 loky 原实现逐行一致，仅 CreateProcess flags=0 → _CREATE_NO_WINDOW
+            import msvcrt
+            import sys as _sys
+            from multiprocessing import util as _mp_util
+            from multiprocessing.context import set_spawning_popen
+            from joblib.externals.loky.backend import reduction as _lred
+
+            prep_data = _lspawn.get_preparation_data(
+                process_obj._name, getattr(process_obj, "init_main_module", True)
+            )
+            rhandle, whandle = _winapi.CreatePipe(None, 0)
+            wfd = msvcrt.open_osfhandle(whandle, 0)
+            cmd = get_command_line(parent_pid=os.getpid(), pipe_handle=rhandle)
+            child_env = {**os.environ, **process_obj.env}
+            python_exe = _lspawn.get_executable()
+            if WINENV and _path_eq(python_exe, _sys.executable):
+                cmd[0] = python_exe = _sys._base_executable
+                child_env["__PYVENV_LAUNCHER__"] = _sys.executable
+            cmd = " ".join(f'"{x}"' for x in cmd)
+            with open(wfd, "wb") as to_child:
+                try:
+                    hp, ht, pid, _ = _winapi.CreateProcess(
+                        python_exe, cmd, None, None, False,
+                        _CREATE_NO_WINDOW, child_env, None, None,
+                    )
+                    _winapi.CloseHandle(ht)
+                except BaseException:
+                    _winapi.CloseHandle(rhandle)
+                    raise
+                self.pid = pid
+                self.returncode = None
+                self._handle = hp
+                self.sentinel = int(hp)
+                self.finalizer = _mp_util.Finalize(
+                    self, _close_handles, (self.sentinel, int(rhandle))
+                )
+                set_spawning_popen(self)
+                try:
+                    _lred.dump(prep_data, to_child)
+                    _lred.dump(process_obj, to_child)
+                finally:
+                    set_spawning_popen(None)
+
+        _lp.Popen.__init__ = _patched_init
+
+        # loky 的 resource_tracker 进程走 resource_tracker.spawnv_passfds（标准库 util
+        # 的 win32 分支，flags 硬编码 0）——不 patch 的话它每次弹一个黑窗（实测 7 个
+        # worker 中该 1 个有可见窗口）。替换为带 CREATE_NO_WINDOW 的实现。
+        from joblib.externals.loky.backend import resource_tracker as _rt
+
+        _orig_spawnv = _rt.spawnv_passfds
+
+        def _patched_spawnv(path, args, passfds):
+            passfds = sorted(passfds)
+            cmd = " ".join(f'"{x}"' for x in args)
+            try:
+                _, ht, pid, _ = _winapi.CreateProcess(
+                    path, cmd, None, None, True, _CREATE_NO_WINDOW, None, None, None,
+                )
+                _winapi.CloseHandle(ht)
+            except BaseException:
+                return 0
+            return pid
+
+        _rt.spawnv_passfds = _patched_spawnv
+        _loky_patched = True
+        _log().info("loky 子进程 CreateProcess 已加 CREATE_NO_WINDOW（免弹黑色命令行窗口）")
+    except Exception:
+        pass
+
+
 def _apply_kernels(jobs: int) -> None:
     """把 qlib 的并行 worker 数与并行后端设置为 jobs / loky（失败静默容忍）。"""
     try:
@@ -223,6 +324,9 @@ def _apply_kernels(jobs: int) -> None:
         C["kernels"] = jobs
         # loky 自动复用进程池，消掉 D.features 每批新建进程池的固定开销
         C["joblib_backend"] = _joblib_backend()
+        # 设置 loky 后端后立刻打免窗补丁（在首次 D.features spawn 之前）
+        if C["joblib_backend"] == "loky":
+            _patch_loky_nowin()
     except Exception:
         pass
 

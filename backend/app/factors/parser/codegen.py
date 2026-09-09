@@ -167,7 +167,8 @@ FUNC_QLIB = {
     "HHV": "Max", "LLV": "Min",
     "SUM": "Sum", "COUNT": "Count",
     "ABS": "Abs", "SQRT": "Sqrt", "LOG": "Log", "LN": "Log",
-    "POW": "Pow", "MAX": "Greater", "MIN": "Less", "MOD": "Mod",
+    "POW": "Power",  # qlib 内建名是 Power（曾误映射 Pow → "operator [Pow] is not registered"）
+    "MAX": "Greater", "MIN": "Less", "MOD": "Mod",
     "STD": "Std", "VAR": "Var", "SLOPE": "Slope",
     "REF": "Ref", "DELTA": "Delta", "MEAN": "Mean", "MED": "Med",
     "IF": "If", "IFS": "If",

@@ -397,6 +397,61 @@ class EMA_TDX(_QLIB_EMA):
         return series.ewm(alpha=2.0 / (self.N + 1), adjust=False, min_periods=1).mean()
 
 
+# ---------------- POW 幂运算（qlib 内建名 Power；Pow 为旧编译别名） ----------------
+
+class Pow(ExpressionOps):
+    """POW(X, Y) = X^Y（逐元素幂）。
+
+    qlib 内建算子名为 Power（NpPairOperator → np.power）。早期 codegen 曾把 POW
+    映射成不存在的 "Pow" → 已存公式里的 Pow(...) 执行报 "operator [Pow] is not
+    registered"。本类注册 Pow 别名（同一 np.power 语义），让旧编译公式无需重存即可跑；
+    新编译公式走 Power（见 parser/codegen.py）。两个名字结果一致。
+    """
+
+    def __init__(self, feature_left, feature_right):
+        self.feature_left = feature_left
+        self.feature_right = feature_right
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        from qlib.data.base import Expression as _E
+
+        def _load(f):
+            if isinstance(f, _E):
+                return f.load(instrument, start_index, end_index, *args)
+            return f
+
+        x = _load(self.feature_left)
+        y = _load(self.feature_right)
+
+        def _arr(v):
+            if isinstance(v, (pd.Series, np.ndarray)):
+                return np.asarray(v, dtype=float)
+            return np.full(1, float(v), dtype=float) if np.ndim(v) == 0 else np.asarray(v, dtype=float)
+
+        xv = _arr(x)
+        yv = _arr(y)
+        yv = np.broadcast_to(yv, xv.shape) if yv.size == 1 else yv
+        res = np.power(xv, yv)
+        idx = x.index if isinstance(x, pd.Series) else None
+        return pd.Series(res, index=idx)
+
+    def __str__(self):
+        return "Pow({},{})".format(self.feature_left, self.feature_right)
+
+    def get_longest_back_rolling(self):
+        def _lbr(f):
+            return f.get_longest_back_rolling() if isinstance(f, Expression) else 0
+        return max(_lbr(self.feature_left), _lbr(self.feature_right))
+
+    def get_extended_window_size(self):
+        def _ext(f):
+            return f.get_extended_window_size() if isinstance(f, Expression) else (0, 0)
+        ll, lr = _ext(self.feature_left)
+        rl, rr = _ext(self.feature_right)
+        return max(ll, rl), max(lr, rr)
+
+
 # ---------------- SGN / INT(TRUNC) / BETWEEN：通达信基础函数 ----------------
 
 class SGN(ExpressionOps):
@@ -726,6 +781,7 @@ _ALL_OPS = [
     SR,
     EMA_TDX,
     SGN, TRUNC, BETWEEN,
+    Pow,
     ROUND,
     FILTER, SMA, BARSSINCE, HHVBARS, LLVBARS,
 ]

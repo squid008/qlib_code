@@ -3,6 +3,26 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.17.1] - 2026-09-09
+
+### Fixed
+- **POW 函数报 "operator [Pow] is not registered"**：`parser/codegen.py` 曾把 POW 映射到 qlib
+  不存在的算子名 `Pow`（qlib 内建为 `Power`）。修复 = codegen 新公式映射 `Power`，并在
+  `ops_ext.py` 注册 `Pow` 别名算子（同一 `np.power` 语义），已存公式无需重存即可执行；
+  面板 `panel_expr` 同步支持 `Power`/`Pow`。实测 qlib 与面板执行 Pow==Power 逐位一致。
+- **面板 EMA 嵌套固定窗口序列偏移**（v1.17.1 修复代码，默认未启用）：`_expr_ext_days`
+  原只按最外层 EMA 的 N-1 前移 read_start，未递归累加输入链内的 Max/Min/Ref 窗口
+  （如 `EMA(Max($h,34),4)` qlib extended=36 而面板只前移 3 天），EMA 起点晚 33 天导致
+  整条序列偏移（趋势顶底类 0/1 阈值比较翻面）。修复 = `_tree_ext_days` 递归整棵树
+  extended（复刻 qlib `get_extended_window_size`）。因"全 A 并行面板 + 含 EMA"端到端
+  数值仍待复验，含 EMA 公式默认继续回退 qlib（与 v1.17.0 一致），本次仅固化为正确基础。
+- **loky resource_tracker 弹窗**：此前只 patch 了 loky worker 的 Popen，漏了
+  `resource_tracker.spawnv_passfds`（CreateProcess flags 硬编码 0）→ 每任务弹一个黑窗。
+  补 patch 后 detached 环境实测全部子进程无可见窗口。
+
+### Changed
+- 版本 1.17.0→1.17.1。
+
 ## [1.17.0] - 2026-09-09
 
 ### Fixed

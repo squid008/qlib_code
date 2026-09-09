@@ -295,6 +295,7 @@ _ROLL_FUNC = {"Mean": "mean", "Max": "max", "Min": "min", "Sum": "sum", "Std": "
 _BIN_ELEM = {
     "Add": "add", "Sub": "sub", "Mul": "mul", "Div": "div",
     "Greater": "max", "Less": "min",
+    "Power": "pow", "Pow": "pow",  # POW(X,Y)=X^Y（Power=qlib 内建名；Pow=旧编译别名）
 }
 _BIN_CMP = {"Gt": "gt", "Ge": "ge", "Lt": "lt", "Le": "le", "Eq": "eq", "Ne": "ne"}
 _UNARY = {"Abs": "abs", "Sqrt": "sqrt", "Log": "log", "Neg": "neg", "Sgn": "sign"}
@@ -421,6 +422,12 @@ class PanelEvaluator:
                 raise ValueError(f"{op} 首参不能是常量")
             # SR 时 active 已剔停牌 → 普通滚动即可（无需 _valid_rolling 二次剔除）
             return _roll(s, _ROLL_FUNC[op], N, sr=False)
+        if op in ("EMA", "EMA_TDX"):
+            s, N = args[0], args[1]
+            if s is None:
+                raise ValueError(f"{op} 首参不能是常量")
+            # EMA 非固定窗口（指数递归），逐股 ewm（sr=True 时 active 已是压缩序列）
+            return _ema(s, float(N), tdx=(op == "EMA_TDX"), sr=sr)
         if op in _BIN_ELEM or op in _BIN_CMP:
             a, b = args
             template = a if isinstance(a, pd.Series) else b
@@ -431,6 +438,8 @@ class PanelEvaluator:
                 fn = _BIN_ELEM[op]
                 if fn in ("add", "sub", "mul", "div"):
                     return getattr(a, fn)(b)
+                if fn == "pow":
+                    return np.power(a, b)
                 if fn == "max":
                     return a.where(a >= b, b)
                 if fn == "min":
@@ -547,6 +556,52 @@ def _roll(s: pd.Series, func: str, N: int, sr: bool) -> pd.Series:
     return out
 
 
+def _ema_apply_series(x: pd.Series, N, tdx: bool) -> pd.Series:
+    """单股 EWM（对齐 qlib ops.EMA / ops_ext.EMA_TDX 的逐股实现）。
+
+    tdx=False（qlib 内建 EMA）：N==0 → expanding 指数加权；0<N<1 → ewm(alpha=N,
+      min_periods=1)；N>=1 → ewm(span=N, min_periods=1)。均 adjust=True（pandas 默认）。
+    tdx=True（EMA_TDX 通达信递归式）：N==0 → expanding 均值；0<N<1 → ewm(alpha=N,
+      adjust=False)；N>=1 → ewm(alpha=2/(N+1), adjust=False)。
+    """
+    n = float(N)
+    if tdx:
+        if n == 0:
+            return x.expanding(min_periods=1).mean()
+        if 0 < n < 1:
+            return x.ewm(alpha=n, min_periods=1, adjust=False).mean()
+        return x.ewm(alpha=2.0 / (n + 1), min_periods=1, adjust=False).mean()
+    # qlib 内建 EMA
+    if n == 0:
+        arr = x.to_numpy(dtype=np.float64)
+        out = np.full(len(arr), np.nan, dtype=np.float64)
+        for i in range(len(arr)):
+            win = arr[: i + 1]
+            valid = win[~np.isnan(win)]
+            if valid.size == 0:
+                continue
+            a = 1 - 2 / (1 + len(valid))
+            w = a ** np.arange(len(valid))[::-1]
+            out[i] = np.nansum(w * valid) / w.sum()
+        return pd.Series(out, index=x.index)
+    if 0 < n < 1:
+        return x.ewm(alpha=n, min_periods=1).mean()
+    return x.ewm(span=n, min_periods=1).mean()
+
+
+def _ema(s: pd.Series, N, tdx: bool, sr: bool) -> pd.Series:
+    """EMA(X, N) / EMA_TDX(X, N) 面板实现。
+
+    语义与逐股一致（EMA 是每股独立指数加权）：
+    - sr=False：s 是全日历（含停牌 NaN 行）。qlib 内建 EMA 直接用 ewm（pandas 遇 NaN
+      保持 NaN 传播）——与 qlib 在含 NaN 全日历上逐股 ewm 一致。这里按组逐段调用
+      _ema_apply_series（各股自己的连续段；段内含 NaN 由 ewm 处理，与 qlib 相同）。
+    - sr=True：active 已是 close 有效行压缩序列（无停牌 NaN），逐段 EWM 后
+      scatter 回全日历由 eval_expr 出口统一处理（此处直接按组返回即可）。
+    """
+    return _by_group(s, None, lambda v: _ema_apply_series(pd.Series(v), N, tdx).to_numpy(dtype=np.float64))
+
+
 def _panel_dyn(op: str, args, ev: PanelEvaluator) -> pd.Series:
     """BARSLAST/DYN_* 面板实现：逐组调用 ops_ext 的纯向量函数（组数~5000，内部 numpy）。"""
     from . import ops_ext
@@ -616,7 +671,8 @@ def _warm_days(exprs) -> int:
     max_k = 0
     for expr in exprs:
         e = str(expr)
-        for m in re.finditer(r"(?:Ref|Mean|Max|Min|Sum|Std|Var|Abs|Sqrt)\([^,]+,\s*(-?\d+)", e):
+        # 固定窗口算子 + Ref/EMA 的第二参（窗口/前移天数）
+        for m in re.finditer(r"(?:Ref|Mean|Max|Min|Sum|Std|Var|Abs|Sqrt|EMA|EMA_TDX)\([^,]+,\s*(-?\d+)", e):
             try:
                 max_k = max(max_k, abs(int(m.group(1))))
             except ValueError:
@@ -624,6 +680,85 @@ def _warm_days(exprs) -> int:
         if "SR(" in e:
             max_k = max(max_k, 250)
     return max_k + 30
+
+
+# 需"精确冷启动起点"的递归算子：qlib 逐字段按 get_extended_window_size 精确前移
+# N-1 天起算（EMA 是序列起点敏感的指数递归，读多了反而不对齐——固定窗口算子多读
+# 无害，EMA 必须恰好 N-1）。这里只把这些算子的窗口参数也纳入 warm，供逐字段分组。
+_EXT_SENSITIVE_OPS = ("EMA", "EMA_TDX")
+
+
+def _tree_ext_days(node) -> int:
+    """递归计算表达式的 qlib extended window（左侧交易日数）。
+
+    复刻 qlib Expression.get_extended_window_size 的递归语义：
+      - Rolling 类（Mean/Max/Min/Sum/Std/Var...）与 EMA/EMA_TDX：N>=1 → 子ext + (N-1)；
+        N==0 → 子ext；0<N<1 → 子ext + log(1e-6)/log(1-N)（与 qlib 同式）。
+      - Ref(x, N)：qlib 对左侧扩展 max(child_ext + N, child_ext)，即正 N（取过去）才加 N。
+      - 其余（二元/If/And/Or/一元/逻辑）：两侧子 ext 取 max。
+    叶子/常量 → 0。
+
+    为什么必须递归整棵树：EMA 是"序列起点敏感"的指数递归，面板若只按最外层 EMA 的
+    N-1 前移 read_start，而输入链里还嵌了 Max/Min/Ref 等固定窗口算子，qlib 会让它们
+    也从各自 extended 起点起算（嵌套窗口沿树累加，如 EMA(Max($h,34),4) 总 extended
+    = 33+3=36），面板起点晚 33 天 → EMA 整条序列永久偏移（实测同一日值差可达 0.37，
+    0/1 阈值比较即翻面）。此递归把整棵树需要的最大前移量算准。
+    """
+    op = node.op
+    if op in ("field", "const"):
+        return 0
+    args = node.args or []
+    if op in _ROLL_FUNC or op in ("EMA", "EMA_TDX"):
+        base = _tree_ext_days(args[0]) if args else 0
+        try:
+            n = float(args[1].raw) if len(args) > 1 and getattr(args[1], "op", None) == "const" else 0.0
+        except Exception:
+            n = 0.0
+        if n >= 1:
+            return base + (int(n) - 1)
+        if n == 0:
+            return base
+        # 0<N<1（qlib: alpha 型，需 ~log(1e-6)/log(1-N) 天收敛）
+        import math as _math
+        return base + max(0, int(_math.log(1e-6) / _math.log(1 - n)) - 1)
+    if op == "Ref":
+        base = _tree_ext_days(args[0]) if args else 0
+        try:
+            k = int(args[1].raw) if args[1].op == "const" else 0
+        except Exception:
+            k = 0
+        return base + max(k, 0)  # 正 k=取过去 k 天前 → 左侧多读 k 天
+    # 其余组合/一元：两侧取 max
+    best = 0
+    for a in args:
+        if hasattr(a, "op"):
+            best = max(best, _tree_ext_days(a))
+    return best
+
+
+def _expr_ext_days(expr: str) -> int:
+    """计算单个表达式为精确复刻 qlib 需前移的交易日数（整棵树 extended，见 _tree_ext_days）。
+
+    含嵌套固定窗口的输入链会正确累加（如 EMA(Max($h,34),4)=33+3=36，而非只认最外层 3）；
+    不含敏感/窗口算子返回 0（统一 warm 宽余量对固定窗口无害）。
+    """
+    try:
+        node = parse_expr(str(expr))
+        return _tree_ext_days(node)
+    except Exception:
+        # 解析失败退化为旧的顶层 EMA 正则（保守兜底）
+        import math as _math
+        need = 0
+        for m in re.finditer(r"(?:EMA|EMA_TDX)\([^,]+,\s*([\d.]+)", str(expr)):
+            try:
+                n = float(m.group(1))
+            except ValueError:
+                continue
+            if n >= 1:
+                need = max(need, int(n) - 1)
+            elif n > 0:
+                need = max(need, int(_math.log(1e-6) / _math.log(1 - n)))
+        return need
 
 
 def _shift_calendar_start(start_time: str, days: int) -> str:
@@ -646,20 +781,50 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
     """
     union_fields = _collect_field_names(fields)
     warm = _warm_days([e for e, _ in fields])
-    read_start = _shift_calendar_start(start_time, warm)
-    ev = PanelEvaluator(instruments, start_time, end_time, union_fields,
-                        read_start=read_start)
-    cols = {}
+    # 分组求值：qlib 逐字段按各自 get_extended_window_size 精确前移历史起点——
+    # EMA/EMA_TDX 是序列起点敏感的指数递归，qlib 只前移 N-1 天冷启动，读多了反而不
+    # 对齐（实测 EMA(5) 前移 4 天才与 qlib 全对、前移 25/56 天都偏）；固定窗口算子
+    # （Mean/Max/Min/Ref 等）多读无害，统一用 warm 即可。因此把字段按各自"精确
+    # 扩展天数"分桶，每桶一个 PanelEvaluator（桶内共享读盘缓存），输出拼回。
+    sensitive_fields = {}
+    normal_fields = {}
     for expr, name in fields:
         e = str(expr).strip()
         if not e or e.lower() in ("", "none", "nan"):
             continue
-        cols[name] = ev.eval_expr(e)
+        if "SR(" in e or not re.search(r"\b(?:EMA|EMA_TDX)\(", e):
+            # 含 SR 的字段：read_start 由 SR 前移主导（lookback 250），EMA 在其中
+            # 从更早收敛点起算，与 qlib 一致（实测 SR(EMA) 全对）→ 归普通组。
+            normal_fields.setdefault(warm, []).append((e, name))
+        else:
+            ext = max(1, _expr_ext_days(e))
+            # 该字段的精确起点 = 统一 warm 与"精确 N-1"的交集？不：qlib 只前移
+            # N-1，故此处 read_start 前移量直接取 ext（比 warm 更晚），让 EMA
+            # 恰好从 qlib 的冷启动点起算。
+            sensitive_fields.setdefault(ext, []).append((e, name))
+
+    cols = {}
+    # 普通组：统一 read_start（保持原语义，含 SR/固定窗口）
+    if normal_fields:
+        rs = _shift_calendar_start(start_time, warm)
+        ev = PanelEvaluator(instruments, start_time, end_time, union_fields,
+                            read_start=rs)
+        for e, name in normal_fields[warm]:
+            cols[name] = ev.eval_expr(e)
+    # 敏感组：每桶按各自精确扩展量建独立 evaluator（桶共享 read_start/读盘缓存）
+    for ext, items in sensitive_fields.items():
+        rs = _shift_calendar_start(start_time, ext)
+        ev = PanelEvaluator(instruments, start_time, end_time, union_fields,
+                            read_start=rs)
+        for e, name in items:
+            cols[name] = ev.eval_expr(e)
     # 输出 = 逻辑区间 [start_time, end_time] 的并集（裁剪预热段）
     full_out = _union_index(instruments, start_time, end_time, union_fields)
     if not cols:
         return pd.DataFrame(index=full_out)
-    df = pd.DataFrame(cols).reindex(ev._full)
+    df = pd.DataFrame(cols)
+    # 不同 read_start 的列 index 覆盖范围不同 → 统一 reindex 到各列并集再裁剪
+    df = df.reindex(df.index.union(full_out))
     df = df[df.index.get_level_values("datetime") >= pd.Timestamp(start_time)]
     return df.reindex(full_out)
 

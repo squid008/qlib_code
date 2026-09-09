@@ -658,6 +658,19 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
     # 面板求值器开关（默认开；QLIB_SFT_PANEL=0 强制回退 qlib）
     if os.environ.get("QLIB_SFT_PANEL", "1") == "0":
         return None
+    # 含 EMA/EMA_TDX 的字段走 qlib 兜底（默认开）。面板 EMA 求值器已修复嵌套固定窗口
+    # 的 read_start 递归（_tree_ext_days），单进程面板与 qlib 逐位对齐；但"全 A 并行
+    # 面板 + 含 EMA 公式"的端到端数值仍有待复验（trend 类日截面差 ~0.02pp 待查）——
+    # 在查清前含 EMA 公式保持回退 qlib（与 v1.17.0 行为一致、数值稳定），仅无 EMA
+    # 公式（CWH 等）走面板提速。QLIB_SFT_PANEL_EMA=0 可强制含 EMA 也走面板。
+    if os.environ.get("QLIB_SFT_PANEL_EMA", "1") != "0":
+        try:
+            for _f in fields:
+                _e = _f if isinstance(_f, str) else _f[0]
+                if ("EMA(" in _e) or ("EMA_TDX(" in _e):
+                    return None
+        except Exception:
+            pass
     # 池子规模阈值：中小池走单进程面板；超大池（全 A）走并行面板（v1.16.9）。
     # 可用 QLIB_SFT_PANEL_MAX 覆盖（如 ="0" 等价关面板，="999999" 强制全走面板）。
     _max_stocks = int(os.environ.get("QLIB_SFT_PANEL_MAX", "1000"))
