@@ -3,6 +3,24 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.17.2] - 2026-09-09
+
+### Fixed
+- **POWER 输入报"不支持的函数"**：`semantic.BUILTIN_FUNCS` 只有 POW 没有 POWER；同事
+  公式用 `POWER(X,Y)`（Excel/部分软件写法）被白名单拦截。修复 = BUILTIN_FUNCS 加
+  POWER + codegen 映射 `POWER → Power`（与 POW 同一算子，实测逐位一致）。
+- **巨型布尔公式执行报 `unsupported operand type(s) for &: 'float' and 'bool'`**
+  （同事报"float 和 bool"）：qlib 内建 And/Or 用 `np.bitwise_and/or_(left,right)` 不
+  归一 dtype，当一侧是动态算子输出（float32 0/1）另一侧是比较结果（bool）时 numpy
+  类型提升抛错（实测 `And(DYN_REF(...),Ge(...))` 必现、换序则偶发）。杯柄突破
+  CUP_POOL 等大量 `A AND B AND C` + 动态窗口公式必触发。修复 = ops_ext 注册自定义
+  And/Or 覆盖 qlib 内建：两侧先 `≠0` 归一数值布尔再逻辑运算、输出 0/1 float，与
+  面板端 And/Or 语义一致（实测任意 float/bool/常量混输入不再报错）。端到端同事
+  CUP_POOL csi300 success（daily_trig 0.004828）。
+
+### Changed
+- 版本 1.17.1→1.17.2。
+
 ## [1.17.1] - 2026-09-09
 
 ### Fixed

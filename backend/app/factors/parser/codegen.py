@@ -167,7 +167,8 @@ FUNC_QLIB = {
     "HHV": "Max", "LLV": "Min",
     "SUM": "Sum", "COUNT": "Count",
     "ABS": "Abs", "SQRT": "Sqrt", "LOG": "Log", "LN": "Log",
-    "POW": "Power",  # qlib 内建名是 Power（曾误映射 Pow → "operator [Pow] is not registered"）
+    "POW": "Power",   # qlib 内建名是 Power（曾误映射 Pow → "operator [Pow] is not registered"）
+    "POWER": "Power",  # 别名：POWER(X,Y)=X^Y（Excel/部分软件写法，与 POW 等价）
     "MAX": "Greater", "MIN": "Less", "MOD": "Mod",
     "STD": "Std", "VAR": "Var", "SLOPE": "Slope",
     "REF": "Ref", "DELTA": "Delta", "MEAN": "Mean", "MED": "Med",

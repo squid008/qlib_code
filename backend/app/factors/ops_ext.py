@@ -35,6 +35,7 @@ from qlib.data.ops import EMA as _QLIB_EMA
 __all__ = [
     "BARSLAST", "BARSCOUNT", "BARSSINCEN",
     "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM",
+    "And", "Or",
     "SR",
     "EMA_TDX",
     "SGN", "TRUNC", "BETWEEN",
@@ -313,6 +314,90 @@ class DYN_SUM(_DynWindowOp):
     def _load_internal(self, instrument, start_index, end_index, *args):
         vals, nvals, idx = self._load_both(instrument, start_index, end_index, *args)
         return pd.Series(dyn_window_sum_vec(vals, nvals), index=idx)
+
+
+# ---------------- And / Or：qlib 内建 np.bitwise_and 的 dtype 脆弱性覆盖 ----------------
+
+class _LogicalAndOr(ExpressionOps):
+    """And/Or 的健壮实现：两侧先转数值布尔（≠0 且非 NaN → True）再逻辑运算，输出 0/1。
+
+    背景：qlib 内建 And/Or 用 `np.bitwise_and/or_(left, right)`，不归一 dtype。当一侧来自
+    动态算子/字段运算（float32 0/1）而另一侧是比较算子结果（可能 bool）时，numpy 抛
+    `unsupported operand type(s) for &: 'float' and 'bool'`（实测 And(DYN_REF(...),Ge(...))
+    报错、顺序反过来则通过——与操作数 numpy 类型提升顺序有关）。巨型布尔公式（杯柄
+    突破 CUP_POOL 等大量 `A AND B AND C` 链 + 动态窗口）必触发。
+    本实现与面板 _apply 的 And/Or 语义一致（a!=0 & b!=0 → 0/1 float），对任意数值/bool
+    输入健壮。注册时覆盖 qlib 内建 And/Or（项目已有 DYN_* override 先例）。
+    """
+
+    def __init__(self, feature_left, feature_right):
+        self.feature_left = feature_left
+        self.feature_right = feature_right
+        super().__init__()
+
+    def _load(self, instrument, start_index, end_index, *args, f=None):
+        from qlib.data.base import Expression as _E
+        if isinstance(f, _E):
+            return f.load(instrument, start_index, end_index, *args)
+        return f
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        l = self._load(instrument, start_index, end_index, *args, f=self.feature_left)
+        r = self._load(instrument, start_index, end_index, *args, f=self.feature_right)
+
+        def _b(v):
+            if isinstance(v, pd.Series):
+                arr = v.to_numpy(dtype=float)
+                idx = v.index
+            elif isinstance(v, np.ndarray):
+                arr = v.astype(float)
+                idx = None
+            else:  # 常量
+                arr = np.asarray(float(v))
+                idx = None
+            arr = np.where(np.isnan(arr), 0.0, (arr != 0).astype(float))
+            return arr, idx
+
+        la, lidx = _b(l)
+        ra, ridx = _b(r)
+        if la.ndim == 0 and ra.ndim == 0:
+            out = float(self._op(la, ra))
+            return out
+        # 广播（常量 vs 序列）
+        if la.ndim == 0:
+            la = np.broadcast_to(la, ra.shape)
+        if ra.ndim == 0:
+            ra = np.broadcast_to(ra, la.shape)
+        res = self._op(la, ra).astype(float)
+        idx = lidx if lidx is not None else ridx
+        return pd.Series(res, index=idx)
+
+    def __str__(self):
+        return f"{type(self).__name__}({self.feature_left},{self.feature_right})"
+
+    def get_longest_back_rolling(self):
+        from qlib.data.base import Expression as _E
+        def _lbr(f):
+            return f.get_longest_back_rolling() if isinstance(f, _E) else 0
+        return max(_lbr(self.feature_left), _lbr(self.feature_right))
+
+    def get_extended_window_size(self):
+        from qlib.data.base import Expression as _E
+        def _ext(f):
+            return f.get_extended_window_size() if isinstance(f, _E) else (0, 0)
+        ll, lr = _ext(self.feature_left)
+        rl, rr = _ext(self.feature_right)
+        return max(ll, rl), max(lr, rr)
+
+
+class And(_LogicalAndOr):
+    def _op(self, a, b):
+        return (a != 0) & (b != 0)
+
+
+class Or(_LogicalAndOr):
+    def _op(self, a, b):
+        return (a != 0) | (b != 0)
 
 
 # ---------------- SR：益盟"删停牌行"语义包装 ----------------
@@ -778,6 +863,7 @@ class LLVBARS(ExpressionOps):
 _ALL_OPS = [
     BARSLAST, BARSCOUNT, BARSSINCEN,
     DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM,
+    And, Or,          # 覆盖 qlib 内建：np.bitwise_and 对 float&bool 混输脆弱
     SR,
     EMA_TDX,
     SGN, TRUNC, BETWEEN,

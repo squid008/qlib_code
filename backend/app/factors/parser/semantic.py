@@ -22,7 +22,7 @@ BUILTIN_FUNCS = {
     "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM", "EMA_TDX", "SGN", "SIGN", "INT", "BETWEEN",
     "CROSS", "IF", "IFS", "RANGE", "LONGCROSS",
     "DELTA", "MEAN", "MED",
-    "ABS", "SQRT", "LOG", "LN", "EXP", "POW", "MAX", "MIN", "MOD",
+    "ABS", "SQRT", "LOG", "LN", "EXP", "POW", "POWER", "MAX", "MIN", "MOD",
     "CEILING", "FLOOR",
     "STD", "STDP", "VAR", "VARP", "AVEDEV", "SLOPE", "FORCAST", "DEVSQ",
     # Level2（留接口：语法支持，计算层待数据）
