@@ -276,9 +276,10 @@ def _sft_render_view(state: dict) -> tuple:
         parts.append(f"[{h}日] {inner}" if inner else f"[{h}日] 统计中")
     msg = "；".join(parts)
     if n_h > 1:
-        msg = f"{msg}（运行 {len(running)}/{n_h} 周期"
-        if done_n:
-            msg += f"，已完成 {done_n}"
+        # 单执行体串行统计：running 恒为正在统计的那 1 个周期（parts 已带 [h日]），
+        # 不再显示旧并发语义的"运行 k/n"（多周期并行取消后该数字恒 1，误导）；
+        # 改为进度维度的"已完成 k/n 周期"，与 overall 进度条口径一致。
+        msg += f"（已完成 {done_n}/{n_h} 周期"
         if queued:
             msg += f"，{len(queued)} 个排队"
         msg += "）"
