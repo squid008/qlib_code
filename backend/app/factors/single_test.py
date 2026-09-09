@@ -358,15 +358,19 @@ def _test_one(
             else:
                 result["daily_trig_mean"] = round(float(daily_trig.mean()), 6)
                 result["daily_not_mean"] = round(float(daily_not.mean()), 6)
+            # 配对日 ≥1：日差与配对日数即真实值（n=1 时日差=该单日两组日截面均值差，
+            # 仍自洽）；t/胜率/HAC/自相关等统计推断仍要求 ≥2（单配对日无统计意义，留空）。
+            if len(daily) >= 1:
+                x = daily.to_numpy(dtype=float)
+                result["daily_diff"] = round(float(x.mean()), 6)
+                result["daily_n"] = int(len(x))
             if len(daily) >= 2:
                 from scipy.stats import ttest_1samp
 
                 x = daily.to_numpy(dtype=float)
                 t_stat, _ = ttest_1samp(x, 0)
-                result["daily_diff"] = round(float(x.mean()), 6)
                 result["daily_t"] = round(float(t_stat), 4)
                 result["daily_win"] = round(float((x > 0).mean()), 4)
-                result["daily_n"] = int(len(x))
                 # Newey-West HAC 稳健 t（主显示用，修正自相关/异方差）
                 try:
                     th = _hac_t(x)
@@ -475,6 +479,12 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
                     return None
         except Exception:
             pass
+    # 取消探针：cancelled() 为 True 时抛 FactorTestCancelled 上传（由路由层标记 cancelled）。
+    # 面板求值器每表达式/每块调用一次；注意必须先于 except Exception 捕获，否则被吞成回退 qlib。
+    def _cancel_probe():
+        if cancelled is not None and cancelled():
+            raise FactorTestCancelled()
+
     # 池子规模阈值：中小池走单进程面板；超大池（全 A）走并行面板（v1.16.9）。
     # 可用 QLIB_SFT_PANEL_MAX 覆盖（如 ="0" 等价关面板，="999999" 强制全走面板）。
     _max_stocks = int(os.environ.get("QLIB_SFT_PANEL_MAX", "1000"))
@@ -486,7 +496,9 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
             if progress_cb:
                 progress_cb(None, 6.0, f"计算特征数据（面板 {len(instruments)} 只）...")
             pdf = panel_features(instruments, list(zip(fields, all_cols)),
-                                 start_date, load_end)
+                                 start_date, load_end, cancel_cb=_cancel_probe)
+        except FactorTestCancelled:
+            raise
         except Exception as e:
             _dump_sft_error(e)
             return None
@@ -507,10 +519,12 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
         n_jobs = int(os.environ.get("QLIB_SFT_PANEL_JOBS", "0")) or None
         if progress_cb:
             progress_cb(None, 6.0, f"计算特征数据（面板并行 {len(instruments)} 只，切块求值中）...")
-        # 并行求值按块回报进度：progress_cb(h=None, pct, msg) 驱动加载阶段 6→30 平滑推进
+        # 并行求值按块回报进度：progress_cb(h=None, pct, msg) 驱动加载阶段 6→30 平滑推进；
+        # cancel_cb 每收一块前检查，命中抛 FactorTestCancelled（最坏多等一块）
         pdf = panel_features_parallel(instruments, list(zip(fields, all_cols)),
                                       start_date, load_end, n_jobs=n_jobs,
-                                      progress_cb=lambda p, m: progress_cb(None, p, m) if progress_cb else None)
+                                      progress_cb=lambda p, m: progress_cb(None, p, m) if progress_cb else None,
+                                      cancel_cb=_cancel_probe)
         if pdf is None or len(pdf) == 0:
             return None
         pdf = pdf.copy()
@@ -520,6 +534,8 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
         if progress_cb:
             progress_cb(None, 30.0, "特征数据就绪")
         return pdf
+    except FactorTestCancelled:
+        raise
     except Exception as e:
         _dump_sft_error(e)
         return None
@@ -648,6 +664,9 @@ def run_single_factor_tests(
         try:
             batch_size = max(1, min(len(fields), 32))
             for k in range(0, len(fields), batch_size):
+                # qlib 回退路径取消点：每批 D.features 前检查（qlib 内部 job 不可中断）
+                if cancelled is not None and cancelled():
+                    raise FactorTestCancelled()
                 if progress_cb:
                     done = min(k + batch_size, len(fields))
                     progress_cb(None, 5 + 25 * (done / len(fields)), f"加载特征数据 {done}/{len(fields)}...")

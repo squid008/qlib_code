@@ -3,6 +3,17 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.17.8] - 2026-09-10
+
+### Fixed
+- **单因子测试"配对日"极稀疏场景口径**：触发样本极少（如 CWH 全 A 2022-2023 两年仅 1 个触发 → 配对日仅 1 天）时，`daily_diff`/`daily_n` 原只在配对日 ≥2 才输出，界面呈现"触发组日均非空但配对日数 0"的矛盾观感。改为**配对日 ≥1 即填真实值**（日差 = 当日触发组−未触发组日截面均值差，与两组日均严格自洽：`0.100491−(−0.033058)=0.133549`）；t/胜率/HAC 等统计推断仍要求 ≥2（单配对日无统计意义）。前端差值子行按是否可算显示，无配对日时悬停说明"无同日样本不计算"（`single_test.py` / `SingleFactorTestPanel.tsx`）
+- **面板求值期间取消不可用**（多因子×多周期大公式点取消后卡在 loading，公司实证）：
+  - `panel_expr.panel_features` / `panel_features_parallel` 新增 `cancel_cb` 取消检查点（表达式级 / 块级）；并行收块由 `as_completed` 阻塞改为 **0.25s 轮询**，取消命中后 `shutdown(wait=False, cancel_futures=True)` **立即返回**（原 with 退出会等在跑块）
+  - `single_test._load_feature_panel` 两处 `except Exception` 前补 `except FactorTestCancelled: raise`（否则取消被吞成"回退 qlib"继续算）；qlib 回退批量循环逐批检查
+  - 实测：全 A 5446 只 CCCMA250 面板并行求值中取消 **2.08s 生效**（原需等整批块算完）；排队中取消 1.35s
+  - 局限（已知）：已在跑的 worker 块无法 kill（取消后跑完当前块自行退出）；单条巨型表达式内部仍为表达式/块粒度检查
+- 版本 1.17.7 → 1.17.8（后端 `backend/app/__init__.py` / README 顶部）。
+
 ## [1.17.7] - 2026-09-09
 
 ### Performance

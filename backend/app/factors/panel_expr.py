@@ -891,13 +891,16 @@ def _shift_calendar_start(start_time: str, days: int) -> str:
 
 
 def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]],
-                   start_time: str, end_time: str) -> pd.DataFrame:
+                   start_time: str, end_time: str, cancel_cb=None) -> pd.DataFrame:
     """替代 D.features：一次面板求值 (expr, name) 列表 → MultiIndex × 列 DataFrame。
 
     与 D.features 输出对齐：行 = 各股在【全部参与字段覆盖并集】∩[start,end] 上的
     日历年（含停牌 NaN），列名 = name。读盘自动前移预热窗口（见 _warm_days），
     最终输出仅覆盖 [start_time, end_time]。
     fields: [(表达式文本, 列名), ...]。空表达式跳过。
+    cancel_cb: 可选取消检查回调（主线程每求值一个表达式前调用一次）。约定：应取消时
+    回调直接抛出异常中止求值（默认 None 不检查）。注意粒度 = 表达式级，单条巨型表达式
+    内部仍不可中断。
     """
     union_fields = _collect_field_names(fields)
     warm = _warm_days([e for e, _ in fields])
@@ -934,6 +937,8 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
         ev = PanelEvaluator(instruments, start_time, end_time, union_fields,
                             read_start=rs)
         for e, name in normal_fields[warm]:
+            if cancel_cb is not None:
+                cancel_cb()  # 取消检查点：表达式级（单条巨型表达式内不可中断）
             cols[name] = ev.eval_expr(e)
     # 敏感组：每桶按各自精确扩展量建独立 evaluator（桶共享 read_start/读盘缓存）
     for ext, items in sensitive_fields.items():
@@ -941,6 +946,8 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
         ev = PanelEvaluator(instruments, start_time, end_time, union_fields,
                             read_start=rs)
         for e, name in items:
+            if cancel_cb is not None:
+                cancel_cb()
             cols[name] = ev.eval_expr(e)
     # 输出 = 逻辑区间 [start_time, end_time] 的并集（裁剪预热段）
     full_out = _union_index(instruments, start_time, end_time, union_fields)
@@ -1045,7 +1052,8 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
                             start_time: str, end_time: str,
                             n_jobs: Optional[int] = None,
                             progress_cb=None,
-                            progress_lo: float = 6.0, progress_hi: float = 30.0) -> pd.DataFrame:
+                            progress_lo: float = 6.0, progress_hi: float = 30.0,
+                            cancel_cb=None) -> pd.DataFrame:
     """并行面板求值（替代 panel_features 用于大池）。
 
     panel_features 的计算对每只股票独立（rolling/shift 按 instrument 分组、字段各读各的
@@ -1060,6 +1068,9 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     progress_cb: 可选回调 progress_cb(pct, msg)。每完成一块报一次，pct 从
     progress_lo 线性推进到 progress_hi（默认 6→30，对应 single_test 的加载阶段
     0-30 进度）。回调只在主进程收集结果时触发，不进入子进程计算路径，不拖慢求值。
+    cancel_cb: 可选取消检查回调（主进程每收一块前调用一次）。约定：应取消时回调直接
+    抛异常中止收集；已提交给进程池的块无法中途终止，但剩余未收结果不再等待
+    （最坏多等一块运行时间）。worker 内 panel_features 不传（无法感知主进程标志）。
     """
     import concurrent.futures as cf
     import math
@@ -1071,8 +1082,8 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
         n_jobs = min(12, max(1, math.ceil(n / 300)))  # 每块 ≥300 只，避免小池切太碎
     n_jobs = max(1, min(n_jobs, n))
     if n_jobs == 1 or n <= 1000:
-        # 小池/单块：直接单进程（避免进程池固定开销）
-        return panel_features(instruments, fields, start_time, end_time)
+        # 小池/单块：直接单进程（避免进程池固定开销）；同样支持取消检查点
+        return panel_features(instruments, fields, start_time, end_time, cancel_cb=cancel_cb)
 
     cal = _calendar()
     fdir = _feature_dir()
@@ -1086,22 +1097,35 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     parts: dict = {}
     done = 0
     with _nowin_spawn():
-        with _panel_executor(
-            len(chunks),
-            _worker_init,
-            (cal, fdir),
-        ) as ex:
+        cm = _panel_executor(len(chunks), _worker_init, (cal, fdir))
+        ex = cm.__enter__()
+        try:
             futs = {ex.submit(_panel_features_chunk, p): i for i, p in enumerate(payloads)}
-            for fut in cf.as_completed(futs):
-                i = futs[fut]
-                r = fut.result()
-                if r is not None and len(r):
-                    parts[i] = r
-                done += 1
-                if progress_cb:
-                    # 线性映射 lo→hi；msg 显示已完块数（真实计算进度，非字节/耗时估算）
-                    pct = progress_lo + (progress_hi - progress_lo) * (done / n_chunk)
-                    progress_cb(pct, f"计算特征数据（面板并行，{done}/{n_chunk} 块完成）...")
+            pending = set(futs)
+            # 轮询式收块：每 0.25s 查一次取消标志 + 收已完成块。相对 as_completed 阻塞
+            # 等待，取消无需等"下一块完成"才被感知——用户点取消后 ≤0.25s 即响应。
+            while pending:
+                if cancel_cb is not None:
+                    cancel_cb()  # 命中即抛，由调用方转为 FactorTestCancelled
+                done_set, pending = cf.wait(pending, timeout=0.25, return_when=cf.FIRST_COMPLETED)
+                for fut in done_set:
+                    i = futs[fut]
+                    r = fut.result()
+                    if r is not None and len(r):
+                        parts[i] = r
+                    done += 1
+                    if progress_cb:
+                        # 线性映射 lo→hi；msg 显示已完块数（真实计算进度，非字节/耗时估算）
+                        pct = progress_lo + (progress_hi - progress_lo) * (done / n_chunk)
+                        progress_cb(pct, f"计算特征数据（面板并行，{done}/{n_chunk} 块完成）...")
+        except BaseException:
+            # 取消（异常路径）：不等在跑块、只取消未开始任务，立即返回让取消生效。
+            # 在跑 worker 会自行跑完当前块后退出（长驻后端下由 GC/进程结束回收，无害）。
+            ex.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            # 正常路径：等待全部块完成（等价原 with 语义）
+            cm.__exit__(None, None, None)
     if not parts:
         return pd.DataFrame()
     # 每块 panel_features 已自行裁剪到该块股票的 union index（字段覆盖 ∩ [start,end]），

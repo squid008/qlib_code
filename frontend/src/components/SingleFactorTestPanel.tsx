@@ -898,6 +898,28 @@ export default function SingleFactorTestPanel({
                 const dailyTip = hasDaily
                   ? `触发组：日截面均值 ${dTrig >= 0 ? '+' : ''}${(dTrig * 100).toFixed(3)}%　|　未触发组：日截面均值 ${dNot >= 0 ? '+' : ''}${(dNot * 100).toFixed(3)}%　|　配对日差：${r.daily_diff != null ? `${r.daily_diff >= 0 ? '+' : ''}${(r.daily_diff * 100).toFixed(3)}%` : '-'}（${dT != null ? `${dTipLabel}=${dT >= 0 ? '+' : ''}${dT.toFixed(1)}` : ''}）　|　配对日数：${r.daily_n ?? '-'}`
                   : ''
+                // 差值单元格悬停：配对日 ≥2 给完整检验详情；仅 1 个配对日说明"不足统计推断"；
+                // 无配对日（两组无同日样本）明示不计算——避免可见区显示误导性的 0。
+                const pairTitle =
+                  dT != null
+                    ? (() => {
+                        const band = r.daily_n > 0 ? 1.96 / Math.sqrt(r.daily_n) : 0
+                        const s1 = r.daily_acf1 != null ? Math.abs(r.daily_acf1) > band : null
+                        const s5 = r.daily_acf5 != null ? Math.abs(r.daily_acf5) > band : null
+                        return [
+                          `按日配对检验（${r.daily_n} 个交易日）：`,
+                          `日差值均值 ${fmt(r.daily_diff, 3)}%`,
+                          `HAC t=${fmtRaw(dT, 2)}（普通 t=${r.daily_t != null ? fmtRaw(r.daily_t, 2) : '-'}）`,
+                          `胜率 ${fmt(r.daily_win, 1)}%`,
+                          `lag-1 自相关=${r.daily_acf1 ?? '-'}${s1 == null ? '' : s1 ? '（显著）' : '（不显著）'}`,
+                          `lag-5 自相关=${r.daily_acf5 ?? '-'}${s5 == null ? '' : s5 ? '（显著）' : '（不显著）'}`,
+                          `方差稳定性 后半/前半=${r.daily_var_ratio != null ? `${r.daily_var_ratio}x` : '-'}`,
+                          `（HAC 修正自相关与异方差；lag 自相关置信带 ±${band.toFixed(3)}）`,
+                        ].join('\n')
+                      })()
+                    : r.daily_diff != null
+                      ? `按日配对检验：仅 ${r.daily_n} 个配对日，不足统计推断；日差 = 当日触发组−未触发组日截面均值差 ${fmt(r.daily_diff, 3)}%`
+                      : '无配对日（触发组与非触发组无任何同日样本），不计算日配对差'
                 return (
                   <tr key={`${r.id}:${r.horizon ?? '-'}`} className="border-b border-slate-100 dark:border-slate-700">
                     {r.error ? (
@@ -957,30 +979,12 @@ export default function SingleFactorTestPanel({
                         <td className="text-right px-1">{fmt(r.not_trigger?.mean_ret, 3)}</td>
                         <td
                           className={`text-right px-1 font-semibold ${(r.diff ?? 0) >= 0 ? 'text-red-500' : 'text-emerald-600'}`}
-                          title={
-                            dT != null
-                              ? (() => {
-                                  const band = r.daily_n > 0 ? 1.96 / Math.sqrt(r.daily_n) : 0
-                                  const s1 = r.daily_acf1 != null ? Math.abs(r.daily_acf1) > band : null
-                                  const s5 = r.daily_acf5 != null ? Math.abs(r.daily_acf5) > band : null
-                                  return [
-                                    `按日配对检验（${r.daily_n} 个交易日）：`,
-                                    `日差值均值 ${fmt(r.daily_diff, 3)}%`,
-                                    `HAC t=${fmtRaw(dT, 2)}（普通 t=${r.daily_t != null ? fmtRaw(r.daily_t, 2) : '-'}）`,
-                                    `胜率 ${fmt(r.daily_win, 1)}%`,
-                                    `lag-1 自相关=${r.daily_acf1 ?? '-'}${s1 == null ? '' : s1 ? '（显著）' : '（不显著）'}`,
-                                    `lag-5 自相关=${r.daily_acf5 ?? '-'}${s5 == null ? '' : s5 ? '（显著）' : '（不显著）'}`,
-                                    `方差稳定性 后半/前半=${r.daily_var_ratio != null ? `${r.daily_var_ratio}x` : '-'}`,
-                                    `（HAC 修正自相关与异方差；lag 自相关置信带 ±${band.toFixed(3)}）`,
-                                  ].join('\n')
-                                })()
-                              : undefined
-                          }
+                          title={pairTitle}
                         >
                           <div>{fmt(r.diff, 3)}</div>
-                          {dT != null && (
+                          {r.daily_diff != null && (
                             <div className="text-slate-400 font-mono text-[9px] font-normal whitespace-nowrap">
-                              日{fmt(r.daily_diff, 3)} · t={fmtRaw(dT, 1)} · 胜{fmt(r.daily_win, 1)}%
+                              日{fmt(r.daily_diff, 3)} · t={dT != null ? fmtRaw(dT, 1) : '-'} · 胜{r.daily_win != null ? fmt(r.daily_win, 1) : '-'}%
                             </div>
                           )}
                         </td>
