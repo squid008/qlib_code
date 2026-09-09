@@ -82,6 +82,39 @@ def clear_bin_cache() -> None:
     _BIN_CACHE_BYTES = 0
 
 
+def set_bin_cache_mb(mb: int) -> None:
+    """动态调整本进程 .bin 读盘缓存上限（MB）；超限立即逐出。"""
+    global _BIN_CACHE_MAX_BYTES
+    _BIN_CACHE_MAX_BYTES = max(1, int(mb)) * 1024 * 1024
+    _evict_bin_cache(0)
+
+
+def _system_avail_gb() -> float:
+    """当前可用内存（GB）；psutil 不可用时返回一个很大的数（不限制）。"""
+    try:
+        import psutil
+
+        return psutil.virtual_memory().available / (1024 ** 3)
+    except Exception:
+        return 999.0
+
+
+# 节点缓存字节上限（v1.18.1）：单表达式内部公共子式缓存也封顶。超巨型公式
+# （如 CUP_POOL 24.6 万字符，单树数千节点 × 每节点 ~MB）即使只驻留一个公式，仍可能
+# 把单 worker 撑到数 GB；写满后按 LRU 逐出最旧，普通公式近端命中不受影响。
+# QLIB_SFT_PANEL_NODE_CACHE_MB 可调（默认 512MB/worker）。
+_NODE_CACHE_MAX_BYTES = int(os.environ.get("QLIB_SFT_PANEL_NODE_CACHE_MB", "512")) * 1024 * 1024
+
+
+def _series_mem_bytes(s: pd.Series) -> int:
+    """Series 值数组的近似内存字节（用于节点缓存记账）。"""
+    try:
+        arr = s.array
+        return int(arr.nbytes) if hasattr(arr, "nbytes") else int(s.to_numpy(dtype=np.float64).nbytes)
+    except Exception:
+        return 0
+
+
 def set_panel_runtime(calendar=None, feature_dir=None):
     """免 qlib.init 的运行时注入（供并行 worker/外部直接使用）。
 
@@ -416,7 +449,8 @@ class PanelEvaluator:
         self._full = _union_index(instruments, self.read_start, end_time, self._union_fields)
         self._active_cache: Dict[bool, pd.MultiIndex] = {}
         self._field_cache: Dict[str, pd.Series] = {}
-        self._node_cache: Dict[Tuple[str, bool], pd.Series] = {}
+        self._node_cache: "OrderedDict[Tuple[str, bool], pd.Series]" = OrderedDict()
+        self._node_bytes = 0  # 节点缓存已记账字节（配合 LRU 上限）
 
     def _active_index(self, sr: bool) -> pd.MultiIndex:
         """当前行集合：sr=True → close 有效行压缩序列；sr=False → 全日历。"""
@@ -456,6 +490,7 @@ class PanelEvaluator:
         key = (node.raw if node.op in ("field", "const") else reconstruct(node), sr)
         hit = self._node_cache.get(key)
         if hit is not None:
+            self._node_cache.move_to_end(key)  # LRU 刷新（命中过的节点更晚被逐出）
             return hit
 
         active = self._active_index(sr)
@@ -476,6 +511,11 @@ class PanelEvaluator:
             out = self._apply(op, args, sr=sr, active=active)
         if out is not None:
             self._node_cache[key] = out
+            self._node_bytes += _series_mem_bytes(out)
+            # LRU 逐出：记账字节超上限时从最旧开始淘汰，封顶单 worker 节点缓存
+            while self._node_bytes > _NODE_CACHE_MAX_BYTES and self._node_cache:
+                _k, _v = self._node_cache.popitem(last=False)
+                self._node_bytes -= _series_mem_bytes(_v)
         return out
 
     def _apply(self, op: str, args, sr: bool, active=None) -> Optional[pd.Series]:
@@ -632,6 +672,13 @@ class PanelEvaluator:
         raise ValueError(f"panel_expr 不支持算子 {op}")
 
     def eval_expr(self, expr: str) -> pd.Series:
+        # 内存（v1.18.1）：节点缓存按"单个表达式"为界清理——多公式共用同一 evaluator
+        # 时，若中间节点缓存跨公式累积（N 公式 × 全树节点同时驻留），每块峰值随勾选
+        # 公式数线性放大（×12 worker 后家里小内存会爆）。同一表达式内部的公共子式
+        # 缓存收益全部保留；跨表达式的完全重复子式极罕见（字段读取走 _field_cache /
+        # 读盘 LRU，不受影响）。清空对数值零影响，只改缓存生命周期。
+        self._node_cache.clear()
+        self._node_bytes = 0
         node = parse_expr(expr)
         # SR 语义：single_test 在 suspend_remove=True 时用 _sr_wrap_expr 把因子表达式
         # 的所有叶子字段包上 SR(...)。含 SR 的表达式整棵在"close 有效行压缩序列"上
@@ -1185,9 +1232,11 @@ def _collect_field_names(fields) -> tuple:
 # 4) 并行版（v1.16.9：全 A 大池。面板求值跨股票独立 → 按股票切块多进程并行）
 # ===========================================================================
 
-def _worker_init(calendar, feature_dir):
-    """子进程初始化：注入日历与数据目录（免 qlib.init）。"""
+def _worker_init(calendar, feature_dir, bin_cache_mb=None):
+    """子进程初始化：注入日历与数据目录（免 qlib.init）；可选收紧 bin 读盘缓存上限。"""
     set_panel_runtime(calendar=calendar, feature_dir=feature_dir)
+    if bin_cache_mb is not None:
+        set_bin_cache_mb(bin_cache_mb)
 
 
 def _panel_features_chunk(payload):
@@ -1269,7 +1318,20 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     if n == 0:
         return pd.DataFrame()
     if n_jobs is None:
-        n_jobs = min(12, max(1, math.ceil(n / 300)))  # 每块 ≥300 只，避免小池切太碎
+        # CPU 维度：每块 ≥300 只、≤12 worker
+        jobs_cpu = min(12, max(1, math.ceil(n / 300)))
+        # 内存维度（v1.18.1）：worker 峰值 ≈ 块内(公式节点 + 字段 + bin LRU) 的倍数，
+        # 小内存机器开满 12 worker 会爆（多公式 × 并行 × 缓存驻留）。按可用内存 ÷
+        # 单 worker 预算估算上限；QLIB_SFT_PANEL_MEM_PER_JOB_GB 可调（默认 3GB），
+        # QLIB_SFT_PANEL_JOBS 显式指定则完全覆盖。
+        avail_gb = _system_avail_gb()
+        per_gb = float(os.environ.get("QLIB_SFT_PANEL_MEM_PER_JOB_GB", "3"))
+        jobs_mem = max(1, int(avail_gb / per_gb))
+        # 低水位加固（v1.18.1）：可用内存已紧张（默认 <6GB）再收敛到 ≤ avail/2 个 worker
+        low = float(os.environ.get("QLIB_SFT_PANEL_LOW_MEM_GB", "6"))
+        if avail_gb < low:
+            jobs_mem = min(jobs_mem, max(1, int(avail_gb / 2)))
+        n_jobs = max(1, min(jobs_cpu, jobs_mem, n))
     n_jobs = max(1, min(n_jobs, n))
     if n_jobs == 1 or n <= 1000:
         # 小池/单块：直接单进程（避免进程池固定开销）；同样支持取消检查点
@@ -1284,10 +1346,24 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     n_chunk = len(chunks)
     payloads = [(c, fields, start_time, end_time) for c in chunks]
 
+    # 每 worker bin 读盘缓存预算（v1.18.1 加固）：显式 QLIB_PANEL_BIN_CACHE_MB 优先；
+    # 否则按可用内存均分（全部 worker 盘缓存合计 ≈ 可用内存 40%），避免
+    # "12 worker × 768MB" 再叠数 GB。
+    bin_cache_mb = None
+    try:
+        env_mb = os.environ.get("QLIB_PANEL_BIN_CACHE_MB")
+        if env_mb is not None:
+            bin_cache_mb = int(env_mb)
+        else:
+            _avail_mb = _system_avail_gb() * 1024.0
+            bin_cache_mb = max(64, min(768, int(_avail_mb * 0.4 / n_jobs)))
+    except Exception:
+        pass
+
     parts: dict = {}
     done = 0
     with _nowin_spawn():
-        cm = _panel_executor(len(chunks), _worker_init, (cal, fdir))
+        cm = _panel_executor(len(chunks), _worker_init, (cal, fdir, bin_cache_mb))
         ex = cm.__enter__()
         try:
             futs = {ex.submit(_panel_features_chunk, p): i for i, p in enumerate(payloads)}

@@ -3,6 +3,18 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.1] - 2026-09-10
+
+### Fixed
+- **多公式 × 并行面板求值的内存放大根治**（用户全 A 极端压测实证：批内 6 公式含 CUP_POOL 24.6 万字符，求值早期内存仅 ~23%、随后爬升至 90%+ 触发系统清理；`panel_expr.py`）：
+  - **节点缓存 LRU 封顶**：`_node_cache` 由 dict 改 `OrderedDict` 并按 Series 值字节记账，默认上限 **512MB/worker**（`QLIB_SFT_PANEL_NODE_CACHE_MB` 可调），写满从最旧 `popitem(last=False)` 逐出——超巨型公式（单树数千节点 × 每节点 ~MB）不再把单 worker 撑到数 GB；命中 `move_to_end` 刷新，普通公式近端命中不受影响
+  - **节点缓存按表达式释放**：`eval_expr` 开头清空——多公式共用同一 evaluator 时中间节点缓存不再跨公式线性累积（N 公式 × 全树 → 仅当前 1 公式 × 全树）；表达式内公共子式缓存收益完整保留，字段/读盘走 `_field_cache` / 读盘 LRU 不受影响，对求值数值零影响
+  - **并行 worker 数内存自适应**：`panel_features_parallel` 由单一 CPU 维度（每块 ≥300 只、≤12 worker）改为 **CPU 维度 ∩ 内存维度**——可用内存 ÷ 单 worker 预算（`QLIB_SFT_PANEL_MEM_PER_JOB_GB` 默认 3GB）取整；可用内存低于低水位（`QLIB_SFT_PANEL_LOW_MEM_GB` 默认 6GB）再收敛到 ≤ 可用/2；`QLIB_SFT_PANEL_JOBS` 显式指定则完全覆盖
+  - **每 worker 读盘缓存预算随内存均分**：新增 `set_bin_cache_mb()` 并注入 `_worker_init`——显式 `QLIB_PANEL_BIN_CACHE_MB` 优先，否则各 worker ≈ 可用内存 ×40% ÷ worker 数（夹在 64~768MB），消除 "12 worker × 768MB" 的数 GB 缓存驻留
+- 实测（本机）：CUP_POOL 120 只两年单进程 **峰值 RSS 722MB**（封顶前数 GB）；2000 只 × 5 表达式并行 **峰值 RSS 合计 2.25GB**（旧估算 >6GB）；panel/ops 回归 41 全绿
+- 性能说明：求值速度**无回退**（单进程 profile 与 v1.17.7 持平或更快：CWH_BREAK_WAIT20_F1 300 只 ×2024-2025 warm ~3.5s）；内存维度仅在机器可用内存紧张时收敛并发以换取不 OOM，速度随并发线性缩减，可经 env 放宽
+- 版本 1.18.0 → 1.18.1（后端 `backend/app/__init__.py` / README 顶部）。
+
 ## [1.18.0] - 2026-09-10
 
 ### Added
