@@ -11,13 +11,11 @@ export interface BacktestRequest {
   n_days_hold: number
   label_horizon: number
   layer_rebalance: number
-  n_days_learn: number
   data_source: string
   data_source_provider_uri?: string | null
   feature: string
   selected_features?: string[] | null
   custom_formulas?: string[] | null
-  bins: number
   // 交易成本与成交设置
   deal_price: string
   price_adjust?: string // 复权方式：none/forward/backward（缺省=不复权）

@@ -20,6 +20,20 @@
     保留逃生口 `QLIB_SFT_PANEL_EMA=1` 可强制回退 qlib。
 - 版本 1.17.5 → 1.17.6（后端 `backend/app/__init__.py` / README 顶部）。
 
+### Chore
+- **工程健康度清理**（一次审计驱动的技术债治理，净删 272 行）：
+  - 修复 `patches/cancel_train.py` 相对导入 bug（`from .context` → `from ..context`）：此前
+    LightGBM/XGBoost"训练中途取消"回调因 import 错误被 `task_manager` 的 `except: pass` 吞掉，
+    从未真正生效；现在取消可中断训练块（此前只能等 qlib 检查点）。
+  - 删除 `single_test.py` 旧单周期 `run_single_factor_test`（215 行死代码，已被多周期
+    `run_single_factor_tests` 取代，全仓库无调用）。
+  - 删除前端 `api.ts` 无引用函数：`translateFormula`/`getFactorOperators`/`listInstruments`/
+    `getDailyBars` 及 `TranslateResult`/`FactorOperators` 类型（47 行）。
+  - 前端移除已废弃字段 `n_days_learn`/`bins`（后端已不读取，仅模型占位兼容）。
+  - 修正 SFT 请求 `parallel` 过时注释（字段已弃用仅兼容，不再生效）。
+  - 本地一次性探针脚本清理：`ai_test/` 22 个、`backend/workdir` diag/repro/check 24 个
+    （均未入 git，无版本历史影响）。
+
 ## [1.17.5] - 2026-09-09
 
 ### Added

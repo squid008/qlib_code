@@ -151,8 +151,8 @@ class SingleFactorTestRequest(BaseModel):
     label_horizon: int = 2   # 未来 N 日收益作为预测目标（label_horizons 未传时的默认单周期）
     label_horizons: Optional[List[int]] = None  # 批量预测周期（如 [1,2,3,5,10,15,20] 或 range 展开）；
     #   传了则忽略 label_horizon；结果按"因子分组、组内周期升序"返回，每行带 horizon 字段
-    parallel: bool = False   # 并行测试：多个预测周期各占一个共享并发单元同时跑（与回测/训练共用
-    #   并发配额：回测占用多时自动少跑/排队，占用释放后自动顶上）；单个周期时无效果
+    parallel: bool = False   # [已弃用，仅保留兼容] 早期"多周期各占并发单元并行跑"已废弃：现为单执行体
+    #   共享一次特征加载后逐周期串行统计（见 run_single_factor_tests），本字段不再生效
     factors: list[SingleFactorTestFactor] = []
     # 触发组剔除开关（默认全开，保持原行为 + 新增成交日口径）：
     exclude_limit_up_signal: bool = True  # 剔除信号日（T）涨停（选股过滤，无前视）
@@ -299,8 +299,7 @@ def single_factor_test(req: SingleFactorTestRequest):
     批量预测周期：
       - label_horizons=[1,2,5,...] 一次测多个持有周期（结果为"因子分组、组内周期升序"，
         每行带 horizon 字段）；单周期（默认 label_horizon=2）行为与历史完全一致。
-      - parallel=True：多个周期各占一个共享并发单元并行跑——与回测/训练共用同一并发配额，
-        回测任务占用多时单因子自动少跑/排队，占用释放后自动顶上（无需手动指定并发数）。
+      - parallel：已弃用不再生效（单执行体共享一次特征加载，逐周期串行统计，见实现）。
     完成后通过 GET /factors/single-factor-test/progress/{task_id} 轮询进度并获取结果。
     """
     if not req.factors:

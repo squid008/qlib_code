@@ -68,8 +68,8 @@ def patch_cancel_callbacks():
         if _APPLIED:
             return
 
-        # 从引擎取 check_cancel（延迟导入避免循环）
-        from .context import check_cancel
+        # 从引擎取 check_cancel（延迟导入避免循环；context 在 engine 包，非 patches 包内）
+        from ..context import check_cancel
 
         # ---- LightGBM（普通函数 callback 即可）----
         try:

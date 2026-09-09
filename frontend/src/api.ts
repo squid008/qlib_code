@@ -150,22 +150,6 @@ export async function getFactorCatalog(dataset = 'Alpha158'): Promise<FactorCata
   return data
 }
 
-// 公式翻译：益盟/通达信公式 → qlib 表达式
-export interface TranslateResult {
-  name: string
-  expression: string
-  inputs: string[]
-  has_patch: boolean
-  source_formula: string
-}
-export async function translateFormula(formula: string, patchable = false): Promise<TranslateResult> {
-  const { data } = await http.post<TranslateResult>('/factors/translate', {
-    formula,
-    patchable,
-  })
-  return data
-}
-
 // ---------- 自定义公式持久化（后端 workdir/custom_formulas.json） ----------
 
 export interface CustomFormula {
@@ -190,18 +174,6 @@ export async function updateCustomFormula(id: string, formula: string): Promise<
 }
 export async function deleteCustomFormula(id: string): Promise<void> {
   await http.delete(`/factors/custom-formulas/${id}`)
-}
-
-// 算子分类清单（前端公式编辑器提示/灰显）
-export interface FactorOperators {
-  supported: string[]
-  patched_need_impl: string[]
-  level2_no_data: string[]
-  ignored_plot: string[]
-}
-export async function getFactorOperators(): Promise<FactorOperators> {
-  const { data } = await http.get<FactorOperators>('/factors/operators')
-  return data
 }
 
 // ---------- 单因子测试（不训练模型，快速诊断因子预测力） ----------
@@ -341,24 +313,5 @@ export async function getSingleFactorTestTasks(
 
 export async function listDataSources(): Promise<DataSourceInfo> {
   const { data } = await http.get<DataSourceInfo>('/data-sources')
-  return data
-}
-
-export async function listInstruments(market = 'all', source = 'qlib') {
-  const { data } = await http.get<string[]>('/data/instruments', {
-    params: { market, source },
-  })
-  return data
-}
-
-export async function getDailyBars(
-  instrument: string,
-  startDate: string,
-  endDate: string,
-  source = 'qlib',
-) {
-  const { data } = await http.get('/data/daily-bars', {
-    params: { instrument, start_date: startDate, end_date: endDate, source },
-  })
   return data
 }
