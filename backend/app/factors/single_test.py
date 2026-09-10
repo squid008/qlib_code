@@ -23,6 +23,7 @@ import pandas as pd
 from ..engine.limits import mark_limit_up, field_bin_available
 from ..engine.adjust import adjust_expr, normalize_mode
 from ..engine.feature_cache import _sr_wrap_expr
+from .event_study import build_event_stats
 
 
 def _inst_codes(s: pd.DataFrame) -> pd.Series:
@@ -159,6 +160,28 @@ def _compute_ic_stats(pl: pd.DataFrame) -> Optional[dict]:
     }
 
 
+# 事件研究（v1.18.7）：0/1 稀疏信号顺带计算的最长持有交易日
+EVENT_MAX_K = 40
+
+
+def _event_px_wide(df_full: pd.DataFrame, trig_index, inst_lv: int):
+    """由未裁剪面板的 PX 列构造触发标的的价格宽表（index=交易日, columns=标的，停牌 ffill）。
+
+    PX 列口径 = `adjust_expr("$close")`，与 label 的收益口径一致（forward/backward
+    用后复权价、none 用真实价，可选按分取整）。
+    """
+    try:
+        px = df_full["PX"]
+        codes = trig_index.get_level_values(inst_lv).unique()
+        mask = px.index.get_level_values(inst_lv).isin(codes)
+        sub = px[mask]
+        if len(sub) == 0:
+            return None
+        return sub.unstack(level=inst_lv).sort_index().ffill()
+    except Exception:
+        return None
+
+
 def _test_one(
     df: pd.DataFrame,
     factor: dict,
@@ -170,6 +193,7 @@ def _test_one(
     exclude_stock_gem: bool = False,   # 剔除创业板
     exclude_stock_kcb: bool = False,   # 剔除科创板
     cancelled=None,  # 取消检查回调：返回 True 表示用户已取消，在重计算步骤间调用（可空）
+    trig_index_out: Optional[list] = None,  # 出参：回传触发样本索引（供事件研究复用，可空）
 ) -> dict:
     """测试单个因子列（df 含 col 与 LABEL 两列）。
 
@@ -307,6 +331,12 @@ def _test_one(
 
     trig, t_lu_t, t_lu_t1, t_susp, t_extra = _exclude(trig)
     not_trig, n_lu_t, n_lu_t1, n_susp, n_extra = _exclude(not_trig)
+    # 触发样本索引出参（可选）：供调用方顺带做事件研究（见 run_single_factor_tests）
+    if trig_index_out is not None:
+        try:
+            trig_index_out.append(trig.index)
+        except Exception:
+            trig_index_out.append(None)
     result["limit_up_excluded"] = t_lu_t + t_lu_t1 + t_susp
     result["limit_up_excluded_t"] = t_lu_t
     result["limit_up_excluded_t1"] = t_lu_t1
@@ -341,6 +371,31 @@ def _test_one(
             daily_trig = trig.groupby(level=dt_pos)["LABEL"].mean()
             daily_not = not_trig.groupby(level=dt_pos)["LABEL"].mean()
             daily = (daily_trig - daily_not).dropna()
+            # 诊断落盘（默认关闭）：设环境变量 QLIB_SFT_DUMP_DAILY=<目录> 时，把该因子的
+            # 日差值序列（每日 触发组截面均值 − 未触发组截面均值）写成 CSV，供"贡献度"
+            # 分析（判断日差均值是否被少数交易日撑起）。只在诊断时开启，不影响任何统计量。
+            try:
+                import os as _os_dump
+                _dump_dir = _os_dump.environ.get("QLIB_SFT_DUMP_DAILY", "").strip()
+                if _dump_dir:
+                    _os_dump.makedirs(_dump_dir, exist_ok=True)
+                    _safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(name))[:60]
+                    pd.DataFrame({
+                        "daily_diff": daily,
+                        "daily_trig": daily_trig.reindex(daily.index),
+                        "daily_not": daily_not.reindex(daily.index),
+                    }).rename_axis("date").to_csv(
+                        _os_dump.path.join(_dump_dir, "daily_%s.csv" % _safe),
+                        encoding="utf-8-sig")
+                    # 触发样本明细（剔除后，通常只有几百~几千行）：用于定位极端值来源
+                    try:
+                        trig.reset_index().to_csv(
+                            _os_dump.path.join(_dump_dir, "trig_%s.csv" % _safe),
+                            encoding="utf-8-sig")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             # 口径 = 配对日（科学口径）：触发/非触发组的日截面均值都只在"当天两组都有
             # 样本"的配对日上计算。若按各自独立全集（daily_trig 只统计有触发的日、
             # daily_not 统计≈全部交易日），分母不同、两值直接相减无意义——这正是用户
@@ -600,6 +655,9 @@ def run_single_factor_tests(
     label_exprs = {
         h: adjust_expr(f"Ref($close, -{h + 1})/Ref($close, -1) - 1", pa) for h in horizons
     }
+    # 尾部加载长度：label 需 n_max+1 个交易日；事件研究（0/1 信号顺带计算）另需
+    # EVENT_MAX_K 个交易日 → 取二者较大值。**统计区间不受影响**：默认
+    # freeze_suspended_price=True 时面板会在统计前裁回 [start_date, end_date]。
     load_end = end_date
     if freeze_suspended_price:
         n_max = max(horizons)
@@ -608,7 +666,8 @@ def run_single_factor_tests(
             cal = _D.calendar()
             cal_ts = pd.to_datetime(cal)
             pos = int((cal_ts <= pd.Timestamp(end_date)).sum())
-            load_end = str(cal_ts[min(pos + n_max + 3, len(cal_ts) - 1)].date())
+            n_need = max(n_max, EVENT_MAX_K)
+            load_end = str(cal_ts[min(pos + n_need + 3, len(cal_ts) - 1)].date())
         except Exception:
             load_end = end_date
 
@@ -677,6 +736,8 @@ def run_single_factor_tests(
         adj_exprs = [adjust_expr(e, pa, round_prices=price_round) for e in ordered_exprs]
     base_fields = ["$close/$factor", "$change", "Ref($close/$factor, -1)", "Ref($change, -1)"]
     base_names = ["CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]
+    # 事件研究取价用（复权口径与 label 一致）：forward/backward=后复权价、none=真实价
+    px_field = adjust_expr("$close", pa, round_prices=price_round)
     tag_fields: List[str] = []
     tag_names: List[str] = []
     if field_bin_available("limit_up") and field_bin_available("limit_down"):
@@ -686,8 +747,8 @@ def run_single_factor_tests(
         tag_fields += ["$is_st", "Ref($is_st, -1)"]
         tag_names += ["IS_ST", "T1_IS_ST"]
     label_cols = {h: f"LABEL_{h}" for h in horizons}
-    fields = tuple(adj_exprs) + tuple(label_exprs.values()) + tuple(base_fields) + tuple(tag_fields)
-    all_cols = factor_cols + list(label_cols.values()) + base_names + tag_names
+    fields = tuple(adj_exprs) + tuple(label_exprs.values()) + tuple(base_fields) + (px_field,) + tuple(tag_fields)
+    all_cols = factor_cols + list(label_cols.values()) + base_names + ["PX"] + tag_names
 
     df = _load_feature_panel(
         instruments, fields, all_cols, start_date, load_end,
@@ -738,6 +799,10 @@ def run_single_factor_tests(
             err = [{**_test_one(pd.DataFrame(), f, ""), "error": "预热裁剪后无样本"} for f in factors]
             return {h: err for h in horizons}
 
+    # 未裁剪面板（含尾部 n_need+3 个交易日）：事件研究需要 T+1+k 的未来价格。
+    # 默认口径下 df 会在下方裁回 [.., end_date] 用于统计；df_full 仅供事件研究取价。
+    df_full = df
+
     # 冻结价 label 兜底：CLOSE ffill 一次，各周期按各自 h 做 shift 修正 label 列
     if freeze_suspended_price:
         try:
@@ -759,6 +824,9 @@ def run_single_factor_tests(
             return {h: err for h in horizons}
 
     out: Dict[int, list] = {}
+    es_inst = df_full.index.names.index("instrument")
+    es_dt = df_full.index.names.index("datetime")
+    _es_px_cache: Dict[str, object] = {}   # col_name -> 价格宽表（同因子的不同周期复用）
     for h in horizons:
         lc = label_cols[h]
         if lc not in df.columns:
@@ -779,21 +847,43 @@ def run_single_factor_tests(
                 raise FactorTestCancelled()
             if col_name is None:
                 results.append({**_test_one(pd.DataFrame(), f, ""), "error": "因子表达式为空"})
-            else:
-                results.append(
-                    _test_one(
-                        sub,
-                        f,
-                        col_name,
-                        exclude_limit_up_signal=exclude_limit_up_signal,
-                        exclude_limit_up_trade=exclude_limit_up_trade,
-                        exclude_suspended=exclude_suspended,
-                        exclude_st_t1=exclude_st_t1,
-                        exclude_stock_gem=exclude_stock_gem,
-                        exclude_stock_kcb=exclude_stock_kcb,
-                        cancelled=cancelled,
-                    )
-                )
+                continue
+            trig_out: list = []
+            r = _test_one(
+                sub,
+                f,
+                col_name,
+                exclude_limit_up_signal=exclude_limit_up_signal,
+                exclude_limit_up_trade=exclude_limit_up_trade,
+                exclude_suspended=exclude_suspended,
+                exclude_st_t1=exclude_st_t1,
+                exclude_stock_gem=exclude_stock_gem,
+                exclude_stock_kcb=exclude_stock_kcb,
+                cancelled=cancelled,
+                trig_index_out=trig_out,
+            )
+            # 事件研究（0/1 信号顺带计算，v1.18.7）：稀疏信号按日配对会退化成单票
+            # 收益序列（触发日只有 1 只票），须以「每次触发」为样本单位才有意义。
+            # 复用本面板的 PX 列，无需二次加载（相对独立事件研究任务省掉一次全量加载）。
+            if r.get("is_binary") and trig_out and trig_out[0] is not None and len(trig_out[0]):
+                try:
+                    if cancelled is not None and cancelled():
+                        raise FactorTestCancelled()
+                    _px = _es_px_cache.get(col_name)
+                    if _px is None:
+                        _px = _event_px_wide(df_full, trig_out[0], es_inst)
+                        _es_px_cache[col_name] = _px
+                    if _px is not None and len(_px):
+                        _ev = pd.DataFrame({
+                            "code": trig_out[0].get_level_values(es_inst).astype(str).values,
+                            "dt": pd.to_datetime(trig_out[0].get_level_values(es_dt)).values,
+                        })
+                        r["event_study"] = build_event_stats(_px, _ev, EVENT_MAX_K)
+                except FactorTestCancelled:
+                    raise
+                except Exception:
+                    pass
+            results.append(r)
         out[h] = results
         if progress_cb:
             progress_cb(h, 100.0, f"{h} 日周期完成")

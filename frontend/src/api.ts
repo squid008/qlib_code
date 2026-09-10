@@ -256,6 +256,9 @@ export interface SingleFactorTestResult {
   rank_icir: number | null
   n_obs: number
   error: string | null
+  // 事件研究（v1.18.7）：仅 0/1 二值信号且触发样本非空时有值
+  // （后端在单因子测试里顺带计算，点「事件研究」按钮直接展示，无需二次提交）
+  event_study?: EventStudyResult | null
 }
 export interface SingleFactorTestProgress {
   task_id: string
@@ -309,6 +312,113 @@ export async function getSingleFactorTestTasks(
   const { data } = await http.get<{ tasks: SingleFactorTestTaskInfo[] }>(
     '/factors/single-factor-test/tasks',
     { params: { limit } },
+  )
+  return data
+}
+
+// ---------- 事件研究（0/1 稀疏信号：触发事件对齐 T=0 的收益分布） ----------
+// 用途：稀疏 0/1 信号的"按日配对检验"在触发日只有 1 只票时会退化成单票收益序列，
+// 均值/显著性不可信；事件研究以"每次触发"为样本单位，给出概率/赔率的真实画像。
+
+export interface EventStudyCurvePoint {
+  k: number // 持有交易日
+  n: number // 该期有效样本数
+  mean: number | null // 平均收益（原始小数）
+  median: number | null
+  win: number | null // 胜率（>0 占比）
+  p10: number | null
+  p25: number | null
+  p75: number | null
+  p90: number | null
+  max: number | null
+  min: number | null
+}
+export interface EventStudyProbPoint {
+  k: number
+  gt0: number | null // 收益 >0 的事件占比
+  gt10: number | null
+  gt20: number | null
+  gt50: number | null
+  gt100: number | null
+}
+export interface EventStudyUpside {
+  mean: number | null // T+1 买入后 max_k 日内"最高点卖出"的收益分布
+  median: number | null
+  p75: number | null
+  p90: number | null
+  p99: number | null
+  max: number | null
+  reach20: number | null // 曾达到 +20% 的事件占比
+  reach50: number | null
+  reach100: number | null
+  dn_mean: number | null // 同期"最低点卖出"（下限参考）
+  dn_median: number | null
+  dn_min: number | null
+}
+export interface EventStudyEvent {
+  code: string
+  dt: string
+  ret: number | null
+  max_ret?: number | null
+}
+export interface EventStudyResult {
+  factor: { id: string; name: string; expression: string; source_formula?: string }
+  params: {
+    universe: string
+    start_date: string
+    end_date: string
+    max_k: number
+    price_adjust: string
+  }
+  n_events: number // 剔除后参与统计的事件数
+  n_aligned: number // 成功对齐到 T+1 买入价的事件数
+  n_raw: number // 剔除前触发数
+  ks: number[]
+  curve: EventStudyCurvePoint[]
+  prob: EventStudyProbPoint[]
+  upside: EventStudyUpside
+  top_events: EventStudyEvent[]
+  worst_events: EventStudyEvent[]
+}
+export interface EventStudyProgress {
+  task_id: string
+  status: 'running' | 'success' | 'failed' | 'cancelled'
+  progress: number
+  message: string
+  result?: EventStudyResult | null
+  error?: string | null
+}
+export interface EventStudyRequest {
+  universe: string
+  start_date: string
+  end_date: string
+  factor: SingleFactorTestItem
+  max_k?: number // 最长持有交易日（1~120，默认 40）
+  exclude_limit_up_signal?: boolean
+  exclude_limit_up_trade?: boolean
+  exclude_suspended?: boolean
+  exclude_st_t1?: boolean
+  exclude_stock_gem?: boolean
+  exclude_stock_kcb?: boolean
+  price_adjust?: string
+  price_round?: boolean
+  suspend_remove?: boolean
+  freeze_suspended_price?: boolean
+  warmup_days?: number
+}
+export async function createEventStudy(req: EventStudyRequest): Promise<{ task_id: string }> {
+  const { data } = await http.post<{ task_id: string }>('/factors/event-study', req)
+  return data
+}
+export async function getEventStudyProgress(taskId: string): Promise<EventStudyProgress> {
+  const { data } = await http.get<EventStudyProgress>(`/factors/event-study/progress/${taskId}`)
+  return data
+}
+export async function cancelEventStudy(
+  taskId: string,
+): Promise<{ ok: boolean; message: string }> {
+  const { data } = await http.post<{ ok: boolean; message: string }>(
+    `/factors/event-study/cancel/${taskId}`,
   )
   return data
 }

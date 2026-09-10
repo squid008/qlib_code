@@ -26,6 +26,7 @@ from ..services.custom_formulas import (
 from .. import config
 from ..engine.task_manager import get_task_manager
 from ..factors.single_test import FactorTestCancelled, run_single_factor_tests
+from ..factors.event_study import run_event_study
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
 
@@ -603,3 +604,195 @@ def single_factor_test_tasks(limit: int = 20):
             }
         )
     return {"tasks": out}
+
+
+# ---------- 事件研究（0/1 稀疏信号：触发事件对齐 T=0 的收益分布） ----------
+# 动机：稀疏信号的"按日配对检验"在触发日样本=1 时退化为单票收益序列，均值/显著性
+# 不可信（实测 CCCMA250 全 A 每日触发中位数 1 只，Top20 天贡献日差净和 100.1%）。
+# 事件研究以"每次触发"为样本单位，给出真正的概率/赔率画像。
+
+
+class EventStudyRequest(BaseModel):
+    universe: str = "csi300"
+    start_date: str = ""
+    end_date: str = ""
+    factor: SingleFactorTestFactor = SingleFactorTestFactor()
+    max_k: int = 40                  # 最长持有交易日（1~120）
+    exclude_limit_up_signal: bool = True
+    exclude_limit_up_trade: bool = True
+    exclude_suspended: bool = True
+    exclude_st_t1: bool = False
+    exclude_stock_gem: bool = False
+    exclude_stock_kcb: bool = False
+    price_adjust: str = "forward"
+    price_round: bool = True
+    suspend_remove: bool = True
+    freeze_suspended_price: bool = True
+    warmup_days: Optional[int] = None
+
+
+_EST_TASKS: dict = {}
+_EST_LOCK = threading.Lock()
+_EST_RESULT_KEEP = 3   # 内存治理：只保留最近 3 个完成任务的结果
+
+
+def _est_get(task_id: str):
+    with _EST_LOCK:
+        return _EST_TASKS.get(task_id)
+
+
+def _est_store(task_id: str, state: dict) -> None:
+    with _EST_LOCK:
+        _EST_TASKS[task_id] = state
+
+
+def _est_trim() -> None:
+    with _EST_LOCK:
+        finished = sorted(
+            (k for k, v in _EST_TASKS.items() if v.get("status") in ("success", "failed")),
+            key=lambda k: _EST_TASKS[k].get("ts", 0),
+            reverse=True,
+        )
+        for k in finished[_EST_RESULT_KEEP:]:
+            if _EST_TASKS[k].get("result") is not None:
+                _EST_TASKS[k]["result"] = None
+
+
+@router.post("/event-study", summary="事件研究（0/1 信号触发后收益分布，异步提交）")
+def event_study(req: EventStudyRequest):
+    """提交事件研究任务，返回 task_id；随后轮询 /factors/event-study/progress/{task_id}。
+
+    仅适用于 0/1 二值信号（触发 = 因子值 > 0.5）。口径与单因子测试完全一致
+    （见 factors/event_study.py 模块 docstring）。
+    """
+    if not req.start_date or not req.end_date:
+        raise HTTPException(status_code=400, detail="请填写测试区间")
+    if not (req.factor and req.factor.expression):
+        raise HTTPException(status_code=400, detail="请提供因子表达式")
+    max_k = int(req.max_k or 40)
+    if not (1 <= max_k <= 120):
+        raise HTTPException(status_code=400, detail="最长持有期 max_k 需在 1~120 之间")
+    if req.exclude_st_t1:
+        from ..engine.limits import field_bin_available
+        if not field_bin_available("is_st"):
+            raise HTTPException(
+                status_code=400,
+                detail='勾选了"剔除ST(T+1)"，但本机 Qlib 数据没有 is_st 标签，请取消勾选',
+            )
+
+    task_id = uuid.uuid4().hex[:12]
+    state: dict = {
+        "task_id": task_id,
+        "status": "running",
+        "progress": 0.0,
+        "message": "已提交",
+        "result": None,
+        "error": None,
+        "cancel_requested": False,
+        "ts": time.time(),
+    }
+    _est_store(task_id, state)
+
+    def _run() -> None:
+        manager = get_task_manager(config.WORK_DIR)
+        manager.register_external_queued(task_id)
+        try:
+            from ..factors.single_test import _ensure_qlib_init
+            _ensure_qlib_init()
+        except Exception as e:  # noqa: BLE001
+            state.update(status="failed", progress=100.0, message=f"事件研究失败: {e}", error=str(e), ts=time.time())
+            manager.unregister_external_queued(task_id)
+            _est_trim()
+            return
+
+        got = manager.external_wait_slot(
+            task_id, cancel_check=lambda: bool(state.get("cancel_requested"))
+        )
+        manager.unregister_external_queued(task_id)
+        if not got:
+            return   # 排队期间被取消（终态在 cancel 侧已标记，或由收尾标记）
+
+        def _cb(h, p: float, m: str) -> None:
+            state["progress"] = float(p)
+            state["message"] = m
+            if state.get("cancel_requested"):
+                raise FactorTestCancelled()
+
+        try:
+            res = run_event_study(
+                universe=req.universe,
+                start_date=req.start_date,
+                end_date=req.end_date,
+                factor=req.factor.model_dump(),
+                max_k=max_k,
+                exclude_limit_up_signal=req.exclude_limit_up_signal,
+                exclude_limit_up_trade=req.exclude_limit_up_trade,
+                exclude_suspended=req.exclude_suspended,
+                exclude_st_t1=req.exclude_st_t1,
+                exclude_stock_gem=req.exclude_stock_gem,
+                exclude_stock_kcb=req.exclude_stock_kcb,
+                price_adjust=req.price_adjust,
+                price_round=req.price_round,
+                suspend_remove=req.suspend_remove,
+                freeze_suspended_price=req.freeze_suspended_price,
+                warmup_days=req.warmup_days,
+                progress_cb=_cb,
+                cancelled=lambda: bool(state.get("cancel_requested")),
+            )
+            if res.get("error"):
+                state.update(status="failed", progress=100.0, message=res["error"],
+                             error=res["error"], ts=time.time())
+            else:
+                state.update(status="success", progress=100.0, message="事件研究完成",
+                             result=_json_safe(res), ts=time.time())
+        except FactorTestCancelled:
+            state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
+        except Exception as e:  # noqa: BLE001
+            state.update(status="failed", progress=100.0, message=f"事件研究失败: {e}",
+                         error=str(e), ts=time.time())
+        finally:
+            _est_trim()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"task_id": task_id}
+
+
+@router.get("/event-study/progress/{task_id}", summary="查询事件研究任务进度")
+def event_study_progress(task_id: str):
+    state = _est_get(task_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    return {
+        "task_id": task_id,
+        "status": state["status"],
+        "progress": float(state.get("progress", 0.0)),
+        "message": state.get("message", ""),
+        "result": state.get("result"),
+        "error": state.get("error"),
+    }
+
+
+@router.post("/event-study/cancel/{task_id}", summary="取消事件研究任务")
+def event_study_cancel(task_id: str):
+    state = _est_get(task_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+    if state.get("status") != "running":
+        return {"ok": False, "message": "任务已结束，无需取消"}
+    state["cancel_requested"] = True
+    try:
+        manager = get_task_manager(config.WORK_DIR)
+        manager.wake_external_waiters()
+    except Exception:
+        pass
+    return {"ok": True, "message": "已请求取消，正在终止..."}
+
+
+@router.post("/event-study/clear", summary="清理已结束的事件研究任务与结果")
+def event_study_clear():
+    with _EST_LOCK:
+        done_keys = [k for k, v in _EST_TASKS.items()
+                     if v.get("status") in ("success", "failed", "cancelled")]
+        for k in done_keys:
+            _EST_TASKS.pop(k, None)
+    return {"ok": True, "cleared": len(done_keys)}

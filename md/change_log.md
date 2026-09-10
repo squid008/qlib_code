@@ -3,6 +3,28 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.7] - 2026-09-10
+
+### Added
+- **单因子诊断新增「事件研究」**（新增 `backend/app/factors/event_study.py`；`routers/factors.py`；前端 `components/EventStudyModal.tsx` / `SingleFactorTestPanel.tsx` / `api.ts`）：稀疏 0/1 信号的「按日配对检验」在触发日只有 1 只票时会**退化成单票收益序列**（实测 CCCMA250 / 全 A：每日触发只数中位数 = 1，Top20 天贡献日差净和的 100.1%，剔除 Top20 后剩余日均 -0.002%），此时均值与显著性均不可信。事件研究改以**每次触发**为样本单位，给出概率/赔率画像。
+  - 后端 `run_event_study(...)`：复用 `_load_feature_panel` 与 `_test_one` 的触发分组/剔除口径（T 涨停、T+1 涨停、T+1 停牌、ST、创业板、科创板），再取触发标的收盘价序列，按 **T+1 收盘买入、T+1+k 收盘卖出**对齐，输出 `curve`（各 k 的均值/中位数/胜率/p10/p25/p75/p90/最大/最小）、`prob`（收益 >0 / >10% / >20% / >50% / >100% 的事件占比）、`upside`（"期内最高点卖出"的赔率上限 + 曾达 +20%/+50%/+100% 比例 + 下限参考）、`top_events` / `worst_events` 明细。
+  - 接口：`POST /api/factors/event-study`（异步提交，与回测/训练共用并发配额）、`GET /factors/event-study/progress/{task_id}`、`POST /factors/event-study/cancel/{task_id}`、`POST /factors/event-study/clear`。价格口径统一走 `adjust_expr("$close")`，与 label 的收益口径一致（forward/backward 用后复权价、none 用真实价，可选按分取整）。
+  - 前端：单因子测试结果表新增「事件研究」列（仅 0/1 信号可点），弹窗用 recharts 展示持有期收益曲线（均值/中位数 + p25~p75 分位线）、目标收益概率表、赔率卡片与贡献最大/最差事件明细；支持自定义最长持有期（1~120 交易日）、重新计算与取消。
+- **事件研究并入单因子测试（免二次计算）**：此前点「事件研究」会**再跑一个独立任务并重新加载一遍全量面板**（全 A 5.4 年实测 56s，其中九成是重复加载）。现改为在单因子测试内顺带完成：
+  - 面板新增 `PX` 列（`adjust_expr("$close")`，与 label 收益口径一致）；尾部加载区间由 `end + max(h) + 3` 延到 `end + max(h, 40) + 3` 个交易日（**统计区间不变** —— 默认 `freeze_suspended_price=True` 时面板在统计前已裁回 `[start_date, end_date]`）
+  - `_test_one` 新增 `trig_index_out` 出参回传触发样本索引；`run_single_factor_tests` 对 `is_binary` 结果**顺带调用** `build_event_stats`（同因子的不同周期复用价格宽表），把 `event_study` 直接挂在结果行上 → **不新增任务、用户零额外操作**
+  - `event_study.py` 抽出可复用的 `load_px_wide` / `build_event_stats`（独立接口 `POST /factors/event-study` 保留，用于改最长持有期重算）
+  - 前端：结果表新增 **「中位数」列**（事件研究中位数，悬停看均值/胜率/样本数）；点「事件研究」**直接展示已有结果（秒开，不再发请求）**；**0/1 信号的「结论」改为以事件研究为准** —— 中位数 ≥0.5% 且胜率 ≥55% → 有效✓；`|中位数| <1%` 且胜率 45%~55% 且均值显著更高 → 新增 **「彩票型」** 标签；中位数 ≤-0.5% 且胜率 ≤45% → 有效(反向)✓；连续因子仍走 IC/分位判定；导出表同步加列
+
+### Changed
+- **单因子测试「剔除 ST(T+1)」改为默认勾选**（前端 `SingleFactorTestPanel.tsx`）：ST/*ST/退市整理期个股的收益分布与正常股差异极大，评估触发型信号时应默认排除；创业板/科创板仍默认关。需本机数据含 `is_st` 标签（缺失时后端会明确报错并提示取消勾选）。事件研究的剔除口径随面板参数自动跟随。
+
+### Notes
+- **口径自检**：CCCMA250 / 全 A / 2021-01-01~2026-06-01 / h=10 / 前复权 → `n_events = 743`（剔除前 823），**k=10 均值 +1.6469% 与单因子测试「触发收益均值」逐位一致**；k=40 均值 +3.331%、中位数 +0.213%、胜率 50.7%。
+- **实测结论（743 次触发）**：胜率全程 44.5%~52.8%、中位数长期 ≈0（k=40 仅 +0.213%，与均值差 16 倍）→ 典型「多数白干、少数暴赚」；按"期内最高点卖出"的理想口径，曾达 +50% 仅 **5.8%**、+100% 仅 0.7%，同期最低点中位数 -7.8%。故该信号统计上显著但**不可作为稳定 alpha**（触发稀疏、无法组合分散）。
+- 辅助脚本（本地 `ai_test/`，不上传）：`ccma_event_study.py`（离线版事件研究）、`test_event_study.py`（函数级验证）、`test_event_study_api.py`（API 端到端验证）。
+- 版本 1.18.6 → 1.18.7。
+
 ## [1.18.6] - 2026-09-10
 
 ### Added

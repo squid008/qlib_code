@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Component, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import DateInput, { type DateInputHandle } from './DateInput'
 import {
   createSingleFactorTest,
@@ -8,8 +8,14 @@ import {
   clearSingleFactorTest,
   getFactorCatalog,
 } from '../api'
-import type { CustomFormula, SingleFactorTestResult } from '../api'
+import type {
+  CustomFormula,
+  EventStudyRequest,
+  EventStudyResult,
+  SingleFactorTestResult,
+} from '../api'
 import type { FactorCatalog, FactorField } from '../types'
+import EventStudyModal from './EventStudyModal'
 
 interface SingleFactorTestPanelProps {
   customFormulas: CustomFormula[]
@@ -25,11 +31,12 @@ type TestResult = SingleFactorTestResult
 
 // 结论判定（与表格"结论"列同源，导出复用，避免两处口径漂移）：
 // 按渲染列的判定顺序给出 kind；布尔字段供表格样式分支使用。
-type VerdictKind = 'conflicting' | 'good' | 'goodReverse' | 'timeConcentrated' | 'watch'
+type VerdictKind = 'conflicting' | 'good' | 'goodReverse' | 'lottery' | 'timeConcentrated' | 'watch'
 const VERDICT_LABEL: Record<VerdictKind, string> = {
   conflicting: '方向矛盾',
   good: '有效✓',
   goodReverse: '有效(反向)✓',
+  lottery: '彩票型',
   timeConcentrated: '时间集中',
   watch: '待观察',
 }
@@ -44,6 +51,50 @@ interface VerdictStats {
   goodReverse: boolean
   kind: VerdictKind
 }
+/** 事件研究弹窗的错误边界：渲染异常时显示错误信息，而不是让整个页面白屏。 */
+class EsErrorBoundary extends Component<{ children: ReactNode }, { err: Error | null }> {
+  state: { err: Error | null } = { err: null }
+
+  static getDerivedStateFromError(err: Error) {
+    return { err }
+  }
+
+  render() {
+    if (this.state.err) {
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-lg shadow-xl p-4 max-w-[640px] text-xs">
+            <div className="text-red-500 font-semibold mb-1">事件研究弹窗渲染出错</div>
+            <div className="text-slate-500 break-all">{String(this.state.err)}</div>
+            <div className="text-slate-400 mt-2">
+              页面其余部分未受影响；按 F5 刷新可重置。请把上面的错误信息反馈给开发者。
+            </div>
+            <button
+              className="mt-3 px-2 py-1 rounded border"
+              onClick={() => this.setState({ err: null })}
+            >
+              重试
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+/** 事件研究在该行「周期」上的取值点（无对应周期时退化为最长持有期）。 */
+function esPointOf(r: TestResult) {
+  const es = r.event_study
+  if (!es || !es.curve || es.curve.length === 0) return null
+  const k = r.horizon
+  if (k != null) {
+    const hit = es.curve.find((c) => c.k === k)
+    if (hit) return hit
+  }
+  return es.curve[es.curve.length - 1]
+}
+
 function verdictOf(r: TestResult): VerdictStats {
   const significant = r.p_value !== null && r.p_value < 0.05
   const goodBase =
@@ -73,9 +124,34 @@ function verdictOf(r: TestResult): VerdictStats {
     dT === undefined ||
     (Math.abs(dT) >= 2 &&
       ((r.diff ?? 0) >= 0 ? (r.daily_win ?? 0) >= 0.5 : (r.daily_win ?? 0) <= 0.5))
-  const good = goodBase && stable
-  const goodReverse = goodReverseBase && stable
+  let good = goodBase && stable
+  let goodReverse = goodReverseBase && stable
   let kind: VerdictKind = 'watch'
+
+  // ---- 0/1 信号：结论以「事件研究」为准（v1.18.7）----
+  // 稀疏信号每天可能只有 1 只票触发 → 按日配对检验退化成单票收益序列，其 t 值/胜率
+  // 不可信（实测 CCCMA250 全 A 每日触发只数中位数 = 1，Top20 天贡献日差净和的 100.1%，
+  // 剔除后剩余日均 -0.002%）。改用事件研究的「中位数 + 胜率」判定，并单独识别
+  // 「彩票型」：中位数≈0、胜率≈50%，但均值显著更高（收益靠极少数连板/妖股事件撑起）。
+  const pt = r.is_binary ? esPointOf(r) : null
+  if (pt) {
+    const med = pt.median ?? 0
+    const win = pt.win ?? 0
+    const mean = pt.mean ?? 0
+    const esGood = med >= 0.005 && win >= 0.55
+    const esReverse = med <= -0.005 && win <= 0.45
+    const lottery =
+      Math.abs(med) < 0.01 && win >= 0.45 && win <= 0.55 && mean > Math.max(0.005, med * 3)
+    good = esGood
+    goodReverse = esReverse
+    if (conflicting && !esGood) kind = 'conflicting'
+    else if (esGood) kind = 'good'
+    else if (esReverse) kind = 'goodReverse'
+    else if (lottery) kind = 'lottery'
+    else kind = 'watch'
+    return { significant, goodBase, conflicting, goodReverseBase, dT, stable, good, goodReverse, kind }
+  }
+
   if (conflicting) kind = 'conflicting'
   else if (good) kind = 'good'
   else if (goodReverse) kind = 'goodReverse'
@@ -91,7 +167,7 @@ const EXPORT_HEADERS = [
   '差值(%)', '日差值(%)', 't(HAC)', '胜率(%)', '配对日数', 'p值',
   'Q1收益(%)', 'Q2收益(%)', 'Q3收益(%)', 'Q4收益(%)', 'Q5收益(%)',
   '触发组日均(%)', '未触发组日均(%)',
-  'IC', 'RankIC', 'ICIR', '结论',
+  'IC', 'RankIC', 'ICIR', '结论', '事件中位数(%)',
 ]
 // 导出工作表2"因子与公式"表头
 const EXPORT_FORMULA_HEADERS = ['因子', '来源', '公式（用户保存原文 / 目录表达式）']
@@ -160,8 +236,10 @@ export default function SingleFactorTestPanel({
   const [excludeLimitUpSignal, setExcludeLimitUpSignal] = useState(true)
   const [excludeLimitUpTrade, setExcludeLimitUpTrade] = useState(true)
   const [excludeSuspended, setExcludeSuspended] = useState(true)
-  // 新增日截面剔除：ST(T+1) / 创业板 / 科创板（均只用当日已发布状态，无未来函数；默认关）
-  const [excludeStT1, setExcludeStT1] = useState(false)
+  // 日截面剔除：ST(T+1) / 创业板 / 科创板（均只用当日已发布状态，无未来函数）。
+  // ST 默认开：ST/*ST/退市整理期个股的收益分布与正常股差异极大，评估触发型信号时
+  // 应默认排除；创业板/科创板仍默认关。缺 is_st 标签时后端会明确报错提示取消勾选。
+  const [excludeStT1, setExcludeStT1] = useState(true)
   const [excludeGem, setExcludeGem] = useState(false)
   const [excludeKcb, setExcludeKcb] = useState(false)
   // 信号停牌行语义：勾选=SR删行（益盟/通达信"无停牌行"，与回测特征一致，默认）；
@@ -172,6 +250,47 @@ export default function SingleFactorTestPanel({
   // 预热缓冲（交易日，v1.18.6）：特征加载多前移 N 个交易日，长回看/动态窗口公式
   // （DYN_*/BARSCOUNT/HHVBARS+Ref 嵌套）在区间首日即有收敛值；0=关闭（旧口径）
   const [warmupDaysText, setWarmupDaysText] = useState('250')
+
+  // 事件研究弹窗：0/1 稀疏信号的"触发事件收益分布"。
+  // 动机：稀疏信号按日配对检验在触发日只有 1 只票时会退化成单票收益序列，均值/显著性
+  // 不可信；事件研究以"每次触发"为样本单位，给出概率/赔率的真实画像。
+  const [estOpen, setEstOpen] = useState(false)
+  const [estReq, setEstReq] = useState<EventStudyRequest | null>(null)
+  const [estData, setEstData] = useState<EventStudyResult | null>(null)
+  const [estName, setEstName] = useState('')
+
+  // 按当前面板参数为某一行结果发起事件研究（参数与单因子测试保持一致）
+  const openEventStudy = (r: TestResult) => {
+    const wn = Math.floor(Number(warmupDaysText))
+    const wu =
+      warmupDaysText.trim() === '' || !Number.isFinite(wn) ? undefined : Math.max(0, wn)
+    setEstData(r.event_study ?? null)
+    setEstName(r.name)
+    setEstReq({
+      universe,
+      start_date: startDate,
+      end_date: endDate,
+      factor: {
+        id: r.id,
+        name: r.name,
+        expression: r.expression,
+        source: r.source,
+        source_formula: r.source_formula,
+      },
+      exclude_limit_up_signal: excludeLimitUpSignal,
+      exclude_limit_up_trade: excludeLimitUpTrade,
+      exclude_suspended: excludeSuspended,
+      exclude_st_t1: excludeStT1,
+      exclude_stock_gem: excludeGem,
+      exclude_stock_kcb: excludeKcb,
+      price_adjust: priceAdjust,
+      price_round: priceRound,
+      suspend_remove: suspendRemove,
+      freeze_suspended_price: true,
+      warmup_days: wu,
+    })
+    setEstOpen(true)
+  }
 
   // 三个因子来源
   const [groups, setGroups] = useState<SourceGroup[]>([
@@ -554,6 +673,10 @@ export default function SingleFactorTestPanel({
           fmtRaw(r.rank_ic, 4),
           fmtRaw(r.icir, 3),
           VERDICT_LABEL[v.kind],
+          (() => {
+            const pt = esPointOf(r)
+            return pt ? fmt(pt.median, 3) : dash
+          })(),
         ])
       }
       const seen = new Set<string>()
@@ -892,6 +1015,13 @@ export default function SingleFactorTestPanel({
                 <th className="text-right px-1">RankIC</th>
                 <th className="text-right px-1">ICIR</th>
                 <th className="text-right pl-2">结论</th>
+                <th
+                  className="text-right px-1"
+                  title="事件研究：持有 = 该行「周期」时的收益中位数（仅 0/1 信号有值；悬停可看均值/胜率/样本数）"
+                >
+                  中位数
+                </th>
+                <th className="text-center px-1">事件研究</th>
               </tr>
             </thead>
             <tbody>
@@ -902,8 +1032,8 @@ export default function SingleFactorTestPanel({
                 const hoverFormula =
                   r.source_formula || srcByKey.get(`${r.source}:${r.id}`) || r.expression
                 // 结论判定统一收敛到模块级 verdictOf（表格"结论"列与导出文件口径一致）
-                const { goodBase, conflicting, goodReverseBase, dT, stable, good, goodReverse } =
-                  verdictOf(r)
+                // 渲染只需 dT（悬停提示）与结论类型；其余判定明细已在 verdictOf 内部消化
+                const { dT, kind: verdictKind } = verdictOf(r)
                 const qr = r.quintile_ret ?? []
                 const maxAbs = qr.length > 0 ? Math.max(...qr.map((g) => Math.abs(g.mean_ret))) : 0
                 // 分位收益悬停：直接展示 5 组日截面收益（一行一组），最后一行汇总配对日数
@@ -949,7 +1079,7 @@ export default function SingleFactorTestPanel({
                 return (
                   <tr key={`${r.id}:${r.horizon ?? '-'}`} className="border-b border-slate-100 dark:border-slate-700">
                     {r.error ? (
-                      <td className="py-1 pr-2 text-red-500" colSpan={15}>
+                      <td className="py-1 pr-2 text-red-500" colSpan={16}>
                         {r.name}{r.horizon ? `（周期 ${r.horizon} 天）` : ''}：{r.error}
                       </td>
                     ) : (
@@ -1055,20 +1185,32 @@ export default function SingleFactorTestPanel({
                         <td className="text-right px-1">{fmtRaw(r.rank_ic, 4)}</td>
                         <td className="text-right px-1">{fmtRaw(r.icir, 3)}</td>
                         <td className="text-right pl-2">
-                          {conflicting ? (
+                          {verdictKind === 'conflicting' ? (
                             <span className="text-red-600 font-semibold" title="IC/ICIR 与触发收益差方向相反，信号可能由少数触发日主导，横截面方向相反">
                               方向矛盾
                             </span>
-                          ) : good ? (
-                            <span className="text-emerald-600 font-semibold">有效✓</span>
-                          ) : goodReverse ? (
+                          ) : verdictKind === 'good' ? (
+                            <span
+                              className="text-emerald-600 font-semibold"
+                              title="0/1 信号按事件研究判定（中位数 ≥0.5% 且胜率 ≥55%）；连续因子按 IC/分位判定"
+                            >
+                              有效✓
+                            </span>
+                          ) : verdictKind === 'goodReverse' ? (
                             <span
                               className="text-emerald-600 font-semibold"
                               title="连续因子：高分位组收益显著更低且 IC/ICIR 稳定为负，因子值与未来收益负相关，需反向使用（因子值低时买入）"
                             >
                               有效(反向)✓
                             </span>
-                          ) : (goodBase || goodReverseBase) && !stable ? (
+                          ) : verdictKind === 'lottery' ? (
+                            <span
+                              className="text-amber-600 font-semibold"
+                              title="事件研究：中位数≈0、胜率≈50%，但均值显著更高 —— 收益主要由极少数尾部事件（连板/妖股）撑起，多数触发只是白干，不可作为稳定 alpha。点右侧「事件研究」看分布明细"
+                            >
+                              彩票型
+                            </span>
+                          ) : verdictKind === 'timeConcentrated' ? (
                             <span
                               className="text-amber-600 font-semibold"
                               title="总差值方向显著但按日配对检验不显著（|t|&lt;2 或胜率≈50%）：差值主要由少数交易日驱动，逐日无稳定超额，慎用"
@@ -1077,6 +1219,42 @@ export default function SingleFactorTestPanel({
                             </span>
                           ) : (
                             <span className="text-slate-400">待观察</span>
+                          )}
+                        </td>
+                        <td className="text-right px-1">
+                          {(() => {
+                            const pt = esPointOf(r)
+                            if (!pt) return <span className="text-slate-300">-</span>
+                            const med = pt.median ?? 0
+                            const cls =
+                              med > 0.005
+                                ? 'text-emerald-600'
+                                : med < -0.005
+                                  ? 'text-red-500'
+                                  : 'text-slate-500'
+                            return (
+                              <span
+                                className={cls}
+                                title={`事件研究（持有 ${pt.k} 交易日，n=${pt.n}）：中位数 ${fmt(med, 3)}%｜均值 ${fmt(pt.mean, 3)}%｜胜率 ${((pt.win ?? 0) * 100).toFixed(1)}%`}
+                              >
+                                {fmt(med, 3)}
+                              </span>
+                            )
+                          })()}
+                        </td>
+                        <td className="text-center px-1">
+                          {r.is_binary ? (
+                            <button
+                              onClick={() => openEventStudy(r)}
+                              className="px-1.5 py-0.5 rounded border border-sky-400 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-900/30 text-[11px] whitespace-nowrap"
+                              title="把每次触发对齐到 T=0，统计 T+1 买入后 1~N 个交易日的收益分布（概率/赔率）。仅适用于 0/1 二值信号；稀疏信号建议用它替代按日配对检验"
+                            >
+                              事件研究
+                            </button>
+                          ) : (
+                            <span className="text-slate-300" title="事件研究仅适用于 0/1 二值信号">
+                              -
+                            </span>
                           )}
                         </td>
                       </>
@@ -1098,6 +1276,18 @@ export default function SingleFactorTestPanel({
           </p>
         </div>
       )}
+
+      {/* 事件研究弹窗：0/1 稀疏信号的触发事件收益分布（触发对齐 T=0）。
+          ErrorBoundary 兜底：弹窗异常时显示错误信息而非整页白屏。 */}
+      <EsErrorBoundary>
+        <EventStudyModal
+          open={estOpen}
+          onClose={() => setEstOpen(false)}
+          factorName={estName}
+          req={estReq}
+          data={estData}
+        />
+      </EsErrorBoundary>
     </div>
   )
 }

@@ -1,0 +1,373 @@
+# -*- coding: utf-8 -*-
+"""事件研究：把 0/1 触发信号的**每次触发**对齐到 T=0，统计 T+1 买入后 1..max_k 日的收益分布。
+
+为什么需要它（2026-09-10 CCCMA250 诊断结论）：
+  稀疏 0/1 信号的"按日配对检验"会退化——若某天只有 1 只股票触发，当天"触发组截面
+  均值"就等于这一只票的收益，日差值序列变成单票噪声（实测 CCCMA250 全 A 每日触发
+  中位数 = 1 只，Top20 天贡献了日差净和的 100.1%，剔除后剩余均值 -0.002%）。
+  事件研究改以**每个触发事件**为样本单位，能回答真正关心的问题：
+
+    - 赔率：各持有期的均值 / 中位数 / 分位数（p10/p25/p75/p90）
+    - 概率：收益 >0 / >10% / >20% / >50% / >100% 的事件占比
+    - 上限：T+1 买入后 max_k 日内的最大收益（"最高点卖出"的理想口径）
+    - 明细：贡献最大 / 最差的事件（用于逐个人工复核）
+
+口径与单因子测试（`single_test._test_one`）完全一致：
+  - 触发 = 因子值 > 0.5（仅支持 0/1 二值信号；连续因子请用 IC/分位）
+  - 剔除开关同 _test_one：信号日(T)涨停 / 成交日(T+1)涨停 / T+1 停牌 /
+    T+1 ST / 创业板 / 科创板
+  - 价格口径 = `adjust_expr("$close")`：forward/backward 用数据原生后复权价、
+    none 用真实价（可选按分取整），故收益率口径与 label 一致
+  - 停牌按前值冻结（ffill）
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+
+from ..engine.adjust import adjust_expr, normalize_mode
+from ..engine.feature_cache import _sr_wrap_expr
+from ..engine.limits import field_bin_available, mark_limit_up
+
+
+def _q(x: np.ndarray, p: float) -> float:
+    """有限值分位数。"""
+    x = x[np.isfinite(x)]
+    return float(np.percentile(x, p)) if x.size else float("nan")
+
+
+def _r(v, nd: int = 6):
+    """安全 round（NaN/Inf → None）。"""
+    try:
+        f = float(v)
+    except Exception:
+        return None
+    if not np.isfinite(f):
+        return None
+    return round(f, nd)
+
+
+def load_px_wide(codes, start_date: str, end_date: str, price_adjust: str,
+                 price_round: bool = True) -> pd.DataFrame:
+    """加载指定标的的收盘价并转宽表（index=交易日, columns=标的），停牌按前值冻结。
+
+    价格口径与 label 一致：`adjust_expr("$close")` —— forward/backward 用数据原生
+    后复权价、none 用真实价（可选按分取整），保证事件收益与单因子测试口径一致。
+    """
+    from qlib.data import D
+
+    codes = list(codes)
+    if not codes:
+        return pd.DataFrame()
+    px_expr = adjust_expr("$close", price_adjust, round_prices=price_round)
+    df = D.features(codes, [px_expr], start_time=start_date, end_time=end_date, freq="day")
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
+    df.columns = ["PX"]
+    return df["PX"].unstack(level=0).sort_index().ffill()
+
+
+def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
+                      n_raw: int = 0, cancel_check=None) -> dict:
+    """由「价格宽表 + 事件表」计算事件研究结果。
+
+    口径：T 为信号日，T+1 收盘买入，T+1+k 收盘卖出（k = 1..max_k）。
+    events：DataFrame，需含 `code` / `dt` 两列（dt 为 Timestamp）。
+    返回 curve / prob / upside / top_events / worst_events 等（不含 factor/params）。
+    """
+    max_k = max(1, int(max_k or 40))
+    ks = list(range(1, max_k + 1))
+    cal = px_wide.index
+    n_ev = len(events)
+    mat = np.full((n_ev, max_k), np.nan)
+    max_ret = np.full(n_ev, np.nan)
+    min_ret = np.full(n_ev, np.nan)
+
+    cols = set(px_wide.columns)
+    code_arr = events["code"].astype(str).values
+    dt_arr = pd.to_datetime(events["dt"]).values
+    for i in range(n_ev):
+        if (i % 200 == 0) and (cancel_check is not None):
+            cancel_check()
+        c = code_arr[i]
+        if c not in cols:
+            continue
+        p = int(cal.searchsorted(dt_arr[i]))
+        if p >= len(cal) or cal[p] != dt_arr[i] or p + 1 >= len(cal):
+            continue
+        col = px_wide[c].values
+        buy = col[p + 1]
+        if not np.isfinite(buy) or buy <= 0:
+            continue
+        for j in range(max_k):
+            q = p + 2 + j
+            if q < len(cal) and np.isfinite(col[q]):
+                mat[i, j] = col[q] / buy - 1.0
+        fin = mat[i][np.isfinite(mat[i])]
+        if fin.size:
+            max_ret[i] = float(fin.max())
+            min_ret[i] = float(fin.min())
+
+    curve = []
+    for j, k in enumerate(ks):
+        x = mat[:, j]
+        x = x[np.isfinite(x)]
+        if x.size == 0:
+            continue
+        curve.append({
+            "k": k,
+            "n": int(x.size),
+            "mean": _r(x.mean()), "median": _r(np.median(x)),
+            "win": _r(float((x > 0).mean())),
+            "p10": _r(_q(x, 10)), "p25": _r(_q(x, 25)),
+            "p75": _r(_q(x, 75)), "p90": _r(_q(x, 90)),
+            "max": _r(x.max()), "min": _r(x.min()),
+        })
+
+    prob = []
+    for j, k in enumerate(ks):
+        x = mat[:, j]
+        x = x[np.isfinite(x)]
+        if x.size == 0:
+            continue
+        prob.append({
+            "k": k,
+            "gt0": _r(float((x > 0).mean())),
+            "gt10": _r(float((x > 0.10).mean())),
+            "gt20": _r(float((x > 0.20).mean())),
+            "gt50": _r(float((x > 0.50).mean())),
+            "gt100": _r(float((x > 1.00).mean())),
+        })
+
+    mr = max_ret[np.isfinite(max_ret)]
+    mn = min_ret[np.isfinite(min_ret)]
+    upside = {
+        "mean": _r(mr.mean()) if mr.size else None,
+        "median": _r(np.median(mr)) if mr.size else None,
+        "p75": _r(_q(mr, 75)) if mr.size else None,
+        "p90": _r(_q(mr, 90)) if mr.size else None,
+        "p99": _r(_q(mr, 99)) if mr.size else None,
+        "max": _r(mr.max()) if mr.size else None,
+        "reach20": _r(float((mr > 0.20).mean())) if mr.size else None,
+        "reach50": _r(float((mr > 0.50).mean())) if mr.size else None,
+        "reach100": _r(float((mr > 1.00).mean())) if mr.size else None,
+        "dn_mean": _r(mn.mean()) if mn.size else None,
+        "dn_median": _r(np.median(mn)) if mn.size else None,
+        "dn_min": _r(mn.min()) if mn.size else None,
+    }
+
+    last = mat[:, -1]
+    order = np.argsort(-np.nan_to_num(last, nan=-9e9))
+    top_events = []
+    for idx in order[:20]:
+        if not np.isfinite(last[idx]):
+            continue
+        top_events.append({
+            "code": str(code_arr[idx]),
+            "dt": str(pd.Timestamp(dt_arr[idx]).date()),
+            "ret": _r(last[idx]),
+            "max_ret": _r(max_ret[idx]),
+        })
+    worst_events = []
+    for idx in order[-10:][::-1]:
+        if not np.isfinite(last[idx]):
+            continue
+        worst_events.append({
+            "code": str(code_arr[idx]),
+            "dt": str(pd.Timestamp(dt_arr[idx]).date()),
+            "ret": _r(last[idx]),
+        })
+
+    return {
+        "n_events": int(n_ev),
+        "n_aligned": int(np.isfinite(last).sum()),
+        "n_raw": int(n_raw or n_ev),
+        "ks": ks,
+        "curve": curve,
+        "prob": prob,
+        "upside": upside,
+        "top_events": top_events,
+        "worst_events": worst_events,
+    }
+
+
+def run_event_study(
+    universe: str,
+    start_date: str,
+    end_date: str,
+    factor: dict,
+    max_k: int = 40,
+    exclude_limit_up_signal: bool = True,
+    exclude_limit_up_trade: bool = True,
+    exclude_suspended: bool = True,
+    exclude_st_t1: bool = False,
+    exclude_stock_gem: bool = False,
+    exclude_stock_kcb: bool = False,
+    price_adjust: str = "forward",
+    price_round: bool = True,
+    suspend_remove: bool = True,
+    freeze_suspended_price: bool = True,
+    warmup_days: Optional[int] = None,
+    progress_cb=None,
+    cancelled=None,
+) -> dict:
+    """执行事件研究，返回 {error} 或完整结果字典（见文件末尾结构说明）。
+
+    progress_cb(h, p, msg)：h=None 表示整体阶段（0-100）。
+    cancelled()：返回 True 时在检查点抛出 FactorTestCancelled。
+    """
+    import os
+
+    from qlib.data import D
+
+    from .single_test import (
+        FactorTestCancelled,
+        _ensure_qlib_init,
+        _inst_codes,
+        _load_feature_panel,
+        _resolve_instruments,
+    )
+
+    def _check():
+        if cancelled is not None and cancelled():
+            raise FactorTestCancelled()
+
+    def _prog(p, msg):
+        if progress_cb:
+            progress_cb(None, p, msg)
+
+    _ensure_qlib_init()
+    pa = normalize_mode(price_adjust)
+    max_k = max(1, int(max_k or 40))
+    expr = (factor or {}).get("expression") or ""
+    if not expr:
+        return {"error": "因子表达式为空"}
+
+    # ---------- 0. 预热缓冲（与单因子测试同语义：None → env → 默认 250） ----------
+    if warmup_days is None:
+        try:
+            warmup_days = int(os.environ.get("QLIB_SFT_WARMUP_DAYS", "250"))
+        except Exception:
+            warmup_days = 250
+    warmup_days = max(0, int(warmup_days or 0))
+
+    # ---------- 1. 股票池 ----------
+    _prog(2.0, "解析股票池成分股...")
+    try:
+        instruments = _resolve_instruments(universe, start_date)
+    except Exception as e:  # noqa: BLE001
+        return {"error": "股票池解析失败: %s" % e}
+    if not instruments:
+        return {"error": "股票池为空（无成分股）"}
+    _check()
+
+    # ---------- 2. 交易日历边界 ----------
+    #   load_end（判定用）：只需前瞻到 T+1 → end + 3 个交易日
+    #   ev_end （取价用）：需覆盖 T+1+max_k → end + max_k + 3 个交易日
+    cal = pd.to_datetime(D.calendar())
+    pos_end = int((cal <= pd.Timestamp(end_date)).sum())
+    load_end = str(cal[min(pos_end + 3, len(cal) - 1)].date())
+    ev_end = str(cal[min(pos_end + max_k + 3, len(cal) - 1)].date())
+
+    # ---------- 3. 加载因子 + T+1 行情（触发判定与剔除，与 _test_one 同字段） ----------
+    if suspend_remove:
+        f0_expr = _sr_wrap_expr(adjust_expr(expr, pa, round_prices=price_round))
+    else:
+        f0_expr = adjust_expr(expr, pa, round_prices=price_round)
+
+    base_fields = ["$close/$factor", "$change", "Ref($close/$factor, -1)", "Ref($change, -1)"]
+    base_names = ["CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]
+    tag_fields: list = []
+    tag_names: list = []
+    if field_bin_available("limit_up") and field_bin_available("limit_down"):
+        tag_fields += ["$limit_up", "$limit_down", "Ref($limit_up, -1)", "Ref($limit_down, -1)"]
+        tag_names += ["LIMIT_UP", "LIMIT_DOWN", "T1_LIMIT_UP", "T1_LIMIT_DOWN"]
+    if field_bin_available("is_st"):
+        tag_fields += ["$is_st", "Ref($is_st, -1)"]
+        tag_names += ["IS_ST", "T1_IS_ST"]
+
+    fields = [f0_expr] + base_fields + tag_fields
+    all_cols = ["F0"] + base_names + tag_names
+
+    _prog(4.0, "计算特征数据（%d 只）..." % len(instruments))
+    df = _load_feature_panel(
+        instruments, fields, all_cols, start_date, load_end,
+        freeze_suspended_price=freeze_suspended_price, end_date=end_date,
+        cancelled=cancelled, progress_cb=progress_cb, factors=[factor],
+        warmup_days=warmup_days,
+    )
+    if df is None:
+        return {"error": "特征计算失败（面板不支持该算子或数据异常，无法事件研究）"}
+    df = df.copy()
+    df.columns = all_cols
+    _check()
+
+    # ---------- 4. 触发样本 + 剔除（口径同 _test_one._exclude） ----------
+    _prog(35.0, "提取触发样本...")
+    sub = df[df["F0"].notna()]
+    trig = sub[sub["F0"] > 0.5]
+    if len(trig) == 0:
+        return {"error": "该因子在区间内没有触发样本（非 0/1 信号或条件从未满足）"}
+
+    def _exclude(g: pd.DataFrame) -> pd.DataFrame:
+        if len(g) == 0:
+            return g
+        if exclude_limit_up_signal and "CLOSE" in df.columns and "CHANGE" in df.columns:
+            g = g[~mark_limit_up(df.loc[g.index], "CLOSE", "CHANGE")]
+        if exclude_limit_up_trade and "T1_CLOSE" in df.columns and "T1_CHANGE" in df.columns:
+            g = g[~mark_limit_up(df.loc[g.index], "T1_CLOSE", "T1_CHANGE")]
+        if exclude_suspended and "T1_CLOSE" in df.columns:
+            g = g[~df.loc[g.index, "T1_CLOSE"].isna()]
+        if (exclude_st_t1 or exclude_stock_gem or exclude_stock_kcb) and len(g):
+            codes = _inst_codes(df.loc[g.index])
+            keep = pd.Series(True, index=g.index)
+            if exclude_st_t1 and "T1_IS_ST" in df.columns:
+                keep &= ~(df.loc[g.index, "T1_IS_ST"] > 0.5)
+            if exclude_stock_gem:
+                keep &= ~codes.str.startswith("SZ30")
+            if exclude_stock_kcb:
+                keep &= ~codes.str.startswith("SH688")
+            g = g[keep]
+        return g
+
+    n_raw = int(len(trig))
+    trig = _exclude(trig)
+    if len(trig) == 0:
+        return {"error": "触发样本在剔除后为空（全部落在涨停/停牌/ST/板块过滤内）"}
+
+    inst_pos = trig.index.names.index("instrument")
+    dt_pos = trig.index.names.index("datetime")
+    ev = pd.DataFrame({
+        "code": trig.index.get_level_values(inst_pos).astype(str),
+        "dt": pd.to_datetime(trig.index.get_level_values(dt_pos)),
+    }).reset_index(drop=True)
+
+    # ---------- 5. 加载触发标的收盘价（仅涉及标的，数据量小） ----------
+    codes = sorted(ev["code"].unique().tolist())
+    _prog(45.0, "加载 %d 只触发标的的后续行情（至 %s）..." % (len(codes), ev_end))
+    piv = load_px_wide(codes, start_date, ev_end, pa, price_round)
+    if piv is None or len(piv) == 0:
+        return {"error": "触发标的行情加载失败"}
+    _check()
+
+    # ---------- 6. 对齐 + 统计（T+1 收盘买入，T+1+k 收盘卖出） ----------
+    _prog(60.0, "对齐 %d 个事件..." % len(ev))
+    stats = build_event_stats(piv, ev, max_k, n_raw=n_raw, cancel_check=_check)
+    if stats.get("n_aligned", 0) == 0:
+        return {"error": "触发事件无法对齐到买入价（行情缺失）"}
+    _prog(100.0, "完成")
+    return {
+        "factor": {
+            "id": (factor or {}).get("id") or "",
+            "name": (factor or {}).get("name") or "",
+            "expression": expr,
+            "source_formula": (factor or {}).get("source_formula") or "",
+        },
+        "params": {
+            "universe": universe, "start_date": start_date, "end_date": end_date,
+            "max_k": max_k, "price_adjust": pa,
+        },
+        **stats,
+    }
