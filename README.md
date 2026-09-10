@@ -4,7 +4,7 @@
 >
 > 各版本更新记录见 **[`md/change_log.md`](./md/change_log.md)**（按 Keep a Changelog 规范）。
 >
-> 大阶段版本已在仓库打 **tag** 作为回退锚点（最近：**`v1.18.7`**）。需要回退时：
+> **每个版本号递增都会打附注 tag**（自 v1.18.8 起确立约定；历史版本已一次性补齐，`v1.0.0` → `v1.18.8` 共 85 个 tag）。任意发版均可一键回退：
 > `git fetch --tags` → `git checkout v1.18.7`（只看）或 `git reset --hard v1.18.7`（彻底回退，慎用）。
 
 基于 Qlib 的量价因子机器学习回测系统，提供 **React 前端 + FastAPI 后端 + Qlib 回测引擎** 的完整闭环，
