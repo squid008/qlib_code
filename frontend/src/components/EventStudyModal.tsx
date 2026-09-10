@@ -131,29 +131,36 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
     }
   }
 
+  // 后端一次就算出 1..computedMaxK 的全部持有期（单因子测试顺带算的是 40 期），
+  // 因此把「最长持有」调小（40 → 10）只是**截断展示**，触发样本完全相同、无需重算；
+  // 只有调到超过 computedMaxK 时才需要真正重算（后端没有更长的期数）。
+  const computedMaxK = result?.params?.max_k ?? result?.ks?.length ?? 0
+  const needRecompute = result != null && maxK > computedMaxK
+  const viewCurve = useMemo(
+    () => (result?.curve ?? []).filter((c) => c.k <= maxK),
+    [result, maxK],
+  )
+
   // 图表数据：curve → {k, mean, median, p25, p75}（百分数）
   const chartData = useMemo(() => {
-    if (!result || !result.curve) return []
-    return result.curve.map((c) => ({
+    return viewCurve.map((c) => ({
       k: c.k,
       mean: c.mean == null ? null : c.mean * 100,
       median: c.median == null ? null : c.median * 100,
       p25: c.p25 == null ? null : c.p25 * 100,
       p75: c.p75 == null ? null : c.p75 * 100,
     }))
-  }, [result])
+  }, [viewCurve])
 
-  // 抽查若干持有期用于概率表
+  // 抽查若干持有期用于概率表（同样按 maxK 截断，随「最长持有」联动）
   const probRows = useMemo(() => {
-    if (!result || !result.prob) return []
     const want = [1, 3, 5, 10, 20, 40, 60]
-    return result.prob.filter((p) => want.includes(p.k)).slice(0, 7)
-  }, [result])
+    return (result?.prob ?? [])
+      .filter((p) => p.k <= maxK && want.includes(p.k))
+      .slice(0, 7)
+  }, [result, maxK])
 
-  const lastPoint =
-    result && result.curve && result.curve.length > 0
-      ? result.curve[result.curve.length - 1]
-      : null
+  const lastPoint = viewCurve.length > 0 ? viewCurve[viewCurve.length - 1] : null
 
   const verdictHint = useMemo(() => {
     if (!result || !lastPoint) return null
@@ -197,7 +204,10 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-xs text-slate-500">
+            <label
+              className="text-xs text-slate-500"
+              title={`显示到第几个持有交易日（后端已算 ${computedMaxK} 期）；不超过它时只切换展示、无需重算`}
+            >
               最长持有
               <input
                 type="number"
@@ -208,13 +218,21 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                 className="ml-1 w-16 px-1 py-0.5 border rounded text-xs dark:bg-slate-700 dark:border-slate-600"
               />
               日
+              {computedMaxK > 0 && (
+                <span className="ml-1 text-slate-400">(已算 {computedMaxK} 期)</span>
+              )}
             </label>
             <button
               onClick={() => void start(maxK)}
-              disabled={status === 'running'}
+              disabled={status === 'running' || !needRecompute}
+              title={
+                needRecompute
+                  ? `重算到 ${maxK} 个交易日（超过后端已算的 ${computedMaxK} 期）`
+                  : `后端已算到 ${computedMaxK} 个交易日，${maxK} 期直接切换展示即可，无需重算`
+              }
               className="px-2 py-1 text-xs rounded bg-sky-600 text-white disabled:opacity-40"
             >
-              重新计算
+              {needRecompute ? `重算至 ${maxK} 期` : '重新计算'}
             </button>
             {status === 'running' && (
               <button

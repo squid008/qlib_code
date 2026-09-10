@@ -878,7 +878,16 @@ def run_single_factor_tests(
                             "code": trig_out[0].get_level_values(es_inst).astype(str).values,
                             "dt": pd.to_datetime(trig_out[0].get_level_values(es_dt)).values,
                         })
-                        r["event_study"] = build_event_stats(_px, _ev, EVENT_MAX_K)
+                        _es = build_event_stats(_px, _ev, EVENT_MAX_K)
+                        # 补参数信息：前端头部展示用，并据此判断「最长持有」是否需要重算
+                        _es["params"] = {
+                            "universe": universe,
+                            "start_date": start_date,
+                            "end_date": end_date,
+                            "max_k": EVENT_MAX_K,
+                            "price_adjust": pa,
+                        }
+                        r["event_study"] = _es
                 except FactorTestCancelled:
                     raise
                 except Exception:
