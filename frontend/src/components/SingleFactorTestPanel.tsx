@@ -50,6 +50,10 @@ interface VerdictStats {
   good: boolean
   goodReverse: boolean
   kind: VerdictKind
+  // 判「待观察」时的具体原因（供结论列悬停）。存在的意义：判定用未舍入的原始值，
+  // 而界面部分列只显示 1~2 位小数，会出现"胜率显示 55.0% 却不通过 >=55%"的困惑
+  // （例：win=0.549694 → 显示 55.0%，但 0.549694 < 0.55 → 判待观察）。
+  watchReason?: string
 }
 /** 事件研究弹窗的错误边界：渲染异常时显示错误信息，而不是让整个页面白屏。 */
 class EsErrorBoundary extends Component<{ children: ReactNode }, { err: Error | null }> {
@@ -93,6 +97,42 @@ function esPointOf(r: TestResult) {
     if (hit) return hit
   }
   return es.curve[es.curve.length - 1]
+}
+
+/** 「待观察」的原因文案（0/1 信号走事件研究路径）：逐条对比门槛，指出差在哪一项。 */
+function watchReasonOfBinary(pt: NonNullable<ReturnType<typeof esPointOf>>) {
+  const med = pt.median ?? 0
+  const win = pt.win ?? 0
+  const pct = (v: number, d = 2) => `${(v * 100).toFixed(d)}%`
+  const medOk = med >= 0.005
+  const winOk = win >= 0.55
+  const medTxt = medOk ? `中位数 ${pct(med, 3)} ≥0.50% ✓` : `中位数 ${pct(med, 3)} <0.50%（差 ${pct(0.005 - med)}）✗`
+  const winTxt = winOk ? `胜率 ${pct(win)} ≥55% ✓` : `胜率 ${pct(win)} <55%（差 ${pct(0.55 - win)}）✗`
+  const why = !medOk && !winOk ? '中位数与胜率均未达标' : !medOk ? '中位数未达标' : '胜率未达标'
+  return [
+    `结论：待观察（${why}）`,
+    `事件研究（持有 ${pt.k ?? '?'} 交易日，n=${pt.n ?? '?'}）：${medTxt}；${winTxt}`,
+    '「有效✓」需中位数 ≥0.50% 且胜率 ≥55%；「彩票型」需 |中位数| <1% 且胜率 45%~55% 且均值 >max(0.50%, 中位数×3)。',
+    '注：判定使用未舍入的原始值（上表胜率已显示到 0.01%）。点右侧「事件研究」看各持有期明细。',
+  ].join('\n')
+}
+
+/** 「待观察」的原因文案（连续因子 / 无事件研究结果时）。 */
+function watchReasonOfContinuous(r: TestResult, significant: boolean, stable: boolean) {
+  const pct = (v: number, d = 3) => `${(v * 100).toFixed(d)}%`
+  const lines = ['结论：待观察']
+  if (r.error) {
+    lines.push(`测试异常：${r.error}`)
+  } else {
+    const bad: string[] = []
+    if (r.diff === null || r.diff === undefined) bad.push('无触发/未触发差值')
+    else if (r.diff <= 0) bad.push(`差值 ${pct(r.diff)} ≤0`)
+    if (r.is_binary && !significant) bad.push('p 值 ≥0.05（两组差异不显著）')
+    if (!stable) bad.push('日配对检验不显著（|HAC t| <2 或胜率未偏离 50%）')
+    lines.push(bad.length ? `未通过：${bad.join('；')}` : '未达任何有效判定条件')
+  }
+  lines.push('连续因子判定需同时满足：差值 >0 且显著、日配对检验稳定。')
+  return lines.join('\n')
 }
 
 function verdictOf(r: TestResult): VerdictStats {
@@ -149,14 +189,21 @@ function verdictOf(r: TestResult): VerdictStats {
     else if (esReverse) kind = 'goodReverse'
     else if (lottery) kind = 'lottery'
     else kind = 'watch'
-    return { significant, goodBase, conflicting, goodReverseBase, dT, stable, good, goodReverse, kind }
+    return {
+      significant, goodBase, conflicting, goodReverseBase, dT, stable, good, goodReverse, kind,
+      watchReason: kind === 'watch' ? watchReasonOfBinary(pt) : undefined,
+    }
   }
 
   if (conflicting) kind = 'conflicting'
   else if (good) kind = 'good'
   else if (goodReverse) kind = 'goodReverse'
   else if ((goodBase || goodReverseBase) && !stable) kind = 'timeConcentrated'
-  return { significant, goodBase, conflicting, goodReverseBase, dT, stable, good, goodReverse, kind }
+  else kind = 'watch'
+  return {
+    significant, goodBase, conflicting, goodReverseBase, dT, stable, good, goodReverse, kind,
+    watchReason: kind === 'watch' ? watchReasonOfContinuous(r, significant, stable) : undefined,
+  }
 }
 
 // 导出工作表1"因子指标"表头（列口径与界面表格一致：覆盖率/收益/差值/胜率/Q组 = ×100 百分数，IC/RankIC/ICIR/t = 原始小数）
@@ -1033,7 +1080,7 @@ export default function SingleFactorTestPanel({
                   r.source_formula || srcByKey.get(`${r.source}:${r.id}`) || r.expression
                 // 结论判定统一收敛到模块级 verdictOf（表格"结论"列与导出文件口径一致）
                 // 渲染只需 dT（悬停提示）与结论类型；其余判定明细已在 verdictOf 内部消化
-                const { dT, kind: verdictKind } = verdictOf(r)
+                const { dT, kind: verdictKind, watchReason } = verdictOf(r)
                 const qr = r.quintile_ret ?? []
                 const maxAbs = qr.length > 0 ? Math.max(...qr.map((g) => Math.abs(g.mean_ret))) : 0
                 // 分位收益悬停：直接展示 5 组日截面收益（一行一组），最后一行汇总配对日数
@@ -1066,7 +1113,7 @@ export default function SingleFactorTestPanel({
                           `按日配对检验（${r.daily_n} 个交易日）：`,
                           `日差值均值 ${fmt(r.daily_diff, 3)}%`,
                           `HAC t=${fmtRaw(dT, 2)}（普通 t=${r.daily_t != null ? fmtRaw(r.daily_t, 2) : '-'}）`,
-                          `胜率 ${fmt(r.daily_win, 1)}%`,
+                          `胜率 ${fmt(r.daily_win, 2)}%`,
                           `lag-1 自相关=${r.daily_acf1 ?? '-'}${s1 == null ? '' : s1 ? '（显著）' : '（不显著）'}`,
                           `lag-5 自相关=${r.daily_acf5 ?? '-'}${s5 == null ? '' : s5 ? '（显著）' : '（不显著）'}`,
                           `方差稳定性 后半/前半=${r.daily_var_ratio != null ? `${r.daily_var_ratio}x` : '-'}`,
@@ -1218,7 +1265,12 @@ export default function SingleFactorTestPanel({
                               时间集中
                             </span>
                           ) : (
-                            <span className="text-slate-400">待观察</span>
+                            <span
+                              className="text-slate-400 cursor-help underline decoration-dotted decoration-slate-300 underline-offset-2"
+                              title={watchReason ?? '未达任何有效判定门槛'}
+                            >
+                              待观察
+                            </span>
                           )}
                         </td>
                         <td className="text-right px-1">
@@ -1235,7 +1287,7 @@ export default function SingleFactorTestPanel({
                             return (
                               <span
                                 className={cls}
-                                title={`事件研究（持有 ${pt.k} 交易日，n=${pt.n}）：中位数 ${fmt(med, 3)}%｜均值 ${fmt(pt.mean, 3)}%｜胜率 ${((pt.win ?? 0) * 100).toFixed(1)}%`}
+                                title={`事件研究（持有 ${pt.k} 交易日，n=${pt.n}）：中位数 ${fmt(med, 3)}%｜均值 ${fmt(pt.mean, 3)}%｜胜率 ${((pt.win ?? 0) * 100).toFixed(2)}%`}
                               >
                                 {fmt(med, 3)}
                               </span>
