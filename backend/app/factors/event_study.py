@@ -416,6 +416,24 @@ def run_event_study(
     stats = build_event_stats(piv, ev, max_k, n_raw=n_raw, cancel_check=_check)
     if stats.get("n_aligned", 0) == 0:
         return {"error": "触发事件无法对齐到买入价（行情缺失）"}
+
+    # ---------- 7. 基准（未触发组）与超额曲线（日配对口径，仅供展示） ----------
+    # 口径与单因子测试「顺带计算」时完全一致（全样本宽表 → 每日剔除当日触发股后取等权均值）。
+    # 此步原先只在 single_test.py 里做，导致弹窗「重新计算」（走本独立接口）会丢掉基准/超额，
+    # 与表格行的结果（带 baseline）表现不一致 —— 本次补齐。
+    baseline = None
+    try:
+        _check()
+        _prog(88.0, "计算基准（全样本收盘价宽表，%d 只）..." % len(instruments))
+        full_codes = sorted({str(c).upper() for c in instruments})
+        full_piv = load_px_wide(full_codes, start_date, ev_end, pa, price_round)
+        if full_piv is not None and len(full_piv):
+            baseline = compute_baseline_curves(piv, full_piv, ev, max_k, cancel_check=_check)
+    except FactorTestCancelled:
+        raise
+    except Exception as _ble:      # 基准失败只影响展示，不拖垮事件研究主结果
+        baseline = {"error": repr(_ble)}
+
     _prog(100.0, "完成")
     return {
         "factor": {
@@ -429,4 +447,6 @@ def run_event_study(
             "max_k": max_k, "price_adjust": pa,
         },
         **stats,
+        # 基准（未触发组）/超额曲线；None 或 {"error": ...} 时前端自动隐藏对应图
+        "baseline": baseline,
     }

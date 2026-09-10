@@ -3,6 +3,18 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.10] - 2026-09-10
+
+### Fixed
+- **修复事件研究弹窗「重新计算」后基准曲线与超额曲线消失**（`factors/event_study.py::run_event_study`）：v1.18.8 的 `compute_baseline_curves` **只在 `single_test.py` 的「单因子测试顺带计算」路径里被调用**，独立的 `run_event_study` 完全没算基准 → 表格行的结果（顺带算）带 `baseline`，而弹窗点「重新计算」（走 `POST /api/factors/event-study`）拿到的是独立接口结果、**没有 `baseline`** → 前端 `EventStudyModal` 自动隐藏基准灰虚线与超额小图，表现为"一重新计算，基准和超额就没了"。
+  - 修复：在 `run_event_study` 的第 6 步（对齐 + 统计）之后新增**第 7 步**——按 `_resolve_instruments` 取全样本代码 → `load_px_wide` 构造全样本宽表 → `compute_baseline_curves(piv, full_piv, ev, max_k, cancel_check=_check)`，口径与顺带计算**完全一致**（日配对：每日剔除当日触发股后取等权均值）；返回值新增 `baseline` 字段。
+  - 基准计算仍**单独兜底**（异常时置为 `{"error": ...}`，不拖垮事件研究主结果）；失败时前端自动隐藏该图，与原先表现一致。
+  - 进度文案新增 `88% 计算基准（全样本收盘价宽表，N 只）...`。
+
+### Notes
+- **冒烟验证**（`ai_test/verify_es_baseline.py`，直调 `run_event_study`；csi300 / 2023-10-01~2023-12-31 / max_k=10 / `CWH_MIX_D_PCT_R40`）：返回 **`baseline 字段存在: True`**、`n_pair_days=1`，并逐 k 给出触发组/基准/超额（k=1 `+0.694% / -0.448% / +1.142%`；k=10 `-0.797% / -1.903% / +1.106%`）→ 字段与计算链路均正常。
+- 版本 1.18.9 → 1.18.10。
+
 ## [1.18.9] - 2026-09-10
 
 ### Changed
