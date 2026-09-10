@@ -39,6 +39,12 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
   const [result, setResult] = useState<EventStudyResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [maxK, setMaxK] = useState(40)
+  // 曲线显隐（点击图例切换）。key = recharts 的 dataKey；两张图共用一份状态（键名不重叠）。
+  const [hidden, setHidden] = useState<Record<string, boolean>>({})
+  const toggleSeries = useCallback((key?: string | number) => {
+    if (typeof key !== 'string' || !key) return
+    setHidden((h) => ({ ...h, [key]: !h[key] }))
+  }, [])
 
   const taskRef = useRef<string | null>(null)
   const timerRef = useRef<number | null>(null)
@@ -162,17 +168,28 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
     })
   }, [viewCurve, result])
 
-  // 超额曲线（触发组 − 基准）
+  // 超额曲线（触发组 − 基准）：均值口径（日配对）+ 中位数口径（事件级）两条线
   const excessChart = useMemo(() => {
     const bl = result?.baseline
     if (!bl || !bl.ks) return []
     return bl.ks
       .map((k, i) => {
         const v = bl.excess?.[i]
-        return { k, excess: v == null ? null : v * 100 }
+        const vm = bl.excess_median?.[i]
+        return {
+          k,
+          excess: v == null ? null : v * 100,
+          excess_median: vm == null ? null : vm * 100,
+        }
       })
       .filter((d) => d.k <= maxK)
   }, [result, maxK])
+
+  // 后端是否给出了中位数口径（旧结果没有该字段时不画这条线）
+  const hasExcessMedian = useMemo(
+    () => excessChart.some((d) => d.excess_median != null),
+    [excessChart],
+  )
 
   // 末点超额（摘要卡片用；依赖 viewCurve 以避免引用后面才定义的 lastPoint）
   const excessAtLast = useMemo(() => {
@@ -180,6 +197,14 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
     if (!bl || !bl.ks || viewCurve.length === 0) return null
     const i = bl.ks.indexOf(viewCurve[viewCurve.length - 1].k)
     return i >= 0 ? (bl.excess?.[i] ?? null) : null
+  }, [result, viewCurve])
+
+  // 末点「中位数超额」：中位数口径下，典型一次触发的超额（均值超额易被暴涨事件主导）
+  const excessMedianAtLast = useMemo(() => {
+    const bl = result?.baseline
+    if (!bl || !bl.ks || !bl.excess_median || viewCurve.length === 0) return null
+    const i = bl.ks.indexOf(viewCurve[viewCurve.length - 1].k)
+    return i >= 0 ? (bl.excess_median?.[i] ?? null) : null
   }, [result, viewCurve])
 
   // 抽查若干持有期用于概率表（同样按 maxK 截断，随「最长持有」联动）
@@ -341,7 +366,12 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                 <div className="text-base font-semibold">
                   {excessAtLast == null ? '-' : `${(excessAtLast * 100).toFixed(3)}%`}
                 </div>
-                <div className="text-slate-400">触发 − 未触发（日配对）</div>
+                <div className="text-slate-400">
+                  触发 − 未触发（日均值口径）
+                  {excessMedianAtLast != null && (
+                    <>　·　中位数 {(excessMedianAtLast * 100).toFixed(3)}%</>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -376,23 +406,32 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                     formatter={(v: number | string) => (typeof v === 'number' ? `${v.toFixed(3)}%` : v)}
                     labelFormatter={(l) => `持有 ${l} 个交易日`}
                   />
-                  <Legend wrapperStyle={{ fontSize: 11 }} />
-                  <Line type="monotone" dataKey="baseline" name="基准(未触发组)" stroke="#94a3b8" dot={false} strokeWidth={1.5} strokeDasharray="4 4" />
-                  <Line type="monotone" dataKey="p75" name="p75" stroke="#cbd5e1" dot={false} strokeWidth={1} />
-                  <Line type="monotone" dataKey="p25" name="p25" stroke="#cbd5e1" dot={false} strokeWidth={1} />
-                  <Line type="monotone" dataKey="median" name="中位数" stroke="#0284c7" dot={false} strokeWidth={2} />
-                  <Line type="monotone" dataKey="mean" name="均值" stroke="#dc2626" dot={false} strokeWidth={2} />
+                  <Legend
+                    wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
+                    onClick={(d) => toggleSeries((d as { dataKey?: string }).dataKey)}
+                  />
+                  <Line type="monotone" dataKey="baseline" name="基准(未触发组·均值口径)" stroke="#94a3b8" dot={false} strokeWidth={1.5} strokeDasharray="4 4" hide={!!hidden.baseline} />
+                  <Line type="monotone" dataKey="p75" name="p75" stroke="#cbd5e1" dot={false} strokeWidth={1} hide={!!hidden.p75} />
+                  <Line type="monotone" dataKey="p25" name="p25" stroke="#cbd5e1" dot={false} strokeWidth={1} hide={!!hidden.p25} />
+                  <Line type="monotone" dataKey="median" name="中位数" stroke="#0284c7" dot={false} strokeWidth={2} hide={!!hidden.median} />
+                  <Line type="monotone" dataKey="mean" name="均值" stroke="#dc2626" dot={false} strokeWidth={2} hide={!!hidden.mean} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
 
-            {/* 超额曲线：触发组 − 基准（未触发组，日配对口径），单独一条避免主图过挤 */}
+            {/* 超额曲线：触发组 − 基准（未触发组）。两条线口径不同、不可相加：
+                - 均值：日配对口径（先按日截面均值、再对配对日平均）→ 易被少数暴涨事件主导
+                - 中位数：事件级口径（全部样本收益的中位数）→ 刻画「典型一次触发」的超额
+                点击图例可单独隐藏/显示。 */}
             {excessChart.length > 0 && (
               <div className="border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
                 <div className="text-slate-500 mb-1">
-                  超额曲线（触发组 − 基准·未触发组，日配对口径；单位 %）
+                  超额曲线（触发组 − 基准·未触发组；单位 %）
+                  <span className="text-slate-400 ml-2">
+                    均值＝日配对口径（易被少数暴涨事件主导）；中位数＝事件级口径（典型一次触发的超额）
+                  </span>
                 </div>
-                <ResponsiveContainer width="100%" height={150}>
+                <ResponsiveContainer width="100%" height={170}>
                   <LineChart data={excessChart} margin={{ top: 5, right: 12, left: 0, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
                     <XAxis dataKey="k" tick={{ fontSize: 11 }} />
@@ -401,17 +440,44 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                       formatter={(v: number | string) => (typeof v === 'number' ? `${v.toFixed(3)}%` : v)}
                       labelFormatter={(l) => `持有 ${l} 个交易日`}
                     />
+                    <Legend
+                      wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
+                      onClick={(d) => toggleSeries((d as { dataKey?: string }).dataKey)}
+                    />
                     <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="3 3" />
                     <Line
                       type="monotone"
                       dataKey="excess"
-                      name="超额"
+                      name="超额(均值·日配对)"
                       stroke="#7c3aed"
                       dot={false}
                       strokeWidth={2}
+                      hide={!!hidden.excess}
                     />
+                    {hasExcessMedian && (
+                      <Line
+                        type="monotone"
+                        dataKey="excess_median"
+                        name="超额(中位数·事件级)"
+                        stroke="#0d9488"
+                        dot={false}
+                        strokeWidth={2}
+                        strokeDasharray="5 3"
+                        hide={!!hidden.excess_median}
+                      />
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
+                {hasExcessMedian && excessAtLast != null && excessMedianAtLast != null && (
+                  <div className="text-slate-400 mt-1">
+                    差值（k={viewCurve.length ? viewCurve[viewCurve.length - 1].k : '-'}）：均值超额{' '}
+                    {(excessAtLast * 100).toFixed(3)}%　中位数超额{' '}
+                    {(excessMedianAtLast * 100).toFixed(3)}%　
+                    {excessAtLast - excessMedianAtLast > 0.01
+                      ? '→ 均值明显高于中位数，超额主要来自少数暴涨事件'
+                      : '→ 两者接近，超额较普遍而非仅靠尾部'}
+                  </div>
+                )}
               </div>
             )}
 

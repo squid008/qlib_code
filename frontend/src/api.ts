@@ -363,9 +363,14 @@ export interface EventStudyEvent {
 }
 export interface EventStudyBaseline {
   ks: number[]
+  // ── 均值口径（日配对：先按日取截面均值，再对配对日平均）──
   trigger_pair: (number | null)[] // 触发组日配对均值（每个 k）
   baseline: (number | null)[] // 基准：未触发组日配对均值
-  excess: (number | null)[] // 超额 = 触发组 − 基准（日配对口径）
+  excess: (number | null)[] // 均值超额 = 触发组 − 基准
+  // ── 中位数口径（事件级：全部样本收益的中位数，与均值口径不可混用）──
+  trigger_median?: (number | null)[] // 触发组事件级中位数
+  baseline_median?: (number | null)[] // 基准：未触发组事件级中位数
+  excess_median?: (number | null)[] // 中位数超额 = 触发组中位数 − 基准中位数
   n_pair_days: number // 配对日数
 }
 export interface EventStudyResult {

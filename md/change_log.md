@@ -3,6 +3,22 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.11] - 2026-09-10
+
+### Added
+- **事件研究新增「中位数超额」曲线；两张图均支持点击图例隐藏/重新显示**（`factors/event_study.py::compute_baseline_curves`、`components/EventStudyModal.tsx`、`api.ts`）：
+  - **口径**：原超额只有**均值口径**（日配对：先按日取截面均值 → 再对配对日平均），会被少数连板/妖股主导。新增**中位数口径（事件级）**：把配对日上的**全部样本**（日 × 标的）汇成一份取中位数，触发组取全部触发事件的 k 期收益中位数。两者**口径不同、不可混用**，`excess_median = trigger_median − baseline_median`。
+  - **后端输出新增** `trigger_median` / `baseline_median` / `excess_median`；`EventStudyBaseline` 类型同步扩展（旧结果无该字段时前端自动不画该线）。
+  - **前端**：第二张图同时画 **均值超额（紫实线）** 与 **中位数超额（青虚线）**；标题下注明两口径含义；图下给出口径差值提示——`均值 − 中位数 > 1%` 时提示「超额主要来自少数暴涨事件」，否则提示「两者接近，超额较普遍而非仅靠尾部」；摘要卡片「k=N 超额」同时显示两个口径。
+  - **图例交互**：两张图的 `Legend` 均可**点击隐藏/重新显示**对应曲线（`hidden` state + `hide` 属性，光标变手型）。
+  - 第一张图的基准线更名为「基准(未触发组·均值口径)」，避免与中位数口径混淆。
+
+### Notes
+- **两条计算路径同时生效**：单因子测试顺带计算（`single_test.py`）与独立接口（`run_event_study`）**共用 `compute_baseline_curves`**，因此「重新计算」后的图同样带新曲线（v1.18.10 已先把独立路径接到同一函数上）。
+- **冒烟验证**（`ai_test/verify_es_baseline.py`；csi300 / 2023-10-01~2023-12-31 / max_k=20 / `CWH_MIX_D_PCT_R40`）返回字段 `['baseline','baseline_median','excess','excess_median','ks','n_pair_days','trigger_median','trigger_pair']`；同样本两口径对比（k=20）均值超额 `+6.147%` vs 中位数超额 `+6.421%`（该样本仅 1 个事件，故两口径接近；样本充足时通常均值明显更高）。
+- 验证：`npx tsc --noEmit` EXIT=0；`read_lints` 0 diagnostics；Python 语法检查通过。
+- 版本 1.18.10 → 1.18.11。
+
 ## [1.18.10] - 2026-09-10
 
 ### Fixed

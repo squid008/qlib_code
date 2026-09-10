@@ -205,12 +205,17 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
 def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFrame,
                             events: pd.DataFrame, max_k: int,
                             cancel_check=None) -> dict:
-    """计算「基准（未触发组）」与「超额」曲线（**日配对口径**，仅供展示）。
+    """计算「基准（未触发组）」与「超额」曲线（仅供展示）。
 
-    基准：对每个触发日 T，取【T 当天未触发的股票】在 T+1..T+1+k 的等权平均收益，
-          再对所有配对日求平均 → 每个 k 一个值。
-    超额：触发组日配对均值 − 基准（**同一天集合**，三者自洽）。
-    三者分别为原始小数；前端按 % 展示。
+    **两套口径，不可混用**：
+      ① 均值口径（日配对）：对每个触发日 T，取【T 当天未触发的股票】在 T+1..T+1+k 的
+         等权平均收益 → 再对所有配对日求平均；触发组同法（先按日截面均值再对日平均）。
+         输出 trigger_pair / baseline / excess。
+      ② 中位数口径（事件级）：把配对日上的**全部样本**（日 × 标的）汇成一份取中位数，
+         触发组取全部触发事件的 k 期收益中位数。输出 trigger_median / baseline_median /
+         excess_median。
+    之所以两套：均值会被少数极端事件（连板/妖股）主导，中位数刻画「典型一次触发」；
+    两者差距本身就是判断信号是否「彩票型」的关键证据。数值均为原始小数；前端按 % 展示。
     """
     max_k = max(1, int(max_k or 40))
     ks = list(range(1, max_k + 1))
@@ -233,21 +238,41 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
             flag.at[t, c] = True
     entry = full.shift(-1)
     base_list = []
+    base_med_list = []
     for j, k in enumerate(ks):
         if (j % 10 == 0) and (cancel_check is not None):
             cancel_check()
         ret = full.shift(-(k + 1)) / entry - 1.0     # T+1+k 相对 T+1
-        daily = ret.where(~flag).mean(axis=1)
+        nf = ret.where(~flag)                        # 剔除当日触发股
+        # 均值口径：先按日取截面均值，再对配对日平均
+        daily = nf.mean(axis=1)
         sel = daily.reindex(days).dropna()
         base_list.append(float(sel.mean()) if len(sel) else float("nan"))
+        # 中位数口径：只取配对日，把 (配对日 × 未触发股) 的全部样本汇成一份取中位数。
+        # 注意不能"先算每日横截面中位数、再对日子平均"——那与触发组的事件级中位数不对称。
+        vals = nf.reindex(days).to_numpy(dtype=float, copy=False)
+        vals = vals[np.isfinite(vals)]
+        base_med_list.append(float(np.median(vals)) if vals.size else float("nan"))
     base_arr = np.asarray(base_list, dtype=float)
+    base_med_arr = np.asarray(base_med_list, dtype=float)
     trig_arr = np.asarray([float(trig_pair.get(k, np.nan)) for k in ks], dtype=float)
+
+    # 触发组「事件级中位数」：全部触发事件在 k 期收益的中位数（与 curve[].median 同口径）
+    mat_arr = np.asarray(mat, dtype=float)
+    with np.errstate(all="ignore"):
+        trig_med_arr = (np.nanmedian(mat_arr, axis=0) if mat_arr.size
+                        else np.full(len(ks), np.nan))
 
     return {
         "ks": ks,
+        # ── 均值口径（日配对）──
         "trigger_pair": [_r(v, 6) for v in trig_arr],
         "baseline": [_r(v, 6) for v in base_arr],
         "excess": [_r(v, 6) for v in (trig_arr - base_arr)],
+        # ── 中位数口径（事件级；与均值口径不可混用）──
+        "trigger_median": [_r(v, 6) for v in trig_med_arr],
+        "baseline_median": [_r(v, 6) for v in base_med_arr],
+        "excess_median": [_r(v, 6) for v in (trig_med_arr - base_med_arr)],
         "n_pair_days": int(len(days)),
     }
 
