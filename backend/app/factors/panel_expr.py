@@ -76,10 +76,11 @@ def _put_bin_cache(key: Tuple[str, str], mtime: int, start: int, vals: np.ndarra
 
 
 def clear_bin_cache() -> None:
-    """清空进程级 .bin 读盘缓存（数据重 dump 后调用；测试用）。"""
+    """清空进程级 .bin 读盘缓存与字段元信息缓存（数据重 dump 后调用；测试用）。"""
     global _BIN_CACHE_BYTES
     _BIN_CACHE.clear()
     _BIN_CACHE_BYTES = 0
+    _BIN_META_CACHE.clear()
 
 
 def set_bin_cache_mb(mb: int) -> None:
@@ -87,6 +88,17 @@ def set_bin_cache_mb(mb: int) -> None:
     global _BIN_CACHE_MAX_BYTES
     _BIN_CACHE_MAX_BYTES = max(1, int(mb)) * 1024 * 1024
     _evict_bin_cache(0)
+
+
+def set_node_cache_mb(mb: int) -> None:
+    """动态调整本进程节点缓存上限（MB）。
+
+    节点缓存是 PanelEvaluator 实例级 OrderedDict（记账字节见 _node_bytes），故调小上限
+    在实例下一次写入节点时按 LRU 逐出到新上限；worker 场景在求值前（_worker_init）
+    设置，无存量节点，等效立即生效。
+    """
+    global _NODE_CACHE_MAX_BYTES
+    _NODE_CACHE_MAX_BYTES = max(1, int(mb)) * 1024 * 1024
 
 
 def _system_avail_gb() -> float:
@@ -102,8 +114,39 @@ def _system_avail_gb() -> float:
 # 节点缓存字节上限（v1.18.1）：单表达式内部公共子式缓存也封顶。超巨型公式
 # （如 CUP_POOL 24.6 万字符，单树数千节点 × 每节点 ~MB）即使只驻留一个公式，仍可能
 # 把单 worker 撑到数 GB；写满后按 LRU 逐出最旧，普通公式近端命中不受影响。
-# QLIB_SFT_PANEL_NODE_CACHE_MB 可调（默认 512MB/worker）。
+# v1.18.3：默认改为按可用内存自适应两档（见 _auto_node_cache_mb）。此处模块级初值仍
+# 是 512MB —— 未调用 set_node_cache_mb 时的兜底（如单元测试直接 import 本模块）。
 _NODE_CACHE_MAX_BYTES = int(os.environ.get("QLIB_SFT_PANEL_NODE_CACHE_MB", "512")) * 1024 * 1024
+
+# 两档划分依据（v1.18.3 实测，脚本 ai_test/bench_node_cache.py / bench_node_cache_parallel.py；
+# 全 A 5312 只 × 2024 全年 × 7 worker、CUP_POOL 27.9 万字符）：
+#   512MB → 52.4s / worker 峰值合计 5.95GB；1024MB → 46.5s / 9.56GB（-11%）；
+#   2048MB → 39.8s / 16.73GB（-24%）——三档输出数值完全一致（校验和恒等）。
+# 常规/中型公式（≤5 万字符：CCCMA250 峰值 176MB、CWH 5.3 万字符峰值 241MB）缓存从不
+# 触顶、两档完全等价。故只取两档以控内存风险：内存宽裕给 1024MB，否则 512MB；需要
+# 2048MB 等更大值可显式设 QLIB_SFT_PANEL_NODE_CACHE_MB（用户自担内存）。
+_AUTO_NODE_CACHE_MIN_AVAIL_GB = 10.0   # 可用内存门槛：低于此不升级（低水位 6GB 之上留余量）
+_AUTO_NODE_CACHE_MIN_PER_JOB_GB = 2.0  # 每 worker 可用内存门槛：1024MB 仅占其一半预算
+
+
+def _auto_node_cache_mb(n_jobs: int) -> int:
+    """节点缓存上限两档自适应（MB）：内存宽裕 → 1024，否则 512。
+
+    显式 QLIB_SFT_PANEL_NODE_CACHE_MB 优先（可指定任意值，含 2048）。psutil 不可用时
+    _system_avail_gb() 返回 999 → 视为宽裕（与 bin cache 同策略）。
+    """
+    try:
+        env_mb = os.environ.get("QLIB_SFT_PANEL_NODE_CACHE_MB")
+        if env_mb is not None:
+            return max(1, int(env_mb))
+        avail_gb = _system_avail_gb()
+        n_jobs = max(1, int(n_jobs))
+        if (avail_gb >= _AUTO_NODE_CACHE_MIN_AVAIL_GB
+                and avail_gb / n_jobs >= _AUTO_NODE_CACHE_MIN_PER_JOB_GB):
+            return 1024
+    except Exception:
+        pass
+    return 512
 
 
 def _series_mem_bytes(s: pd.Series) -> int:
@@ -178,6 +221,47 @@ def _read_field_bin(inst: str, field: str):
     return start, vals
 
 
+# 字段文件元信息缓存（v1.18.4 性能）：(mtime_ns, start_idx, n_rows)。
+# 用途 = _union_index 只需"数据区间覆盖"，原实现却走 _read_field_bin 把整列读进 BIN_CACHE：
+# 全 A 5312 只 × 4 字段 ≈ 1.1GB > 768MB 上限 → 边读边逐出，随后的 load_field_series 又
+# 得重读一遍（纯浪费）。改为只 stat 大小推导行数 + 读 4 字节头，读盘/缓存压力归零。
+_BIN_META_CACHE: "OrderedDict[Tuple[str, str], Tuple[int, int, int]]" = OrderedDict()
+_BIN_META_CACHE_MAX = 131072  # 全 A × 数十字段量级（每项 ~100B）
+
+
+def _field_bin_meta(inst: str, field: str):
+    """[只 stat，不读数据] → (mtime_ns, start_idx, n_rows)；缺失/过短返回 None。
+
+    n_rows 与 _read_field_bin 的 len(vals) 严格一致（= 文件字节数 // 4 - 1），
+    保证 _union_index 推算的覆盖区间与原实现逐股相同。
+
+    头部 dtype 必须与 _read_field_bin 一致：首 4 字节是**float32** 存的起始日历
+    idx（_read_field_bin 用 np.fromfile(dtype='<f4') + int(arr[0])）。若误用 '<i4'
+    读，得到的是 float32 位模式（如真实 791 → 0x44480000 = 1145421824），会让
+    _union_index 把绝大多数股票判为"无覆盖"而丢行（v1.18.4 实测 144306→64895）。
+    """
+    p = os.path.join(_feature_dir(), inst, f"{field}.day.bin")
+    try:
+        st = os.stat(p)
+    except OSError:
+        return None
+    n_words = st.st_size // 4
+    if n_words < 2:  # 与 _read_field_bin 的 arr.size < 2 对齐
+        return None
+    key = (inst, field)
+    hit = _BIN_META_CACHE.get(key)
+    if hit is not None and hit[0] == st.st_mtime_ns:
+        _BIN_META_CACHE.move_to_end(key)
+        return hit
+    with open(p, "rb") as fh:
+        start = int(np.frombuffer(fh.read(4), dtype="<f4")[0])
+    ent = (st.st_mtime_ns, start, int(n_words - 1))
+    _BIN_META_CACHE[key] = ent
+    while len(_BIN_META_CACHE) > _BIN_META_CACHE_MAX:
+        _BIN_META_CACHE.popitem(last=False)
+    return ent
+
+
 def load_field_series(instruments, field: str, start_time, end_time) -> pd.Series:
     """读一字段为 MultiIndex(instrument, datetime) 全日历面板（各股行数=其有效日历）。
 
@@ -230,18 +314,20 @@ def _union_index(instruments, start_time, end_time, fields=("close",)) -> pd.Mul
     req_hi = int(np.searchsorted(cal, t1, side="right")) - 1
     # 性能（v1.17.7）：原实现每股构造 MultiIndex 后链式 append（O(k²) 拷贝 + 数千次
     # from_arrays/factorize）；改为收集 codes/dates 后一次 from_arrays，顺序等价。
+    # v1.18.4：字段覆盖区间改用 _field_bin_meta（只 stat、不读整列数据）——本函数只需
+    # "各字段覆盖到哪天"，原实现把数据读进 BIN_CACHE 属纯浪费（全 A 可达 1.1GB 反复逐出）。
     codes = []
     dates_parts = []
     fields = tuple(dict.fromkeys(fields))
     for inst in instruments:
         lo_max, hi_min = None, None
         for fld in fields:
-            r = _read_field_bin(inst, fld)
+            r = _field_bin_meta(inst, fld)
             if r is None:
                 continue
-            start_idx, vals = r
+            start_idx, n_rows = r[1], r[2]
             a = max(start_idx, req_lo)
-            b = min(start_idx + len(vals) - 1, req_hi)
+            b = min(start_idx + n_rows - 1, req_hi)
             if b < a:
                 continue
             lo_max = a if lo_max is None else min(lo_max, a)
@@ -258,18 +344,51 @@ def _union_index(instruments, start_time, end_time, fields=("close",)) -> pd.Mul
         names=["instrument", "datetime"])
 
 
+def _trim_index_from(idx: pd.MultiIndex, start_time) -> pd.MultiIndex:
+    """把面板 index 裁剪到 datetime ≥ start_time（保持行序；无需裁剪时原样返回）。
+
+    v1.18.4 性能：panel_features 的输出行集 = [start_time, end_time] 的字段覆盖并集，
+    与最后一个 evaluator 的 _full = [read_start, end_time] 的并集只差"预热段"
+    （read_start ≤ start_time），按 datetime 裁剪即可，免去重算一遍全量 union（全 A
+    是数百万行 index 的重复构造 + 数万次 stat）。
+    """
+    if len(idx) == 0:
+        return idx
+    dt = idx.get_level_values("datetime")
+    mask = np.asarray(dt >= pd.Timestamp(start_time))
+    if mask.all():
+        return idx
+    return idx[mask]
+
+
 # ===========================================================================
 # 2) 轻量 AST
 # ===========================================================================
 
 
+# 结构去重（hash-cons，v1.18.4）：把"结构相同"的子树收敛到同一个 int key，作为
+# 节点缓存 key。原实现每次 eval 都 reconstruct(node) 重建子树字符串（CUP_POOL 实测
+# 递归 262 万次 / 343M 字符，占单块耗时 15.4%）。但**不能**简单换成节点唯一 id：
+# 公式内重复子式极多（实测 CWH 11562 节点 / 仅 150 个唯一子树 = 77×；CUP_POOL
+# 49321 / 2141 = 23×），丢掉结构去重会让每个重复子式各自重算（quick 回归
+# 15.3s → 342s 的教训）。本方案：parse 时按 (op, 子key...) 做一次 hash-cons，子 key
+# 是 int → 构造/哈希/比较都是 O(arity)，整体 O(节点数)；相同结构仍共享同一个 key，
+# 故缓存命中率与原实现一致、数值逐位不变。_CANON 是单次解析的局部表，parse_expr
+# 入口清空（节点缓存本就按单条表达式清空 → 跨表达式无需共享 key）。
+_CANON: Dict[tuple, int] = {}
+
+
 class Node:
-    __slots__ = ("op", "args", "raw")
+    __slots__ = ("op", "args", "raw", "key")
 
     def __init__(self, op, args, raw):
         self.op = op
         self.args = args
         self.raw = raw
+        parts = [op]
+        for a in args:
+            parts.append(a.key if isinstance(a, Node) else a)
+        self.key = _CANON.setdefault(tuple(parts), len(_CANON))
 
     def __repr__(self):
         return self.raw
@@ -279,12 +398,20 @@ class Node:
 _INFIX = {"+": "Add", "-": "Sub", "*": "Mul", "/": "Div"}
 _INFIX_PREC = {"+": 10, "-": 10, "*": 20, "/": 20}
 
+# 词法正则（v1.18.4 性能）：必须用 `match(text, pos)` 而非 `match(text[pos:])`——
+# 巨型公式（CUP_POOL 24.6 万字符 / ~10 万 token）下每次切片都是 O(剩余长度) 复制，
+# 累计复制量以 GB 计（实测 parse_expr 1.85s/块）。带 pos 匹配为零拷贝，语义等价。
+_RE_FIELD = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
+_RE_NUM = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
+_RE_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
 
 def parse_expr(text: str) -> Node:
     """递归下降解析 qlib 表达式：$field / 数字 / Func(args) / 中缀 + - * /。
 
     自左到右按优先级处理中缀；逗号/右括号作为参数边界。
     """
+    _CANON.clear()  # 单次解析的结构去重表（节点 key 分配见 Node.__init__）
     pos = 0
     n = len(text)
 
@@ -323,14 +450,14 @@ def parse_expr(text: str) -> Node:
         c = text[pos]
         # 一元负号（仅当后随数字/字段/函数且上下文需要 → 简化：数字已含负号）
         if c == "$":
-            m = re.match(r"\$[A-Za-z_][A-Za-z0-9_]*", text[pos:])
+            m = _RE_FIELD.match(text, pos)
             tok = m.group(0)
-            pos += len(tok)
+            pos = m.end()
             return Node("field", [tok], tok)
         if c.isdigit() or (c == "-" and pos + 1 < n and text[pos + 1].isdigit()):
-            m = re.match(r"-?\d+(\.\d+)?([eE][+-]?\d+)?", text[pos:])
+            m = _RE_NUM.match(text, pos)
             tok = m.group(0)
-            pos += len(tok)
+            pos = m.end()
             return Node("const", [tok], tok)
         if c == "(":
             pos += 1
@@ -339,11 +466,11 @@ def parse_expr(text: str) -> Node:
             if pos < n and text[pos] == ")":
                 pos += 1
             return inner
-        m = re.match(r"[A-Za-z_][A-Za-z0-9_]*", text[pos:])
+        m = _RE_IDENT.match(text, pos)
         if not m:
             raise ValueError(f"无法解析: {text[pos:pos+40]}")
         name = m.group(0)
-        pos += len(name)
+        pos = m.end()
         skip()
         if pos >= n or text[pos] != "(":
             # 裸标识符（非常量函数/字段）：可能是除法等残留，容错为常量 0
@@ -449,7 +576,7 @@ class PanelEvaluator:
         self._full = _union_index(instruments, self.read_start, end_time, self._union_fields)
         self._active_cache: Dict[bool, pd.MultiIndex] = {}
         self._field_cache: Dict[str, pd.Series] = {}
-        self._node_cache: "OrderedDict[Tuple[str, bool], pd.Series]" = OrderedDict()
+        self._node_cache: "OrderedDict[Tuple[object, bool], pd.Series]" = OrderedDict()
         self._node_bytes = 0  # 节点缓存已记账字节（配合 LRU 上限）
 
     def _active_index(self, sr: bool) -> pd.MultiIndex:
@@ -487,7 +614,10 @@ class PanelEvaluator:
         sr=False（label/base/tag）：active = 全日历，保留停牌 NaN 行（普通 shift
         在停牌日给前值，与 qlib 非 SR 字段一致）。
         """
-        key = (node.raw if node.op in ("field", "const") else reconstruct(node), sr)
+        # v1.18.4 性能：key 用 parse 时预计算的"结构规范 id"（O(1) 属性读取），取代
+        # reconstruct(node)（每次 eval 递归重建子树字符串）。结构相同的子树共享同
+        # 一个 key → 缓存命中率与原实现一致，数值逐位不变。
+        key = (node.key, sr)
         hit = self._node_cache.get(key)
         if hit is not None:
             self._node_cache.move_to_end(key)  # LRU 刷新（命中过的节点更晚被逐出）
@@ -548,7 +678,10 @@ class PanelEvaluator:
             s = args[0]
             if s is None:
                 raise ValueError("BARSCOUNT 首参不能是常量")
-            return _by_group(s, None, _bars_count_seg)
+            from . import ops_ext
+
+            return _by_group(s, None, _bars_count_seg,
+                             lambda v, w, ss, se: ops_ext.bars_count_seg(v, w, ss, se))
         if op == "BARSSINCE":
             # 距首次成立周期数（不限窗口）。面板与 qlib 共用 ops_ext.barsince_vec。
             s = args[0]
@@ -556,7 +689,8 @@ class PanelEvaluator:
                 raise ValueError("BARSSINCE 首参不能是常量")
             from . import ops_ext
 
-            return _by_group(s, None, lambda v: ops_ext.barsince_vec(v))
+            return _by_group(s, None, lambda v: ops_ext.barsince_vec(v),
+                             lambda v, w, ss, se: ops_ext.barsince_vec_seg(v, w, ss, se))
         if op == "FILTER":
             # 信号抑制：成立输出 1 后 N-1 周期抑制重复。面板与 qlib 共用 ops_ext.filter_vec。
             s, N = args[0], args[1]
@@ -564,7 +698,8 @@ class PanelEvaluator:
                 raise ValueError("FILTER 首参不能是常量")
             from . import ops_ext
 
-            return _by_group(s, None, lambda v: ops_ext.filter_vec(v, int(N)))
+            return _by_group(s, None, lambda v: ops_ext.filter_vec(v, int(N)),
+                             lambda v, w, ss, se: ops_ext.filter_vec_seg(v, w, ss, se))
         if op == "TRUNC":
             # 向零截断取整（np.trunc；3.7→3、-3.7→-3），NaN 保持
             s = args[0]
@@ -810,26 +945,31 @@ def _panel_dyn(op: str, args, ev: PanelEvaluator) -> pd.Series:
         s = args[0]
         if not isinstance(s, pd.Series):
             raise ValueError("BARSLAST 参数不能是常量")
-        return _by_group(s, None, lambda v: ops_ext.barslast_vec(v))
+        return _by_group(s, None, lambda v: ops_ext.barslast_vec(v),
+                         lambda v, w, ss, se: ops_ext.barslast_vec_seg(v, w, ss, se))
     if op == "BARSSINCEN":
         s, N = args[0], int(args[1])
         if not isinstance(s, pd.Series):
             raise ValueError("BARSSINCEN 首参不能是常量")
-        return _by_group(s, None, lambda v: ops_ext.barsincen_vec(v, N))
+        return _by_group(s, None, lambda v: ops_ext.barsincen_vec(v, N),
+                         lambda v, w, ss, se: ops_ext.barsincen_vec_seg(v, N, ss, se))
     if op in ("HHVBARS", "LLVBARS"):
         s, N = args[0], int(args[1])
         if not isinstance(s, pd.Series):
             raise ValueError(f"{op} 首参不能是常量")
         is_max = op == "HHVBARS"
+        _seg = ops_ext.hhvbars_seg if is_max else ops_ext.llvbars_seg
         return _by_group(s, None,
-                         lambda v: ops_ext.HHVBARS._bars(v, N, is_max=is_max))
+                         lambda v: ops_ext.HHVBARS._bars(v, N, is_max=is_max),
+                         lambda v, w, ss, se, _f=_seg: _f(v, N, ss, se))
     s, ns = args
     if not isinstance(s, pd.Series) or not isinstance(ns, pd.Series):
         raise ValueError(f"{op} 参数须为序列")
     kind = {"DYN_REF": "ref", "DYN_MIN": "min", "DYN_MAX": "max",
             "DYN_SUM": "sum", "DYN_COUNT": "count",
             "DYN_HHVBARS": "hhvbars", "DYN_LLVBARS": "llvbars"}[op]
-    return _by_group(s, ns, lambda v, w: _dyn_kernel(kind, v, w, ops_ext))
+    return _by_group(s, ns, lambda v, w: _dyn_kernel(kind, v, w, ops_ext),
+                     lambda v, w, ss, se: _dyn_kernel_seg(kind, v, w, ss, se, ops_ext))
 
 
 def _dyn_kernel(kind, vals, nvals, ops_ext):
@@ -847,6 +987,29 @@ def _dyn_kernel(kind, vals, nvals, ops_ext):
         return ops_ext.dyn_bars_vec(vals, nvals, True)
     if kind == "llvbars":
         return ops_ext.dyn_bars_vec(vals, nvals, False)
+    raise ValueError(kind)
+
+
+def _dyn_kernel_seg(kind, vals, nvals, seg_start, seg_end, ops_ext):
+    """DYN_* 段感知内核分派（一次处理全部段；与 `_dyn_kernel` 逐位一致，见 v1.18.4）。
+
+    sum/count 返回 None 表示"无段感知实现"，由 `_by_group` 回退逐段循环：它们内部是
+    `cumsum` 前缀和相减，全局前缀和的浮点累加顺序与逐段前缀和不同 → 结果差 1 ULP
+    （实测 dyn_sum 0.9 vs 0.9000000000000004），无法位一致；而这两个内核本身很轻
+    （~8 次 numpy 调用），放弃段感知的收益损失可接受。
+    """
+    if kind == "ref":
+        return ops_ext.dyn_ref_vec_seg(vals, nvals, seg_start, seg_end)
+    if kind == "min":
+        return ops_ext._dyn_rmq_vec_seg(vals, nvals, np.fmin, seg_start)
+    if kind == "max":
+        return ops_ext._dyn_rmq_vec_seg(vals, nvals, np.fmax, seg_start)
+    if kind in ("sum", "count"):
+        return None
+    if kind == "hhvbars":
+        return ops_ext.dyn_bars_vec_seg(vals, nvals, True, seg_start)
+    if kind == "llvbars":
+        return ops_ext.dyn_bars_vec_seg(vals, nvals, False, seg_start)
     raise ValueError(kind)
 
 
@@ -908,6 +1071,49 @@ def _seg_window_op(op: str, v: np.ndarray, N: int, q=None) -> np.ndarray:
     raise ValueError(f"panel_expr 不支持 {op}")
 
 
+def _segment_bnd(idx) -> np.ndarray:
+    """计算按 level0（instrument）分组的段边界数组 bnd。
+
+    第 k 段为 bnd[k]:bnd[k+1]，即"相邻 level0 标签变化处"的切分。
+
+    性能（v1.18.4，巨型公式最大瓶颈）：原实现用
+    `idx.get_level_values(0).to_numpy()` 得到 **object 字符串数组**，再做
+    `np.not_equal(lv[1:], lv[:-1])` 相邻比较——object dtype 会退化成逐元素的 Python
+    对象富比较（93000 行 ≈ 60ms）。而 `_by_group` 在一次 CUP_POOL 求值中被调用上百次
+    （每个 dyn 节点一次），累计 8s+（单块 42% 的"逐段调度"开销）——这是真正的热点，
+    而非逐段循环本身（内部 ops_ext 内核早已全向量化）。
+
+    改用 `MultiIndex.codes[0]`（int 数组，整数比较 ~0.1ms）：codes 唯一标识 label，
+    相邻 codes 相等 ⟺ 同 instrument，段边界与标签比较**逐位等价**（仅速度不同，
+    数值结果不变）。codes 含 -1（缺失）或非 MultiIndex 时回退原标签比较路径。
+    """
+    n = len(idx)
+    if n == 0:
+        return np.zeros(1, dtype=np.int64)
+    codes = None
+    if isinstance(idx, pd.MultiIndex):
+        try:
+            c = np.asarray(idx.codes[0])
+        except Exception:
+            c = None
+        if c is not None and len(c) == n and (c >= 0).all():
+            codes = c
+    if codes is None:
+        lv = idx.get_level_values(0).to_numpy()
+        change = np.empty(n, dtype=bool)
+        change[0] = True
+        np.not_equal(lv[1:], lv[:-1], out=change[1:])
+    else:
+        change = np.empty(n, dtype=bool)
+        change[0] = True
+        np.not_equal(codes[1:], codes[:-1], out=change[1:])
+    starts = np.flatnonzero(change)
+    bnd = np.empty(len(starts) + 1, dtype=np.int64)
+    bnd[:-1] = starts
+    bnd[-1] = n
+    return bnd
+
+
 def _pair_seg_corr(va: np.ndarray, vb: np.ndarray, N: int) -> np.ndarray:
     """单股段相关：rolling/expanding corr(min_periods=1) + qlib Corr 的 std≈0 置 NaN。"""
     sa = pd.Series(np.asarray(va, dtype=np.float64))
@@ -932,30 +1138,26 @@ def _corr_pair_panel(a: pd.Series, b: pd.Series, N: int) -> pd.Series:
     idx = a.index
     arr_a = a.to_numpy(dtype=np.float64)
     arr_b = b.to_numpy(dtype=np.float64)
-    lv = idx.get_level_values(0).to_numpy()
     n = len(a)
-    change = np.empty(n, dtype=bool)
-    change[0] = True
-    np.not_equal(lv[1:], lv[:-1], out=change[1:])
-    starts = np.flatnonzero(change)
-    bnd = np.empty(len(starts) + 1, dtype=np.int64)
-    bnd[:-1] = starts
-    bnd[-1] = n
+    bnd = _segment_bnd(idx)
     out = np.empty(n, dtype=np.float64)
-    for gi in range(len(starts)):
+    for gi in range(len(bnd) - 1):
         s = bnd[gi]
         e = bnd[gi + 1]
         out[s:e] = _pair_seg_corr(arr_a[s:e], arr_b[s:e], N)
     return pd.Series(out, index=idx)
 
 
-def _by_group(s: pd.Series, ns, fn) -> pd.Series:
+def _by_group(s: pd.Series, ns, fn, seg_fn=None) -> pd.Series:
     """按组（股票）把 fn 应用到每个连续 segment（ns 可为 None）。
 
     性能（v1.17.7）：原实现逐行 `inst[i]` 判组界 + 每股 `s.iloc[a:b]` pandas 切片
     （profile：322 万次 Index.__getitem__ + 数千次 MultiIndex _slice 是逐组执行层的
-    隐藏大头）。改为 numpy 向量化组界（level 数组一次 != 比较）+ 单次 to_numpy 后
-    的纯 numpy 切片，语义不变。
+    隐藏大头）。改为 numpy 向量化组界 + 单次 to_numpy 后的纯 numpy 切片，语义不变。
+    性能（v1.18.4）：组界计算改走 `_segment_bnd`（codes 整数比较），消除 object
+    字符串逐元素比较（详见 `_segment_bnd`）。另新增 `seg_fn` 段感知快捷路径：把
+    全部段拼成一个长数组 + 段起止数组，一次性调用内核（免去数百次逐段 numpy 调用
+    调度开销，巨型公式主要瓶颈）；`seg_fn` 缺省时回退逐段循环。
     """
     idx = s.index
     n = len(s)
@@ -966,17 +1168,20 @@ def _by_group(s: pd.Series, ns, fn) -> pd.Series:
         ns_arr = None
     else:
         ns_arr = ns.to_numpy(dtype=np.float64)
-    # 组界：level0 变化处（一次向量化比较，取代逐行 python）
-    lv = idx.get_level_values(0).to_numpy()
-    change = np.empty(n, dtype=bool)
-    change[0] = True
-    np.not_equal(lv[1:], lv[:-1], out=change[1:])
-    starts = np.flatnonzero(change)
-    bnd = np.empty(len(starts) + 1, dtype=np.int64)
-    bnd[:-1] = starts
-    bnd[-1] = n
+    bnd = _segment_bnd(idx)
+    if seg_fn is not None:
+        from . import ops_ext
+
+        ss = ops_ext.seg_start_arr(bnd, n)
+        se = ops_ext.seg_end_arr(bnd, n)
+        res = seg_fn(arr, ns_arr, ss, se)
+        if res is not None:
+            out = np.asarray(res, dtype=np.float64)
+            if out.shape != arr.shape:
+                out = np.broadcast_to(out, arr.shape).astype(np.float64)
+            return pd.Series(out, index=idx)
     out = np.empty(n, dtype=np.float64)
-    for gi in range(len(starts)):
+    for gi in range(len(bnd) - 1):
         a = bnd[gi]
         b = bnd[gi + 1]
         if ns_arr is None:
@@ -1168,11 +1373,13 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
             normal_fields.setdefault(warm, []).append((e, name))
 
     cols = {}
+    last_ev = None
     # 普通组：统一 read_start（保持原语义，含 SR/固定窗口）
     if normal_fields:
         rs = _shift_calendar_start(start_time, warm)
         ev = PanelEvaluator(instruments, start_time, end_time, union_fields,
                             read_start=rs)
+        last_ev = ev
         for e, name in normal_fields[warm]:
             if cancel_cb is not None:
                 cancel_cb()  # 取消检查点：表达式级（单条巨型表达式内不可中断）
@@ -1182,12 +1389,19 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
         rs = _shift_calendar_start(start_time, ext)
         ev = PanelEvaluator(instruments, start_time, end_time, union_fields,
                             read_start=rs)
+        last_ev = ev
         for e, name in items:
             if cancel_cb is not None:
                 cancel_cb()
             cols[name] = ev.eval_expr(e)
     # 输出 = 逻辑区间 [start_time, end_time] 的并集（裁剪预热段）
-    full_out = _union_index(instruments, start_time, end_time, union_fields)
+    # v1.18.4 性能：复用最后一个 evaluator 的 _full（[read_start, end] 的字段覆盖并集）
+    # 按时序裁剪，免去重算一遍全量 union。等价性：read_start ≤ start_time，
+    # 每股覆盖 [max(lo, rs), hi] ∩ [start, end] = [max(lo, start), hi]（hi 已截到 end）。
+    if last_ev is not None:
+        full_out = _trim_index_from(last_ev._full, start_time)
+    else:
+        full_out = _union_index(instruments, start_time, end_time, union_fields)
     if not cols:
         return pd.DataFrame(index=full_out)
     df = pd.DataFrame(cols)
@@ -1232,11 +1446,13 @@ def _collect_field_names(fields) -> tuple:
 # 4) 并行版（v1.16.9：全 A 大池。面板求值跨股票独立 → 按股票切块多进程并行）
 # ===========================================================================
 
-def _worker_init(calendar, feature_dir, bin_cache_mb=None):
-    """子进程初始化：注入日历与数据目录（免 qlib.init）；可选收紧 bin 读盘缓存上限。"""
+def _worker_init(calendar, feature_dir, bin_cache_mb=None, node_cache_mb=None):
+    """子进程初始化：注入日历与数据目录（免 qlib.init）；可选收紧读盘/节点缓存上限。"""
     set_panel_runtime(calendar=calendar, feature_dir=feature_dir)
     if bin_cache_mb is not None:
         set_bin_cache_mb(bin_cache_mb)
+    if node_cache_mb is not None:
+        set_node_cache_mb(node_cache_mb)
 
 
 def _panel_features_chunk(payload):
@@ -1332,6 +1548,10 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     cancel_cb: 可选取消检查回调（主进程每收一块前调用一次）。约定：应取消时回调直接
     抛异常中止收集；已提交给进程池的块无法中途终止，但剩余未收结果不再等待
     （最坏多等一块运行时间）。worker 内 panel_features 不传（无法感知主进程标志）。
+
+    缓存档位（v1.18.3）：节点缓存上限按可用内存自适应两档（_auto_node_cache_mb，
+    宽裕 1024MB / 否则 512MB，QLIB_SFT_PANEL_NODE_CACHE_MB 显式覆盖）；读盘缓存按
+    可用内存均分（见下）。两者先作用于本进程，再随 initargs 注入 worker。
     """
     import concurrent.futures as cf
     import math
@@ -1355,6 +1575,11 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
             jobs_mem = min(jobs_mem, max(1, int(avail_gb / 2)))
         n_jobs = max(1, min(jobs_cpu, jobs_mem, n))
     n_jobs = max(1, min(n_jobs, n))
+    # 节点缓存上限（v1.18.3）：按可用内存自适应两档（见 _auto_node_cache_mb），显式
+    # QLIB_SFT_PANEL_NODE_CACHE_MB 优先。先在本进程设置（单进程路径同样生效），再把
+    # 同一档位显式注入 worker（比依赖 spawn 继承 env 更可靠、可测）。
+    node_cache_mb = _auto_node_cache_mb(n_jobs)
+    set_node_cache_mb(node_cache_mb)
     if n_jobs == 1 or n <= 1000:
         # 小池/单块：直接单进程（避免进程池固定开销）；同样支持取消检查点
         return panel_features(instruments, fields, start_time, end_time, cancel_cb=cancel_cb)
@@ -1385,7 +1610,8 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     parts: dict = {}
     done = 0
     with _nowin_spawn():
-        cm = _panel_executor(len(chunks), _worker_init, (cal, fdir, bin_cache_mb))
+        cm = _panel_executor(len(chunks), _worker_init,
+                             (cal, fdir, bin_cache_mb, node_cache_mb))
         ex = cm.__enter__()
         try:
             futs = {ex.submit(_panel_features_chunk, p): i for i, p in enumerate(payloads)}

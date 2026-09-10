@@ -973,6 +973,269 @@ class LLVBARS(ExpressionOps):
         return lft + self.N - 1, rght
 
 
+# ---------------- 段感知（multi-segment）内核 ----------------
+# 背景（v1.18.4）：面板 `_by_group` 逐段调用"单段"内核，每段仅 200~250 行（一只股票
+# 一次），而每个内核内部有 ~10 次 numpy 调用（arange/isnan/where/花式索引…），小数组
+# 下调用调度开销远大于计算本身（实测 dyn_ref_vec 单段约 10μs）。巨型公式（CUP_POOL）
+# 一次求值有上百个动态节点 × 数百只股票 = 数万次内核调用，纯调度开销占单块 40%+。
+#
+# 此处提供"一次处理全部段"的等价实现：各段拼成一个长数组 + 段边界（seg_start/seg_end
+# 为"每位置所属段起/止"数组），在全局长数组上做向量化运算，并用段边界 mask 掉跨段污染。
+# 数值与逐段调用**逐位一致**（见 ai_test 单元对拍与面板快照对拍）。
+# 统一签名：(vals, nvals, seg_start, seg_end) -> ndarray(len(vals))。
+
+
+def seg_start_arr(bnd: np.ndarray, n: int) -> np.ndarray:
+    """由段边界 bnd（长度 nseg+1）生成"每位置所属段起点"数组（长度 n）。"""
+    return np.repeat(np.asarray(bnd[:-1], dtype=np.int64), np.diff(bnd))
+
+
+def seg_end_arr(bnd: np.ndarray, n: int) -> np.ndarray:
+    """由段边界 bnd 生成"每位置所属段终点（不含）"数组（长度 n）。"""
+    return np.repeat(np.asarray(bnd[1:], dtype=np.int64), np.diff(bnd))
+
+
+def bars_count_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
+    """BARSCOUNT 段感知：全局 cumsum 减去段起点前的累计值（段内重置）。"""
+    v = np.asarray(vals, dtype=float)
+    c = np.cumsum(~np.isnan(v)).astype(np.float64)
+    off = np.where(seg_start > 0, c[np.maximum(seg_start - 1, 0)], 0.0)
+    return c - off
+
+
+def barslast_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
+    """BARSLAST 段感知：全局"最近成立下标"前缀最大值，落在段起点之前则记 0。"""
+    n = len(vals)
+    mask = (vals != 0) & ~np.isnan(vals)
+    idx = np.where(mask, np.arange(n), -1)
+    last = np.maximum.accumulate(idx)
+    return np.where(last >= seg_start, np.arange(n) - last, 0.0)
+
+
+def barsince_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
+    """BARSSINCE 段感知：段内首个成立位置（searchsorted 从段起点起）。"""
+    vals = np.asarray(vals, dtype=float)
+    n = len(vals)
+    mask = (vals != 0) & ~np.isnan(vals)
+    out = np.zeros(n, dtype=float)
+    pos = np.flatnonzero(mask)
+    if pos.size:
+        j = np.searchsorted(pos, seg_start, side="left")
+        in_seg = j < pos.size
+        first = np.where(in_seg, pos[np.minimum(j, pos.size - 1)], n + 1)
+        ok = in_seg & (first <= np.arange(n))
+        out = np.where(ok, np.arange(n) - first, 0.0)
+    return out
+
+
+def barsincen_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
+    """BARSSINCEN 段感知：N 窗内最早成立距当前周期数（窗口下界 clip 到段起点）。"""
+    vals = np.asarray(vals, dtype=float)
+    N = max(1, int(nvals)) if np.isscalar(nvals) else 1
+    n = len(vals)
+    i = np.arange(n)
+    mask = (vals != 0) & ~np.isnan(vals)
+    pos = np.flatnonzero(mask)
+    out = np.zeros(n, dtype=float)
+    if pos.size:
+        lo = np.maximum(seg_start, i - N + 1)
+        j = np.searchsorted(pos, lo, side="left")
+        in_win = j < pos.size
+        earliest = np.where(in_win, pos[np.minimum(j, pos.size - 1)], n + 1)
+        ok = in_win & (earliest <= i)
+        out = np.where(ok, i - earliest, 0.0)
+    return out
+
+
+def filter_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
+    """FILTER 段感知：逐段贪心抑制（只在触发位置上前进，段内 reopen 重置）。
+
+    与逐段 `filter_vec` 逻辑完全一致（reopen 用全局下标：段起点即段内 reopen=0）。
+    """
+    vals = np.asarray(vals, dtype=float)
+    N = max(1, int(nvals)) if np.isscalar(nvals) else 1
+    n = len(vals)
+    out = np.zeros(n, dtype=float)
+    mask = (vals != 0) & ~np.isnan(vals)
+    pos = np.flatnonzero(mask)
+    if pos.size == 0:
+        return out
+    starts = np.flatnonzero(np.r_[True, seg_start[1:] != seg_start[:-1]])
+    ends = np.r_[starts[1:], n]
+    lo = np.searchsorted(pos, starts, side="left")
+    hi = np.searchsorted(pos, ends, side="left")
+    for g in range(len(starts)):
+        reopen = int(starts[g])
+        for p in pos[lo[g]:hi[g]]:
+            if p >= reopen:
+                out[p] = 1.0
+                reopen = int(p) + N
+    return out
+
+
+def dyn_ref_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
+    """DYN_REF 段感知：全局下标回退 N_i，越出本段 [seg_start, seg_end) 则 NaN。"""
+    n = len(vals)
+    nv = np.where(np.isnan(nvals), 0.0, np.trunc(nvals))
+    j = np.arange(n) - nv.astype(np.int64)
+    out = np.full(n, np.nan, dtype=float)
+    ok = (j >= seg_start) & (j < seg_end)
+    out[ok] = vals[j[ok]]
+    return out
+
+
+def _dyn_rmq_vec_seg(vals, nvals, func, seg_start) -> np.ndarray:
+    """DYN_MIN/MAX 段感知：全局稀疏表 + 窗口下界 clip 到段起点。
+
+    仅读取"完整落在某段内"的稀疏表区间（l, r 均在段内 → 其 2 个子区间也都在段内），
+    故与逐段建表结果一致；fmin/fmax 满足结合律，建表顺序不影响数值。
+    """
+    n = len(vals)
+    if n == 0:
+        return np.zeros(0, dtype=float)
+    st = _build_sparse(vals, func)
+    Ns = _win_lens_vec(nvals)
+    idx = np.arange(n)
+    lens = np.minimum(Ns, idx - seg_start + 1)
+    js = np.floor(np.log2(lens)).astype(np.int64)
+    l_arr = idx - lens + 1
+    out = np.full(n, np.nan, dtype=float)
+    for k, layer in enumerate(st):
+        sel = js == k
+        if not sel.any():
+            continue
+        span = 1 << k
+        lk = l_arr[sel]
+        rk = idx[sel]
+        out[sel] = func(layer[lk], layer[rk - span + 1])
+    return out
+
+
+def dyn_window_sum_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
+    """DYN_SUM 段感知：全局前缀和（窗口下界 clip 到段起点即可，无需按段重置）。"""
+    n = len(vals)
+    pre = np.concatenate([[0.0], np.cumsum(np.nan_to_num(vals, nan=0.0))])
+    Ns = _win_lens_vec(nvals)
+    lo = np.maximum(seg_start, np.arange(n) - Ns + 1)
+    return pre[np.arange(n) + 1] - pre[lo]
+
+
+def dyn_window_count_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
+    """DYN_COUNT 段感知：同 DYN_SUM，权重改为"非 0 且非 NaN"计数。"""
+    n = len(vals)
+    w = ((vals != 0) & ~np.isnan(vals)).astype(float)
+    pre = np.concatenate([[0.0], np.cumsum(w)])
+    Ns = _win_lens_vec(nvals)
+    lo = np.maximum(seg_start, np.arange(n) - Ns + 1)
+    return pre[np.arange(n) + 1] - pre[lo]
+
+
+def _dyn_arg_idx_vec_seg(vals, nvals, is_max, seg_start) -> np.ndarray:
+    """段感知的"最右极值下标"稀疏表查询（返回全局下标，落在段内）。"""
+    n = len(vals)
+    if n == 0:
+        return np.zeros(0, dtype=np.int64)
+    st = _build_argmax_sparse(vals, is_max)
+    Ns = _win_lens_vec(nvals)
+    idx = np.arange(n)
+    lens = np.minimum(Ns, idx - seg_start + 1)
+    js = np.floor(np.log2(lens)).astype(np.int64)
+    l_arr = idx - lens + 1
+    out = np.full(n, -1, dtype=np.int64)
+    for k, layer in enumerate(st):
+        sel = js == k
+        if not sel.any():
+            continue
+        span = 1 << k
+        lk = l_arr[sel]
+        rk = idx[sel]
+        out[sel] = _dyn_best_idx(layer[lk], layer[rk - span + 1], vals, is_max)
+    return out
+
+
+def dyn_bars_vec_seg(vals, nvals, is_max, seg_start) -> np.ndarray:
+    """DYN_HHVBARS/LLVBARS 段感知：全局下标差 i - j（j 在段内）。"""
+    n = len(vals)
+    if n == 0:
+        return np.zeros(0, dtype=float)
+    j = _dyn_arg_idx_vec_seg(vals, nvals, is_max, seg_start)
+    i = np.arange(n)
+    ok = (j >= 0) & ~np.isnan(vals)
+    return np.where(ok, (i - j).astype(float), np.nan)
+
+
+# ---- 固定窗口 HHVBARS/LLVBARS 段感知（对齐 ops_ext.HHVBARS._bars 单调队列语义）----
+# 注意：`dyn_bars_vec`（动态窗口）内部走 `_dyn_best_idx`，其 max/min 判定方向与
+# `HHVBARS._bars` 相反（既有行为：面板与 qlib 侧共用同一函数，故两端对账不暴露），
+# 因此固定窗口 HHVBARS/LLVBARS **不能**复用 `dyn_bars_vec_seg`，必须用下面这套
+# "最右极值"稀疏表，才能与 `_bars` 单调队列（等值保留新索引 = 取最右）逐位一致。
+
+
+def _rightmost_arg_best(ai, bi, vals, is_max):
+    """合并两个候选"极值最右下标"（-1 = 无效/NaN）；同值取更右（max(ai, bi)）。"""
+    a_ok = ai >= 0
+    b_ok = bi >= 0
+    av = np.where(a_ok, vals[np.maximum(ai, 0)], np.nan)
+    bv = np.where(b_ok, vals[np.maximum(bi, 0)], np.nan)
+    if is_max:
+        b_better = (bv > av) | (np.isnan(av) & ~np.isnan(bv))
+    else:
+        b_better = (bv < av) | (np.isnan(av) & ~np.isnan(bv))
+    tie = av == bv
+    return np.where(b_ok & ((~a_ok) | b_better | (tie & (bi > ai))), bi, ai)
+
+
+def _build_rightmost_arg_sparse(vals, is_max):
+    """稀疏表：每层存"区间极值的最右下标"（NaN 位用 -1 占位）。"""
+    n = len(vals)
+    if n == 0:
+        return []
+    k = int(np.log2(n)) + 1
+    st = [np.where(np.isnan(vals), -1, np.arange(n))]
+    for j in range(1, k):
+        prev = st[-1]
+        half = 1 << (j - 1)
+        cur = np.empty(n, dtype=np.int64)
+        cur[: n - half] = _rightmost_arg_best(prev[: n - half], prev[half:], vals, is_max)
+        cur[n - half:] = prev[n - half:]
+        st.append(cur)
+    return st
+
+
+def _rightmost_bars_seg(vals, seg_start, nvals, is_max) -> np.ndarray:
+    """固定窗口 HHVBARS/LLVBARS 段感知：i - (段内窗口最右极值下标)。"""
+    n = len(vals)
+    if n == 0:
+        return np.zeros(0, dtype=float)
+    N = max(1, int(nvals))
+    st = _build_rightmost_arg_sparse(vals, is_max)
+    idx = np.arange(n)
+    lens = np.minimum(N, idx - seg_start + 1)
+    js = np.floor(np.log2(lens)).astype(np.int64)
+    l_arr = idx - lens + 1
+    out = np.full(n, -1, dtype=np.int64)
+    for k, layer in enumerate(st):
+        sel = js == k
+        if not sel.any():
+            continue
+        span = 1 << k
+        lk = l_arr[sel]
+        rk = idx[sel]
+        out[sel] = _rightmost_arg_best(layer[lk], layer[rk - span + 1], vals, is_max)
+    ok = (out >= 0) & ~np.isnan(vals)
+    return np.where(ok, (idx - out).astype(float), np.nan)
+
+
+def hhvbars_seg(vals, nvals, seg_start, seg_end) -> np.ndarray:
+    """HHVBARS 固定窗口 N=nvals 段感知（与 HHVBARS._bars(is_max=True) 逐位一致）。"""
+    return _rightmost_bars_seg(vals, seg_start, nvals, True)
+
+
+def llvbars_seg(vals, nvals, seg_start, seg_end) -> np.ndarray:
+    """LLVBARS 固定窗口 N=nvals 段感知（与 HHVBARS._bars(is_max=False) 逐位一致）。"""
+    return _rightmost_bars_seg(vals, seg_start, nvals, False)
+
+
 # ---------------- 注册机制 ----------------
 
 _ALL_OPS = [

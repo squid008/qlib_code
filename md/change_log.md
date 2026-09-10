@@ -3,6 +3,36 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.4] - 2026-09-10
+
+### Changed
+- **面板巨型公式性能大修（纯优化，数值逐位不变）**：600 股 × 8 公式（含 CUP_POOL 27.9 万字符）× 2021 全年快照墙钟 **68.57s → 34.30s（-50%，2.0×）**，18 列全部 `nan_mismatch=0 / maxabs=0 / exact=True`、形状恒为 `(144306, 18)`。四项改动（`panel_expr.py` / `ops_ext.py`）：
+  - ① **`_by_group` 段感知向量化**（本版最大收益）：原实现"逐段（每只股票一段）调用单段内核"，每段仅 ~200 行却要 ~10 次 numpy 调用，**小数组下调度开销远大于计算本身**；CUP_POOL 一次求值上百个动态节点 × 数百只股票 = 数万次内核调用（微基准：`dyn_ref_vec` 单次 `_by_group` 7.19ms 中内核 5.89ms / 逐段循环 1.09ms / 组界 0.04ms）。现改为**把各段拼成一个长数组 + 段起止数组（`seg_start`/`seg_end`）一次性处理全部段**；`ops_ext.py` 新增 `*_seg` 内核族（`seg_start_arr`/`seg_end_arr`/`bars_count_seg`/`barslast_vec_seg`/`barsince_vec_seg`/`barsincen_vec_seg`/`filter_vec_seg`/`dyn_ref_vec_seg`/`_dyn_rmq_vec_seg`/`dyn_bars_vec_seg`），并为固定窗口 `HHVBARS/LLVBARS` 单独新增 `hhvbars_seg`/`llvbars_seg`
+  - ② **`_segment_bnd`（组界）**：由 `idx.get_level_values(0).to_numpy()`（object 字符串数组做逐元素富比较，93000 行 ≈ 60ms，而一次 CUP_POOL 求值要调用上百次 → 累计 8s+）改为 `MultiIndex.codes[0]` 整数比较（≈0.043ms，**48×**）；`_by_group` 与 `_pair_seg_corr` 共用
+  - ③ **`_union_index` 只 stat 不读整列**：新增 `_field_bin_meta`（读 4 字节头部 + `st_size // 4 - 1` 推 `n_rows`，按 `st_mtime_ns` 缓存）替代整列 `_read_field_bin` 读盘
+  - ④ **`parse_expr` 零拷贝词法 + AST 结构去重（hash-cons）**：词法由 `regex.match(text[pos:])` 改为 `regex.match(text, pos)`（消除每 token 一次字符串切片拷贝）；`Node` 增加"结构规范 int key"（`_CANON` 表 + `__slots__`），求值缓存 key 与 `reconstruct` 字符串重建改为 O(1) 属性读取（CUP_POOL 原 `reconstruct` 递归 262 万次 / 343M 字符，占单块 15.4%）
+
+### Fixed
+- `_field_bin_meta` 头部 dtype：`.day.bin` 首 4 字节是**以 float32 存的**起始日历 idx（`_read_field_bin` 用 `np.fromfile(dtype="<f4")` + `int(arr[0])`），首版误用 `"<i4"` 读成 float32 位模式（真实 791 → `0x44480000` = 1145421824），使 `_union_index` 把绝大多数股票判为"无覆盖"而丢行 —— **输出 144306 → 64895 行**（只有 `start == 0` 的老股因 float32 0.0 位模式也是 0 而碰巧正确）。
+
+### Notes
+- 段感知内核的**逐位等价**由双重兜底保证：`ai_test/test_seg_kernels.py` 单测（随机 2 万行 / 135 段，含 NaN、0、大量并列值、段长 1，N ∈ {1,2,3,8,60}，12 + 7 + 30 项全绿）＋ 面板快照对拍（18 列 exact）。
+- **有意放弃两处段感知**（为保位一致）：`DYN_SUM`/`DYN_COUNT` 内部是 `cumsum` 前缀和相减，全局前缀和与逐段前缀和的**浮点累加顺序不同** → 差 1 ULP（0.9 vs 0.9000000000000004），无法逐位一致；`_dyn_kernel_seg` 对 sum/count 返回 `None`，`_by_group` 回退逐段循环（这两个内核本身很轻，收益损失可接受）。
+- **发现既有语义不一致（本版未改，待决策）**：`ops_ext._dyn_best_idx` 的 `better` 判定方向写反（`is_max` 时 `better = (av > bv)`，但该布尔被直接当作"b 胜"使用），导致 `DYN_HHVBARS`/`DYN_LLVBARS` 实际返回的是**窗口内极值的反面**（实测窗口 `[nan, -0.4, 1.8, -0.4]` 在 i=3 时 `HHVBARS._bars` = 1.0（j=2，正确）而 `dyn_bars_vec(is_max=True)` = 0.0（j=3，取到最小值））。面板侧与 qlib 侧共用同一函数，故两端对账不暴露。固定窗口 `HHVBARS/LLVBARS` 走 `_bars` 单调队列（正确），因此本版段感知为它单独实现 `hhvbars_seg`/`llvbars_seg`，**不**复用 `dyn_bars_vec_seg`。
+- 验证：`pytest tests/test_panel_expr.py tests/test_ops_ext_vec.py tests/test_formula_parser.py tests/test_segments.py` **80 全绿**；`tests/test_golden_regression.py tests/test_limits.py` **23 全绿**；面板快照 18 列逐位一致。
+- 版本 1.18.3 → 1.18.4（后端 `backend/app/__init__.py` / README 顶部）。
+
+## [1.18.3] - 2026-09-10
+
+### Changed
+- **面板节点缓存上限改为「按可用内存自适应两档」**（v1.18.1 的 512MB 固定默认 → 512MB/1024MB 自动选择；`panel_expr.py`）：
+  - 新增 `_auto_node_cache_mb(n_jobs)`：显式 `QLIB_SFT_PANEL_NODE_CACHE_MB` 优先（可指定 2048 等任意值）；否则 可用内存 ≥10GB **且** 每 worker ≥2GB → **1024MB**，其余 → **512MB**
+  - 新增 `set_node_cache_mb(mb)`；`_worker_init` 增加 `node_cache_mb` 入参 —— 档位在 `panel_features_parallel` 内先作用于本进程（`n≤1000` 的单进程分支同样生效），再随 initargs 注入 worker（比依赖 spawn 继承 env 更可靠）
+- 两档划分依据（本次对照实验；全 A 5312 只 × 2024 全年 × 7 worker × CUP_POOL 27.9 万字符）：**512MB = 52.4s / worker 峰值合计 5.95GB**、**1024MB = 46.5s / 9.56GB（-11%）**、2048MB = 39.8s / 16.73GB（-24%），三档输出数值**完全一致**（校验和恒等）；常规/中型公式（≤5 万字符：CCCMA250 峰值 176MB、CWH 5.3 万字符峰值 241MB）缓存从不触顶、两档完全等价 —— 故只取两档，兼顾大内存机提速与小内存机安全（需要 2048MB 可显式设 env 自担内存）
+- 验证：不设任何 env 端到端 —— 全 A 并行**自动取 1024MB**（47.5s / worker 峰值 9.55GB / chk=5594，与手工 1024 档 46.5s / 9.56GB 吻合）；`n=500` 单进程分支亦取 1024MB；panel/ops 回归 **48 全绿**
+- 复现脚本（临时，`ai_test/`）：`bench_node_cache.py`（单进程 patch `PanelEvaluator.eval` 统计命中/未命中 + 缓存峰值）、`bench_node_cache_parallel.py`（真实 `panel_features_parallel` + worker 峰值 RSS 采样）
+- 版本 1.18.2 → 1.18.3（后端 `backend/app/__init__.py` / README 顶部）。
+
 ## [1.18.2] - 2026-09-10
 
 ### Fixed
