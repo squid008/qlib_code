@@ -23,7 +23,7 @@ import pandas as pd
 from ..engine.limits import mark_limit_up, field_bin_available
 from ..engine.adjust import adjust_expr, normalize_mode
 from ..engine.feature_cache import _sr_wrap_expr
-from .event_study import build_event_stats
+from .event_study import build_event_stats, compute_baseline_curves
 
 
 def _inst_codes(s: pd.DataFrame) -> pd.Series:
@@ -178,6 +178,14 @@ def _event_px_wide(df_full: pd.DataFrame, trig_index, inst_lv: int):
         if len(sub) == 0:
             return None
         return sub.unstack(level=inst_lv).sort_index().ffill()
+    except Exception:
+        return None
+
+
+def _full_px_wide(df_full: pd.DataFrame, inst_lv: int):
+    """全样本 PX 宽表（index=交易日, columns=标的）—— 事件研究「基准（未触发组）」曲线用。"""
+    try:
+        return df_full["PX"].unstack(level=inst_lv).sort_index().ffill()
     except Exception:
         return None
 
@@ -826,7 +834,8 @@ def run_single_factor_tests(
     out: Dict[int, list] = {}
     es_inst = df_full.index.names.index("instrument")
     es_dt = df_full.index.names.index("datetime")
-    _es_px_cache: Dict[str, object] = {}   # col_name -> 价格宽表（同因子的不同周期复用）
+    _es_px_cache: Dict[str, object] = {}      # col_name -> 触发股价格宽表（同因子跨周期复用）
+    _full_wide_box: Dict[str, object] = {}    # 全样本价格宽表（基准曲线用，跨因子复用一次）
     for h in horizons:
         lc = label_cols[h]
         if lc not in df.columns:
@@ -887,11 +896,24 @@ def run_single_factor_tests(
                             "max_k": EVENT_MAX_K,
                             "price_adjust": pa,
                         }
-                        r["event_study"] = _es
+                        r["event_study"] = _es       # 先挂主结果，保证基准失败不影响事件研究
+                        # 基准（未触发组）+ 超额（日配对口径）：仅展示，不参与判定。
+                        # 全样本宽表一次构造、跨因子复用（约 1300×5000，50MB 量级）。
+                        try:
+                            if "w" not in _full_wide_box:
+                                _full_wide_box["w"] = _full_px_wide(df_full, es_inst)
+                            _fw = _full_wide_box.get("w")
+                            if _fw is not None and len(_fw):
+                                _es["baseline"] = compute_baseline_curves(
+                                    _px, _fw, _ev, EVENT_MAX_K)
+                        except Exception as _bl_e:   # 基准失败只影响展示，不拖垮事件研究
+                            _es["baseline_error"] = repr(_bl_e)
                 except FactorTestCancelled:
                     raise
-                except Exception:
-                    pass
+                except Exception as _es_e:       # 诊断：暴露事件研究失败原因（前端忽略该字段）
+                    import traceback as _tb
+                    r["event_study_error"] = "%r @ %s" % (
+                        _es_e, _tb.format_exc().strip().splitlines()[-1])
             results.append(r)
         out[h] = results
         if progress_cb:

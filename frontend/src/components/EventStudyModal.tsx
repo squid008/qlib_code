@@ -4,6 +4,7 @@ import {
   Legend,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -141,16 +142,45 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
     [result, maxK],
   )
 
-  // 图表数据：curve → {k, mean, median, p25, p75}（百分数）
+  // 图表数据：curve → {k, mean, median, p25, p75} + 基准线（未触发组，日配对口径）
   const chartData = useMemo(() => {
-    return viewCurve.map((c) => ({
-      k: c.k,
-      mean: c.mean == null ? null : c.mean * 100,
-      median: c.median == null ? null : c.median * 100,
-      p25: c.p25 == null ? null : c.p25 * 100,
-      p75: c.p75 == null ? null : c.p75 * 100,
-    }))
-  }, [viewCurve])
+    const bl = result?.baseline
+    const baseMap = new Map<number, number | null>()
+    if (bl && bl.ks) {
+      bl.ks.forEach((k, i) => baseMap.set(k, bl.baseline?.[i] ?? null))
+    }
+    return viewCurve.map((c) => {
+      const b = baseMap.get(c.k)
+      return {
+        k: c.k,
+        mean: c.mean == null ? null : c.mean * 100,
+        median: c.median == null ? null : c.median * 100,
+        p25: c.p25 == null ? null : c.p25 * 100,
+        p75: c.p75 == null ? null : c.p75 * 100,
+        baseline: b == null ? null : b * 100,
+      }
+    })
+  }, [viewCurve, result])
+
+  // 超额曲线（触发组 − 基准）
+  const excessChart = useMemo(() => {
+    const bl = result?.baseline
+    if (!bl || !bl.ks) return []
+    return bl.ks
+      .map((k, i) => {
+        const v = bl.excess?.[i]
+        return { k, excess: v == null ? null : v * 100 }
+      })
+      .filter((d) => d.k <= maxK)
+  }, [result, maxK])
+
+  // 末点超额（摘要卡片用；依赖 viewCurve 以避免引用后面才定义的 lastPoint）
+  const excessAtLast = useMemo(() => {
+    const bl = result?.baseline
+    if (!bl || !bl.ks || viewCurve.length === 0) return null
+    const i = bl.ks.indexOf(viewCurve[viewCurve.length - 1].k)
+    return i >= 0 ? (bl.excess?.[i] ?? null) : null
+  }, [result, viewCurve])
 
   // 抽查若干持有期用于概率表（同样按 maxK 截断，随「最长持有」联动）
   const probRows = useMemo(() => {
@@ -278,7 +308,7 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
         {status === 'success' && result && result.curve && result.upside && (
           <div className="px-4 py-3 text-xs">
             {/* 摘要卡片 */}
-            <div className="grid grid-cols-5 gap-2 mb-3">
+            <div className="grid grid-cols-6 gap-2 mb-3">
               <div className="rounded border border-slate-200 dark:border-slate-700 p-2">
                 <div className="text-slate-400">触发事件数</div>
                 <div className="text-base font-semibold">{result.n_events}</div>
@@ -303,6 +333,15 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                 <div className="text-slate-400">理想最高点卖出中位数</div>
                 <div className="text-base font-semibold">{pct(result.upside.median)}</div>
                 <div className="text-slate-400">翻倍 {num(result.upside.reach100, 1)}</div>
+              </div>
+              <div className="rounded border border-slate-200 dark:border-slate-700 p-2">
+                <div className="text-slate-400">
+                  k={viewCurve.length ? viewCurve[viewCurve.length - 1].k : '-'} 超额
+                </div>
+                <div className="text-base font-semibold">
+                  {excessAtLast == null ? '-' : `${(excessAtLast * 100).toFixed(3)}%`}
+                </div>
+                <div className="text-slate-400">触发 − 未触发（日配对）</div>
               </div>
             </div>
 
@@ -338,6 +377,7 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                     labelFormatter={(l) => `持有 ${l} 个交易日`}
                   />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Line type="monotone" dataKey="baseline" name="基准(未触发组)" stroke="#94a3b8" dot={false} strokeWidth={1.5} strokeDasharray="4 4" />
                   <Line type="monotone" dataKey="p75" name="p75" stroke="#cbd5e1" dot={false} strokeWidth={1} />
                   <Line type="monotone" dataKey="p25" name="p25" stroke="#cbd5e1" dot={false} strokeWidth={1} />
                   <Line type="monotone" dataKey="median" name="中位数" stroke="#0284c7" dot={false} strokeWidth={2} />
@@ -345,6 +385,35 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                 </LineChart>
               </ResponsiveContainer>
             </div>
+
+            {/* 超额曲线：触发组 − 基准（未触发组，日配对口径），单独一条避免主图过挤 */}
+            {excessChart.length > 0 && (
+              <div className="border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
+                <div className="text-slate-500 mb-1">
+                  超额曲线（触发组 − 基准·未触发组，日配对口径；单位 %）
+                </div>
+                <ResponsiveContainer width="100%" height={150}>
+                  <LineChart data={excessChart} margin={{ top: 5, right: 12, left: 0, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+                    <XAxis dataKey="k" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} width={45} />
+                    <Tooltip
+                      formatter={(v: number | string) => (typeof v === 'number' ? `${v.toFixed(3)}%` : v)}
+                      labelFormatter={(l) => `持有 ${l} 个交易日`}
+                    />
+                    <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="3 3" />
+                    <Line
+                      type="monotone"
+                      dataKey="excess"
+                      name="超额"
+                      stroke="#7c3aed"
+                      dot={false}
+                      strokeWidth={2}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               {/* 概率表 */}

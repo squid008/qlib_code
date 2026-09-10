@@ -69,22 +69,14 @@ def load_px_wide(codes, start_date: str, end_date: str, price_adjust: str,
     return df["PX"].unstack(level=0).sort_index().ffill()
 
 
-def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
-                      n_raw: int = 0, cancel_check=None) -> dict:
-    """由「价格宽表 + 事件表」计算事件研究结果。
-
-    口径：T 为信号日，T+1 收盘买入，T+1+k 收盘卖出（k = 1..max_k）。
-    events：DataFrame，需含 `code` / `dt` 两列（dt 为 Timestamp）。
-    返回 curve / prob / upside / top_events / worst_events 等（不含 factor/params）。
-    """
-    max_k = max(1, int(max_k or 40))
-    ks = list(range(1, max_k + 1))
+def _align_returns(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
+                   cancel_check=None):
+    """把事件对齐到「T+1 收盘买入、T+1+k 收盘卖出」，返回 (mat[事件×k], max_ret, min_ret)。"""
     cal = px_wide.index
     n_ev = len(events)
     mat = np.full((n_ev, max_k), np.nan)
     max_ret = np.full(n_ev, np.nan)
     min_ret = np.full(n_ev, np.nan)
-
     cols = set(px_wide.columns)
     code_arr = events["code"].astype(str).values
     dt_arr = pd.to_datetime(events["dt"]).values
@@ -109,6 +101,23 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
         if fin.size:
             max_ret[i] = float(fin.max())
             min_ret[i] = float(fin.min())
+    return mat, max_ret, min_ret
+
+
+def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
+                      n_raw: int = 0, cancel_check=None) -> dict:
+    """由「价格宽表 + 事件表」计算事件研究结果。
+
+    口径：T 为信号日，T+1 收盘买入，T+1+k 收盘卖出（k = 1..max_k）。
+    events：DataFrame，需含 `code` / `dt` 两列（dt 为 Timestamp）。
+    返回 curve / prob / upside / top_events / worst_events 等（不含 factor/params）。
+    """
+    max_k = max(1, int(max_k or 40))
+    ks = list(range(1, max_k + 1))
+    n_ev = len(events)
+    code_arr = events["code"].astype(str).values
+    dt_arr = pd.to_datetime(events["dt"]).values
+    mat, max_ret, min_ret = _align_returns(px_wide, events, max_k, cancel_check)
 
     curve = []
     for j, k in enumerate(ks):
@@ -190,6 +199,56 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
         "upside": upside,
         "top_events": top_events,
         "worst_events": worst_events,
+    }
+
+
+def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFrame,
+                            events: pd.DataFrame, max_k: int,
+                            cancel_check=None) -> dict:
+    """计算「基准（未触发组）」与「超额」曲线（**日配对口径**，仅供展示）。
+
+    基准：对每个触发日 T，取【T 当天未触发的股票】在 T+1..T+1+k 的等权平均收益，
+          再对所有配对日求平均 → 每个 k 一个值。
+    超额：触发组日配对均值 − 基准（**同一天集合**，三者自洽）。
+    三者分别为原始小数；前端按 % 展示。
+    """
+    max_k = max(1, int(max_k or 40))
+    ks = list(range(1, max_k + 1))
+    ev_code = events["code"].astype(str).values
+    ev_dt = pd.to_datetime(events["dt"]).values
+
+    # ---- 触发组：事件矩阵 → 按触发日聚合 → 配对日平均 ----
+    mat, _, _ = _align_returns(px_wide_trig, events, max_k, cancel_check)
+    tdf = pd.DataFrame(mat, columns=ks)
+    tdf["_d"] = ev_dt
+    by_day = tdf.groupby("_d")[ks].mean()
+    days = by_day.index
+    trig_pair = by_day.mean(axis=0)
+
+    # ---- 基准：全样本宽表 → 每日「未触发组」等权均值（剔除当日触发股） ----
+    full = px_wide_full
+    flag = pd.DataFrame(False, index=full.index, columns=full.columns)
+    for c, t in zip(ev_code, ev_dt):
+        if (t in flag.index) and (c in flag.columns):
+            flag.at[t, c] = True
+    entry = full.shift(-1)
+    base_list = []
+    for j, k in enumerate(ks):
+        if (j % 10 == 0) and (cancel_check is not None):
+            cancel_check()
+        ret = full.shift(-(k + 1)) / entry - 1.0     # T+1+k 相对 T+1
+        daily = ret.where(~flag).mean(axis=1)
+        sel = daily.reindex(days).dropna()
+        base_list.append(float(sel.mean()) if len(sel) else float("nan"))
+    base_arr = np.asarray(base_list, dtype=float)
+    trig_arr = np.asarray([float(trig_pair.get(k, np.nan)) for k in ks], dtype=float)
+
+    return {
+        "ks": ks,
+        "trigger_pair": [_r(v, 6) for v in trig_arr],
+        "baseline": [_r(v, 6) for v in base_arr],
+        "excess": [_r(v, 6) for v in (trig_arr - base_arr)],
+        "n_pair_days": int(len(days)),
     }
 
 

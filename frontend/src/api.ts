@@ -361,6 +361,13 @@ export interface EventStudyEvent {
   ret: number | null
   max_ret?: number | null
 }
+export interface EventStudyBaseline {
+  ks: number[]
+  trigger_pair: (number | null)[] // 触发组日配对均值（每个 k）
+  baseline: (number | null)[] // 基准：未触发组日配对均值
+  excess: (number | null)[] // 超额 = 触发组 − 基准（日配对口径）
+  n_pair_days: number // 配对日数
+}
 export interface EventStudyResult {
   factor: { id: string; name: string; expression: string; source_formula?: string }
   params: {
@@ -379,6 +386,8 @@ export interface EventStudyResult {
   upside: EventStudyUpside
   top_events: EventStudyEvent[]
   worst_events: EventStudyEvent[]
+  // 基准（未触发组）与超额曲线（日配对口径）：仅 0/1 信号有；仅展示、不参与判定
+  baseline?: EventStudyBaseline | null
 }
 export interface EventStudyProgress {
   task_id: string
