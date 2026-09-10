@@ -3,6 +3,21 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.12] - 2026-09-10
+
+### Fixed
+- **修复「周期填 80 天，事件研究却仍只显示已算 40 期」**（`factors/single_test.py`）：事件研究顺带计算的期数被硬编码为常量 `EVENT_MAX_K = 40` —— `build_event_stats(_px, _ev, EVENT_MAX_K)`、`compute_baseline_curves(..., EVENT_MAX_K)` 与回传前端的 `params.max_k` 全都用它，导致**无论「周期」填多少，事件研究永远只算 40 期**、弹窗永远显示「(已算 40 期)」。而尾部加载长度早已按 `max(horizons, EVENT_MAX_K)` 延展 —— **数据是够的，只是没用上**。
+  - 修复：新增 `es_k = max(EVENT_MAX_K, max(horizons))`，`build_event_stats` / `compute_baseline_curves` / `params.max_k` / 尾部加载长度（`n_need`）全部改用它 → **周期填 80 就真算到 80 期**，同时默认口径（周期 ≤40 时）保持 40 期不变。
+  - 前端无需改动：`computedMaxK` 读 `params.max_k`，「已算 N 期」与「是否需要重算」自动跟随。
+
+### Added
+- **事件研究第一张图新增「基准中位数（未触发组·事件级）」曲线**（`components/EventStudyModal.tsx`）：此前第一张图上 `median`（触发组·**事件级**中位数）与 `baseline`（基准·**均值**口径）**口径不对齐**，二者垂直距离**不能**读作"中位数超额"，容易误判。
+  - 现同时给出两条基准线：`基准(未触发组·均值口径)`（灰虚线，与 `mean` 配对）、`基准中位数(未触发组·事件级)`（青点线，与 `median` 配对）；`chartData` 新增 `baseline_median` 字段。
+  - 配合 v1.18.11 的第二张图，「**中位数超额上升到底来自触发组走强还是基准下跌**」现在可以一眼看出。
+
+### Notes
+- 版本 1.18.11 → 1.18.12。
+
 ## [1.18.11] - 2026-09-10
 
 ### Added

@@ -148,15 +148,23 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
     [result, maxK],
   )
 
-  // 图表数据：curve → {k, mean, median, p25, p75} + 基准线（未触发组，日配对口径）
+  // 图表数据：curve → {k, mean, median, p25, p75} + 两条基准线
+  //   baseline        = 未触发组·均值口径（日配对）→ 与 mean 同口径
+  //   baseline_median = 未触发组·中位数口径（事件级）→ 与 median 同口径
+  // 两条基准线分别对应触发组的均值/中位数，避免跨口径误读。
   const chartData = useMemo(() => {
     const bl = result?.baseline
     const baseMap = new Map<number, number | null>()
+    const baseMedMap = new Map<number, number | null>()
     if (bl && bl.ks) {
-      bl.ks.forEach((k, i) => baseMap.set(k, bl.baseline?.[i] ?? null))
+      bl.ks.forEach((k, i) => {
+        baseMap.set(k, bl.baseline?.[i] ?? null)
+        baseMedMap.set(k, bl.baseline_median?.[i] ?? null)
+      })
     }
     return viewCurve.map((c) => {
       const b = baseMap.get(c.k)
+      const bm = baseMedMap.get(c.k)
       return {
         k: c.k,
         mean: c.mean == null ? null : c.mean * 100,
@@ -164,6 +172,7 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
         p25: c.p25 == null ? null : c.p25 * 100,
         p75: c.p75 == null ? null : c.p75 * 100,
         baseline: b == null ? null : b * 100,
+        baseline_median: bm == null ? null : bm * 100,
       }
     })
   }, [viewCurve, result])
@@ -411,6 +420,7 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                     onClick={(d) => toggleSeries((d as { dataKey?: string }).dataKey)}
                   />
                   <Line type="monotone" dataKey="baseline" name="基准(未触发组·均值口径)" stroke="#94a3b8" dot={false} strokeWidth={1.5} strokeDasharray="4 4" hide={!!hidden.baseline} />
+                  <Line type="monotone" dataKey="baseline_median" name="基准中位数(未触发组·事件级)" stroke="#0e7490" dot={false} strokeWidth={1.5} strokeDasharray="2 2" hide={!!hidden.baseline_median} />
                   <Line type="monotone" dataKey="p75" name="p75" stroke="#cbd5e1" dot={false} strokeWidth={1} hide={!!hidden.p75} />
                   <Line type="monotone" dataKey="p25" name="p25" stroke="#cbd5e1" dot={false} strokeWidth={1} hide={!!hidden.p25} />
                   <Line type="monotone" dataKey="median" name="中位数" stroke="#0284c7" dot={false} strokeWidth={2} hide={!!hidden.median} />

@@ -666,6 +666,12 @@ def run_single_factor_tests(
     # 尾部加载长度：label 需 n_max+1 个交易日；事件研究（0/1 信号顺带计算）另需
     # EVENT_MAX_K 个交易日 → 取二者较大值。**统计区间不受影响**：默认
     # freeze_suspended_price=True 时面板会在统计前裁回 [start_date, end_date]。
+    # 事件研究（0/1 信号顺带算）的期数：至少 EVENT_MAX_K（保持默认口径不变）；
+    # 用户若把「周期」设得更长（例如 80 天），则同步算到该周期 —— 避免出现
+    # 「周期填 80，事件研究却只显示已算 40 期」的错配。尾部加载长度已按
+    # max(horizons, EVENT_MAX_K) 延展，数据足够，无需额外加载。
+    es_k = max(EVENT_MAX_K, max(horizons))
+
     load_end = end_date
     if freeze_suspended_price:
         n_max = max(horizons)
@@ -674,7 +680,7 @@ def run_single_factor_tests(
             cal = _D.calendar()
             cal_ts = pd.to_datetime(cal)
             pos = int((cal_ts <= pd.Timestamp(end_date)).sum())
-            n_need = max(n_max, EVENT_MAX_K)
+            n_need = max(n_max, es_k)
             load_end = str(cal_ts[min(pos + n_need + 3, len(cal_ts) - 1)].date())
         except Exception:
             load_end = end_date
@@ -887,13 +893,13 @@ def run_single_factor_tests(
                             "code": trig_out[0].get_level_values(es_inst).astype(str).values,
                             "dt": pd.to_datetime(trig_out[0].get_level_values(es_dt)).values,
                         })
-                        _es = build_event_stats(_px, _ev, EVENT_MAX_K)
+                        _es = build_event_stats(_px, _ev, es_k)
                         # 补参数信息：前端头部展示用，并据此判断「最长持有」是否需要重算
                         _es["params"] = {
                             "universe": universe,
                             "start_date": start_date,
                             "end_date": end_date,
-                            "max_k": EVENT_MAX_K,
+                            "max_k": es_k,
                             "price_adjust": pa,
                         }
                         r["event_study"] = _es       # 先挂主结果，保证基准失败不影响事件研究
@@ -905,7 +911,7 @@ def run_single_factor_tests(
                             _fw = _full_wide_box.get("w")
                             if _fw is not None and len(_fw):
                                 _es["baseline"] = compute_baseline_curves(
-                                    _px, _fw, _ev, EVENT_MAX_K)
+                                    _px, _fw, _ev, es_k)
                         except Exception as _bl_e:   # 基准失败只影响展示，不拖垮事件研究
                             _es["baseline_error"] = repr(_bl_e)
                 except FactorTestCancelled:
