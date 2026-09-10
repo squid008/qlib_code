@@ -35,6 +35,8 @@
 - 回退方式：`git fetch --tags` → `git checkout vX.Y.Z`（只查看）或 `git reset --hard vX.Y.Z`（彻底回退）。
 - 空间代价可忽略：tag 只是指向已有 commit 的指针，附注 tag 约 200~400 字节/个；本仓库 `.git` 总计约 3.6 MB。
 - ⚠ 注意：tag 会令所指向对象**永久可达**，故误提交的大文件一旦被打 tag 就无法靠 `git gc` 回收（需 `filter-repo` 重写历史）。当前 `.gitignore` 已忽略 `backend/workdir/*`（仅保留 `custom_formulas.json`）、`ai_test/`、`workdir/`，训练权重与产物不会入库。
+- **历史 tag 说明修复**：`v1.0.0` 的 message 因早期用 `git tag -m` 传中文而损坏（UTF-8 字节被按 GBK 解码，显示为 `棣栦釜姝ｅ紡鐗?`）。已按原始字节反推还原原文并以 UTF-8 重建 tag 对象（**保留原 tagger 与时间戳，指向的 commit 不变**，对象 `4d040ee` → `2b81aab`，已 force 覆盖远程）。`v1.0.1` / `v1.0.2` 经查原文即纯英文，无需处理。
+- 教训：**tag / commit 的 message 一律用 `-F <UTF-8 文件>` 写入，不要用 `-m` 传中文**（Windows 下会按系统代码页编码）。
 
 ## [1.18.7] - 2026-09-10
 
