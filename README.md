@@ -3,6 +3,9 @@
 > **当前版本：v1.18.7**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
 >
 > 各版本更新记录见 **[`md/change_log.md`](./md/change_log.md)**（按 Keep a Changelog 规范）。
+>
+> 大阶段版本已在仓库打 **tag** 作为回退锚点（当前：**`v1.18.7`**）。需要回退时：
+> `git fetch --tags` → `git checkout v1.18.7`（只看）或 `git reset --hard v1.18.7`（彻底回退，慎用）。
 
 基于 Qlib 的量价因子机器学习回测系统，提供 **React 前端 + FastAPI 后端 + Qlib 回测引擎** 的完整闭环，
 并预留 **rqalpha(h5)** 多类型数据源接入接口。
