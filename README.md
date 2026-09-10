@@ -1,6 +1,6 @@
 # Qlib 量化回测平台
 
-> **当前版本：v1.18.4**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+> **当前版本：v1.18.6**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
 >
 > 各版本更新记录见 **[`md/change_log.md`](./md/change_log.md)**（按 Keep a Changelog 规范）。
 
@@ -41,6 +41,8 @@ qlib_code/
 │   │   ├── factors/              # ★ 公式翻译器 + 因子 Handler
 │   │   │   ├── parser/           #   Lexer/Parser/Semantic/CodeGen（益盟/通达信公式）
 │   │   │   ├── ops_ext.py        #   外挂算子（BARSLAST/BARSSINCEN/DYN_*/SR/EMA_TDX 等）
+│   │   │   ├── panel_expr.py     #   面板求值器（替代 qlib D.features，含预热缓冲 warmup_days）
+│   │   │   ├── single_test.py    #   单因子测试（覆盖率/IC/分层/触发诊断）
 │   │   │   └── handler.py        #   SelectedAlpha158/360 + FormulaHandler
 │   │   ├── engine/               # 回测引擎
 │   │   │   ├── qlib_engine.py    #   Qlib 回测实现
@@ -61,9 +63,10 @@ qlib_code/
 │   │   ├── App.tsx               # 主界面
 │   │   ├── api.ts                # API 客户端
 │   │   ├── types.ts              # 类型定义
-│   │   └── components/           # 组件（指标卡片/净值曲线）
+│   │   └── components/           # 组件（净值/IC/分层曲线、指标卡、单因子诊断面板、公式编辑器等）
 │   ├── package.json
 │   └── vite.config.ts            # Vite + 代理配置
+├── md/                           # 辅助文档（见文末「md/ 文档说明」）
 ├── start_backend.bat             # 启动后端
 ├── start_frontend.bat            # 启动前端
 └── ai_test/                      # AI 临时验算文件（探查/诊断脚本、输出等，可随时安全删除，不入版本库）
@@ -120,6 +123,10 @@ npm run dev
 | POST | `/api/factors/custom-formulas` | 编译并保存自定义公式 |
 | PUT | `/api/factors/custom-formulas/{id}` | 修改（重新编译）自定义公式 |
 | DELETE | `/api/factors/custom-formulas/{id}` | 删除自定义公式 |
+| POST | `/api/factors/single-factor-test` | 提交单因子测试任务（异步；可选 `warmup_days` 预热缓冲） |
+| GET | `/api/factors/single-factor-test/progress/{task_id}` | 查询单因子测试进度/结果 |
+| POST | `/api/factors/single-factor-test/cancel/{task_id}` | 取消单因子测试任务 |
+| GET | `/api/factors/single-factor-test/tasks` | 列出最近的单因子测试任务 |
 | GET | `/api/data/daily-bars` | 日线数据 |
 | GET | `/api/data/minute-bars` | 分钟数据（rqalpha） |
 | GET | `/api/data/financial` | 财报数据（rqalpha） |
@@ -176,6 +183,12 @@ npm run dev
    - **真凶**：qlib `D.features` **所有字段最终输出整列为 float32**（内部 float64 求值、出口 cast，见 qlib `data.py`），而面板输出 float64 → 两者 `CLOSE/CHANGE` 等列有 ~4-8e-6 的 float32 ulp 尾差。因子值本身逐位一致，但尾差传导到**涨停/停牌剔除判定**（`limits.mark_limit_up` 用 `close >= limit_up - 1e-6`，1e-6 容差与尾差同量级）→ 边界触发翻面。**差异不在求值，在输出 dtype + 下游剔除容差**。
    - **修复**：面板求值保持 float64（EMA 递归收敛精度不变），**出口统一 cast float32**（`panel_expr._cast_output_f32`）与 qlib 返回 dtype 对齐 → 全 A 触发集 0 差（24128==24128、daily 0 差）。
    - **排查方法论（可复用于同类诡异差异）**：小池 0 差但全 A 有差时，不硬碰更大样本——**抓差异行做单股全字段组复现**（把全 A 问题降维成 15 只×单股逐只击破）；把"触发集"与"剔除环节"分离排查（剔前 0 差 ⇒ 差异必在剔除）；最后逐列对比 base/tag 发现 CLOSE 差 4e-6 → 定位到 dtype。**教训：自研求值器越精确（float64）≠ 与引擎一致；对账"基本对齐"的 0.00x pp 小差背后可能是系统性 dtype 不一致，值得一次性深挖到底。**
+7. **单因子诊断的"预热缓冲"与 `SR` 的 250 天静态前扩（v1.18.6）**：
+   - **背景**：面板执行器默认从 `start_date` 当天起加载特征，而 `_tree_ext_days` 只能前移**可静态推断的固定窗口量**；`DYN_*` / `BARSCOUNT` / `HHVBARS+Ref` 嵌套这类**动态窗口**真实所需历史无法静态推断 → 长回看公式在评估区间首日因子为 NaN / 未收敛（实测 CCCMA250 不复权：区间首日全市场"因子=1"股票数 **0**、因子覆盖率 71.5%→88% 爬坡）。
+   - **方案**：新增 `warmup_days`（交易日）预热缓冲——面板普通组 `read_start = 可推断预热 + warmup_days`、起点敏感组 `精确扩展 + warmup_days`；qlib 回退路径从 `load_start` 起 `D.features`；**出口统一裁剪回 `[start_date, end_date]`**。入口：单因子请求体 `warmup_days` / 前端「预热缓冲」输入框（默认 250 ≈ 1 年、`0`=关闭、留空=服务端默认）/ 服务端 env `QLIB_SFT_WARMUP_DAYS`（默认 250）。
+   - **语义边界（重要）**：输出仍只覆盖 `[start_date, end_date]`，**预热行绝不进入统计**；**固定窗口算子（Mean/Max/Ref…）结果与关闭预热时逐位相同**；`EMA`/状态类算子只是序列起点提前（值更接近长历史真值，不再复刻 qlib 在 `start_date` 的冷启动）→ 默认启用不会污染既有对账结论。
+   - **口径澄清：`SR` 自带 250 天静态前扩**。`SR.get_extended_window_size() = 子ext + LOOKBACK_DAYS(250)`，而默认 `suspend_remove=True` 时表达式叶子被 `SR(...)` 包裹 → **qlib `D.features` 与面板本就无条件前读 ≥250 个交易日**。因此默认口径下 `EMA` 这类 ~50 天收敛的算子早已"预热过量"，再叠加 `warmup_days` 属**冗余**（实测 0/3/200 三档首日均值逐位相同）；**判断"预热是否生效"必须先把 `SR` 关掉（`suspend_remove=False`）或改用面板侧动态窗口公式验证**，否则会误判"预热没起作用"。预热真正解决的是**面板侧动态窗口公式**（其扩展量静态不可知）。
+   - 验证：CCCMA250 不复权 / 全 A / H=10 / 2021-01-04~2026-06-01 → 触发 **627 → 628**（与"start_date 提前到 2019-07-01"的旧实证 628 一致）；`QLIB_SFT_WARMUP_DAYS=0` 复现 627。
 
 ## 训练/测试划分（滚动训练）
 
@@ -577,6 +590,7 @@ conda env export --no-builds > qlib_env.yml  # 生成 conda 环境
 | `md/自定义因子与因子库架构.md` | 因子能力总览：0 章"现状能力（已落地）"（Alpha158/360 勾选、catalog 接口、Provider 扩展、自定义公式）+ 2.0 架构设计稿（因子库、评估看板、预处理、h5 存储） |
 | `md/change_log.md` | 版本更新记录（Keep a Changelog 规范，v1.3.2 起，README 顶部有链接） |
 | `md/两地 git 工作流.md` | 家/公司两地协作的 Git 工作流约定 |
+| `md/研报集合.md` | 量化研报要点摘录（核心方法论 + 对本项目的可落地点/差距清单，可续加） |
 | `md/开发记录.md` | 每次开发更新/修复要点记录（本地专用，已 .gitignore 排除，不上传 GitHub） |
 | `md/upload.md` | 本地专用文档（已在 .gitignore 排除，不上传 GitHub） |
 

@@ -3,6 +3,31 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.6] - 2026-09-10
+
+### Added
+- **单因子诊断新增「特征加载预热缓冲」**（`panel_expr.py` / `single_test.py` / `routers/factors.py` / 前端 `SingleFactorTestPanel.tsx`）：长回看 / 动态窗口公式（`DYN_*`、`BARSCOUNT`、`HHVBARS+Ref` 嵌套等）的真实扩展天数**无法静态推断**（`_tree_ext_days` 只覆盖固定窗口），此前面板只前移「可推断量」→ 评估区间首日因子 NaN / 未收敛。物证（CCCMA250 不复权）：SZ002414 2021-01-04 因子 NaN、区间首日全市场「因子=1」股票数 = 0、因子覆盖率 71.5%→88% 爬坡。
+  - 新参数 `warmup_days`（交易日）：请求体新增可选字段，前端新增输入框（默认 250 ≈ 1 年，`0` = 关闭，留空 = 取服务端默认）；服务端默认取环境变量 `QLIB_SFT_WARMUP_DAYS=250`。
+  - 面板路径：普通组 `read_start = 可推断预热 + warmup_days`、起点敏感组 `精确扩展 + warmup_days`；`panel_features` / `panel_features_parallel` 新增入参，`_panel_features_chunk` 改收 5 元组 payload（向后兼容 4 元组）。
+  - qlib 回退路径：`D.features(start_time=load_start)` 从 `load_start`（按交易日历回退 `warmup_days` 天）起加载，出口统一裁剪回 `[start_date, ...]`（对面板路径幂等；裁剪失败 / 裁空直接报错，不静默保留未裁剪面板）。
+  - **语义边界**：输出仍只覆盖 `[start_date, end_date]`，预热行绝不进入统计；固定窗口算子（`Mean`/`Max`/`Ref`…）结果与关闭预热时**逐位相同**；`EMA`/状态类算子序列起点提前（值更接近长历史真值，不再复刻 qlib 在 `start_date` 的冷启动）。
+
+### Notes
+- 端到端验证：CCCMA250 / 全 A / 2021-01-04~2026-06-01 / h=10 / 不复权 → 触发 **627 → 628**（与「`start_date` 提前到 2019-07-01」的旧实证 628 一致）；`QLIB_SFT_WARMUP_DAYS=0` 复现旧口径 627。
+- **SR 自带 250 天前扩（口径澄清）**：默认 `suspend_remove=True` 时表达式叶子被 `SR(...)` 包装，而 `SR.get_extended_window_size() = 子 ext + 250` → qlib `D.features` 本身就会无条件前读 ≥250 交易日；故默认口径下再叠加 `warmup_days`，对 `EMA` 这类 ~50 天收敛的算子属**冗余**（`ai_test/verify_warmup_fallback.py`：SR 口径 0/3/200 三档首日均值逐位相同；关掉 SR 后 0 vs 3 出现差异）。预热真正解决的是**面板侧动态窗口公式**（扩展量静态不可知）。
+- 验证：`ai_test/verify_warmup_fallback.py` ALL PASS（回退路径预热生效 + 三档行数一致 → 出口裁剪无损、无预热行泄漏）；`pytest tests/test_panel_expr.py -m datareq` **8 全绿**（含新增 `test_panel_warmup_days`：输出日期轴恒等于评估区间交易日、`MA5` 逐位不变、`BARSCOUNT` 首日均值随预热变大）；前端 `tsc -b` 通过。
+- 版本 1.18.5 → 1.18.6。
+
+## [1.18.5] - 2026-09-10
+
+### Fixed
+- **修复 `DYN_HHVBARS` / `DYN_LLVBARS` 方向反转（回归 bug，影响所有依赖它的公式）**（`ops_ext.py`）：`_dyn_best_idx` 里 `better` 布尔语义写反 —— `is_max` 分支用 `better = (av > bv)`（字面含义是"a 更优"）却被直接当作"b 胜"返回，导致动态窗口极值取到**反面**（`is_max` 时返回窗口最小值、`is_min` 时返回最大值）。
+  - **影响面**：`DYN_HHVBARS`/`DYN_LLVBARS` 及一切依赖它们的自定义公式（如 `CCCMA250`：报出「旧版 500~700 触发信号 → 现版仅 51」）。用户实测 `CCCMA250` 全 A / 2021-01-01~2026-01-01 / 周期 10 / 前复权，修复后触发信号 **45 → 694**，回到旧版区间。
+  - **根因溯源**：v1.17.7（`e6a3cb5`）把 `dyn_bars_vec` 由"逐位 while 扫描"重写为稀疏表 RMQ 时引入；v1.17.3 旧实现用 `np.fmax/np.fmin` 语义正确。面板侧与 qlib 侧共用同一函数，故内外对账不暴露。
+  - **修复**：`b_better = (bv > av) | (np.isnan(av) & ~np.isnan(bv))`（`is_max`；`is_min` 用 `<`），`b_wins = b_ok & ((~a_ok) | b_better | (tie & (bi > ai)))`。三处调用共用同一函数，改一处即可。
+  - **验证**：新增交叉对拍 `ai_test/test_dyn_semantics.py`（动态窗口 vs 固定窗口 `HHVBARS._bars` 两套独立实现）修复后 24/24 通过；`pytest test_ops_ext_vec.py test_panel_expr.py` 41 全绿。
+- 版本 1.18.4 → 1.18.5。
+
 ## [1.18.4] - 2026-09-10
 
 ### Changed

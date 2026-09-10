@@ -165,6 +165,10 @@ class SingleFactorTestRequest(BaseModel):
     freeze_suspended_price: bool = True   # 停牌日价格冻结计入未来收益（对齐聚宽口径 B）
     suspend_remove: bool = True           # 信号停牌行语义：True=SR删行(益盟/回测一致)；False=NaN占位(聚宽口径)
     price_round: bool = True              # 真实价按分取整参与因子计算（仅不复权生效，默认开；与益盟/聚宽对齐）
+    warmup_days: Optional[int] = None     # 特征加载额外预热缓冲（交易日，v1.18.6）：None=按
+    #   QLIB_SFT_WARMUP_DAYS（默认 250 ≈1 年）；0=关闭。长回看/动态窗口公式（DYN_*/
+    #   BARSCOUNT/HHVBARS+Ref 嵌套）扩展天数无法静态推断，预热后区间首日即有收敛值；
+    #   出口仍裁剪回 [start_date, ...]，固定窗口公式结果不变。
 
 
 # ---------- 单因子测试异步任务：POST 提交返回 task_id，GET 轮询进度/结果 ----------
@@ -449,6 +453,7 @@ def single_factor_test(req: SingleFactorTestRequest):
                     freeze_suspended_price=req.freeze_suspended_price,
                     suspend_remove=req.suspend_remove,
                     price_round=req.price_round,
+                    warmup_days=req.warmup_days,
                 )
                 with lock:
                     for h, rows in (res or {}).items():

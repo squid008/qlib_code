@@ -169,6 +169,9 @@ export default function SingleFactorTestPanel({
   const [suspendRemove, setSuspendRemove] = useState(true)
   // 价格整分：真实价按分取整参与因子计算（仅不复权生效，默认开；与益盟/聚宽整分口径对齐）
   const [priceRound, setPriceRound] = useState(true)
+  // 预热缓冲（交易日，v1.18.6）：特征加载多前移 N 个交易日，长回看/动态窗口公式
+  // （DYN_*/BARSCOUNT/HHVBARS+Ref 嵌套）在区间首日即有收敛值；0=关闭（旧口径）
+  const [warmupDaysText, setWarmupDaysText] = useState('250')
 
   // 三个因子来源
   const [groups, setGroups] = useState<SourceGroup[]>([
@@ -386,6 +389,10 @@ export default function SingleFactorTestPanel({
       setError('请填写预测周期，如 2 或 1,2,5 或 1:5:20')
       return
     }
+    // 预热缓冲（交易日）：空=后端默认（250）；非数字按默认处理，负数取 0，小数取整
+    const warmupNum = Math.floor(Number(warmupDaysText))
+    const warmup_days =
+      warmupDaysText.trim() === '' || !Number.isFinite(warmupNum) ? undefined : Math.max(0, warmupNum)
     setRunning(true)
     setCancelling(false)
     setError('')
@@ -409,6 +416,7 @@ export default function SingleFactorTestPanel({
         suspend_remove: suspendRemove,
         price_round: priceRound,
         price_adjust: priceAdjust,
+        warmup_days,
       })
       const task_id = resp?.task_id
       if (!task_id) {
@@ -735,6 +743,24 @@ export default function SingleFactorTestPanel({
             onChange={(e) => setPriceRound(e.target.checked)}
           />
           <span>价格整分</span>
+        </label>
+      </div>
+
+      {/* 预热缓冲（v1.18.6）：长回看/动态窗口公式在评估区间首日的收敛保障 */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-3">
+        <label
+          className="flex items-center gap-1"
+          title="特征加载时多前移 N 个交易日（预热缓冲），使 DYN_*/BARSCOUNT/HHVBARS+Ref 嵌套等『扩展天数无法静态推断』的长回看/动态窗口公式在区间首日即有收敛后的因子值。0=关闭（回到旧口径，与 qlib D.features 冷启动逐位对齐）；留空=后端默认 250 交易日（≈1年）。固定窗口公式（MA/REF 等）结果不受影响，出口仍只按评估区间统计。代价：加载耗时/内存随 N 近似线性增加"
+        >
+          <span className="text-slate-500">预热缓冲：</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            className="border rounded px-2 py-0.5 w-16 text-center"
+            value={warmupDaysText}
+            onChange={(e) => setWarmupDaysText(e.target.value)}
+          />
+          <span className="text-slate-500">交易日（0=关闭，留空=默认250）</span>
         </label>
       </div>
 

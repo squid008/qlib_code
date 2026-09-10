@@ -327,12 +327,19 @@ def _dyn_best_idx(ai: np.ndarray, bi: np.ndarray, vals: np.ndarray, is_max: bool
     b_ok = bi >= 0
     av = np.where(a_ok, vals[np.maximum(ai, 0)], np.nan)
     bv = np.where(b_ok, vals[np.maximum(bi, 0)], np.nan)
+    # [v1.18.5 修复] 原文写的是 `better = (av > bv)`（语义="a 更优"），却直接放进
+    # `b_wins` 当作"b 胜"使用 → is_max/is_min 整体反转：DYN_HHVBARS 实际取到窗口
+    # 最小值位置、DYN_LLVBARS 取到最大值位置。
+    # 引入版本：v1.17.7 (e6a3cb5) 把 `dyn_bars_vec` 从"逐位 while 扫描"重写为稀疏表时
+    # 写反；v1.17.3~v1.17.6 的旧实现先 `_dyn_rmq_vec(..., np.fmax if is_max else np.fmin)`
+    # 求窗口极值再回找最右位置，语义正确。注意 tie/无效 两个分支原本就是对的，只有
+    # "两候选都有效且值不等"这一支反向。
     if is_max:
-        better = (av > bv) | (np.isnan(bv) & ~np.isnan(av))
+        b_better = (bv > av) | (np.isnan(av) & ~np.isnan(bv))
     else:
-        better = (av < bv) | (np.isnan(bv) & ~np.isnan(av))
+        b_better = (bv < av) | (np.isnan(av) & ~np.isnan(bv))
     tie = av == bv
-    b_wins = b_ok & ((~a_ok) | better | (tie & (bi > ai)))
+    b_wins = b_ok & ((~a_ok) | b_better | (tie & (bi > ai)))
     return np.where(b_wins, bi, ai)
 
 

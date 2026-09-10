@@ -203,6 +203,10 @@ export interface SingleFactorTestRequest {
   suspend_remove?: boolean // 信号停牌行语义：true=SR删行(益盟/回测一致，默认)；false=NaN占位(聚宽口径)
   price_round?: boolean // 真实价按分取整参与因子计算（仅不复权生效，默认开；与益盟/聚宽整分口径对齐）
   price_adjust?: string // 复权方式：none/forward/backward（缺省=不复权）
+  // 特征加载额外预热缓冲（交易日，v1.18.6）：缺省=后端按 250 交易日（≈1年）预热；
+  // 0=关闭。用于长回看/动态窗口公式（DYN_*/BARSCOUNT/HHVBARS+Ref 嵌套）在区间首日
+  // 即有收敛值；出口仍裁剪回评估区间，固定窗口公式结果不变
+  warmup_days?: number
 }
 export interface FactorTestGroupStats {
   count: number

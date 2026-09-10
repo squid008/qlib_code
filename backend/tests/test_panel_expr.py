@@ -157,6 +157,57 @@ def test_panel_matches_qlib_cwh():
 
 
 @pytest.mark.datareq
+def test_panel_warmup_days():
+    """预热缓冲（warmup_days，v1.18.6）语义回归：
+
+    1) 出口裁剪：无论 warmup_days 多大，输出行集恒为 [start_time, end_time]（索引一致）；
+    2) 固定窗口算子无副作用：MA5 在两种 warmup 下逐位相同（多读历史不影响 bounded 窗口）；
+    3) 状态类算子（BARSCOUNT）随 warmup 前移起点 → 区间首日值显著变大（预热确实生效）。
+    """
+    from qlib.config import C
+    from qlib.data import D
+
+    from app.engine.qlib_engine import _ensure_qlib_init
+    from app.engine.utils import _default_qlib_uri
+    from app.factors.panel_expr import panel_features
+
+    _ensure_qlib_init(_default_qlib_uri())
+    C["joblib_backend"] = "loky"
+    C["kernels"] = 8
+
+    insts = [str(i).upper()
+             for i in D.list_instruments(D.instruments("csi300"), start_time="2024-12-01", as_list=True)][:50]
+    assert insts, "股票池为空"
+    START, END = "2025-01-01", "2025-06-30"
+    fields = [("Mean($close,5)", "MA5"), ("BARSCOUNT($close)", "BC")]
+
+    p0 = panel_features(insts, fields, START, END, warmup_days=0)
+    p1 = panel_features(insts, fields, START, END, warmup_days=250)
+
+    # 1) 出口裁剪：行集恒为评估区间的交易日轴（与 warmup 无关，无预热行泄漏）
+    cal = pd.to_datetime(D.calendar(start_time=START, end_time=END))
+    assert len(cal) > 0
+    for p in (p0, p1):
+        dt = p.index.get_level_values("datetime").unique()
+        assert dt.min() >= pd.Timestamp(START) and dt.max() <= pd.Timestamp(END), (dt.min(), dt.max())
+        assert list(dt.sort_values()) == list(cal), "输出日期轴应恰为评估区间交易日"
+    assert p0.index.equals(p1.index), (len(p0), len(p1))
+
+    # 2) 固定窗口算子：逐位相同（多读 250 天历史对 MA5 无影响）
+    a = p0["MA5"].to_numpy(dtype=np.float64)
+    b = p1["MA5"].to_numpy(dtype=np.float64)
+    both = ~(np.isnan(a) | np.isnan(b))
+    assert np.array_equal(a[both], b[both], equal_nan=True), "MA5 在 warmup 下不应变化"
+    assert both.any(), "MA5 全为 NaN，样本无效"
+
+    # 3) 状态类算子：起点前移后首日值变大（BARSCOUNT 从更早起点起算）
+    bc0 = float(p0["BC"].groupby(level="datetime").mean().iloc[0])
+    bc1 = float(p1["BC"].groupby(level="datetime").mean().iloc[0])
+    assert bc0 < bc1, f"预热未生效：BC 首日均值 {bc0} vs {bc1}"
+    assert bc1 >= 200, f"预热 250 天后 BC 首日均值应约 250，实际 {bc1}"
+
+
+@pytest.mark.datareq
 def test_panel_matches_qlib_sr_continuous():
     """SR 包裹的连续因子（面板预热 + SR active 压缩语义）panel vs qlib 逐位对齐。
 

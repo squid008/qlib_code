@@ -450,13 +450,16 @@ def _test_one(
 
 
 def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
-                        freeze_suspended_price, end_date, cancelled, progress_cb, factors):
+                        freeze_suspended_price, end_date, cancelled, progress_cb, factors,
+                        warmup_days=0):
     """面板级特征加载（panel_expr 求值器，替代 qlib D.features）。
 
     成功返回与 D.features 输出结构一致的 DataFrame（MultiIndex 全历 × all_cols）；
     失败（含 panel 不支持的算子 / 数据异常）返回 None，由调用方回退 qlib。
     进度：面板求值一次性完成，进度回调给 5（解析）→ 30（就绪）；取消在求值期间
     无法中断（面板单批计算），接受此局限（求值远快于 qlib，等待显著缩短）。
+    warmup_days: 额外预热缓冲（交易日，v1.18.6），透传给 panel_features/
+    panel_features_parallel（语义见 panel_expr.panel_features；0=关闭）。
     """
     import os
 
@@ -496,7 +499,8 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
             if progress_cb:
                 progress_cb(None, 6.0, f"计算特征数据（面板 {len(instruments)} 只）...")
             pdf = panel_features(instruments, list(zip(fields, all_cols)),
-                                 start_date, load_end, cancel_cb=_cancel_probe)
+                                 start_date, load_end, cancel_cb=_cancel_probe,
+                                 warmup_days=warmup_days)
         except FactorTestCancelled:
             raise
         except Exception as e:
@@ -524,7 +528,8 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
         pdf = panel_features_parallel(instruments, list(zip(fields, all_cols)),
                                       start_date, load_end, n_jobs=n_jobs,
                                       progress_cb=lambda p, m: progress_cb(None, p, m) if progress_cb else None,
-                                      cancel_cb=_cancel_probe)
+                                      cancel_cb=_cancel_probe,
+                                      warmup_days=warmup_days)
         if pdf is None or len(pdf) == 0:
             return None
         pdf = pdf.copy()
@@ -559,6 +564,7 @@ def run_single_factor_tests(
     exclude_stock_gem: bool = False,
     exclude_stock_kcb: bool = False,
     price_round: bool = True,
+    warmup_days: Optional[int] = None,
 ) -> Dict[int, list]:
     """多预测周期单因子测试：所有周期【共享一次特征加载】，再逐周期分别统计。
 
@@ -574,6 +580,12 @@ def run_single_factor_tests(
       - h=None：整体阶段（解析股票池/共享特征加载），p 为整体 0-100，供整体进度条直接使用；
       - h=int：该预测周期统计阶段内部 0-100。
     返回 {label_horizon: [因子结果]}。
+
+    warmup_days（v1.18.6）：特征加载的额外预热缓冲（交易日）。None（默认）取环境变量
+    QLIB_SFT_WARMUP_DAYS（默认 250，≈1 年）；0 = 关闭（回到 v1.18.5 口径，与 qlib
+    D.features 冷启动逐位对齐）。>0 时面板多前移 warmup_days 天起算、qlib 回退路径亦
+    从该点起加载并在出口裁回 [start_date, ...]，使"扩展天数无法静态推断"的长回看/
+    动态窗口公式（DYN_*/BARSCOUNT/HHVBARS+Ref 嵌套）在区间首日即有收敛后的因子值。
     """
     horizons = sorted({max(1, int(h or 2)) for h in (label_horizons or [])})
     if not horizons or not factors:
@@ -599,6 +611,30 @@ def run_single_factor_tests(
             load_end = str(cal_ts[min(pos + n_max + 3, len(cal_ts) - 1)].date())
         except Exception:
             load_end = end_date
+
+    # 预热缓冲（v1.18.6）：多前移 warmup_days 个交易日加载，仅供状态类/动态窗口算子
+    # 收敛（启动值），出口仍裁剪回 [start_date, ...]，不改变评估区间。
+    # 动机（2026-09-10 CCCMA250 不复权对账定位）：DYN_*/BARSCOUNT/HHVBARS+Ref 嵌套的
+    # 真实扩展天数无法从表达式静态推断（_tree_ext_days 只能算固定窗口），面板原先只
+    # 前移"可推断量" → 区间首日因子 NaN/未收敛（实测 002414 2021-01-04 因子 NaN，
+    # start 提前到 2019-07-01 后 = 1，同池触发 627→628）。默认取
+    # QLIB_SFT_WARMUP_DAYS（默认 250 交易日 ≈ 1 年）；传 0 关闭（回到 v1.18.5 口径）。
+    import os as _os
+    if warmup_days is None:
+        try:
+            warmup_days = int(_os.environ.get("QLIB_SFT_WARMUP_DAYS", "250"))
+        except Exception:
+            warmup_days = 250
+    warmup_days = max(0, int(warmup_days or 0))
+    load_start = start_date
+    if warmup_days > 0:
+        try:
+            from qlib.data import D as _D
+            _cal_ts = pd.to_datetime(_D.calendar())
+            _pos = int((_cal_ts < pd.Timestamp(start_date)).sum())
+            load_start = str(_cal_ts[max(0, _pos - warmup_days)].date())
+        except Exception:
+            load_start = start_date
 
     # 因子去重编号
     ordered_exprs: List[str] = []
@@ -657,6 +693,7 @@ def run_single_factor_tests(
         instruments, fields, all_cols, start_date, load_end,
         freeze_suspended_price=freeze_suspended_price, end_date=end_date,
         cancelled=cancelled, progress_cb=progress_cb, factors=factors,
+        warmup_days=warmup_days,
     )
     if df is None:
         # 面板加载失败（不支持的算子/数据异常）→ 回退 qlib D.features
@@ -671,7 +708,7 @@ def run_single_factor_tests(
                     done = min(k + batch_size, len(fields))
                     progress_cb(None, 5 + 25 * (done / len(fields)), f"加载特征数据 {done}/{len(fields)}...")
                 part = D.features(instruments, list(fields[k:k + batch_size]),
-                                  start_time=start_date, end_time=load_end)
+                                  start_time=load_start, end_time=load_end)
                 frames.append(part)
         except FactorTestCancelled:
             raise
@@ -687,6 +724,19 @@ def run_single_factor_tests(
         raw = frames[0] if len(frames) == 1 else pd.concat(frames, axis=1)
         df = raw.copy()
         df.columns = all_cols
+        # 预热缓冲（v1.18.6）：qlib 回退路径从 load_start 起加载 → 此处出口裁剪回评估区间
+        # [start_date, ...]。面板路径出口已裁剪，本步对两条路径幂等生效，保证预热行绝不
+        # 进入统计（失败必须报错而非静默保留未裁剪面板，否则样本数会被污染）。
+        try:
+            _dt_lv0 = df.index.names.index("datetime")
+            df = df[df.index.get_level_values(_dt_lv0) >= pd.Timestamp(start_date)]
+        except Exception as e:
+            _dump_sft_error(e)
+            err = [{**_test_one(pd.DataFrame(), f, ""), "error": f"预热区间裁剪失败: {e}"} for f in factors]
+            return {h: err for h in horizons}
+        if len(df) == 0:
+            err = [{**_test_one(pd.DataFrame(), f, ""), "error": "预热裁剪后无样本"} for f in factors]
+            return {h: err for h in horizons}
 
     # 冻结价 label 兜底：CLOSE ffill 一次，各周期按各自 h 做 shift 修正 label 列
     if freeze_suspended_price:

@@ -1321,7 +1321,8 @@ def _shift_calendar_start(start_time: str, days: int) -> str:
 
 
 def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]],
-                   start_time: str, end_time: str, cancel_cb=None) -> pd.DataFrame:
+                   start_time: str, end_time: str, cancel_cb=None,
+                   warmup_days: int = 0) -> pd.DataFrame:
     """替代 D.features：一次面板求值 (expr, name) 列表 → MultiIndex × 列 DataFrame。
 
     与 D.features 输出对齐：行 = 各股在【全部参与字段覆盖并集】∩[start,end] 上的
@@ -1331,9 +1332,17 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
     cancel_cb: 可选取消检查回调（主线程每求值一个表达式前调用一次）。约定：应取消时
     回调直接抛出异常中止求值（默认 None 不检查）。注意粒度 = 表达式级，单条巨型表达式
     内部仍不可中断。
+    warmup_days: 额外预热缓冲（交易日，v1.18.6）。>0 时在【各字段自身可推断的扩展量】
+    之外再多前移 warmup_days 天起算（普通组 warm+wu、起点敏感组 ext+wu），使
+    DYN_*/BARSCOUNT/HHVBARS+Ref 嵌套等"扩展天数无法静态推断"的状态类/动态窗口算子
+    在 start_time 当天就有收敛后的值。固定窗口算子（Mean/Max/Ref…）多读无副作用
+    （结果与 warmup_days=0 逐位相同）；EMA/状态类算子的序列起点会提前（值更接近
+    长历史真值，但不再复刻 qlib 在 start_time 的冷启动）→ 默认 0，由单因子诊断按需开启。
+    输出仍只覆盖 [start_time, end_time]（预热段在出口裁剪，行集不受影响）。
     """
     union_fields = _collect_field_names(fields)
     warm = _warm_days([e for e, _ in fields])
+    _wu = max(0, int(warmup_days or 0))  # 额外预热缓冲（交易日）
     # 分组求值：qlib 逐字段按各自 get_extended_window_size 精确前移历史起点——
     # EMA/EMA_TDX 是序列起点敏感的指数递归，qlib 只前移 N-1 天冷启动，读多了反而不
     # 对齐（实测 EMA(5) 前移 4 天才与 qlib 全对、前移 25/56 天都偏）；固定窗口算子
@@ -1374,9 +1383,9 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
 
     cols = {}
     last_ev = None
-    # 普通组：统一 read_start（保持原语义，含 SR/固定窗口）
+    # 普通组：统一 read_start（保持原语义，含 SR/固定窗口）+ 额外预热缓冲 wu
     if normal_fields:
-        rs = _shift_calendar_start(start_time, warm)
+        rs = _shift_calendar_start(start_time, warm + _wu)
         ev = PanelEvaluator(instruments, start_time, end_time, union_fields,
                             read_start=rs)
         last_ev = ev
@@ -1385,8 +1394,9 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
                 cancel_cb()  # 取消检查点：表达式级（单条巨型表达式内不可中断）
             cols[name] = ev.eval_expr(e)
     # 敏感组：每桶按各自精确扩展量建独立 evaluator（桶共享 read_start/读盘缓存）
+    # 同样叠加额外预热缓冲 wu（EMA 等在更早起点收敛，见 warmup_days 说明）
     for ext, items in sensitive_fields.items():
-        rs = _shift_calendar_start(start_time, ext)
+        rs = _shift_calendar_start(start_time, ext + _wu)
         ev = PanelEvaluator(instruments, start_time, end_time, union_fields,
                             read_start=rs)
         last_ev = ev
@@ -1456,9 +1466,16 @@ def _worker_init(calendar, feature_dir, bin_cache_mb=None, node_cache_mb=None):
 
 
 def _panel_features_chunk(payload):
-    """子进程执行体：对一份股票子集跑 panel_features。payload: (insts, fields, start, end)。"""
-    insts, fields, start, end = payload
-    return panel_features(insts, fields, start, end)
+    """子进程执行体：对一份股票子集跑 panel_features。
+
+    payload: (insts, fields, start, end, warmup_days)；兼容旧 4 元组（warmup=0）。
+    """
+    if len(payload) >= 5:
+        insts, fields, start, end, wu = payload[:5]
+    else:
+        insts, fields, start, end = payload
+        wu = 0
+    return panel_features(insts, fields, start, end, warmup_days=wu)
 
 
 @contextlib.contextmanager
@@ -1530,7 +1547,8 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
                             n_jobs: Optional[int] = None,
                             progress_cb=None,
                             progress_lo: float = 6.0, progress_hi: float = 30.0,
-                            cancel_cb=None) -> pd.DataFrame:
+                            cancel_cb=None,
+                            warmup_days: int = 0) -> pd.DataFrame:
     """并行面板求值（替代 panel_features 用于大池）。
 
     panel_features 的计算对每只股票独立（rolling/shift 按 instrument 分组、字段各读各的
@@ -1548,6 +1566,8 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     cancel_cb: 可选取消检查回调（主进程每收一块前调用一次）。约定：应取消时回调直接
     抛异常中止收集；已提交给进程池的块无法中途终止，但剩余未收结果不再等待
     （最坏多等一块运行时间）。worker 内 panel_features 不传（无法感知主进程标志）。
+    warmup_days: 额外预热缓冲（交易日），随切块 payload 透传给每个 worker 的
+    panel_features（语义见 panel_features.warmup_days；默认 0 = 关闭）。
 
     缓存档位（v1.18.3）：节点缓存上限按可用内存自适应两档（_auto_node_cache_mb，
     宽裕 1024MB / 否则 512MB，QLIB_SFT_PANEL_NODE_CACHE_MB 显式覆盖）；读盘缓存按
@@ -1582,7 +1602,8 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     set_node_cache_mb(node_cache_mb)
     if n_jobs == 1 or n <= 1000:
         # 小池/单块：直接单进程（避免进程池固定开销）；同样支持取消检查点
-        return panel_features(instruments, fields, start_time, end_time, cancel_cb=cancel_cb)
+        return panel_features(instruments, fields, start_time, end_time, cancel_cb=cancel_cb,
+                              warmup_days=warmup_days)
 
     cal = _calendar()
     fdir = _feature_dir()
@@ -1591,7 +1612,8 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     chunk_size = math.ceil(n / n_jobs)
     chunks = [instruments[i:i + chunk_size] for i in range(0, n, chunk_size)]
     n_chunk = len(chunks)
-    payloads = [(c, fields, start_time, end_time) for c in chunks]
+    _wu = max(0, int(warmup_days or 0))
+    payloads = [(c, fields, start_time, end_time, _wu) for c in chunks]
 
     # 每 worker bin 读盘缓存预算（v1.18.1 加固）：显式 QLIB_PANEL_BIN_CACHE_MB 优先；
     # 否则按可用内存均分（全部 worker 盘缓存合计 ≈ 可用内存 40%），避免
