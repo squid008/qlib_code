@@ -1210,27 +1210,78 @@ def _build_rightmost_arg_sparse(vals, is_max):
 
 
 def _rightmost_bars_seg(vals, seg_start, nvals, is_max) -> np.ndarray:
-    """固定窗口 HHVBARS/LLVBARS 段感知：i - (段内窗口最右极值下标)。"""
+    """固定窗口 HHVBARS/LLVBARS 段感知：i - (段内窗口最右极值下标)。
+
+    性能（v1.18.22）：原实现用**完整稀疏表**做 RMQ（`_build_rightmost_arg_sparse`，
+    O(n·log n) 内存+时间）再逐层查询（log n 层 × 每层全表掩码扫描 + 花式索引），
+    实测 28 万行 ≈ 140ms/次；而 HHVBARS/LLVBARS 的窗口 N 是**完全固定的**，
+    根本不需要 RMQ。现改为两段式：
+      · 满窗口（段内偏移 r >= N-1）：**分块** `sliding_window_view` + **反转 argmax**
+        取"最右"极值（等价于原 `_rightmost_arg_best` 的"同值取更右"），纯 O(n) 向量化；
+        分块是为了避免 (n × N) 的窗口视图造成内存爆炸。
+      · 不满窗口（每段前 N-1 个，数量极少）：段内前缀累积（`fmax/fmin.accumulate`
+        + 下标 `maximum.accumulate`）取"到 r 为止的最右极值"。
+    NaN 语义与原实现逐位一致：NaN 位不参与比较；窗口内全 NaN 或 vals[i] 为 NaN → 输出 NaN。
+    """
     n = len(vals)
     if n == 0:
         return np.zeros(0, dtype=float)
     N = max(1, int(nvals))
-    st = _build_rightmost_arg_sparse(vals, is_max)
     idx = np.arange(n)
-    lens = np.minimum(N, idx - seg_start + 1)
-    js = np.floor(np.log2(lens)).astype(np.int64)
-    l_arr = idx - lens + 1
-    out = np.full(n, -1, dtype=np.int64)
-    for k, layer in enumerate(st):
-        sel = js == k
-        if not sel.any():
-            continue
-        span = 1 << k
-        lk = l_arr[sel]
-        rk = idx[sel]
-        out[sel] = _rightmost_arg_best(layer[lk], layer[rk - span + 1], vals, is_max)
-    ok = (out >= 0) & ~np.isnan(vals)
-    return np.where(ok, (idx - out).astype(float), np.nan)
+    r = idx - seg_start                      # 段内偏移（段起点为 0）
+    best = np.full(n, -1, dtype=np.int64)    # 段内窗口"最右极值"的全局下标；-1=无效
+
+    if N == 1:
+        # 窗口退化为单点：极值即自身
+        best[:] = np.where(np.isnan(vals), -1, idx)
+    else:
+        v = np.where(np.isnan(vals), -np.inf if is_max else np.inf, vals)
+        full = r >= (N - 1)                  # 满窗口：窗口 = [i-N+1, i]，完全落在段内
+        if full.any():
+            # 分块滑窗（块大小取 1<<16，控制 (block × N) 视图规模）
+            BLK = 1 << 16
+            fi = np.flatnonzero(full)
+            swv = np.lib.stride_tricks.sliding_window_view
+            for s in range(0, fi.size, BLK):
+                seg_idx = fi[s:s + BLK]
+                a = int(seg_idx[0]) - (N - 1)
+                b = int(seg_idx[-1]) + 1
+                win = swv(v[a:b], N)                          # (b-a-N+1, N)
+                rev = win[:, ::-1]                            # 反转后 argmax 即"最右"
+                pos_in_win = (N - 1) - (
+                    rev.argmax(axis=1) if is_max else rev.argmin(axis=1))
+                # win 的第 k 行覆盖全局 [a+k, a+k+N-1]，故位置 i 对应 k = i-a-N+1
+                k = seg_idx - (a + N - 1)
+                # 全局下标 = (i-N+1) + pos_in_win  ← win 起始 a+k = i-N+1
+                best[seg_idx] = seg_idx - (N - 1) + pos_in_win[k]
+                # 窗口内全 NaN → 无有效极值
+                has = np.isfinite(win).any(axis=1)
+                best[seg_idx] = np.where(has[k], best[seg_idx], -1)
+
+        # 不满窗口（每段前 N-1 个）：段内前缀"到 r 为止的最右极值"
+        need = np.flatnonzero(~full)
+        if need.size:
+            # 段边界（need 的段起点即其所在段的首行）
+            starts = np.flatnonzero(np.r_[True, seg_start[1:] != seg_start[:-1]])
+            ends = np.r_[starts[1:], n]
+            for a, b in zip(starts, ends):
+                m = int(min(N - 1, b - a))
+                if m <= 0:
+                    continue
+                vv = v[a:a + m]
+                ar = np.arange(m)
+                if is_max:
+                    cm = np.fmax.accumulate(vv)
+                    eq = vv == cm
+                else:
+                    cm = np.fmin.accumulate(vv)
+                    eq = vv == cm
+                eq &= ~np.isnan(cm)
+                acc = np.maximum.accumulate(np.where(eq, ar, -1))
+                best[a:a + m] = np.where(acc >= 0, a + acc, -1)
+
+    ok = (best >= 0) & ~np.isnan(vals)
+    return np.where(ok, (idx - best).astype(float), np.nan)
 
 
 def hhvbars_seg(vals, nvals, seg_start, seg_end) -> np.ndarray:

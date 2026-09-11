@@ -3,6 +3,29 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.22] - 2026-09-11
+
+### Performance
+- **重写固定窗口 HHVBARS/LLVBARS 段感知内核 `_rightmost_bars_seg`，大公式端到端提速 8.7%**（`factors/ops_ext.py`）：
+  - **背景**：先用端到端剖面 + `_by_group` 内部逐项拆解 + **逐内核消融**三级定位，实测（CUP_POOL / 300 只 / 2021-2023）只有 4 个动态内核被调用，其中 **`hhvbars_seg` 18.3% + `llvbars_seg` 9.2% = 27.5%** 是最大单项（~140ms/次）。
+  - **根因**：原实现用**完整稀疏表**做 RMQ（`_build_rightmost_arg_sparse`，O(n·log n) 内存+时间），再用 `for k, layer in enumerate(st)` **逐层查询**（log n 层 × 每层全表掩码扫描 + 两次花式索引 + `_rightmost_arg_best` 逐元素比较）→ 28 万行 × ~18 层 ≈ 500 万+ 元素的多趟操作。**但 HHVBARS/LLVBARS 的窗口 N 是完全固定的，根本不需要 RMQ。**
+  - **改法**：两段式纯向量化实现（O(n)）——
+    - **满窗口**（段内偏移 `r >= N-1`，占绝大多数）：**分块** `np.lib.stride_tricks.sliding_window_view` + **反转 argmax/argmin**（`N-1-rev.argmax(axis=1)` 即"最右"极值）。分块（`BLK = 1<<16`）是为避免 `(n × N)` 窗口视图内存爆炸。
+    - **不满窗口**（每段前 N-1 个，数量极少）：段内前缀累积（`fmax/fmin.accumulate` 求前缀极值 + 下标 `maximum.accumulate` 求"最右"）。
+  - **语义严格保持**：窗口 `[max(seg_start, i-N+1), i]` 不跨段；**等值取最右**（对齐原 `_rightmost_arg_best` 的 `tie → bi > ai`）；`vals[i]` 为 NaN 或窗口内全 NaN → 输出 NaN。
+  - **⚠ 定位过程中的一次重要纠错**：上一轮曾把 `pd.Series(out, index=idx)`（重建 28 万行 Series）指认为"43.6s 的元凶"——**实测仅 0.153ms/次、占内部 0.6%**。错因是端到端插桩的 `OPS_EXT_FNS` **只列了 `*_vec`（逐段回退路径）、漏了 `*_seg`（段感知路径）**，导致"内核 0.020s"是漏抓、`_panel_dyn − 0.020s` 被误读为"Python 调度"（实际就是 `*_seg` 内核）。**教训：粗粒度相减会严重误导，必须逐项拆解 / 消融定位。**
+  - **收益实测**（同一基准，base 9.16s → 8.36s）：
+    - 端到端 **−0.80s（−8.7%）**；`hhvbars_seg` 1.68s→**0.97s（−42%）**、`llvbars_seg` 0.84s→**0.64s（−24%）**，两者合计 2.52s→**1.61s（−36%）**。
+    - 两个探针互相印证（端到端 −0.80s ≈ 内核 −0.91s）；剩余 19.3% 为分块滑窗必需的 O(n) 计算量。
+
+### Notes
+- **数值正确性双重验证（全部通过）**：
+  - **单元对拍**（新增 `ai_test/test_rightmost_bars_seg.py`，从 `git show HEAD:` 取旧实现对比新版）：**202 用例、0 失败**，覆盖段长 1/2/小于N/大于N/远大于N、N=1/N=段长/N>段长、段数 1~40、NaN 占比 0~100%（含窗口内全 NaN）、**大量等值**（专测"同值取最右"）、全常量/全 NaN/严格递增递减、以及**真实规模 300 段 × 700 行 × N=9/60/250**。
+  - **端到端面板快照**（`ai_test/snapshot_panel.py --tag after --compare before`）：**8 列全部 `exact=True`（maxabs=0、nan_mismatch=0）**。
+- **新增/用到的一次性分析脚本**（均在 `ai_test/`，本地专用）：`profile_sft_e2e.py`（端到端阶段+桶级剖面）、`profile_bygroup_deep.py`（`_by_group` 内部逐项，含复刻一致性校验）、`ablate_seg_kernels.py`（逐内核消融）、`test_rightmost_bars_seg.py`（单元对拍）。
+- **后续优化目标已登记在 `md/开发记录.md`「性能优化遗留项」**：T2 `rest`（非 `_by_group` 部分，占端到端 53.8%，最大单块）｜T3 `_dyn_rmq_vec_seg`（7.7%，动态窗口 → 分块 RMQ）｜T4 `seg_start/end_arr` 缓存（3.7%）｜T5 `_ref`/`_roll`（~9%，语义细节多、慎动）。**明确不做**：`dyn_ref_vec_seg`（已近最优）、`Series(ctor)`/`to_numpy`（0.6%/0.1%）、读盘 bin→h5（3.2%，常数项）、以及"`(arr, idx)` 贯通改 `eval` 契约"（= 重写引擎）。
+- 版本 1.18.21 → 1.18.22。
+
 ## [1.18.21] - 2026-09-11
 
 ### Changed
