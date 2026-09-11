@@ -3,6 +3,34 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.28] - 2026-09-11
+
+### Performance
+- **T2 第 2 项：DYN_REF 段感知内核提速 2.0×，大公式端到端 −6.0%**（`factors/ops_ext.py`，**数值零变化**）：
+  - **背景**：v1.18.27 拿下 HHVBARS/LLVBARS 后，`DYN_REF` 成为**新的最大单项**（126 次 × 9.9ms ≈ 12.8%）。内核只是「回退 N_i 个位置再取值」，理论上是几次轻量 pass，但 ≈20 ns/行明显偏离纯带宽下限。
+  - **微基准逐项排查**（新增 `ai_test/bench_dynref.py`，n=354794）：
+
+    | 变体 | 随机 N | 恒定 N |
+    |---|---|---|
+    | `cur` 现状（v1.18.27） | 7.42ms | 7.23ms |
+    | 去冗余 `np.trunc` | 6.87 | 5.91 |
+    | + 去**布尔掩码三连**、改 `np.take(mode="clip")` + 一次 `np.where` | 6.15 | 5.45 |
+    | + **线程局部 scratch** + 缓存 `arange(n)` | **4.05** | **3.34** |
+
+  - **三处等价改动**：① `np.trunc(nvals).astype(np.int64)` 中的 trunc 是**冗余**的（float→int64 转换本身就向零截断），原先要两遍全表扫描；② 去掉**布尔掩码三连** —— `j[ok]` 压缩、`vals[j[ok]]` 非连续 gather、`out[ok]=` 掩码写回，每处都要一次全表 `nonzero`；改为全量 `np.take(mode="clip")`（越界先 clip 保安全，随后掩码置 NaN）+ 一次 `np.where`；③ **复用线程局部 scratch 缓冲 + 缓存 `arange(n)`**，消除每趟多 MB 临时数组的 malloc/free（微基准显示这一项独占一半以上收益）。
+  - ⚠ **为什么 scratch 必须线程局部**：单因子测试 / 事件研究各跑在一个**后台线程**里，股票池小于 `QLIB_SFT_PANEL_MAX`（默认 1000）时是**进程内**求值 → 两个任务并发会共用模块级缓冲而**串数据**；大池走 `ProcessPoolExecutor`、各 worker 进程独立。故用 `threading.local()`。
+  - **实测**（新增 `ai_test/bench_dynref_ab.py`：同进程交替 A/B，主判据 = 内核累计耗时，126 次/轮）：
+    - **`dyn_ref_vec_seg` 内核**：**1.190s → 0.613s（−48.5%）**（单次 9.44ms → 4.87ms；样本 旧 1.232/1.190/1.196、新 0.641/0.626/0.613）
+    - **整次 panel 墙钟**：**9.62s → 9.04s（−0.58s，−6.0%）**（样本区间不重叠；内核差 0.577s ≈ 面板差 0.58s，互相印证）
+  - **验证（三重）**：① 新增 `ai_test/test_dyn_ref_seg.py` **400 用例 0 失败**（**三方**对拍：新实现 vs 朴素逐位置参考 vs 旧实现；覆盖段长 1/2/长短悬殊、NaN 率 0/10/50/100%、N 为 0/1/常量/随机/负/1e18/全 NaN/跨段，共 10 段长组合 × 4 NaN 率 × 10 N 型）；② `backend/tests/test_ops_ext_vec.py` **26 passed**；③ `snapshot_panel.py --tag dynref --compare powbase` → **18 列全部 `exact=True`**（快照 wall 36.09s → **29.10s**）。
+  - 说明：单独建对拍网是因为既有单测只覆盖**非段感知**的 `dyn_ref_vec`（`DYN_REF._load_internal` 走它），段感知路径此前只有面板快照覆盖，对本次改写的粒度太粗。
+- 版本 1.18.27 → 1.18.28。
+
+### Notes
+- 本次只动 `ops_ext.dyn_ref_vec_seg`，并新增线程局部 scratch 工具（`_dyn_scratch` / `_dyn_arange`，供后续 DYN 内核复用）；`dyn_ref_vec`（非段路径）未动。
+- 返回值始终是 `np.where` 产出的新数组，scratch 不会泄露给调用方。
+- 同日快照 wall 轨迹：**36.09s**（v1.18.24 基线）→ 35.25（pow）→ 39.81/34.91（T3，噪声大）→ 30.89（bars）→ **29.10s**（本版），累计 **−19.4%**。
+
 ## [1.18.27] - 2026-09-11
 
 ### Performance

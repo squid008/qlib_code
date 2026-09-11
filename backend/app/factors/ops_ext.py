@@ -26,6 +26,8 @@
 """
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 import pandas as pd
 from qlib.data.base import Expression, ExpressionOps
@@ -1074,15 +1076,71 @@ def filter_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
     return out
 
 
+# ---------------- DYN_* 内核的线程局部 scratch（v1.18.28） ----------------
+# 为什么必须**线程局部**：单因子测试 / 事件研究各跑在一个后台线程里，股票池小于
+# `QLIB_SFT_PANEL_MAX`（默认 1000）时是**进程内**求值 → 两个任务并发会共用模块级缓冲
+# 而串数据。大池走 ProcessPoolExecutor、各 worker 进程独立，不受影响。
+_TLS = threading.local()
+
+
+def _dyn_scratch(key: str, n: int, dtype):
+    """取线程局部 scratch 缓冲（容量不足或 dtype 变化则重建；返回的可能更大缓冲的视图）。"""
+    st = getattr(_TLS, "dyn", None)
+    if st is None:
+        st = _TLS.dyn = {}
+    b = st.get(key)
+    if b is None or b.size < n or b.dtype != dtype:
+        b = np.empty(n, dtype=dtype)
+        st[key] = b
+    return b[:n]
+
+
+def _dyn_arange(n: int) -> np.ndarray:
+    """缓存 `arange(n)`：每次调用重建 n×8 字节数组纯属浪费。只读，天然线程安全。"""
+    st = getattr(_TLS, "ar", None)
+    if st is None:
+        st = _TLS.ar = {}
+    a = st.get(n)
+    if a is None:
+        a = np.arange(n, dtype=np.int64)
+        st[n] = a
+        while len(st) > 4:                      # 兜底：只保留最近几个 n
+            st.pop(next(iter(st)))
+    return a
+
+
 def dyn_ref_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
-    """DYN_REF 段感知：全局下标回退 N_i，越出本段 [seg_start, seg_end) 则 NaN。"""
+    """DYN_REF 段感知：全局下标回退 N_i，越出本段 [seg_start, seg_end) 则 NaN。
+
+    性能（v1.18.28）：DYN_REF 曾是整次求值的**最大单项**（126 次 × 9.9ms ≈ 12.8%）。
+    三处等价改动，n=354794 实测（随机动态 N / 恒定 N）：**7.42→4.05ms / 7.23→3.34ms**：
+      · 去掉冗余 `np.trunc` —— float→int64 转换本身就**向零截断**，原先 trunc 与 astype
+        各扫一遍全表；
+      · 去掉**布尔掩码三连** —— `j[ok]` 压缩、`vals[j[ok]]` 非连续 gather、`out[ok]=`
+        掩码写回，每处都要一次全表 nonzero 扫描；改为全量 `np.take(mode="clip")`
+        （越界先 clip 保安全，随后用掩码置 NaN）+ 一次 `np.where`；
+      · 复用**线程局部** scratch 缓冲 + 缓存 `arange(n)`，消除每趟多 MB 临时数组的
+        malloc/free —— 微基准显示这一项独占了一半以上的收益。
+    返回值始终是新数组（`np.where` 产出），不会把 scratch 泄露给调用方。
+    """
     n = len(vals)
-    nv = np.where(np.isnan(nvals), 0.0, np.trunc(nvals))
-    j = np.arange(n) - nv.astype(np.int64)
-    out = np.full(n, np.nan, dtype=float)
-    ok = (j >= seg_start) & (j < seg_end)
-    out[ok] = vals[j[ok]]
-    return out
+    nvf = _dyn_scratch("ref_nvf", n, np.float64)
+    np.copyto(nvf, nvals)
+    mb = _dyn_scratch("ref_mask", n, bool)
+    np.isnan(nvf, out=mb)
+    np.copyto(nvf, 0.0, where=mb)             # NaN→0（避免整型转换得到未定义值）
+    nvi = _dyn_scratch("ref_nvi", n, np.int64)
+    np.copyto(nvi, nvf, casting="unsafe")     # float→int64 = 向零截断（等价原 trunc+astype）
+    j = _dyn_scratch("ref_j", n, np.int64)
+    np.subtract(_dyn_arange(n), nvi, out=j)
+    g = _dyn_scratch("ref_g", n, np.float64)
+    np.take(vals, j, out=g, mode="clip")
+    bad = _dyn_scratch("ref_bad", n, bool)
+    tb = _dyn_scratch("ref_tmp", n, bool)
+    np.less(j, seg_start, out=bad)
+    np.greater_equal(j, seg_end, out=tb)
+    np.logical_or(bad, tb, out=bad)
+    return np.where(bad, np.nan, g)
 
 
 def _dyn_rmq_vec_seg(vals, nvals, func, seg_start) -> np.ndarray:
