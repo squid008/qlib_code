@@ -335,21 +335,34 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
         rows = full.index.get_indexer(pd.DatetimeIndex(days))
         rows = rows[rows >= 0]
         if rows.size:
-            # 当日触发股标记：只建「配对日 × 标的」小布尔矩阵（原实现是全表 DataFrame flag）
+            # 当日触发股标记：改**稀疏 (行, 列) 对**（v1.18.37）——
+            # 原实现建 (配对日 × 标的) 布尔大矩阵（全 A 1172×5418 = 635 万），且循环内
+            # 每 k 还要 `flag[r_idx]` 复制一次同规模掩码。触发股数量远小于全体样本，
+            # 稀疏后每 k 只改 O(触发数) 个元素；置 NaN 的位置完全相同（数值等价）。
             cols = full.columns.get_indexer(pd.Index(ev_code))
             ev_rows = full.index.get_indexer(pd.DatetimeIndex(ev_dt))
             row_of = {int(r): i for i, r in enumerate(rows)}
-            flag = np.zeros((rows.size, n_col), dtype=bool)
+            _ti: list = []
+            _tc: list = []
             for r, c in zip(ev_rows, cols):
                 i = row_of.get(int(r))
                 if i is not None and c >= 0:
-                    flag[i, c] = True
+                    _ti.append(i)
+                    _tc.append(c)
+            trig_i = np.asarray(_ti, dtype=np.intp)
+            trig_c = np.asarray(_tc, dtype=np.intp)
             entry_rows = rows + 1  # T+1（entry 行）
+            # `entry_rows < n_row` 与 k 无关 → 提到循环外（原来每 k 重算一次布尔与）
+            entry_ok = entry_rows < n_row
+            # T+1（entry 行）取值矩阵一次算好（n_pair × n_inst）；循环内只按有效行取子集，
+            # 省掉每 k 一次 635 万 gather（`F[entry_rows[r_idx]]`）。越界行（数据末尾不足
+            # T+1 的配对日）用第 0 行占位——它们随后被 `entry_ok` 过滤，不参与任何计算。
+            entry_mat = F[np.where(entry_ok, entry_rows, 0)]
             for j, k in enumerate(ks):
                 if (j % 10 == 0) and (cancel_check is not None):
                     cancel_check()
                 tgt = entry_rows + k  # T+1+k
-                ok = (tgt < n_row) & (entry_rows < n_row)
+                ok = entry_ok & (tgt < n_row)
                 if not ok.any():
                     continue
                 # v1.18.35 性能：只对**有效配对日**（该日存在 T+1+k 价）构造子矩阵 ——
@@ -357,28 +370,55 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
                 # 1172×5418 = 635 万），大 k 时绝大多数行整行无效仍参与 nanmean/median。
                 r_idx = np.nonzero(ok)[0]
                 with np.errstate(all="ignore"):
-                    num = F[tgt[r_idx]] / F[entry_rows[r_idx]] - 1.0
-                num[flag[r_idx]] = np.nan  # 剔除当日触发股（保持 NaN）
+                    num = F[tgt[r_idx]] / entry_mat[r_idx] - 1.0
+                # 剔除当日触发股（保持 NaN）：把「配对日行位置」映射到 r_idx 内的下标
+                if trig_i.size:
+                    pos = np.full(rows.size, -1, dtype=np.intp)
+                    pos[r_idx] = np.arange(r_idx.size, dtype=np.intp)
+                    ii = pos[trig_i]
+                    m = ii >= 0
+                    if m.any():
+                        num[ii[m], trig_c[m]] = np.nan
                 # 均值口径：先按日取截面均值，再对配对日平均
-                # （某配对日可能全部为 NaN——如该日所有个股都缺 T+1+k 价：nanmean 会发
-                #  RuntimeWarning「Mean of empty slice」，此处显式抑制，结果仍为 NaN）
+                # （某配对日可能全部为 NaN——如该日所有个股都缺 T+1+k 价：结果仍为 NaN）
                 with np.errstate(all="ignore"), warnings.catch_warnings():
                     warnings.simplefilter("ignore", RuntimeWarning)
-                    daily = np.nanmean(num, axis=1)
-                    if np.isfinite(daily).any():
-                        base_arr[j] = float(np.nanmean(daily))
                     # 中位数口径：配对日 × 未触发股的全部样本汇成一份取中位数
                     # （不能"先算每日横截面中位数、再对日子平均"——与触发组事件级中位数不对称）
-                    vals = num[np.isfinite(num)]
+                    _finite = np.isfinite(num)
+                    vals = num[_finite]
                     if vals.size:
                         base_med_arr[j] = float(np.median(vals))
+                    # v1.18.37 性能：等价 `np.nanmean(num, axis=1)`（NaN 不计入计数、inf 仍
+                    # 参与求和），但用「原地 NaN→0 + sum/count」替代 nanmean 内部的整表
+                    # `_replace_nan`（`np.where(mask, 0, a)` 会额外分配一份 635 万 float64）。
+                    # 注意**不要**用 `np.nan_to_num`：它内部还要 isposinf/isneginf/isnan 各扫
+                    # 一遍（实测 1.67s，比 `_replace_nan` 的 1.16s 还贵）；`np.copyto(where=)`
+                    # 复用已算好的掩码，一遍原地写入。
+                    _isnan = np.isnan(num)
+                    cnt = n_col - _isnan.sum(axis=1)
+                    if _isnan.any():
+                        np.copyto(num, 0.0, where=_isnan)
+                    daily = np.full(cnt.size, np.nan, dtype=float)
+                    nz = cnt > 0
+                    if nz.any():
+                        daily[nz] = num.sum(axis=1)[nz] / cnt[nz]
+                    if np.isfinite(daily).any():
+                        base_arr[j] = float(np.nanmean(daily))
     trig_arr = np.asarray([float(trig_pair.get(k, np.nan)) for k in ks], dtype=float)
 
     # 触发组「事件级中位数」：全部触发事件在 k 期收益的中位数（与 curve[].median 同口径）
+    # v1.18.37 性能：逐列 `np.median(~isnan)` 替代 `np.nanmedian(axis=0)` —— 后者内部会把
+    # (事件 × k) 矩阵 flatten 成整块再 reduce（实测 flatten 0.69s）。等价性：两者都忽略
+    # NaN、inf 参与；空列（全 NaN / 无事件）返回 NaN。
     mat_arr = np.asarray(mat, dtype=float)
+    trig_med_arr = np.full(len(ks), np.nan, dtype=float)
     with np.errstate(all="ignore"):
-        trig_med_arr = (np.nanmedian(mat_arr, axis=0) if mat_arr.size
-                        else np.full(len(ks), np.nan))
+        for j in range(len(ks)):
+            col = mat_arr[:, j]
+            fin = col[~np.isnan(col)]
+            if fin.size:
+                trig_med_arr[j] = float(np.median(fin))
 
     return {
         "ks": ks,

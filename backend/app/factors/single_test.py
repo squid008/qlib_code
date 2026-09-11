@@ -792,14 +792,17 @@ def run_single_factor_tests(
     label_exprs = {
         h: adjust_expr(f"Ref($close, -{h + 1})/Ref($close, -1) - 1", pa) for h in horizons
     }
-    # 尾部加载长度：label 需 n_max+1 个交易日；事件研究（0/1 信号顺带计算）另需
-    # EVENT_MAX_K 个交易日 → 取二者较大值。**统计区间不受影响**：默认
-    # freeze_suspended_price=True 时面板会在统计前裁回 [start_date, end_date]。
-    # 事件研究（0/1 信号顺带算）的期数：至少 EVENT_MAX_K（保持默认口径不变）；
-    # 用户若把「周期」设得更长（例如 80 天），则同步算到该周期 —— 避免出现
-    # 「周期填 80，事件研究却只显示已算 40 期」的错配。尾部加载长度已按
-    # max(horizons, EVENT_MAX_K) 延展，数据足够，无需额外加载。
-    es_k = max(EVENT_MAX_K, max(horizons))
+    # 尾部加载长度：label 需 n_max+1 个交易日；冻结价 label 与事件研究另需尾部延展。
+    # **统计区间不受影响**：默认 freeze_suspended_price=True 时面板会在统计前裁回
+    # [start_date, end_date]。
+    # 事件研究（0/1 信号顺带算）的期数 = **用户填的最大周期**（v1.18.37 起）：
+    #   × 旧行为 `max(EVENT_MAX_K=40, max(horizons))`：填 20 天也会白算到 40 期 ——
+    #     基线曲线是逐 k 的大矩阵运算，k 越大越贵，20 期白算是近一半浪费。
+    #   √ 现行为 `max(horizons)`：填 20 就算 1..20。弹窗「最长持有」默认 = es_k（已算期数），
+    #     想看更长期数点「重算至 N 期」即可（独立接口按需重算，不拖累本任务）。
+    # 判定口径不受影响：0/1 判定取的是**该行「周期」对应的 k**（前端 esPointOf 用 r.horizon），
+    # 而 es_k ≥ 每个 horizon 恒成立，故判定点始终存在。
+    es_k = max(1, int(max(horizons)))
 
     load_end = end_date
     if freeze_suspended_price:
@@ -971,6 +974,7 @@ def run_single_factor_tests(
     es_inst = df_full.index.names.index("instrument")
     es_dt = df_full.index.names.index("datetime")
     _es_px_cache: Dict[str, object] = {}      # col_name -> 触发股价格宽表（同因子跨周期复用）
+    _es_res_cache: Dict[str, dict] = {}       # col_name -> 事件研究结果（同因子跨周期复用，见下）
     _full_wide_box: Dict[str, object] = {}    # 全样本价格宽表（基准曲线用，跨因子复用一次）
     for h in horizons:
         lc = label_cols[h]
@@ -1025,29 +1029,40 @@ def run_single_factor_tests(
                             _px = _event_px_wide(df_full, trig_out[0], es_inst)
                         _es_px_cache[col_name] = _px
                     if _px is not None and len(_px):
-                        _ev = pd.DataFrame({
-                            "code": trig_out[0].get_level_values(es_inst).astype(str).values,
-                            "dt": pd.to_datetime(trig_out[0].get_level_values(es_dt)).values,
-                        })
-                        _es = build_event_stats(_px, _ev, es_k)
-                        # 补参数信息：前端头部展示用，并据此判断「最长持有」是否需要重算
-                        _es["params"] = {
-                            "universe": universe,
-                            "start_date": start_date,
-                            "end_date": end_date,
-                            "max_k": es_k,
-                            "price_adjust": pa,
-                        }
-                        r["event_study"] = _es       # 先挂主结果，保证基准失败不影响事件研究
-                        # 基准（未触发组）+ 超额（日配对口径）：仅展示，不参与判定。
-                        # 全样本宽表一次构造、跨因子复用（约 1300×5000，50MB 量级）。
-                        try:
-                            _fw = _full_wide_box.get("w")  # 已在上方构造（w 不存在时为 None）
-                            if _fw is not None and len(_fw):
-                                _es["baseline"] = compute_baseline_curves(
-                                    _px, _fw, _ev, es_k)
-                        except Exception as _bl_e:   # 基准失败只影响展示，不拖垮事件研究
-                            _es["baseline_error"] = repr(_bl_e)
+                        # v1.18.37 跨周期复用：事件研究只取决于「触发事件集合 + es_k」，
+                        # 二者都与预测周期 h 无关（触发由因子自身决定、es_k 为所有周期的上界），
+                        # 因此多周期下逐周期重算完全等价、纯属浪费（全 A 实测单次
+                        # build_event_stats + compute_baseline_curves ≈ 11.2s，N 个周期白烧
+                        # (N-1)×11.2s）。首周期算完存缓存，其余周期浅拷贝复用（多周期结果
+                        # 逐位相同，实测 MD5 指纹一致）。
+                        _cached_es = _es_res_cache.get(col_name)
+                        if _cached_es is not None:
+                            r["event_study"] = dict(_cached_es)
+                        else:
+                            _ev = pd.DataFrame({
+                                "code": trig_out[0].get_level_values(es_inst).astype(str).values,
+                                "dt": pd.to_datetime(trig_out[0].get_level_values(es_dt)).values,
+                            })
+                            _es = build_event_stats(_px, _ev, es_k)
+                            # 补参数信息：前端头部展示用，并据此判断「最长持有」是否需要重算
+                            _es["params"] = {
+                                "universe": universe,
+                                "start_date": start_date,
+                                "end_date": end_date,
+                                "max_k": es_k,
+                                "price_adjust": pa,
+                            }
+                            r["event_study"] = _es   # 先挂主结果，保证基准失败不影响事件研究
+                            # 基准（未触发组）+ 超额（日配对口径）：仅展示，不参与判定。
+                            # 全样本宽表一次构造、跨因子复用（约 1300×5000，50MB 量级）。
+                            try:
+                                _fw = _full_wide_box.get("w")  # 已在上方构造（w 不存在时为 None）
+                                if _fw is not None and len(_fw):
+                                    _es["baseline"] = compute_baseline_curves(
+                                        _px, _fw, _ev, es_k)
+                            except Exception as _bl_e:   # 基准失败只影响展示，不拖垮事件研究
+                                _es["baseline_error"] = repr(_bl_e)
+                            _es_res_cache[col_name] = _es
                 except FactorTestCancelled:
                     raise
                 except Exception as _es_e:       # 诊断：暴露事件研究失败原因（前端忽略该字段）

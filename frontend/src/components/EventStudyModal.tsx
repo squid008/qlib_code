@@ -156,8 +156,9 @@ export default function EventStudyModal({ open, onClose, factorName, req, data, 
     }
   }
 
-  // 后端一次就算出 1..computedMaxK 的全部持有期（单因子测试顺带算的是 40 期），
-  // 因此把「最长持有」调小（40 → 10）只是**截断展示**，触发样本完全相同、无需重算；
+  // 后端一次就算出 1..computedMaxK 的全部持有期（单因子测试顺带算的期数 = 该任务填的
+  // **最大预测周期**，v1.18.37 起；此前固定至少 40 期），因此把「最长持有」调小只是
+  // **截断展示**，触发样本完全相同、无需重算；
   // 只有调到超过 computedMaxK 时才需要真正重算（后端没有更长的期数）。
   const computedMaxK = result?.params?.max_k ?? result?.ks?.length ?? 0
   const needRecompute = result != null && maxK > computedMaxK
@@ -366,7 +367,7 @@ export default function EventStudyModal({ open, onClose, factorName, req, data, 
                 min={1}
                 max={120}
                 value={maxK}
-                onChange={(e) => setMaxK(Number(e.target.value) || 40)}
+                onChange={(e) => setMaxK(Number(e.target.value) || computedMaxK || 40)}
                 className="ml-1 w-16 px-1 py-0.5 border rounded text-xs dark:bg-slate-700 dark:border-slate-600"
               />
               日

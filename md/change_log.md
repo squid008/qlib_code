@@ -3,6 +3,16 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.37] - 2026-09-12
+
+### Performance
+- **事件研究（0/1 信号）多周期重复计算去重 + 期数跟随周期 + 基线曲线提速**（`factors/single_test.py` / `factors/event_study.py`；实测全 A「趋势顶底离开底部」多周期 [20,40] **52.4s → 38.0s（−27.5%）**，数值逐位不变）：
+  - **① 跨周期复用事件研究结果**：事件研究只取决于「触发事件集合 + es_k」，二者都与预测周期 h 无关（触发由因子自身决定、es_k 为所有周期的上界），而原实现位于 `for h in horizons` 循环内 —— N 个周期就重算 N 遍**完全相同**的 40 期结果（实测 `build_event_stats + compute_baseline_curves` ≈ 11.2s/次，勾 7 个周期白烧 ~67s）。现按 `col_name` 缓存、其余周期浅拷贝复用（两周期事件研究 MD5 指纹逐位一致）。
+  - **② 事件研究期数改为跟随用户填的最大周期**：`es_k = max(horizons)`（原 `max(EVENT_MAX_K=40, max(horizons))`）—— 填 20 天从此只算 1..20 期（基线曲线是逐 k 大矩阵运算、k 越大越贵：单次 10.6s → 5.5s），不再白算到 40 期。弹窗「最长持有」默认 = 已算期数，想看更长期数点「重算至 N 期」。**判定口径不变**：0/1 判定取该行「周期」对应的 k（前端 `esPointOf` 用 `r.horizon`），而 `es_k ≥ horizon` 恒成立。
+  - **③ `compute_baseline_curves` 内部三处**（逐位等价；11 组边界用例对拍 PASS：常规 / 触发股子集 / 无效代码 / 非日历日 / k 超尾部 / 空事件 / 全 NaN 列+±inf / 单事件 / 3 行极小表 / k=1 / 无宽表）：`entry_mat = F[entry_rows]` 与 `entry_rows < n_row` 提到 k 循环外（省每 k 一次 635 万 gather）；触发股剔除由「(配对日 × 标的) 635 万 bool 大矩阵 + 每 k `flag[r_idx]` 复制」改**稀疏 (行,列) 对**（每 k 只改 O(触发数) 个元素）；均值口径用「原地 NaN→0（`np.copyto(where=)`）+ sum/count」替代 `np.nanmean` 的整表 `_replace_nan` 拷贝；`trig_med_arr` 逐列 median 替代 `np.nanmedian(axis=0)` 的整块 flatten。实测 10.6s → 9.0s。
+  - 踩坑记录：曾用 `np.nan_to_num(copy=False)` 替代 `_replace_nan`，实测**反而更慢**（其内部还要 `isposinf`/`isneginf`/`isnan` 各扫一遍：1.67s > 1.16s），最终改用 `np.copyto(where=)` 复用已算掩码。
+- 版本 1.18.36 → 1.18.37（后端 `backend/app/__init__.py` / README 顶部）。
+
 ## [1.18.36] - 2026-09-12
 
 ### Performance
