@@ -529,6 +529,27 @@ _BIN_ELEM = {
 _BIN_CMP = {"Gt": "gt", "Ge": "ge", "Lt": "lt", "Le": "le", "Eq": "eq", "Ne": "ne"}
 _UNARY = {"Abs": "abs", "Sqrt": "sqrt", "Log": "log", "Neg": "neg", "Sgn": "sign"}
 
+# 逐元素算子的 numpy ufunc 直落表（v1.18.29）。
+# 本机无 numexpr，pandas 的 Series 算术分派走 operator.* + 重包 Series；当两列同 index
+# 且值为 float64 时，numpy ufunc 结果与之**逐位一致**（实测 17 组含 NaN 对拍全 True）。
+# 注意：pandas 在内部用 errstate 抑制了 divide-by-zero / invalid 告警，直接调 numpy 会
+# 漏出 RuntimeWarning，故下面统一套 np.errstate(all="ignore")（进入开销仅 ~1us）。
+_NUM_UFUNC = {
+    "add": np.add, "sub": np.subtract, "mul": np.multiply, "div": np.divide,
+    "pow": np.power,
+    "gt": np.greater, "ge": np.greater_equal, "lt": np.less,
+    "le": np.less_equal, "eq": np.equal, "ne": np.not_equal,
+}
+
+
+def _is_num_scalar(x) -> bool:
+    """可作为 ufunc 广播标的的数值常量。
+
+    排除 str/bytes（pandas 对字符串走另一套路径）；None/list/ndarray 等一律返回 False
+    → 落到原 pandas 兜底分支，保持既有行为。
+    """
+    return np.isscalar(x) and not isinstance(x, (str, bytes))
+
 
 def _as_series(x, template: Optional[pd.Series]) -> pd.Series:
     """把标量或 Series 归一到 Series（常量按 template index 广播）。"""
@@ -738,6 +759,53 @@ class PanelEvaluator:
             return _corr_pair_panel(a, b, N)
         if op in _BIN_ELEM or op in _BIN_CMP:
             a, b = args
+            # ---- numpy 快路（v1.18.29）----
+            # 三条等价改动（17 组含 NaN 对拍逐位一致）：
+            #  ① 常量操作数**不再经 _as_series 物化成整列**：广播一列常量要写 ~2.8MB
+            #     （实测 0.85ms/次；大公式单轮约 950 个常量操作数 ≈ 0.8s），而 ufunc 对
+            #     标量广播零成本。v1.18.25 只对 Power 的标量指数做了这一步，此处覆盖
+            #     add/sub/mul/div/Greater/Less 与全部比较算子。
+            #  ② Greater/Less 的 `a.where(a >= b, b)` 要过两遍 Series 比较 + 掩码写回
+            #     （实测 1.65ms → np.where 0.88ms）。
+            #  ③ 比较算子走 ufunc，省掉一次 pandas 结果包装。
+            # NaN 语义与 pandas 一致：where 对 NaN 比较得 False → 取 b，np.where 同。
+            # ⚠ **不能**用 np.maximum/np.minimum —— 它们传播 NaN，而此处语义是
+            #   「a 为 NaN 时取 b」。
+            a_is_s = isinstance(a, pd.Series)
+            b_is_s = isinstance(b, pd.Series)
+            if (a_is_s or b_is_s) and (a_is_s or _is_num_scalar(a)) \
+                    and (b_is_s or _is_num_scalar(b)):
+                fn = _BIN_ELEM[op] if op in _BIN_ELEM else _BIN_CMP[op]
+                if fn == "pow" and a_is_s and not b_is_s:
+                    # **「Series ** 标量」保留 pandas 路径**（即 v1.18.25~v1.18.28 的行为）：
+                    # numpy 对「ndarray ** 标量」启用**快速标量幂**（x**2 → x*x、x**0.5 → sqrt），
+                    # `np.power(ndarray, 标量)` 则走通用数组内循环，两者在特殊值上不同 ——
+                    # 实测 `(-inf) ** 0.5`：前者（含 Series/pandas 路径） = nan，后者 = inf。
+                    # Log(0) 会产出 -inf，故这是真实语义漂移，必须避开。
+                    # 该路径本身已够快（且不必再物化常量列），v1.18.25 起的快照已覆盖。
+                    # 注意「标量 ** Series」（常量在左）旧行为本就是数组路径（指数是数组，
+                    # numpy 不启用标量快速幂），故仍走下面的 numpy 快路。
+                    return np.power(a, b)
+                if a_is_s and b_is_s:
+                    a2, b2 = _align(a, b)
+                    idx = a2.index
+                    av, bv = a2.to_numpy(), b2.to_numpy()
+                elif a_is_s:
+                    # 常量在右：保持标量，交给 ufunc 广播（等价于原 _as_series 的整列广播）
+                    idx, av, bv = a.index, a.to_numpy(), b
+                else:
+                    idx, av, bv = b.index, a, b.to_numpy()
+                with np.errstate(all="ignore"):
+                    if fn == "max":
+                        vals = np.where(av >= bv, av, bv)
+                    elif fn == "min":
+                        vals = np.where(av <= bv, av, bv)
+                    else:
+                        vals = _NUM_UFUNC[fn](av, bv)
+                if op in _BIN_CMP:
+                    vals = vals.astype(np.float64, copy=False)
+                return pd.Series(vals, index=idx)
+            # ---- pandas 兜底（非常量非 Series 的入参；行为与改动前完全一致）----
             template = a if isinstance(a, pd.Series) else b
             # 常量右操作数（如 Power(x, 2) 的指数 2）：单独留下标量形态。
             # 若被 _as_series 广播成整列数组，np.power 会走「数组指数」的逐元素通用 pow，
@@ -791,20 +859,36 @@ class PanelEvaluator:
             if not isinstance(s, pd.Series):
                 raise ValueError("ROUND 首参不能是常量")
             return np.round(s, nd)
-        if op == "And":
+        if op == "And" or op == "Or":
             a, b = args
             tpl = a if isinstance(a, pd.Series) else b
-            a = _as_series(a, tpl).fillna(0.0)
-            b = _as_series(b, tpl).fillna(0.0)
-            a, b = _align(a, b)
-            return ((a != 0) & (b != 0)).astype(np.float64)
-        if op == "Or":
-            a, b = args
-            tpl = a if isinstance(a, pd.Series) else b
-            a = _as_series(a, tpl).fillna(0.0)
-            b = _as_series(b, tpl).fillna(0.0)
-            a, b = _align(a, b)
-            return ((a != 0) | (b != 0)).astype(np.float64)
+            a = _as_series(a, tpl)
+            b = _as_series(b, tpl)
+            # numpy 直落：pandas 的 `(a != 0) & (b != 0)` 要过两次 Series 比较（各含一次
+            # 包装）+ 一次 Series 级逻辑运算 + astype（实测 3.68ms → 2.33ms）。
+            # ⚠ NaN 语义有**两处**不同来源，不能一概而论：
+            #   · 原始 NaN 经 fillna(0) → 判 False；
+            #   · _align 新引入的缺失行仍是 NaN，而 pandas 里 `NaN != 0` 为 **True**。
+            # 故 fillna 必须在 _align **之前**。同 index（面板常态：字段都被 field() 对齐
+            # 到同一 _full）时无缺失行，fillna(0) 可安全挪到 numpy 侧，省掉两次 pandas
+            # fillna（约 2.9ms/次）；下标不同时严格按「先 fillna 再 align」的原顺序走。
+            # （对拍实测：若一概用 numpy 的 `(v != 0) & ~isnan(v)`，会在 union 路径上
+            #   产生 525/75 处差异。）
+            if a.index.equals(b.index):
+                idx = a.index
+                av = a.to_numpy(dtype=np.float64)
+                bv = b.to_numpy(dtype=np.float64)
+                av = np.where(np.isnan(av), 0.0, av)
+                bv = np.where(np.isnan(bv), 0.0, bv)
+            else:
+                a, b = _align(a.fillna(0.0), b.fillna(0.0))
+                idx = a.index
+                av = a.to_numpy(dtype=np.float64)
+                bv = b.to_numpy(dtype=np.float64)
+            ma = av != 0
+            mb = bv != 0
+            m = (ma & mb) if op == "And" else (ma | mb)
+            return pd.Series(m.astype(np.float64), index=idx)
         if op in ("BARSLAST", "BARSSINCEN", "HHVBARS", "LLVBARS",
                   "DYN_REF", "DYN_MIN", "DYN_MAX", "DYN_SUM", "DYN_COUNT",
                   "DYN_HHVBARS", "DYN_LLVBARS"):

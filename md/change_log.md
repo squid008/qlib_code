@@ -3,6 +3,34 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.29] - 2026-09-11
+
+### Performance
+- **T2 第 3 项：逐元素算术族改走 numpy ufunc（消掉常量列物化 + pandas 分派），大公式端到端 −8.8%**（`factors/panel_expr.py`，**数值零变化**）：
+  - **背景**：v1.18.28 之后，`_by_group`（33%）之外**最大的一块就是逐元素算术族** —— `Sub 0.931 + Mul 0.692 + Greater 0.665 + Add 0.609 + Div 0.194 + Less 0.185 + Power 0.168 + Le/Ge/Gt 0.28 + And 0.579 ≈ 4.33s / 39%`。原实现 `getattr(a, fn)(b)` 走 pandas 算术分派（本机**无 numexpr** → `_evaluate_standard` → `operator.*` → 再包回 Series）。
+  - **微基准（新增 `ai_test/bench_arith.py`，交错 A/B，n=354794、含 NaN）推翻了一个错误假设** —— 「大头是 pandas 分派」只对了一半：
+    - 两列同 index 的 `Mul/Add/Sub/Div` **本就贴着内存带宽极限**（0.60~0.80ms，numpy 仅快 ~1.0×）→ 这部分改与不改无意义；
+    - 真正的浪费是**常量操作数**：`_as_series` 把常量**物化成一整列**（写 ~2.8MB，**0.85ms/次**；大公式单轮约 **951 个**常量操作数 ⇒ **0.7~0.8s / 6~7%**），而 ufunc 对标量广播零成本（实测 1.45ms → 0.68ms，**2.1×**）；
+    - `Greater/Less` 的 `a.where(a >= b, b)` 要过两遍 Series 比较 + 掩码写回（1.65ms → `np.where` 0.88ms，**1.9×**）；
+    - `And/Or` 的 `(a!=0)&(b!=0)` 过两次 Series 比较 + 对齐 + 包装（3.68ms → 2.33ms，**1.6×**）；
+    - **17 组含 NaN 对拍全部逐位相同**。
+  - **改法**：新增 `_NUM_UFUNC` 表 + `_is_num_scalar()`；二元分支加 numpy 快路（**常量保持标量**交给 ufunc 广播、`max/min` 用 `np.where`、比较算子走 ufunc 后 `astype(np.float64)`），并**保留原 pandas 兜底分支**处理「非常量且非 Series」的入参。
+  - ⚠ **必须套 `np.errstate(all="ignore")`**：pandas 2.3.3 在内部抑制了 numpy 告警（实测 `Series.div` **0 条**），直接调 numpy 会漏出 `divide by zero` / `invalid value`（实测各 1 条）。开销仅 ~1us/次。
+  - ⚠ **`max/min` 不能用 `np.maximum`/`np.minimum`** —— 它们**传播 NaN**，而 `a.where(a >= b, b)` 的语义是「a 为 NaN 时**取 b**」；须用 `np.where(av >= bv, av, bv)`（NaN 比较为 False → 取 b，与原式逐位一致）。
+  - ⚠ **「Series ** 标量」必须保留 pandas 路径**：`ndarray ** 标量` 走 numpy 的**快速标量幂**（`x**2 → x*x`、`x**0.5 → sqrt`），而 `np.power(ndarray, 标量)` 走通用数组内循环，两者在特殊值上不同 —— 实测 `(-inf) ** 0.5`：前者（及 pandas / `**` / `sqrt`）= **nan**，后者 = **inf**。`Log(0)` 会产出 `-inf`，故按旧行为保留（该路径本身已够快，且不必再物化常量列）。「标量 ** Series」（常量在左）旧行为本就是数组路径（指数是数组，numpy 不启用标量快速幂），仍走 numpy。
+  - ⚠ **`And/Or` 的 `fillna` 必须在 `_align` 之前**：`_align` 新引入的缺失行仍是 NaN，而 pandas 里 `NaN != 0` 为 **True**，与「原始 NaN 先填成 0 → 判 False」语义不同。若一概用 `(v != 0) & ~isnan(v)`，会在 union 路径上产生 **525/75 处**差异（被对拍当场抓出）。同 index（面板常态）时无缺失行，fillna 才可安全挪到 numpy 侧（省掉两次 pandas fillna，约 2.9ms/次）。
+  - **实测**（新增 `ai_test/ab_arith.py`：同脚本各跑 3 轮，样本区间**不重叠**）：
+    - **整次 panel 墙钟**：**11.628s → 10.603s（−1.03s，−8.8%）**（旧 11.595/11.628/11.808、新 9.816/10.603/10.945）
+    - **`_apply` 独占合计**：**9.002s → 7.603s（−1.40s，−15.5%）**，与「算术族 + And/Or」实测 4.334s → 2.941s（**−1.393s**）互相印证
+    - **`_as_series` 常量广播**：**951 次 / 0.708s → 2 次 / 0.002s**
+    - 单次均值（`调用数 / 基线 / 改后`，ms）：`Sub` 541/1.72/1.29、`Mul` 288/2.40/1.12、`Greater` 192/3.46/1.33、`Add` 318/1.92/1.14、`Div` 133/1.46/1.20、`Less` 66/2.80/1.61、`Power` 84/2.00/1.06、`Le` 58/2.48/1.25、`Ge` 50/2.21/1.36、`And` 110/5.26/4.68
+  - **验证（四重）**：① **新增 `ai_test/test_arith_numpy.py` 3632 用例 0 失败** —— 新快路 vs **旧 pandas 实现逐位对拍**，覆盖 `_BIN_ELEM` + `_BIN_CMP` + `And` + `Or` **全部算子** × `S/S`（含**下标不同 union 路径**）/`S/c`/`c/S`/`c/c`/`None` × **8 种值池**（含 ±inf / 全 NaN / 半 NaN / 常量列 / 负底数） × 10 个常量（含 `np.float64`/`np.int64`），比对**数值 / index / dtype 三项**；② `backend/tests` **180 passed**；③ `snapshot_panel.py --tag arith2 --compare powbase` → **18 列全部 `exact=True`**；④ 上文 A/B。
+- 版本 1.18.28 → 1.18.29。
+
+### Notes
+- 本次只动 `panel_expr.py` 的二元算子分支与 `And/Or`；`_ref`/`_roll`/`_by_group`/各 DYN 内核**未动**。
+- 遗留可做：`_by_group` 调度（33%）｜`DYN_REF`（8.4%）｜`HHVBARS`/`LLVBARS`（各 7.5%）｜`DYN_MIN`+`DYN_MAX`（9%）｜`Ref`（4.8%）｜`Mean`（4.4%）｜`[其余]`（15.3%：下标构造 + DataFrame 组装 + 2 次 reindex）。
+
 ## [1.18.28] - 2026-09-11
 
 ### Performance
