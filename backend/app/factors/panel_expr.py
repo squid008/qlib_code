@@ -635,10 +635,18 @@ def _align(a: pd.Series, b: pd.Series):
 
     不同行集（字段覆盖范围/上市日不同）：并集（不排序——MultiIndex 混合列类型
     不能整体 sort；pandas 运算按 label 对齐与顺序无关）。
+
+    v1.18.33 性能：全 A 大公式 cProfile 显示 `MultiIndex.equals` 占 6.2s / 6723 次
+    （逐元素比较 object level）。两处减法：① `is` 同一对象（同一 evaluator 内部
+    index 常为同一对象，如缓存的 `_active_index`）直接返回；② `equals` 要求等长，
+    长度不同必不相等，可跳过。
     """
-    if a.index.equals(b.index):
+    ia, ib = a.index, b.index
+    if ia is ib:
         return a, b
-    idx = a.index.union(b.index)
+    if len(ia) == len(ib) and ia.equals(ib):
+        return a, b
+    idx = ia.union(ib)
     # union 可能产生未排序/类型不齐的 index：算术按 label 对齐即可，无需排序
     return a.reindex(idx), b.reindex(idx)
 
@@ -951,7 +959,7 @@ class PanelEvaluator:
             # fillna（约 2.9ms/次）；下标不同时严格按「先 fillna 再 align」的原顺序走。
             # （对拍实测：若一概用 numpy 的 `(v != 0) & ~isnan(v)`，会在 union 路径上
             #   产生 525/75 处差异。）
-            if a.index.equals(b.index):
+            if a.index is b.index or a.index.equals(b.index):
                 idx = a.index
                 av = a.to_numpy(dtype=np.float64)
                 bv = b.to_numpy(dtype=np.float64)
@@ -1714,9 +1722,9 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
     #    evaluator）⇒ union + 两次 reindex + 时间戳掩码全是恒等操作，直接返回；
     #  · 否则若列 index 正好等于最后一个 evaluator 的 _full，则 df.index ⊇ full_out
     #    （full_out 由它裁剪而来）⇒ union 必等于 df.index，跳过这次 union。
-    if df.index.equals(full_out):
+    if df.index is full_out or df.index.equals(full_out):
         return _cast_output_f32(df)
-    if last_ev is None or not df.index.equals(last_ev._full):
+    if last_ev is None or not (df.index is last_ev._full or df.index.equals(last_ev._full)):
         # 不同 read_start 的列 index 覆盖范围不同 → 统一 reindex 到各列并集再裁剪
         df = df.reindex(df.index.union(full_out))
     df = df[df.index.get_level_values("datetime") >= pd.Timestamp(start_time)]

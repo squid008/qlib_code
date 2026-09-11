@@ -3,6 +3,19 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.33] - 2026-09-11
+
+### Performance
+- **单因子测试端到端四项低风险优化（数值零变化；全 A 实测 −8.7%）**（`factors/event_study.py` / `factors/single_test.py` / `factors/panel_expr.py` / `factors/ops_ext.py`）：
+  - **起因（端到端实测定位）**：全 A（过滤后 5418 只 × 2021-01-01~2026-06-01 × 周期 40 × 前复权 × 预热 250）总 **124.25s**，分阶段为：解析股票池 1.8s、**特征加载「切块求值」27.3s（22%）**、**统计阶段 95.0s（76%）**；统计阶段内部 `_test_one`（逐因子求值+统计）50.4s（41%）、**事件研究（0/1 信号顺带算）≈41s（33%）** —— 结论：**大头已不再是「切块求值」**，而是统计阶段（其中事件研究占三成）。
+  - **① `compute_baseline_curves` numpy 化**：原实现对每个 k（40 次）做全表 `shift(-(k+1))` / `where(~flag)` / `reindex(days)` / `to_numpy` → 改为**一次性转 numpy**，逐 k 只在「配对日」行上取子矩阵做除法/截面均值/中位数，当日触发股用「配对日 × 标的」小布尔矩阵标记（原实现是全表 DataFrame 逐点赋值）：**8.78s → 2.24s（−74%）**。口径不变（`ret[t]=F[t+1+k]/F[t+1]−1`、剔除当日触发股、先按日截面均值再对配对日平均、中位数取配对日全部样本）。
+  - **② 全样本 PX 宽表进程级缓存**：`single_test._full_px_wide` 新增 `_FULL_WIDE_CACHE`（只保留最近 1 份；key = 形状 + 区间端点 + 首值指纹；提供 `clear_full_wide_cache()`），同一进程连续跑多个单因子测试/多因子时复用，省 ~3.1s/次（单份约 50MB，返回值只读）。
+  - **③ `MultiIndex.equals` 热点治理**：`panel_expr._align`、And/Or 分支、出口两条快路与 `ops_ext` mask 对齐处统一加 **`is` 同对象短路 + 等长前置**（cProfile 实测原 `MultiIndex.equals` 占 6.2s / 6723 次，逐元素比较 object level）。
+  - **④ `_inst_codes` 加速**：原逐行 `.astype(str).str.upper()`（全 A 单次调用 832 万次 `str.upper`，≈4~5s）→ 改 `pd.factorize` 取 unique 标的（约 5000 个）做 `str().upper()` 再按整数 codes 回填；逐元素语义不变（含 NaN → `'NAN'`）。
+- **验证（数值零变化，双重）**：① 新旧实现对拍脚本（临时 `ai_test/verify_baseline_np.py`：从 `git show HEAD:` 取旧实现 exec，与本模块新实现对同一批随机输入比较，4 组覆盖 NaN 20% / max_k=1 / max_k=60 / 越界 code）→ **全部严格相等（atol=0）**；② 全 A 三因子端到端 `results` 逐字段比对 → **0 处差异**；③ 总耗时 **124.25s → 113.38s（−8.7%）**（统计阶段 94.98→85.05s；`_test_one` 三项各 −0.6~1.0s；2 因子含 cProfile 口径 81.81→69.51s，−15.0%）。
+- **剩余大头（后续候选）**：特征加载 26.4s（23%）、`_test_one` 合计 48.1s（42%）、事件研究 ~34s（30%，其中趋势顶底段仍约 25s 未定位：疑在触发索引 level 提取 / `df_full` 列切片 / `es_inst` 解析）。
+- 版本 1.18.32 → 1.18.33。
+
 ## [1.18.32] - 2026-09-11
 
 ### Changed

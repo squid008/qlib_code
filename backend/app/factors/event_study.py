@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import warnings
 from typing import Optional
 
 import numpy as np
@@ -288,30 +289,56 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
     trig_pair = by_day.mean(axis=0)
 
     # ---- 基准：全样本宽表 → 每日「未触发组」等权均值（剔除当日触发股） ----
+    # v1.18.33 性能：原实现对每个 k 做 full.shift(-(k+1)) / entry / where(~flag) /
+    # reindex(days) / to_numpy（40 次全表操作，全 A 实测 8.8s/因子）。改为**一次性转
+    # numpy**，逐 k 只在「配对日」行上取子矩阵做除法/截面均值/中位数（配对日 ~几百行，
+    # 无全表 shift 与整表 reindex 拷贝）。数值口径不变：ret[t] = F[t+1+k]/F[t+1] − 1，
+    # 剔除当日触发股后「先按日截面均值、再对配对日平均」/ 中位数取配对日全部样本。
     full = px_wide_full
-    flag = pd.DataFrame(False, index=full.index, columns=full.columns)
-    for c, t in zip(ev_code, ev_dt):
-        if (t in flag.index) and (c in flag.columns):
-            flag.at[t, c] = True
-    entry = full.shift(-1)
-    base_list = []
-    base_med_list = []
-    for j, k in enumerate(ks):
-        if (j % 10 == 0) and (cancel_check is not None):
-            cancel_check()
-        ret = full.shift(-(k + 1)) / entry - 1.0     # T+1+k 相对 T+1
-        nf = ret.where(~flag)                        # 剔除当日触发股
-        # 均值口径：先按日取截面均值，再对配对日平均
-        daily = nf.mean(axis=1)
-        sel = daily.reindex(days).dropna()
-        base_list.append(float(sel.mean()) if len(sel) else float("nan"))
-        # 中位数口径：只取配对日，把 (配对日 × 未触发股) 的全部样本汇成一份取中位数。
-        # 注意不能"先算每日横截面中位数、再对日子平均"——那与触发组的事件级中位数不对称。
-        vals = nf.reindex(days).to_numpy(dtype=float, copy=False)
-        vals = vals[np.isfinite(vals)]
-        base_med_list.append(float(np.median(vals)) if vals.size else float("nan"))
-    base_arr = np.asarray(base_list, dtype=float)
-    base_med_arr = np.asarray(base_med_list, dtype=float)
+    base_arr = np.full(len(ks), np.nan, dtype=float)
+    base_med_arr = np.full(len(ks), np.nan, dtype=float)
+    if full is not None and len(full) and len(days):
+        F = full.to_numpy(dtype=np.float64, copy=False)
+        n_row = F.shape[0]
+        n_col = F.shape[1]
+        # 配对日 → 宽表行位置；不在宽表内的日期跳过（等价于原 reindex(days).dropna()）
+        rows = full.index.get_indexer(pd.DatetimeIndex(days))
+        rows = rows[rows >= 0]
+        if rows.size:
+            # 当日触发股标记：只建「配对日 × 标的」小布尔矩阵（原实现是全表 DataFrame flag）
+            cols = full.columns.get_indexer(pd.Index(ev_code))
+            ev_rows = full.index.get_indexer(pd.DatetimeIndex(ev_dt))
+            row_of = {int(r): i for i, r in enumerate(rows)}
+            flag = np.zeros((rows.size, n_col), dtype=bool)
+            for r, c in zip(ev_rows, cols):
+                i = row_of.get(int(r))
+                if i is not None and c >= 0:
+                    flag[i, c] = True
+            entry_rows = rows + 1  # T+1（entry 行）
+            for j, k in enumerate(ks):
+                if (j % 10 == 0) and (cancel_check is not None):
+                    cancel_check()
+                tgt = entry_rows + k  # T+1+k
+                ok = (tgt < n_row) & (entry_rows < n_row)
+                num = np.full((rows.size, n_col), np.nan, dtype=np.float64)
+                if ok.any():
+                    r_idx = np.nonzero(ok)[0]
+                    with np.errstate(all="ignore"):
+                        num[r_idx] = F[tgt[r_idx]] / F[entry_rows[r_idx]] - 1.0
+                num[flag] = np.nan  # 剔除当日触发股（保持 NaN）
+                # 均值口径：先按日取截面均值，再对配对日平均
+                # （某配对日可能全部为 NaN——如该日所有个股都缺 T+1+k 价：nanmean 会发
+                #  RuntimeWarning「Mean of empty slice」，此处显式抑制，结果仍为 NaN）
+                with np.errstate(all="ignore"), warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    daily = np.nanmean(num, axis=1)
+                    if np.isfinite(daily).any():
+                        base_arr[j] = float(np.nanmean(daily))
+                    # 中位数口径：配对日 × 未触发股的全部样本汇成一份取中位数
+                    # （不能"先算每日横截面中位数、再对日子平均"——与触发组事件级中位数不对称）
+                    vals = num[np.isfinite(num)]
+                    if vals.size:
+                        base_med_arr[j] = float(np.median(vals))
     trig_arr = np.asarray([float(trig_pair.get(k, np.nan)) for k in ks], dtype=float)
 
     # 触发组「事件级中位数」：全部触发事件在 k 期收益的中位数（与 curve[].median 同口径）

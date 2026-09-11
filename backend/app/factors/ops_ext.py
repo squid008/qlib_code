@@ -537,7 +537,7 @@ class SR(ExpressionOps):
         if self._mask is not None:
             m = self._mask.load(instrument, start_index, end_index, *args)
             if len(series) and len(m):
-                if not series.index.equals(m.index):
+                if not (series.index is m.index or series.index.equals(m.index)):
                     m = m.reindex(series.index)
                 keep = m.notna()
                 return series[keep.values]

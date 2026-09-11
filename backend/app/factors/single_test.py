@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -28,9 +29,19 @@ from .event_study import build_event_stats, compute_baseline_curves
 
 
 def _inst_codes(s: pd.DataFrame) -> pd.Series:
-    """每行样本的 instrument 代码（大写，如 SZ300001/SH688001/BJ430047）；单标的（无 instrument 层）返回空串。"""
+    """每行样本的 instrument 代码（大写，如 SZ300001/SH688001/BJ430047）；单标的（无 instrument 层）返回空串。
+
+    v1.18.33 性能：原实现逐行 `.astype(str).str.upper()` —— 全 A（760 万行）单次调用实测
+    ~4~5s（cProfile：`str.upper` + `object_array._str_map` 合计 832 万次调用）。改为用
+    `pd.factorize` 取 unique 标的（约 5000 个）做 str/upper，再用整数 codes 回填，
+    逐元素语义与原来完全一致（含 NaN → 'NAN'）。
+    """
     if isinstance(s.index, pd.MultiIndex):
-        return s.index.get_level_values(0).astype(str).str.upper()
+        lev = s.index.get_level_values(0)
+        codes, uniques = pd.factorize(lev, sort=False)
+        ups = np.asarray([str(u).upper() for u in uniques], dtype=object)
+        vals = ups[codes] if codes.size else np.empty(0, dtype=object)
+        return pd.Series(vals, index=s.index)
     return pd.Series([""] * len(s), index=s.index)
 
 
@@ -200,12 +211,52 @@ def _event_px_wide(df_full: pd.DataFrame, trig_index, inst_lv: int):
         return None
 
 
-def _full_px_wide(df_full: pd.DataFrame, inst_lv: int):
-    """全样本 PX 宽表（index=交易日, columns=标的）—— 事件研究「基准（未触发组）」曲线用。"""
+# 全样本 PX 宽表进程级缓存（v1.18.33）：单份约 50MB（≈1300 日 × 5000 只）。同一区间/
+# 股票池连续跑多个单因子测试（或同一任务内多个 0/1 因子）时复用，避免每次重建
+# （全 A 实测 3.3s/次）。只保留最近一份；区间/规模/首值指纹变化即自然失效。
+_FULL_WIDE_CACHE: "OrderedDict[tuple, pd.DataFrame]" = OrderedDict()
+_FULL_WIDE_MAX = 1
+
+
+def clear_full_wide_cache() -> None:
+    """清空全样本 PX 宽表缓存（数据更新 / 测试用）。"""
+    _FULL_WIDE_CACHE.clear()
+
+
+def _full_wide_key(df_full: pd.DataFrame, inst_lv: int):
+    """宽表缓存键：形状 + 区间端点 + 首值指纹（同一面板必然一致，数据变动即失效）。"""
     try:
-        return df_full["PX"].unstack(level=inst_lv).sort_index().ffill()
+        idx = df_full.index
+        dt_lv = idx.names.index("datetime") if "datetime" in idx.names else -1
+        dt = idx.get_level_values(dt_lv)
+        n_inst = len(idx.levels[inst_lv]) if isinstance(idx, pd.MultiIndex) else 0
+        px = df_full["PX"]
+        sample = float(px.iloc[0]) if len(px) else float("nan")
+        return (len(idx), n_inst, str(dt[0]), str(dt[-1]), inst_lv, sample)
     except Exception:
         return None
+
+
+def _full_px_wide(df_full: pd.DataFrame, inst_lv: int):
+    """全样本 PX 宽表（index=交易日, columns=标的）—— 事件研究「基准（未触发组）」曲线用。
+
+    v1.18.33：加进程级缓存（_FULL_WIDE_CACHE）。**返回值仅供只读使用**，调用方不得原地修改。
+    """
+    key = _full_wide_key(df_full, inst_lv)
+    if key is not None:
+        hit = _FULL_WIDE_CACHE.get(key)
+        if hit is not None:
+            _FULL_WIDE_CACHE.move_to_end(key)
+            return hit
+    try:
+        w = df_full["PX"].unstack(level=inst_lv).sort_index().ffill()
+    except Exception:
+        return None
+    if key is not None and w is not None:
+        _FULL_WIDE_CACHE[key] = w
+        while len(_FULL_WIDE_CACHE) > _FULL_WIDE_MAX:
+            _FULL_WIDE_CACHE.popitem(last=False)
+    return w
 
 
 def _test_one(
