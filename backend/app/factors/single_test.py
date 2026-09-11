@@ -237,6 +237,27 @@ def _full_wide_key(df_full: pd.DataFrame, inst_lv: int):
         return None
 
 
+def _event_px_from_full(full_wide: pd.DataFrame, trig_index, inst_lv: int):
+    """由**全样本宽表**按触发标的取列子集，替代 `_event_px_wide` 的 mask+unstack。
+
+    v1.18.35 性能：同一因子的触发股宽表与全样本宽表内容一致（unstack/ffill 均逐列独立），
+    从已构造好的全样本宽表取列即可（列选择 ~0.05s），省掉 `px[mask]` 布尔索引 + 二次
+    unstack + sort_index + ffill（全 A「趋势顶底」实测 3.86s）。数值等价：列集合相同、
+    列顺序同为字典序（两者都 sort_index 过），下游 `_align_returns` 按列名取值。
+    """
+    try:
+        if full_wide is None or len(full_wide) == 0:
+            return None
+        codes = trig_index.get_level_values(inst_lv).unique()
+        want = pd.Index([str(c).upper() for c in codes])
+        cols = full_wide.columns.intersection(want)
+        if len(cols) == 0:
+            return None
+        return full_wide[cols]
+    except Exception:
+        return None
+
+
 def _full_px_wide(df_full: pd.DataFrame, inst_lv: int):
     """全样本 PX 宽表（index=交易日, columns=标的）—— 事件研究「基准（未触发组）」曲线用。
 
@@ -358,18 +379,23 @@ def _test_one(
     except Exception:
         result["is_binary"] = False
 
-    # IC / RankIC / ICIR
-    try:
-        if cancelled is not None and cancelled():
-            raise FactorTestCancelled()
-        pl = sub.rename(columns={col: "score", "LABEL": "label"})
-        icr = _compute_ic_stats(pl)
-        if icr:
-            result.update(icr)
-    except FactorTestCancelled:
-        raise
-    except Exception:
-        pass
+    # IC / RankIC / ICIR（连续因子专用，v1.18.35）
+    # 0/1 信号只有 0 与 1 两档取值：Pearson IC 退化为"点二列相关"，RankIC 更谈不上
+    # 排序（秩只有两档）、ICIR 亦无解释意义；且 0/1 信号的结论本就以事件研究
+    # （中位数 / 绝对收益胜率 / 日配对超额）为准。故跳过计算 —— 全 A 约省 4s/因子，
+    # 代价是 0/1 不再参与「方向矛盾」判定（该分支依赖 IC/ICIR）。
+    if not result["is_binary"]:
+        try:
+            if cancelled is not None and cancelled():
+                raise FactorTestCancelled()
+            pl = sub.rename(columns={col: "score", "LABEL": "label"})
+            icr = _compute_ic_stats(pl)
+            if icr:
+                result.update(icr)
+        except FactorTestCancelled:
+            raise
+        except Exception:
+            pass
 
     # 触发 vs 未触发：0/1 稀疏信号按 >0.5 分组；连续因子按分位数分组
     # （触发 = 前 20% 高分位，未触发 = 后 20% 低分位）。否则连续因子几乎全部落入
@@ -988,9 +1014,15 @@ def run_single_factor_tests(
                 try:
                     if cancelled is not None and cancelled():
                         raise FactorTestCancelled()
+                    # v1.18.35：先构造（或复用）**全样本宽表**，触发股宽表直接取列子集
+                    # （等价且免去 mask + 二次 unstack：全 A「趋势顶底」实测 3.86s → ~0.05s）
+                    if "w" not in _full_wide_box:
+                        _full_wide_box["w"] = _full_px_wide(df_full, es_inst)
                     _px = _es_px_cache.get(col_name)
                     if _px is None:
-                        _px = _event_px_wide(df_full, trig_out[0], es_inst)
+                        _px = _event_px_from_full(_full_wide_box.get("w"), trig_out[0], es_inst)
+                        if _px is None:  # 兜底：全样本宽表不可用时回退原路径
+                            _px = _event_px_wide(df_full, trig_out[0], es_inst)
                         _es_px_cache[col_name] = _px
                     if _px is not None and len(_px):
                         _ev = pd.DataFrame({
@@ -1010,9 +1042,7 @@ def run_single_factor_tests(
                         # 基准（未触发组）+ 超额（日配对口径）：仅展示，不参与判定。
                         # 全样本宽表一次构造、跨因子复用（约 1300×5000，50MB 量级）。
                         try:
-                            if "w" not in _full_wide_box:
-                                _full_wide_box["w"] = _full_px_wide(df_full, es_inst)
-                            _fw = _full_wide_box.get("w")
+                            _fw = _full_wide_box.get("w")  # 已在上方构造（w 不存在时为 None）
                             if _fw is not None and len(_fw):
                                 _es["baseline"] = compute_baseline_curves(
                                     _px, _fw, _ev, es_k)

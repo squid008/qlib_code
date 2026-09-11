@@ -72,36 +72,66 @@ def load_px_wide(codes, start_date: str, end_date: str, price_adjust: str,
 
 def _align_returns(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
                    cancel_check=None):
-    """把事件对齐到「T+1 收盘买入、T+1+k 收盘卖出」，返回 (mat[事件×k], max_ret, min_ret)。"""
+    """把事件对齐到「T+1 收盘买入、T+1+k 收盘卖出」，返回 (mat[事件×k], max_ret, min_ret)。
+
+    v1.18.35 性能：原实现是「逐事件 Python 循环 + 内层逐 k 循环」（n_ev × max_k 次标量
+    运算，且每个事件还要 `px_wide[c].values` 取一次整列）—— 触发事件上万时单次调用可达
+    ~25s（全 A「趋势顶底离开底部」实测）。现改为：
+      ① 列位置 / 日期位置一次性解析（`get_indexer`，无 Python 循环）；
+      ② 价格宽表一次性转 numpy，逐 k 列向量化切片（40 次 O(n_ev) 运算）。
+    数值口径完全不变：T+1 相对 T+1+k（k=1..max_k）、买入价无效或越界的事件整行 NaN。
+    """
     cal = px_wide.index
     n_ev = len(events)
     mat = np.full((n_ev, max_k), np.nan)
     max_ret = np.full(n_ev, np.nan)
     min_ret = np.full(n_ev, np.nan)
-    cols = set(px_wide.columns)
+    if n_ev == 0 or len(cal) == 0 or px_wide.shape[1] == 0:
+        return mat, max_ret, min_ret
     code_arr = events["code"].astype(str).values
     dt_arr = pd.to_datetime(events["dt"]).values
-    for i in range(n_ev):
-        if (i % 200 == 0) and (cancel_check is not None):
-            cancel_check()
-        c = code_arr[i]
-        if c not in cols:
-            continue
-        p = int(cal.searchsorted(dt_arr[i]))
-        if p >= len(cal) or cal[p] != dt_arr[i] or p + 1 >= len(cal):
-            continue
-        col = px_wide[c].values
-        buy = col[p + 1]
-        if not np.isfinite(buy) or buy <= 0:
-            continue
+    if cancel_check is not None:
+        cancel_check()
+    # 列位置（缺失标的 → -1）与信号日位置（-1=不在日历上）
+    col_pos = px_wide.columns.get_indexer(pd.Index(code_arr))
+    p_pos = cal.get_indexer(pd.DatetimeIndex(dt_arr))
+    ok = (col_pos >= 0) & (p_pos >= 0) & (p_pos < len(cal))
+    if not ok.any():
+        return mat, max_ret, min_ret
+    ev_idx = np.nonzero(ok)[0]
+    cc = col_pos[ev_idx]
+    pp = p_pos[ev_idx]
+    # 严格落在真实交易日上（与原实现 `cal[p] != dt → skip` 等价），且需存在 T+1
+    keep = (cal.take(pp) == pd.DatetimeIndex(dt_arr[ev_idx])) & (pp + 1 < len(cal))
+    if not keep.any():
+        return mat, max_ret, min_ret
+    ev_idx = ev_idx[keep]
+    cc = cc[keep]
+    pp = pp[keep]
+    F = px_wide.to_numpy(dtype=np.float64, copy=False)
+    n_row = F.shape[0]
+    buy = F[pp + 1, cc]
+    good = np.isfinite(buy) & (buy > 0.0)
+    block = np.full((ev_idx.size, max_k), np.nan)
+    with np.errstate(all="ignore"):
         for j in range(max_k):
-            q = p + 2 + j
-            if q < len(cal) and np.isfinite(col[q]):
-                mat[i, j] = col[q] / buy - 1.0
-        fin = mat[i][np.isfinite(mat[i])]
-        if fin.size:
-            max_ret[i] = float(fin.max())
-            min_ret[i] = float(fin.min())
+            q = pp + 2 + j
+            v = np.full(ev_idx.size, np.nan)
+            inb = q < n_row
+            if inb.any():
+                kk = np.nonzero(inb)[0]
+                v[kk] = F[q[kk], cc[kk]]
+            block[:, j] = v / buy - 1.0
+    block[~good] = np.nan
+    mat[ev_idx] = block
+    # 期内最大/最小收益（原实现：对每个事件的有限值取 max/min；全 NaN → NaN）
+    fin_ok = np.isfinite(block).any(axis=1)
+    if fin_ok.any():
+        sub = block[fin_ok]
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            max_ret[ev_idx[fin_ok]] = np.nanmax(sub, axis=1)
+            min_ret[ev_idx[fin_ok]] = np.nanmin(sub, axis=1)
     return mat, max_ret, min_ret
 
 
@@ -320,12 +350,15 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
                     cancel_check()
                 tgt = entry_rows + k  # T+1+k
                 ok = (tgt < n_row) & (entry_rows < n_row)
-                num = np.full((rows.size, n_col), np.nan, dtype=np.float64)
-                if ok.any():
-                    r_idx = np.nonzero(ok)[0]
-                    with np.errstate(all="ignore"):
-                        num[r_idx] = F[tgt[r_idx]] / F[entry_rows[r_idx]] - 1.0
-                num[flag] = np.nan  # 剔除当日触发股（保持 NaN）
+                if not ok.any():
+                    continue
+                # v1.18.35 性能：只对**有效配对日**（该日存在 T+1+k 价）构造子矩阵 ——
+                # 原实现对全部配对日分配 (n_pair_days × n_inst) 大矩阵（全 A 约
+                # 1172×5418 = 635 万），大 k 时绝大多数行整行无效仍参与 nanmean/median。
+                r_idx = np.nonzero(ok)[0]
+                with np.errstate(all="ignore"):
+                    num = F[tgt[r_idx]] / F[entry_rows[r_idx]] - 1.0
+                num[flag[r_idx]] = np.nan  # 剔除当日触发股（保持 NaN）
                 # 均值口径：先按日取截面均值，再对配对日平均
                 # （某配对日可能全部为 NaN——如该日所有个股都缺 T+1+k 价：nanmean 会发
                 #  RuntimeWarning「Mean of empty slice」，此处显式抑制，结果仍为 NaN）
