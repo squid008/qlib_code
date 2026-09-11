@@ -99,25 +99,60 @@ function esPointOf(r: TestResult) {
   return es.curve[es.curve.length - 1]
 }
 
+/**
+ * 取「当前判定持有期 k」对应的**日配对均值超额**（= 触发组 − 未触发组，同口径）。
+ *
+ * 为何需要它：中位数为正只说明"典型一次触发赚钱"，但若**跑不赢同期未触发组**，
+ * 那等于"随便买也比它强"，信号没有实用价值 → 故 v1.18.20 起把 `excess > 0` 纳入
+ * 「有效」的必要条件（反向则为 `excess < 0`）。
+ *
+ * 口径选择：用 `baseline.excess`（均值·日配对）而非 `excess_median`（中位数·事件级）——
+ * 前者直接对应"整体收益是否跑赢未触发组"，与用户直觉一致；后者作为参考在弹窗中可见。
+ * 无 `baseline`（旧结果 / 基准计算失败）时返回 null → 不加此门槛但明确标注。
+ */
+function esExcessOf(r: TestResult, k?: number | null): number | null {
+  const bl = r.event_study?.baseline
+  if (!bl || !bl.ks || !bl.excess) return null
+  const i = k == null ? bl.ks.length - 1 : bl.ks.indexOf(k)
+  if (i < 0 || i >= bl.excess.length) return null
+  const v = bl.excess[i]
+  return v == null ? null : v
+}
+
 /** 「待观察」的原因文案（0/1 信号走事件研究路径）：逐条对比门槛，指出差在哪一项。 */
-function watchReasonOfBinary(pt: NonNullable<ReturnType<typeof esPointOf>>) {
+function watchReasonOfBinary(
+  pt: NonNullable<ReturnType<typeof esPointOf>>,
+  ex: number | null,
+) {
   const med = pt.median ?? 0
   const win = pt.win ?? 0
   const pct = (v: number, d = 2) => `${(v * 100).toFixed(d)}%`
   const medOk = med >= 0.005
   const winOk = win >= 0.55
-  const medTxt = medOk ? `中位数 ${pct(med, 3)} ≥0.50% ✓` : `中位数 ${pct(med, 3)} <0.50%（差 ${pct(0.005 - med)}）✗`
+  const exOk = ex != null && ex > 0
+  const medTxt = medOk
+    ? `中位数 ${pct(med, 3)} ≥0.50% ✓`
+    : `中位数 ${pct(med, 3)} <0.50%（差 ${pct(0.005 - med)}）✗`
   const winTxt = winOk
     ? `绝对收益胜率 ${pct(win)} ≥55% ✓`
     : `绝对收益胜率 ${pct(win)} <55%（差 ${pct(0.55 - win)}）✗`
-  const why = !medOk && !winOk
-    ? '中位数与绝对收益胜率均未达标'
-    : !medOk ? '中位数未达标' : '绝对收益胜率未达标'
+  const exTxt =
+    ex == null
+      ? '超额 无法计算（无基准，未参与判定）—'
+      : exOk
+        ? `超额 ${ex >= 0 ? '+' : ''}${pct(ex)} >0 ✓`
+        : `超额 ${pct(ex)} ≤0（跑不赢未触发组，差 ${pct(-ex)}）✗`
+  const why = [
+    !medOk ? '中位数未达标' : '',
+    !winOk ? '绝对收益胜率未达标' : '',
+    ex != null && !exOk ? '超额为负（跑不赢未触发组）' : '',
+  ].filter(Boolean).join('、') || '未达任何有效判定条件'
   return [
     `结论：待观察（${why}）`,
-    `事件研究（持有 ${pt.k ?? '?'} 交易日，n=${pt.n ?? '?'}）：${medTxt}；${winTxt}`,
-    '「有效✓」需中位数 ≥0.50% 且绝对收益胜率 ≥55%；「彩票型」需 |中位数| <1% 且绝对收益胜率 45%~55% 且均值 >max(0.50%, 中位数×3)。',
-    '注：判定使用未舍入的原始值（上表绝对收益胜率已显示到 0.01%）。点右侧「事件研究」看各持有期明细。',
+    `事件研究（持有 ${pt.k ?? '?'} 交易日，n=${pt.n ?? '?'}）：${medTxt}；${winTxt}；${exTxt}`,
+    '「有效✓」需同时满足：中位数 ≥0.50%、绝对收益胜率 ≥55%、**超额（触发组−未触发组·日配对）>0**。',
+    '「彩票型」需 |中位数| <1% 且绝对收益胜率 45%~55% 且均值 >max(0.50%, 中位数×3)。',
+    '注：判定使用未舍入的原始值（上表绝对收益胜率已显示到 0.01%）。点右侧「事件研究」看各持有期明细与超额曲线。',
   ].join('\n')
 }
 
@@ -182,8 +217,18 @@ function verdictOf(r: TestResult): VerdictStats {
     const med = pt.median ?? 0
     const win = pt.win ?? 0
     const mean = pt.mean ?? 0
-    const esGood = med >= 0.005 && win >= 0.55
-    const esReverse = med <= -0.005 && win <= 0.45
+    // 超额（触发组 − 未触发组·日配对均值，与判定同一持有期 k）
+    const ex = esExcessOf(r, pt.k)
+    // v1.18.20：把「超额 >0」纳入「有效」的必要条件。
+    // 动机：中位数为正只说明"典型一次触发赚钱"，但若整体跑不赢同期未触发组，
+    // 等于"什么都不选也比它强"，信号没有实用价值（实测「趋势顶底离开底部」即此情形：
+    // 事件级均值远高于基准，但日配对超额为负 —— 收益靠少数密集触发日撑起）。
+    // 反向同理：因子反向有效时，触发组本应跑输（超额为负）。
+    // ex == null（无基准/旧结果）时不加此门槛，避免因基准计算失败而误伤全部结论。
+    const exOk = ex == null || ex > 0
+    const exRevOk = ex == null || ex < 0
+    const esGood = med >= 0.005 && win >= 0.55 && exOk
+    const esReverse = med <= -0.005 && win <= 0.45 && exRevOk
     const lottery =
       Math.abs(med) < 0.01 && win >= 0.45 && win <= 0.55 && mean > Math.max(0.005, med * 3)
     good = esGood
@@ -195,7 +240,7 @@ function verdictOf(r: TestResult): VerdictStats {
     else kind = 'watch'
     return {
       significant, goodBase, conflicting, goodReverseBase, dT, stable, good, goodReverse, kind,
-      watchReason: kind === 'watch' ? watchReasonOfBinary(pt) : undefined,
+      watchReason: kind === 'watch' ? watchReasonOfBinary(pt, ex) : undefined,
     }
   }
 
@@ -1243,7 +1288,7 @@ export default function SingleFactorTestPanel({
                           ) : verdictKind === 'good' ? (
                             <span
                               className="text-emerald-600 font-semibold"
-                              title="0/1 信号按事件研究判定（中位数 ≥0.5% 且绝对收益胜率 ≥55%）；连续因子按 IC/分位判定"
+                              title="0/1 信号按事件研究判定：中位数 ≥0.5%、绝对收益胜率 ≥55%，且超额（触发组 − 未触发组·日配对）>0 —— 三者需同时满足；连续因子按 IC/分位判定"
                             >
                               有效✓
                             </span>
@@ -1324,6 +1369,7 @@ export default function SingleFactorTestPanel({
             触发分组：0/1 信号为"因子值&gt;0.5"；连续因子按分位数分组（触发 = 前 20% 高分位，未触发 = 后 20% 低分位）。触发数为按剔除开关过滤后的数量（涨停/停牌判定统一为涨停价四舍五入口径，板块 10%/20%/30%）：信号日(T)涨停 = 选股过滤无前视；成交日(T+1)涨停与停牌 = 调仓日实际买不到，与回测一致。
             差值 = 触发均值 − 未触发均值（正数说明触发组未来收益更高）；收益按信号日收盘价买入、持有"周期"列对应天数计算（同因子不同周期逐行对比，可看持有期长短对预测力的影响）；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
             IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.05（即×100后≥5，日频口径，市值为例0.1以上即为稳定负向）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
+            0/1 信号的「有效✓」需<b>同时</b>满足三条：① 事件研究中位数 ≥0.50%；② 绝对收益胜率 ≥55%；③ <b>超额（触发组 − 未触发组·日配对）&gt;0</b>。第③条用于排除「虽然典型触发是赚的、但整体跑不赢什么都不选」的信号 —— 中位数为正只说明典型一次触发赚钱，若超额为负则说明收益靠少数「触发密集日」撑起、不具备可复制的横向选股能力（详见事件研究弹窗的超额曲线）。无基准（旧结果或基准计算失败）时不启用第③条。
             0/1 信号的分位收益列显示"信号组 vs 非信号组"的逐日截面收益均值双柱（每天先算各组平均未来收益，再对所有交易日取均值，防信号聚集虚高），悬停可查看两组数值与配对日差。
             分位收益：连续因子按每日横截面分 5 组（1=最低值组…5=最高值组），每组为日截面平均收益（每天先算组内均值、再对所有参与交易日取平均，与 0/1 双柱同口径，避免少数日子集中主导），柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益；勾选剔除开关时，分位样本先按剔除开关过滤再分组，悬停显示 5 组日截面收益与配对日数。
             若出现"方向矛盾"：diff 为正但 IC/ICIR 稳定为负，说明信号由少数触发日主导，逐日横截面方向相反，慎用。

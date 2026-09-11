@@ -260,14 +260,28 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
     if (!result || !lastPoint) return null
     const win = lastPoint.win ?? 0
     const med = lastPoint.median ?? 0
+    // 当前 k 的日配对超额（与判定同口径）；无基准时为 null（不加此条件）
+    const bl = result.baseline
+    const bi = bl && bl.ks ? bl.ks.indexOf(lastPoint.k) : -1
+    const ex = bi >= 0 ? (bl?.excess?.[bi] ?? null) : null
+    const pct = (v: number) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(3)}%`
     if (win >= 0.45 && win <= 0.55 && Math.abs(med) < 0.005) {
       return {
         tone: 'warn' as const,
         text: '绝对收益胜率约 50%、中位数≈0：无方向优势，均值几乎全部来自少数尾部事件（典型"彩票型"分布），不可作为稳定 alpha。',
       }
     }
+    // 中位数与胜率都好看，但跑不赢未触发组 → 不能算"正向事件效应"
+    if (med > 0 && win > 0.55 && ex != null && ex <= 0) {
+      return {
+        tone: 'warn' as const,
+        text:
+          `中位数为正、绝对收益胜率高于 50%，但日配对超额为负（${pct(ex)}）：` +
+          '触发组整体跑不赢同期未触发组 —— 收益靠少数「触发密集日」撑起，无横向选股价值，判定为「待观察」。',
+      }
+    }
     if (med > 0.01 && win > 0.55) {
-      return { tone: 'good' as const, text: '中位数为正且绝对收益胜率明显高于 50%：存在可复制的正向事件效应。' }
+      return { tone: 'good' as const, text: '中位数为正、绝对收益胜率明显高于 50%，且超额为正：存在可复制的正向事件效应。' }
     }
     if (med < -0.005) {
       return { tone: 'bad' as const, text: '中位数为负：多数触发事件是亏的，均值靠少数大赢家——需谨慎。' }
@@ -459,6 +473,30 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                   只有后两条同口径、可相减（差值见下方超额曲线）。
                 </span>
               </div>
+              {/* 触发集中度：配对日数 vs 事件数。两者相差越大，说明触发在时间上越集中，
+                  事件级均值越容易被少数「触发密集日」抬高（而日配对口径不受其影响）——
+                  这正是「事件级均值为正、日配对超额为负」这类现象的判读依据。 */}
+              {result?.baseline?.n_pair_days != null && (
+                <div className="text-slate-500 mb-1">
+                  配对日 <span className="font-semibold text-slate-700 dark:text-slate-200">{result.baseline.n_pair_days}</span> 天
+                  {' / '}
+                  事件 <span className="font-semibold text-slate-700 dark:text-slate-200">{result.n_events}</span> 个
+                  {result.baseline.n_pair_days > 0 && (
+                    <>
+                      {'　·　平均每个配对日触发 '}
+                      <span className="font-semibold text-slate-700 dark:text-slate-200">
+                        {(result.n_events / result.baseline.n_pair_days).toFixed(1)}
+                      </span>
+                      {' 个'}
+                    </>
+                  )}
+                  {(result.n_events / Math.max(1, result.baseline.n_pair_days)) >= 3 && (
+                    <span className="text-amber-600 dark:text-amber-400 ml-2">
+                      ⚠ 触发高度集中 —— 事件级均值易被少数密集触发日抬高，请以「日配对」超额为准
+                    </span>
+                  )}
+                </div>
+              )}
               <ResponsiveContainer width="100%" height={260}>
                 <LineChart data={chartData} margin={{ top: 5, right: 12, left: 0, bottom: 4 }}>
                   <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
