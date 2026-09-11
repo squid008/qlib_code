@@ -3,6 +3,24 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.25] - 2026-09-11
+
+### Performance
+- **常量指数不再被广播成整列，`Power(x, 2)` 类节点提速 15×，大公式端到端 −3.9%**（`factors/panel_expr.py`，**数值零变化**）：
+  - **定位**：cProfile 的 `tottime` 里 `_operator.pow` 长期是异常项（v1.18.23 实测 0.248s/84 次 ≈ 3ms/次，是 `add` 的 15 倍）。给剖面脚本加「调用者追溯」后确认调用方是 **pandas `_evaluate_standard`**（`pandas/core/computation/expressions.py:67`，算术分派的 numexpr 回退分支）——本机 **`numexpr` 未安装**，故所有逐元素算术都落到 `operator.*`。
+  - **根因**：`panel_expr._eval_op` 的 `pow` 分支先经 `_as_series(b, template)` 把常量指数**广播成整列 Series**，于是 `np.power` 走「**数组指数**」的逐元素通用 `pow()` 循环，丢掉 numpy/glibc 对「**标量指数**」的特化。42000 行实测：
+    - `np.power(nd, 2.0)` 标量 **0.0119ms**（glibc `y==2 → x*x`）｜`np.power(nd, 2.0 数组)` **0.7852ms**｜`np.power(Ser, Ser2)` **0.8990ms**｜`np.power(Ser, 2.0)` **0.0586ms**
+  - **扫描确认影响面**：新增 `ai_test/scan_pow_exponents.py`（深度感知解析）→ CUP_POOL **84 个 `Power` 节点，指数 100% 是常量 `2`**（`Pow(`/`^` 均 0 次）。
+  - **改法（6 行）**：pow 分支保留标量形态 —— `b_scalar = b if (np.isscalar(b) and not isinstance(b, (str, bytes))) else None`，`return np.power(a, b if b_scalar is None else b_scalar)`。仅 b 是标量时 `template` 必为 `a`，故 `_align` 后同 index，取标量无语义损失。
+  - **为什么只改 pow**：实测 `add/sub/mul/div/ge` 的「广播后」反而**略快**（0.0578 vs 0.0625ms）——pandas 内部同样要广播；这个红利是 **glibc 对标量指数 2 的 `x*x` 特化**独有，并非普遍的广播开销问题。
+  - **实测（同进程 A/B，新增 `ai_test/bench_pow_scalar.py`：把 `panel_expr` 视角下 `np.isscalar` 换恒 False 精确复现旧分支，同 config 取 3 次最小）**：CUP_POOL / 300 只 / 2021-06~2026-06 / **354794 行** → **12.980s → 12.480s（−0.500s，−3.9%）**；定向剖面同 config：`_operator.pow` **0.120s → 0.008s（84 次，单次 1.43ms → 0.095ms，15.0×）**。
+  - **数值验证**：`snapshot_panel.py --tag powfix2 --compare powbase` → **18 列全部 `exact=True`（maxabs=0、nan_mismatch=0）**。机理上标量路径走 `x*x`（精确），数组路径是 1ulp 级通用 `pow`；输出统一 `_cast_output_f32`（float32）后差异不可见。改前快照 36.09s vs 改后 34.91s / 35.25s，方向一致。
+- 版本 1.18.24 → 1.18.25。
+
+### Notes
+- 本次**只动 `panel_expr.py` 的一处 pow 分支**，`ops_ext` 内核与其它算子均未动；不含 `Power` 的公式，结果与耗时都不受影响。
+- 评估后未做：**安装 numexpr**（`pandas` 会改走 numexpr 后端，可能改变逐位结果，与"与 qlib/聚盟逐位对账"的口径冲突；且单算子调用下 numexpr 自身开销可能吃掉收益）。
+
 ## [1.18.24] - 2026-09-11
 
 ### Fixed

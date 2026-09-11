@@ -739,6 +739,11 @@ class PanelEvaluator:
         if op in _BIN_ELEM or op in _BIN_CMP:
             a, b = args
             template = a if isinstance(a, pd.Series) else b
+            # 常量右操作数（如 Power(x, 2) 的指数 2）：单独留下标量形态。
+            # 若被 _as_series 广播成整列数组，np.power 会走「数组指数」的逐元素通用 pow，
+            # 丢掉 numpy/glibc 对**标量指数**的特化（实测 42000 行：0.899ms → 0.059ms，15×）。
+            # 仅 b 是标量时 template 必为 a，故 _align 后 b 与 a 同 index，取标量无对齐损失。
+            b_scalar = b if (np.isscalar(b) and not isinstance(b, (str, bytes))) else None
             a = _as_series(a, template)
             b = _as_series(b, template)
             a, b = _align(a, b)
@@ -747,7 +752,7 @@ class PanelEvaluator:
                 if fn in ("add", "sub", "mul", "div"):
                     return getattr(a, fn)(b)
                 if fn == "pow":
-                    return np.power(a, b)
+                    return np.power(a, b if b_scalar is None else b_scalar)
                 if fn == "max":
                     return a.where(a >= b, b)
                 if fn == "min":
