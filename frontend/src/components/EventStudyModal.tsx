@@ -233,16 +233,16 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
     if (win >= 0.45 && win <= 0.55 && Math.abs(med) < 0.005) {
       return {
         tone: 'warn' as const,
-        text: '胜率约 50%、中位数≈0：无方向优势，均值几乎全部来自少数尾部事件（典型"彩票型"分布），不可作为稳定 alpha。',
+        text: '绝对收益胜率约 50%、中位数≈0：无方向优势，均值几乎全部来自少数尾部事件（典型"彩票型"分布），不可作为稳定 alpha。',
       }
     }
     if (med > 0.01 && win > 0.55) {
-      return { tone: 'good' as const, text: '中位数为正且胜率明显高于 50%：存在可复制的正向事件效应。' }
+      return { tone: 'good' as const, text: '中位数为正且绝对收益胜率明显高于 50%：存在可复制的正向事件效应。' }
     }
     if (med < -0.005) {
       return { tone: 'bad' as const, text: '中位数为负：多数触发事件是亏的，均值靠少数大赢家——需谨慎。' }
     }
-    return { tone: 'plain' as const, text: '中位数与胜率处于临界区间，建议结合概率表与明细复核。' }
+    return { tone: 'plain' as const, text: '中位数与绝对收益胜率均处于临界区间，建议结合概率表与明细复核。' }
   }, [result, lastPoint])
 
   if (!open) return null
@@ -354,7 +354,7 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                 <div className="text-slate-400">均值 {pct(lastPoint?.mean)}</div>
               </div>
               <div className="rounded border border-slate-200 dark:border-slate-700 p-2">
-                <div className="text-slate-400">胜率（{lastPoint?.k ?? '-'}日）</div>
+                <div className="text-slate-400">绝对收益胜率（{lastPoint?.k ?? '-'}日）</div>
                 <div className="text-base font-semibold">{num(lastPoint?.win, 1)}</div>
                 <div className="text-slate-400">p25 {pct(lastPoint?.p25)}</div>
               </div>

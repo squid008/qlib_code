@@ -107,13 +107,17 @@ function watchReasonOfBinary(pt: NonNullable<ReturnType<typeof esPointOf>>) {
   const medOk = med >= 0.005
   const winOk = win >= 0.55
   const medTxt = medOk ? `中位数 ${pct(med, 3)} ≥0.50% ✓` : `中位数 ${pct(med, 3)} <0.50%（差 ${pct(0.005 - med)}）✗`
-  const winTxt = winOk ? `胜率 ${pct(win)} ≥55% ✓` : `胜率 ${pct(win)} <55%（差 ${pct(0.55 - win)}）✗`
-  const why = !medOk && !winOk ? '中位数与胜率均未达标' : !medOk ? '中位数未达标' : '胜率未达标'
+  const winTxt = winOk
+    ? `绝对收益胜率 ${pct(win)} ≥55% ✓`
+    : `绝对收益胜率 ${pct(win)} <55%（差 ${pct(0.55 - win)}）✗`
+  const why = !medOk && !winOk
+    ? '中位数与绝对收益胜率均未达标'
+    : !medOk ? '中位数未达标' : '绝对收益胜率未达标'
   return [
     `结论：待观察（${why}）`,
     `事件研究（持有 ${pt.k ?? '?'} 交易日，n=${pt.n ?? '?'}）：${medTxt}；${winTxt}`,
-    '「有效✓」需中位数 ≥0.50% 且胜率 ≥55%；「彩票型」需 |中位数| <1% 且胜率 45%~55% 且均值 >max(0.50%, 中位数×3)。',
-    '注：判定使用未舍入的原始值（上表胜率已显示到 0.01%）。点右侧「事件研究」看各持有期明细。',
+    '「有效✓」需中位数 ≥0.50% 且绝对收益胜率 ≥55%；「彩票型」需 |中位数| <1% 且绝对收益胜率 45%~55% 且均值 >max(0.50%, 中位数×3)。',
+    '注：判定使用未舍入的原始值（上表绝对收益胜率已显示到 0.01%）。点右侧「事件研究」看各持有期明细。',
   ].join('\n')
 }
 
@@ -211,7 +215,7 @@ function verdictOf(r: TestResult): VerdictStats {
 // 即触发组 vs 未触发组的逐日截面收益均值）。两类分组口径不同故不混填 Q 列，避免"触发组与最低值组同列"的误读。
 const EXPORT_HEADERS = [
   '因子', '来源', '周期(天)', '公式', '覆盖率(%)', '信号', '触发数', '触发收益(%)', '未触发数', '未触发收益(%)',
-  '差值(%)', '日差值(%)', 't(HAC)', '胜率(%)', '配对日数', 'p值',
+  '差值(%)', '日差值(%)', 't(HAC)', '相对收益胜率(%)', '配对日数', 'p值',
   'Q1收益(%)', 'Q2收益(%)', 'Q3收益(%)', 'Q4收益(%)', 'Q5收益(%)',
   '触发组日均(%)', '未触发组日均(%)',
   'IC', 'RankIC', 'ICIR', '结论', '事件中位数(%)',
@@ -1064,7 +1068,7 @@ export default function SingleFactorTestPanel({
                 <th className="text-right pl-2">结论</th>
                 <th
                   className="text-right px-1"
-                  title="事件研究：持有 = 该行「周期」时的收益中位数（仅 0/1 信号有值；悬停可看均值/胜率/样本数）"
+                  title="事件研究：持有 = 该行「周期」时的收益中位数（仅 0/1 信号有值；悬停可看均值/绝对收益胜率/样本数）"
                 >
                   中位数
                 </th>
@@ -1113,7 +1117,7 @@ export default function SingleFactorTestPanel({
                           `按日配对检验（${r.daily_n} 个交易日）：`,
                           `日差值均值 ${fmt(r.daily_diff, 3)}%`,
                           `HAC t=${fmtRaw(dT, 2)}（普通 t=${r.daily_t != null ? fmtRaw(r.daily_t, 2) : '-'}）`,
-                          `胜率 ${fmt(r.daily_win, 2)}%`,
+                          `相对收益胜率 ${fmt(r.daily_win, 2)}%（触发组日均 > 未触发组日配对的交易日占比）`,
                           `lag-1 自相关=${r.daily_acf1 ?? '-'}${s1 == null ? '' : s1 ? '（显著）' : '（不显著）'}`,
                           `lag-5 自相关=${r.daily_acf5 ?? '-'}${s5 == null ? '' : s5 ? '（显著）' : '（不显著）'}`,
                           `方差稳定性 后半/前半=${r.daily_var_ratio != null ? `${r.daily_var_ratio}x` : '-'}`,
@@ -1187,7 +1191,7 @@ export default function SingleFactorTestPanel({
                           <div>{fmt(r.diff, 3)}</div>
                           {r.daily_diff != null && (
                             <div className="text-slate-400 font-mono text-[9px] font-normal whitespace-nowrap">
-                              日{fmt(r.daily_diff, 3)} · t={dT != null ? fmtRaw(dT, 1) : '-'} · 胜{r.daily_win != null ? fmt(r.daily_win, 1) : '-'}%
+                              日{fmt(r.daily_diff, 3)} · t={dT != null ? fmtRaw(dT, 1) : '-'} · 日胜{r.daily_win != null ? fmt(r.daily_win, 1) : '-'}%
                             </div>
                           )}
                         </td>
@@ -1239,7 +1243,7 @@ export default function SingleFactorTestPanel({
                           ) : verdictKind === 'good' ? (
                             <span
                               className="text-emerald-600 font-semibold"
-                              title="0/1 信号按事件研究判定（中位数 ≥0.5% 且胜率 ≥55%）；连续因子按 IC/分位判定"
+                              title="0/1 信号按事件研究判定（中位数 ≥0.5% 且绝对收益胜率 ≥55%）；连续因子按 IC/分位判定"
                             >
                               有效✓
                             </span>
@@ -1253,14 +1257,14 @@ export default function SingleFactorTestPanel({
                           ) : verdictKind === 'lottery' ? (
                             <span
                               className="text-amber-600 font-semibold"
-                              title="事件研究：中位数≈0、胜率≈50%，但均值显著更高 —— 收益主要由极少数尾部事件（连板/妖股）撑起，多数触发只是白干，不可作为稳定 alpha。点右侧「事件研究」看分布明细"
+                              title="事件研究：中位数≈0、绝对收益胜率≈50%，但均值显著更高 —— 收益主要由极少数尾部事件（连板/妖股）撑起，多数触发只是白干，不可作为稳定 alpha。点右侧「事件研究」看分布明细"
                             >
                               彩票型
                             </span>
                           ) : verdictKind === 'timeConcentrated' ? (
                             <span
                               className="text-amber-600 font-semibold"
-                              title="总差值方向显著但按日配对检验不显著（|t|&lt;2 或胜率≈50%）：差值主要由少数交易日驱动，逐日无稳定超额，慎用"
+                              title="总差值方向显著但按日配对检验不显著（|t|&lt;2 或相对收益胜率≈50%）：差值主要由少数交易日驱动，逐日无稳定超额，慎用"
                             >
                               时间集中
                             </span>
@@ -1287,7 +1291,7 @@ export default function SingleFactorTestPanel({
                             return (
                               <span
                                 className={cls}
-                                title={`事件研究（持有 ${pt.k} 交易日，n=${pt.n}）：中位数 ${fmt(med, 3)}%｜均值 ${fmt(pt.mean, 3)}%｜胜率 ${((pt.win ?? 0) * 100).toFixed(2)}%`}
+                                title={`事件研究（持有 ${pt.k} 交易日，n=${pt.n}）：中位数 ${fmt(med, 3)}%｜均值 ${fmt(pt.mean, 3)}%｜绝对收益胜率 ${((pt.win ?? 0) * 100).toFixed(2)}%`}
                               >
                                 {fmt(med, 3)}
                               </span>
@@ -1323,7 +1327,7 @@ export default function SingleFactorTestPanel({
             0/1 信号的分位收益列显示"信号组 vs 非信号组"的逐日截面收益均值双柱（每天先算各组平均未来收益，再对所有交易日取均值，防信号聚集虚高），悬停可查看两组数值与配对日差。
             分位收益：连续因子按每日横截面分 5 组（1=最低值组…5=最高值组），每组为日截面平均收益（每天先算组内均值、再对所有参与交易日取平均，与 0/1 双柱同口径，避免少数日子集中主导），柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益；勾选剔除开关时，分位样本先按剔除开关过滤再分组，悬停显示 5 组日截面收益与配对日数。
             若出现"方向矛盾"：diff 为正但 IC/ICIR 稳定为负，说明信号由少数触发日主导，逐日横截面方向相反，慎用。
-            若出现"时间集中"：diff 方向显著但按日配对检验（日均差值 t 值 / 胜率）不显著，说明总差值被少数交易日拉高，逐日看并无稳定超额（典型如暴跌抄底类信号），慎用。结论判定与提示中的 t 均为 Newey-West HAC 稳健 t。
+            若出现"时间集中"：diff 方向显著但按日配对检验（日均差值 t 值 / 相对收益胜率）不显著，说明总差值被少数交易日拉高，逐日看并无稳定超额（典型如暴跌抄底类信号），慎用。结论判定与提示中的 t 均为 Newey-West HAC 稳健 t。
             有效(反向)：连续因子高分位组收益显著更低（diff&lt;0）、IC/ICIR 稳定为负且方向一致，说明因子与未来收益负相关，反向使用（因子值低时买入）有效，常见于市值、流动性等负向因子。
           </p>
         </div>
