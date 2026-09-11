@@ -3,6 +3,28 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.26] - 2026-09-11
+
+### Performance
+- **T3：RMQ 内核族改为「按需建层 + 2D 一次 gather」，内核 −48.3%、大公式端到端 −4.5%**（`factors/ops_ext.py`，**数值零变化**）：
+  - **消融先定位**（新增 `ai_test/ablate_dyn_rmq.py`）：`_dyn_rmq_vec_seg` 18 次调用 **1.370s（占整次 panel 9.9%）**，其中 `_build_sparse` **0.598s（43.7%）**、查询循环 **0.772s（56.3%）**；关键数字是 **n=431028、窗口最长 400 → 只需 9 层，却固定建了 19 层**。
+  - **根因两条**：① `_build_sparse` 永远建 `log2(n)+1` 层，长面板上远超实际需要的 `floor(log2(max(lens)))+1` 层；② 查询是「按层遍历 + 每层全表布尔掩码」，其中 10 个空层纯属空转。
+  - **改法**：`_build_sparse` / `_build_argmax_sparse` 改为返回 **2D 连续数组** `st[k, i]` 并支持 `k_max` 只建所需层；4 个查询函数（`_dyn_rmq_vec`、`_dyn_rmq_vec_seg`、`_dyn_arg_idx_vec`、`_dyn_arg_idx_vec_seg`）改成一次 fancy-index：
+    `func(st[js, idx-lens+1], st[js, idx-(1<<js)+1])` —— 把「19 层各自的掩码 + gather + scatter」压成「一次 gather + 一次 func」。
+  - **数值为什么必然一致**：`fmin/fmax` 满足结合律/交换律且忽略 NaN，一次查询只是合并两个长 `2^js` 的重叠块；新旧读的是**同一批稀疏表元素**（`st[js, l]` 与 `st[js, r-span+1]`），故逐位相同。`_dyn_best_idx` 的「等值取最右」语义也未动。
+  - **评估后改方案**：原计划做「分块 RMQ（块内 O(n)、跨块 O(1)）」，但消融显示真实问题只是**层数超配 + 逐层空转** → 用更小、更安全的改动即拿到收益，无需引入块分解。
+  - **实测**（新增 `ai_test/bench_t3_ab.py`：同进程交替 A/B，把旧实现逐字复制进来运行期覆盖 6 个符号，**主判据 = 内核累计耗时**，剔除面板级噪声）：
+    - **RMQ 内核族（6 个符号）**：**1.728s → 0.894s（−48.3%）**（样本 旧 1.74/1.73/1.85、新 0.92/0.89/0.95）
+    - **整次 panel 墙钟**（300 只 / 2021-06~2026-06 / 354794 行）：**12.39s → 11.83s（−4.5%）**（样本 旧 12.39~12.67、新 11.83~12.22，区间不重叠）
+    - 消融口径：`_dyn_rmq_vec_seg` 单函数 **1.370s → 0.759s**；建的层数 **19（固定）→ 5~9（按需）**
+  - **验证**：`tests/test_ops_ext_vec.py` **26 passed**（该文件自带独立朴素实现 `_ref_dyn_minmax` 做逐位置 RMQ 对拍）；`snapshot_panel.py --tag t3 --compare powbase` → **18 列全部 `exact=True`（maxabs=0、nan_mismatch=0）**。
+  - ⚠ **方法学教训（重要）**：首次用「整次 panel 墙钟」做判据时得出**相反结论（新 −5.7%）** —— 本机上跨进程/跨次运行的 panel wall 波动达 **±10%**（同一快照负载实测 34.91 / 35.25 / 39.81s）。改成**同进程交替 + 内核累计耗时**后信噪比立刻正常。**面板级墙钟不足以判断 5% 量级的改动。**
+- 版本 1.18.25 → 1.18.26。
+
+### Notes
+- 本次只动 `ops_ext.py` 的稀疏表构建与 4 个 RMQ 查询函数；`fmin/fmax` 语义、段边界 clip、`_dyn_best_idx`「等值取最右」全部未动。
+- 附带内存收益：`n=431028` 时稀疏表由 19 层（float64 ≈65MB；argmax 版 int64 亦 ≈65MB）降到 9 层（≈31MB）。
+
 ## [1.18.25] - 2026-09-11
 
 ### Performance

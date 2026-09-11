@@ -131,20 +131,29 @@ class BARSSINCEN(ExpressionOps):
 
 # ---------------- 动态窗口算子（O(n log n) / O(n)） ----------------
 
-def _build_sparse(vals: np.ndarray, func) -> list:
-    """构建稀疏表（RMQ 预处理），func 是 np.fmin / np.fmax（忽略 NaN）。"""
+def _build_sparse(vals: np.ndarray, func, k_max: int = None) -> np.ndarray:
+    """构建稀疏表（RMQ 预处理），func 是 np.fmin / np.fmax（忽略 NaN）。
+
+    返回 **2D 连续数组** `st[k, i]` = func(vals[i .. i + 2^k - 1])（尾部越界沿用原值），
+    便于一次 fancy-index 查询（`st[js, l]`）替代"层列表 + 逐层布尔掩码"。
+
+    `k_max`：只建到第 k_max 层（含）。查询端只读 `k <= floor(log2(max(lens)))` 这些层，
+    固定建 `log2(n)+1` 层在长面板上是纯浪费 —— v1.18.26 实测 n=431028、窗口最长 400
+    → 19 层里只有 9 层会被读到。
+    """
     n = len(vals)
     if n == 0:
-        return []
+        return np.zeros((0, 0), dtype=float)
     k = int(np.log2(n)) + 1
-    st = [np.asarray(vals, dtype=float).copy()]
+    if k_max is not None:
+        k = max(1, min(k, int(k_max) + 1))
+    st = np.empty((k, n), dtype=float)
+    st[0] = vals
     for j in range(1, k):
-        prev = st[-1]
+        prev = st[j - 1]
         half = 1 << (j - 1)
-        cur = np.empty(n, dtype=float)
-        cur[: n - half] = func(prev[: n - half], prev[half:])
-        cur[n - half :] = prev[n - half :]
-        st.append(cur)
+        st[j, : n - half] = func(prev[: n - half], prev[half:])
+        st[j, n - half :] = prev[n - half :]
     return st
 
 
@@ -161,29 +170,22 @@ def _win_lens_vec(nvals: np.ndarray) -> np.ndarray:
 def _dyn_rmq_vec(vals: np.ndarray, nvals: np.ndarray, func) -> np.ndarray:
     """动态窗口最值的全向量化版本（等价逐行 _rmq 循环）。
 
-    每个位置的窗口为 [i-N_i+1, i]（N_i 由 nvals 给出）。RMQ 层级 j 随窗口长度
-    而异，按层级分组后每层一次批量查询（总 O(n·log n) 的向量化实现，消灭
-    逐位置 Python 循环）。
+    每个位置的窗口为 [i-N_i+1, i]（N_i 由 nvals 给出）。窗口左端 l=idx-lens+1、
+    右端 r=idx，取 `js=floor(log2(lens))` 层的两个长 2^js 的重叠块合并 ——
+    fmin/fmax 满足结合律且忽略 NaN，故与逐位置 RMQ 逐位一致。
+
+    v1.18.26（T3）：把「只建到 `js.max()` 层」+「合并成一次 fancy-index 查询」合起来
+    做 —— 原先是建 `log2(n)+1` 层再逐层布尔掩码，长面板上大量层纯属空转。
     """
     n = len(vals)
     if n == 0:
         return np.zeros(0, dtype=float)
-    st = _build_sparse(vals, func)
     Ns = _win_lens_vec(nvals)
-    lens = np.minimum(Ns, np.arange(1, n + 1))  # 窗口实际长度（截到数组起点）
-    js = np.floor(np.log2(lens)).astype(np.int64)
     idx = np.arange(n)
-    l_arr = idx - lens + 1
-    out = np.full(n, np.nan, dtype=float)
-    for k, layer in enumerate(st):
-        sel = js == k
-        if not sel.any():
-            continue
-        span = 1 << k
-        lk = l_arr[sel]
-        rk = idx[sel]
-        out[sel] = func(layer[lk], layer[rk - span + 1])
-    return out
+    lens = np.minimum(Ns, idx + 1)  # 窗口实际长度（截到数组起点）
+    js = np.floor(np.log2(lens)).astype(np.int64)
+    st = _build_sparse(vals, func, int(js.max()) if n else 0)
+    return func(st[js, idx - lens + 1], st[js, idx - (1 << js) + 1])
 
 
 def barslast_vec(vals: np.ndarray) -> np.ndarray:
@@ -343,51 +345,43 @@ def _dyn_best_idx(ai: np.ndarray, bi: np.ndarray, vals: np.ndarray, is_max: bool
     return np.where(b_wins, bi, ai)
 
 
-def _build_argmax_sparse(vals: np.ndarray, is_max: bool) -> list:
+def _build_argmax_sparse(vals: np.ndarray, is_max: bool, k_max: int = None) -> np.ndarray:
     """稀疏表（RMQ）变体：每层存"区间极值的最右下标"，同值取更右（等值取最近）。
 
-    与 _build_sparse（存极值）同构；层合并比较见 _dyn_best_idx。NaN 位用 -1 占位。
+    与 `_build_sparse`（存极值）同构，同样返回 **2D 连续数组** 且支持 `k_max` 只建所需层；
+    层合并比较见 `_dyn_best_idx`。NaN 位用 -1 占位。
     """
     n = len(vals)
     if n == 0:
-        return []
+        return np.zeros((0, 0), dtype=np.int64)
     k = int(np.log2(n)) + 1
-    st = [np.where(np.isnan(vals), -1, np.arange(n))]
+    if k_max is not None:
+        k = max(1, min(k, int(k_max) + 1))
+    st = np.empty((k, n), dtype=np.int64)
+    st[0] = np.where(np.isnan(vals), -1, np.arange(n))
     for j in range(1, k):
-        prev = st[-1]
+        prev = st[j - 1]
         half = 1 << (j - 1)
-        cur = np.empty(n, dtype=np.int64)
-        cur[: n - half] = _dyn_best_idx(prev[: n - half], prev[half:], vals, is_max)
-        cur[n - half :] = prev[n - half :]
-        st.append(cur)
+        st[j, : n - half] = _dyn_best_idx(prev[: n - half], prev[half:], vals, is_max)
+        st[j, n - half :] = prev[n - half :]
     return st
 
 
 def _dyn_arg_idx_vec(vals: np.ndarray, nvals: np.ndarray, is_max: bool) -> np.ndarray:
     """动态窗口"最右极值下标"：每位置 i 返回窗口 [i-N_i+1, i] 内极值所在的最大下标。
 
-    与 _dyn_rmq_vec 同构的全向量化（按窗口长度分组、每层一次批量查询，O(n log n)）；
-    不同处是稀疏表存"极值下标"而非极值，直接给出 HHVBARS/LLVBARS 需要的 j。
+    与 `_dyn_rmq_vec` 同构的全向量化；不同处是稀疏表存"极值下标"而非极值，直接给出
+    HHVBARS/LLVBARS 需要的 j。v1.18.26（T3）：同样改为「按需建层 + 一次 fancy-index 查询」。
     """
     n = len(vals)
     if n == 0:
         return np.zeros(0, dtype=np.int64)
-    st = _build_argmax_sparse(vals, is_max)
     Ns = _win_lens_vec(nvals)
-    lens = np.minimum(Ns, np.arange(1, n + 1))
-    js = np.floor(np.log2(lens)).astype(np.int64)
     idx = np.arange(n)
-    l_arr = idx - lens + 1
-    out = np.full(n, -1, dtype=np.int64)
-    for k, layer in enumerate(st):
-        sel = js == k
-        if not sel.any():
-            continue
-        span = 1 << k
-        lk = l_arr[sel]
-        rk = idx[sel]
-        out[sel] = _dyn_best_idx(layer[lk], layer[rk - span + 1], vals, is_max)
-    return out
+    lens = np.minimum(Ns, idx + 1)
+    js = np.floor(np.log2(lens)).astype(np.int64)
+    st = _build_argmax_sparse(vals, is_max, int(js.max()) if n else 0)
+    return _dyn_best_idx(st[js, idx - lens + 1], st[js, idx - (1 << js) + 1], vals, is_max)
 
 
 def dyn_bars_vec(vals: np.ndarray, nvals: np.ndarray, is_max: bool) -> np.ndarray:
@@ -1096,26 +1090,19 @@ def _dyn_rmq_vec_seg(vals, nvals, func, seg_start) -> np.ndarray:
 
     仅读取"完整落在某段内"的稀疏表区间（l, r 均在段内 → 其 2 个子区间也都在段内），
     故与逐段建表结果一致；fmin/fmax 满足结合律，建表顺序不影响数值。
+
+    v1.18.26（T3）：改为「按需建层 + 一次 fancy-index 查询」。实测 n=431028、窗口最长 400
+    → 原先建 19 层（实际只用得到 9 层），且查询循环在 10 个空层上空转。
     """
     n = len(vals)
     if n == 0:
         return np.zeros(0, dtype=float)
-    st = _build_sparse(vals, func)
     Ns = _win_lens_vec(nvals)
     idx = np.arange(n)
     lens = np.minimum(Ns, idx - seg_start + 1)
     js = np.floor(np.log2(lens)).astype(np.int64)
-    l_arr = idx - lens + 1
-    out = np.full(n, np.nan, dtype=float)
-    for k, layer in enumerate(st):
-        sel = js == k
-        if not sel.any():
-            continue
-        span = 1 << k
-        lk = l_arr[sel]
-        rk = idx[sel]
-        out[sel] = func(layer[lk], layer[rk - span + 1])
-    return out
+    st = _build_sparse(vals, func, int(js.max()) if n else 0)
+    return func(st[js, idx - lens + 1], st[js, idx - (1 << js) + 1])
 
 
 def dyn_window_sum_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
@@ -1138,26 +1125,19 @@ def dyn_window_count_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.
 
 
 def _dyn_arg_idx_vec_seg(vals, nvals, is_max, seg_start) -> np.ndarray:
-    """段感知的"最右极值下标"稀疏表查询（返回全局下标，落在段内）。"""
+    """段感知的"最右极值下标"稀疏表查询（返回全局下标，落在段内）。
+
+    v1.18.26（T3）：同 `_dyn_rmq_vec_seg` —— 改为「按需建层 + 一次 fancy-index 查询」。
+    """
     n = len(vals)
     if n == 0:
         return np.zeros(0, dtype=np.int64)
-    st = _build_argmax_sparse(vals, is_max)
     Ns = _win_lens_vec(nvals)
     idx = np.arange(n)
     lens = np.minimum(Ns, idx - seg_start + 1)
     js = np.floor(np.log2(lens)).astype(np.int64)
-    l_arr = idx - lens + 1
-    out = np.full(n, -1, dtype=np.int64)
-    for k, layer in enumerate(st):
-        sel = js == k
-        if not sel.any():
-            continue
-        span = 1 << k
-        lk = l_arr[sel]
-        rk = idx[sel]
-        out[sel] = _dyn_best_idx(layer[lk], layer[rk - span + 1], vals, is_max)
-    return out
+    st = _build_argmax_sparse(vals, is_max, int(js.max()) if n else 0)
+    return _dyn_best_idx(st[js, idx - lens + 1], st[js, idx - (1 << js) + 1], vals, is_max)
 
 
 def dyn_bars_vec_seg(vals, nvals, is_max, seg_start) -> np.ndarray:
