@@ -3,6 +3,34 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.30] - 2026-09-11
+
+### Performance
+- **T5：`_roll` / `_ref` 去 pandas groupby，改「段作列矩阵 + 一次 2D 滚动」与 numpy 段内移位**（`factors/panel_expr.py`，**数值零变化**）：
+  - **背景**：v1.18.29 之后，`Mean/Max/Min/Sum/Std/Var`（`_roll`）与 `Ref`（`_ref`）仍走 **pandas groupby**，实测单次 **`_roll` 55~66ms、`_ref` 22.9ms**（354794 行 / 300 段），远超内核应有个量级。
+  - **微基准定因**（新增 `ai_test/bench_roll.py`、`bench_roll2.py`）：
+    - `groupby(level=0).size()` **18.5ms** vs `groupby(整数段码).size()` **4.4ms** ⇒ 取 MultiIndex level=0（object 字符串）作组键要物化 35 万个字符串；
+    - 全表 `pd.Series(arr).rolling(40).mean()` 只要 **11.0ms**，而 groupby 版 **58.7ms** ⇒ **81% 是 groupby 调度开销**；
+    - **整数段码 groupby 虽然逐位相同但更慢（100ms）** ⇒ 此路否掉；
+    - **逐段 pandas rolling 只快 1.1~1.3×** ⇒ 否掉。
+  - **关键判据（决定方案）**：pandas 的 `max/min` 是**窗口局部**的 → 「全表 rolling + 只修段首 N-1 行」可行（56.3ms，收益小）；但 **`mean/std/sum/var` 是「增量累积、历史相关」** 的 —— 实测**即使只看「距段首 ≥ N-1 的不跨段安全区」，全表值与逐段值也有 33 万处不同**（对拍 FAIL）。故只有「让每条段的累积链独立」才既保逐位又快。
+  - **采纳方案 G**：把各段**当作矩阵的列**（段尾 NaN 补齐），对整块做**一次** `DataFrame.rolling(N, min_periods=1)` —— **pandas 的 2D 滚动内核逐列独立累积**（每列自有累积链与 NaN 重置）⇒ 与逐段 rolling **逐位相同**，且 **2.1~2.6×**（mean 59.7→23.4ms、max 63.0→25.3、std 55.1→22.7、sum 48.9→18.8、min 55.3→24.7、var 47.8→22.5）。
+  - **`_ref` 改动**：shift 只是搬值、**不含任何算术** ⇒ 逐段纯 numpy 移位与 `groupby(level=0).shift(k)` **逐位相同**（实测），而 **22.9ms → 1.6ms（14×）**。
+  - **新增** `_shift_seg()` / `_seg_grid()`（+ `_SEG_RC_CACHE`，与 `_SEG_CACHE` 同生命周期、由 `eval_expr` 开头一并清空）/ `_seg_roll()`；`_ref` / `_roll` 改写为 numpy 段感知路径，sr 两路同步。
+  - ⚠ **矩阵分块**：按「块内最长段 × 块内段数 ≤ 4n」贪心分块，避免「一只超长 + 一堆超短」时矩阵爆内存（段在扁平数组中连续 ⇒ 块对应一段连续区间，直接切片、无需布尔掩码）。
+  - ⚠ **顺带消除了一个已知坑**：原 `_roll` 的 sr 分支注释写着「必须 `sort=False`，否则 rolling 按组字典序排序、按位置回填会整池错位（实测 csi300+BJ 复现）」；新实现是**位置序**构造，天然没有这个隐患。
+  - **实测**：
+    - **CUP_POOL 同脚本 A/B（各 3 轮，样本区间不重叠）**：墙钟 **9.618s → 9.225s（−0.393s，−4.1%）**、`_apply` 独占 **7.153s → 6.615s（−0.538s，−7.5%）**（与「Mean 6 次 + Ref 19 次」的实测量互相印证）
+    - **用户三因子**（300 只 / 2021-06-01~2026-06-01）：`趋势顶底离开底部` **1.873s → 1.201s（−36%）**、`CWH_MIX_D_PCT_R40` **2.789s → 2.050s（−26%）**；按算子：`Max` 104→**39ms**、`Min` 92→**39ms**、`Mean` 82→**29ms**（趋势顶底）；`Ref`（8 次）26.4→**9.8ms**、`Mean` 74.5→**31.6ms**（CWH）
+    - **快照墙钟**：29.10s（v1.18.28）→ **27.84s（−4.3%）**
+  - **验证（三重）**：① **新增 `ai_test/test_roll_ref_seg.py` 3214 用例 0 失败** —— 新实现 vs **旧 pandas 实现逐位对拍**（7 种段布局含**段长 1/2、长短悬殊（1,2,3,400,5,6,250,8）**、4 种 NaN 率含**全 NaN**、sr 两路 × 6 个滚动函数 × 8 个 N（1/2/3/5/40/100/250/999，**含 N 远大于段长**）+ 9 个 k（−300/−5/−1/0/1/2/5/40/500），比对**数值 / index / dtype**）；② `backend/tests` **180 passed**；③ `snapshot_panel.py --tag roll30 --compare powbase` → **18 列全部 `exact=True`**。
+- 版本 1.18.29 → 1.18.30。
+
+### Notes
+- 本次只动 `panel_expr.py` 的 `_ref` / `_roll`（+ 三个新辅助函数、一个新缓存）；`_by_group` / 各 DYN 内核 / 二元算子分支**未动**。
+- **`_by_group` 的「调度开销」本轮实测已近于零**：CWH 上 `_by_group` 0.888s、其 17 个 seg_fn 调用者自时间和 0.873s ⇒ 残差 ≈ 0.015s（0.5%）—— 那条 33% 是**内核本身**，不是调度（v1.18.22 的 seg_fn 快捷路径 + v1.18.23 的段数组缓存已把调度消掉）。
+- 未做（本轮未触及、且在 CUP_POOL / 用户三因子中均未出现）：`IdxMax/IdxMin/Rank/Slope/Rsquare/Resi/Quantile` 仍走 `_by_group(s, None, _seg_window_op)` 的**逐段 pandas 循环**，可用同一套矩阵法改造。
+
 ## [1.18.29] - 2026-09-11
 
 ### Performance

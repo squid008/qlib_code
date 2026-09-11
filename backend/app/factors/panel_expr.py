@@ -904,6 +904,7 @@ class PanelEvaluator:
         self._node_cache.clear()
         self._node_bytes = 0
         _SEG_CACHE.clear()          # 段边界缓存与节点缓存同生命周期（v1.18.22）
+        _SEG_RC_CACHE.clear()       # 段→矩阵布局缓存（v1.18.30，同上）
         node = parse_expr(expr)
         # SR 语义：single_test 在 suspend_remove=True 时用 _sr_wrap_expr 把因子表达式
         # 的所有叶子字段包上 SR(...)。含 SR 的表达式整棵在"close 有效行压缩序列"上
@@ -927,40 +928,47 @@ class PanelEvaluator:
 
 
 def _ref(s: pd.Series, k: int, sr: bool) -> pd.Series:
-    """Ref(X, k)：k>0 过去、k<0 未来。sr=True 时按有效行（非 NaN）shift。"""
+    """Ref(X, k)：k>0 过去、k<0 未来。sr=True 时按有效行（非 NaN）shift。
+
+    性能（v1.18.30）：原 `s.groupby(level=0, group_keys=False).shift(k)` 实测 354794 行 /
+    300 段要 **22.9ms**，而"逐段纯 numpy 搬值"只要 **1.6ms（14×）** —— shift 不出算术、
+    只搬值，两者**逐位相同**（实测对拍通过）。大头同在 groupby（MultiIndex level 取组键）。
+    """
+    idx = s.index
+    if len(s) == 0:
+        return pd.Series(np.nan, index=idx, dtype=np.float64)
     if sr:
         valid = s[s.notna()]
         if valid.empty:
             return pd.Series(np.nan, index=s.index, dtype=np.float64)
-        r = valid.groupby(level=0, group_keys=False).shift(k)
+        core = _shift_seg(valid.to_numpy(dtype=np.float64), valid.index, k)
         out = pd.Series(np.nan, index=s.index, dtype=np.float64)
-        out.loc[valid.index] = r.to_numpy(dtype=np.float64)
+        out.loc[valid.index] = core
         return out
-    return s.groupby(level=0, group_keys=False).shift(k)
+    return pd.Series(_shift_seg(s.to_numpy(dtype=np.float64), idx, k), index=idx)
 
 
 def _roll(s: pd.Series, func: str, N: int, sr: bool) -> pd.Series:
-    """滚动算子；sr=True 剔除 NaN 行滚动后回填全日历（停牌日 NaN）。"""
+    """滚动算子；sr=True 剔除 NaN 行滚动后回填全日历（停牌日 NaN）。
+
+    性能（v1.18.30）：原 `s.groupby(level=0, sort=False).rolling(N, min_periods=1)` 实测
+    354794 行 / 300 段 **55~66ms/次**，其中 **81% 是 groupby 本身**（取 MultiIndex level=0
+    作组键要物化 35 万个 object 字符串：`groupby(level=0).size()` 就要 18.5ms，而全表
+    `pd.Series(arr).rolling(40).mean()` 只需 11ms）。改走 `_seg_roll`（段作列矩阵 + 一次
+    DataFrame.rolling）→ **22~29ms/次（2.1~2.6×）**，且逐位相同。
+    """
+    idx = s.index
+    if len(s) == 0:
+        return pd.Series(np.nan, index=idx, dtype=np.float64)
     if sr:
         valid = s[s.notna()]
         if valid.empty:
             return pd.Series(np.nan, index=s.index, dtype=np.float64)
-        r = getattr(valid.groupby(level=0, sort=False).rolling(N, min_periods=1), func)()
+        core = _seg_roll(valid.to_numpy(dtype=np.float64), N, func, valid.index)
         out = pd.Series(np.nan, index=s.index, dtype=np.float64)
-        # groupby-rolling 输出 index 比 valid 多一层组 key：用位置赋值规避。
-        # 必须 sort=False：rolling 默认按组字典序排序，组输入顺序非字典序时
-        # 按位置 to_numpy 回填会整池错位（跨股票窗口混算，实测 csi300+BJ 复现）。
-        out.loc[valid.index] = r.to_numpy(dtype=np.float64)
+        out.loc[valid.index] = core
         return out
-    r = getattr(s.groupby(level=0, sort=False).rolling(N, min_periods=1), func)()
-    # groupby-rolling 对 Series 输出会保留原 MultiIndex + 组前缀；
-    # 位置与 s 对齐时直接取数值回填，保证 index = s.index
-    if len(r) == len(s):
-        out = pd.Series(r.to_numpy(dtype=np.float64), index=s.index)
-    else:
-        out = s.copy()
-        out.loc[:] = np.nan
-    return out
+    return pd.Series(_seg_roll(s.to_numpy(dtype=np.float64), N, func, idx), index=idx)
 
 
 def _ema_apply_series(x: pd.Series, N, tdx: bool) -> pd.Series:
@@ -1189,6 +1197,99 @@ def _seg_arrays(idx, n):
 
 
 _SEG_CACHE: "dict" = {}
+
+
+def _shift_seg(arr: np.ndarray, idx, k: int) -> np.ndarray:
+    """段内移位（= `groupby(level=0).shift(k)`，k>0 取过去、k<0 取未来）。
+
+    shift 只是搬值、**不含任何算术** → 与 pandas 的 groupby-shift **逐位相同**（实测对拍
+    通过），但 22.9ms → 1.6ms（14×），因为省掉了 groupby 的组键物化。
+    """
+    n = arr.shape[0]
+    out = np.full(n, np.nan, dtype=np.float64)
+    if n == 0:
+        return out
+    k = int(k)
+    if k == 0:
+        out[:] = arr
+        return out
+    _bnd, ss, se = _seg_arrays(idx, n)          # se 为「不含」端点
+    i = np.arange(n, dtype=np.int64)
+    j = i - k
+    # 仅当源位置仍落在**同一段**内才搬（跨段即补 NaN，与 shift 逐段语义一致）
+    ok = (j >= ss) & (j < se)
+    out[i[ok]] = arr[j[ok]]
+    return out
+
+
+def _seg_grid(idx, n: int):
+    """段→矩阵布局索引（缓存）：(row, col, counts, seg_pos)。row[i]=i 在段内偏移、
+    col[i]=段序号、counts[c]=第 c 段行数、seg_pos 为各段在扁平数组中的起点（含末位 n）。"""
+    key = (id(idx), n)
+    hit = _SEG_RC_CACHE.get(key)
+    if hit is not None and hit[0] is idx:
+        return hit[1], hit[2], hit[3], hit[4]
+    _bnd, ss, _se = _seg_arrays(idx, n)         # 段边界与 _by_group 共用同一份缓存
+    row = np.arange(n, dtype=np.int64) - ss
+    newseg = np.empty(n, dtype=bool)
+    newseg[0] = True
+    if n > 1:
+        np.not_equal(ss[1:], ss[:-1], out=newseg[1:])
+    col = np.cumsum(newseg, dtype=np.int64) - 1
+    nseg = int(col[-1]) + 1 if n else 0
+    counts = np.bincount(col, minlength=nseg).astype(np.int64) if n else np.zeros(0, np.int64)
+    seg_pos = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
+    if len(_SEG_RC_CACHE) > 64:   # 兜底上限（正常每表达式只有 1~2 个 idx）
+        _SEG_RC_CACHE.clear()
+    _SEG_RC_CACHE[key] = (idx, row, col, counts, seg_pos)
+    return row, col, counts, seg_pos
+
+
+_SEG_RC_CACHE: "dict" = {}
+
+
+def _seg_roll(arr: np.ndarray, N: int, func: str, idx) -> np.ndarray:
+    """按段独立的 pandas rolling（等价 `groupby(level=0).rolling(N, min_periods=1).<f>()`）。
+
+    做法（v1.18.30）：把各段**当作矩阵的列**（段尾 NaN 补齐），对整块做**一次**
+    `DataFrame.rolling(N, min_periods=1)` —— pandas 的 2D 滚动内核**逐列独立累积**
+    （每列有自己的累积链与 NaN 重置），所以与"逐段 rolling"**逐位相同**
+    （实测 mean/max/min/sum/std/var 六个函数全部逐位相同），而 **2.1~2.6×** 快。
+
+    ⚠ **不能**改成「全表 rolling + 只修段首 N-1 行」：pandas 的 mean/std/sum/var 是
+    **增量累积、历史相关**的 —— 实测即使只看「距段首 ≥ N-1 的不跨段安全区」，全表值
+    与逐段值仍有 **33 万处**不同（对拍 FAIL）；只有 max/min 是窗口局部的（那条路可行，
+    但收益更小：56.3ms vs 本方案 25ms）。
+    """
+    n = arr.shape[0]
+    out = np.full(n, np.nan, dtype=np.float64)
+    if n == 0:
+        return out
+    row, col, counts, seg_pos = _seg_grid(idx, n)
+    nseg = counts.shape[0]
+    # 分块：控制「块内最长段 × 块内段数」规模，避免"一只超长 + 一堆超短"时矩阵爆内存
+    budget = max(n, 1) * 4
+    c0 = 0
+    while c0 < nseg:
+        c1 = c0
+        m = 0
+        while c1 < nseg:
+            m2 = m if int(counts[c1]) < m else int(counts[c1])
+            if c1 > c0 and (c1 + 1 - c0) * m2 > budget:
+                break
+            m = m2
+            c1 += 1
+        # 段在扁平数组中连续 → 块对应一段连续区间，直接切片（无需布尔掩码）
+        a0, a1 = int(seg_pos[c0]), int(seg_pos[c1])
+        r = row[a0:a1]
+        c = col[a0:a1] - c0
+        mat = np.full((m, c1 - c0), np.nan, dtype=np.float64)
+        mat[r, c] = arr[a0:a1]
+        res = getattr(pd.DataFrame(mat).rolling(N, min_periods=1), func)().to_numpy(
+            dtype=np.float64)
+        out[a0:a1] = res[r, c]
+        c0 = c1
+    return out
 
 
 def _segment_bnd(idx) -> np.ndarray:
