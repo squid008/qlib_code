@@ -40,7 +40,19 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
   const [error, setError] = useState<string | null>(null)
   const [maxK, setMaxK] = useState(40)
   // 曲线显隐（点击图例切换）。key = recharts 的 dataKey；两张图共用一份状态（键名不重叠）。
-  const [hidden, setHidden] = useState<Record<string, boolean>>({})
+  //
+  // 默认隐藏 mean / p25 / p75（v1.18.21）：主图只留**成对可比较**的线 ——
+  //   ① 日配对：trigger_pair ↔ baseline（可相减 → 差值即下方超额曲线）
+  //   ② 事件级中位数：median ↔ baseline_median
+  // `mean`（事件级均值）是**该口径下的孤立线**（没有同口径基准），留在主图里极易被
+  // 误用来减 `baseline`（日配对口径）—— 本项目已发生过一次（用户据 6.326% − 3.067%
+  // 得出不存在的"+3.259% 超额"）。其诊断价值（与 median 的差距 = 是否「彩票型」）
+  // 由弹窗的 upside 表与概率表承担，故默认收起、点击图例可随时开启。
+  const [hidden, setHidden] = useState<Record<string, boolean>>({
+    mean: true,
+    p25: true,
+    p75: true,
+  })
   const toggleSeries = useCallback((key?: string | number) => {
     if (typeof key !== 'string' || !key) return
     setHidden((h) => ({ ...h, [key]: !h[key] }))
@@ -468,9 +480,10 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
               <div className="text-slate-500 mb-1">
                 持有期收益曲线（T+1 收盘买入，持有 k 个交易日；单位 %）
                 <span className="text-amber-600 dark:text-amber-400 ml-2">
-                  ⚠ 两套口径不可混算：「均值」「中位数」= 事件级（每个事件 1 票，易被少数暴涨事件主导）；
-                  「触发组(日配对)」与「基准(日配对)」= 每个配对日 1 票。
-                  只有后两条同口径、可相减（差值见下方超额曲线）。
+                  ⚠ 两套口径不可混算。默认只显示两对<b>同口径</b>曲线：
+                  ① 「触发组(日配对)」↔「基准·未触发组(日配对)」（每个配对日 1 票，可相减 → 差值见下方超额曲线）；
+                  ② 「中位数(事件级)」↔「基准中位数·未触发组(事件级)」（每个事件 1 票）。
+                  「均值(事件级)」与 p25/p75 无同口径基准，已默认隐藏，点击图例可开启——<b>请勿用它减「基准(日配对)」</b>。
                 </span>
               </div>
               {/* 触发集中度：配对日数 vs 事件数。两者相差越大，说明触发在时间上越集中，
@@ -510,15 +523,17 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                     wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
                     onClick={(d) => toggleSeries((d as { dataKey?: string }).dataKey)}
                   />
-                  {/* 日配对口径一对（同口径、可相减 → 差值即下方超额曲线）：
-                      触发组实线 + 未触发组虚线。基准线紧跟其后便于横向比对。 */}
-                  <Line type="monotone" dataKey="trigger_pair" name="触发组(日配对·与基准同口径)" stroke="#7c3aed" dot={false} strokeWidth={2} hide={!!hidden.trigger_pair} />
-                  <Line type="monotone" dataKey="baseline" name="基准(未触发组·日配对)" stroke="#94a3b8" dot={false} strokeWidth={1.5} strokeDasharray="4 4" hide={!!hidden.baseline} />
-                  <Line type="monotone" dataKey="baseline_median" name="基准中位数(未触发组·事件级)" stroke="#0e7490" dot={false} strokeWidth={1.5} strokeDasharray="2 2" hide={!!hidden.baseline_median} />
-                  <Line type="monotone" dataKey="p75" name="p75" stroke="#cbd5e1" dot={false} strokeWidth={1} hide={!!hidden.p75} />
-                  <Line type="monotone" dataKey="p25" name="p25" stroke="#cbd5e1" dot={false} strokeWidth={1} hide={!!hidden.p25} />
+                  {/* 成对口径（每组两条同口径、可互比）：
+                      ① 日配对：trigger_pair ↔ baseline —— 可相减，差值即下方「超额曲线」
+                      ② 事件级中位数：median ↔ baseline_median
+                      默认隐藏的 mean / p25 / p75 见 hidden 初始值处的说明。 */}
+                  <Line type="monotone" dataKey="trigger_pair" name="触发组(日配对)" stroke="#7c3aed" dot={false} strokeWidth={2} hide={!!hidden.trigger_pair} />
+                  <Line type="monotone" dataKey="baseline" name="基准·未触发组(日配对)" stroke="#94a3b8" dot={false} strokeWidth={1.5} strokeDasharray="4 4" hide={!!hidden.baseline} />
                   <Line type="monotone" dataKey="median" name="中位数(事件级)" stroke="#0284c7" dot={false} strokeWidth={2} hide={!!hidden.median} />
-                  <Line type="monotone" dataKey="mean" name="均值(事件级·勿直接减基准)" stroke="#dc2626" dot={false} strokeWidth={2} hide={!!hidden.mean} />
+                  <Line type="monotone" dataKey="baseline_median" name="基准中位数·未触发组(事件级)" stroke="#0e7490" dot={false} strokeWidth={1.5} strokeDasharray="2 2" hide={!!hidden.baseline_median} />
+                  <Line type="monotone" dataKey="p75" name="p75(事件级·默认隐藏)" stroke="#cbd5e1" dot={false} strokeWidth={1} hide={!!hidden.p75} />
+                  <Line type="monotone" dataKey="p25" name="p25(事件级·默认隐藏)" stroke="#cbd5e1" dot={false} strokeWidth={1} hide={!!hidden.p25} />
+                  <Line type="monotone" dataKey="mean" name="均值(事件级·无同口径基准)" stroke="#dc2626" dot={false} strokeWidth={2} strokeDasharray="6 2" hide={!!hidden.mean} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
