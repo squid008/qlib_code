@@ -1189,19 +1189,35 @@ def _build_rightmost_arg_sparse(vals, is_max):
     return st
 
 
+# 满窗口两套实现的切换阈值（2026-09-11 实测交叉点，n=354794 / 300 段 / 段长 1182）：
+#   新版 van Herk/Gil-Werman：耗时与 N 无关、恒定 ~40ms，但小 N 有固定开销
+#     （`axis=1` 逐行累积，行越短行数越多，行级开销累积）；
+#   旧版 分块滑窗 argmax：O(n·N)，N 小反而更省。
+#   N = 4/8/12/16/24/32/64/100/250/400 实测（新 / 旧，ms）：
+#     44.5/26.1、43.9/32.6、41.4/39.0、42.5/44.9、44.9/55.7、42.7/65.3、
+#     40.9/93.7、40.2/133.3、40.7/360.8、37.5/528.4
+#   → 交叉点 N≈13，取 16 作阈值（两侧留余量，使本次改动整体不劣化）。
+_BARS_SLIDE_MAX_N = 16
+
+
 def _rightmost_bars_seg(vals, seg_start, nvals, is_max) -> np.ndarray:
     """固定窗口 HHVBARS/LLVBARS 段感知：i - (段内窗口最右极值下标)。
 
-    性能（v1.18.22）：原实现用**完整稀疏表**做 RMQ（`_build_rightmost_arg_sparse`，
-    O(n·log n) 内存+时间）再逐层查询（log n 层 × 每层全表掩码扫描 + 花式索引），
-    实测 28 万行 ≈ 140ms/次；而 HHVBARS/LLVBARS 的窗口 N 是**完全固定的**，
-    根本不需要 RMQ。现改为两段式：
-      · 满窗口（段内偏移 r >= N-1）：**分块** `sliding_window_view` + **反转 argmax**
-        取"最右"极值（等价于原 `_rightmost_arg_best` 的"同值取更右"），纯 O(n) 向量化；
-        分块是为了避免 (n × N) 的窗口视图造成内存爆炸。
-      · 不满窗口（每段前 N-1 个，数量极少）：段内前缀累积（`fmax/fmin.accumulate`
-        + 下标 `maximum.accumulate`）取"到 r 为止的最右极值"。
-    NaN 语义与原实现逐位一致：NaN 位不参与比较；窗口内全 NaN 或 vals[i] 为 NaN → 输出 NaN。
+    性能演进（HHVBARS/LLVBARS 的窗口 N 完全固定，不需要 RMQ）：
+      · 初版：完整稀疏表做 RMQ（O(n·log n)）→ 实测 28 万行 ≈ 140ms/次。
+      · v1.18.22：满窗口改「**分块** `sliding_window_view` + 反转 argmax」—— 但每行要扫
+        过 N 个元素，整体是 **O(n·N)** 的内存流量（实测 n=354794：N=5 30ms、N=60 86ms、
+        N=125 191ms、N=250 306ms、N=400 520ms，**随 N 近似线性**），N 一大就吃掉整次求值 30%。
+      · v1.18.27（本版）：满窗口换 **van Herk / Gil-Werman「块内前缀-后缀极值」** ——
+        按 N reshape 成 (m, N)，行内做前缀/后缀累积，长度恰为 N 的窗口被两块无缝拼成
+        （推导见下方注释）→ 每点 O(1)、总 **O(n)**、纯向量化、复杂度与 N 无关。
+      · 不满窗口（每段前 N-1 个，数量极少）：段内前缀累积（`fmax/fmin.accumulate` +
+        下标 `maximum.accumulate`）取"到 r 为止的最右极值"（两版未变）。
+    "最右极值下标"（同值取最右）三处共用同一套：前缀用「等值 + `maximum.accumulate`」
+    （得到"最后一次达成"）、后缀在反转坐标下用「**严格递增(jump)** + `maximum.accumulate`」
+    （得到"首次达成" → 映射回原坐标即最右）、两半合并用 `_rightmost_arg_best`。
+    满窗口按 N 二选一：`N <= _BARS_SLIDE_MAX_N` 走分块滑窗、否则走 van Herk（见常量注释）。
+    NaN 语义不变：NaN 位不参与比较；窗口内无有限值或 vals[i] 为 NaN → 输出 NaN。
     """
     n = len(vals)
     if n == 0:
@@ -1218,25 +1234,65 @@ def _rightmost_bars_seg(vals, seg_start, nvals, is_max) -> np.ndarray:
         v = np.where(np.isnan(vals), -np.inf if is_max else np.inf, vals)
         full = r >= (N - 1)                  # 满窗口：窗口 = [i-N+1, i]，完全落在段内
         if full.any():
-            # 分块滑窗（块大小取 1<<16，控制 (block × N) 视图规模）
-            BLK = 1 << 16
-            fi = np.flatnonzero(full)
-            swv = np.lib.stride_tricks.sliding_window_view
-            for s in range(0, fi.size, BLK):
-                seg_idx = fi[s:s + BLK]
-                a = int(seg_idx[0]) - (N - 1)
-                b = int(seg_idx[-1]) + 1
-                win = swv(v[a:b], N)                          # (b-a-N+1, N)
-                rev = win[:, ::-1]                            # 反转后 argmax 即"最右"
-                pos_in_win = (N - 1) - (
-                    rev.argmax(axis=1) if is_max else rev.argmin(axis=1))
-                # win 的第 k 行覆盖全局 [a+k, a+k+N-1]，故位置 i 对应 k = i-a-N+1
-                k = seg_idx - (a + N - 1)
-                # 全局下标 = (i-N+1) + pos_in_win  ← win 起始 a+k = i-N+1
-                best[seg_idx] = seg_idx - (N - 1) + pos_in_win[k]
-                # 窗口内全 NaN → 无有效极值
-                has = np.isfinite(win).any(axis=1)
-                best[seg_idx] = np.where(has[k], best[seg_idx], -1)
+            if N <= _BARS_SLIDE_MAX_N:
+                # 小 N：分块滑窗 + 反转 argmax。它虽是 O(n·N)，但 N 小时常数更小，
+                # 比 van Herk 的固定开销划算（交叉点实测见 _BARS_SLIDE_MAX_N 注释）。
+                BLK = 1 << 16
+                fi = np.flatnonzero(full)
+                swv = np.lib.stride_tricks.sliding_window_view
+                for s in range(0, fi.size, BLK):
+                    seg_idx = fi[s:s + BLK]
+                    a = int(seg_idx[0]) - (N - 1)
+                    b = int(seg_idx[-1]) + 1
+                    win = swv(v[a:b], N)                      # (b-a-N+1, N)
+                    rev = win[:, ::-1]                        # 反转后 argmax 即"最右"
+                    pos_in_win = (N - 1) - (
+                        rev.argmax(axis=1) if is_max else rev.argmin(axis=1))
+                    k = seg_idx - (a + N - 1)
+                    best[seg_idx] = seg_idx - (N - 1) + pos_in_win[k]
+                    has = np.isfinite(win).any(axis=1)        # 窗口内全 NaN → 无有效极值
+                    best[seg_idx] = np.where(has[k], best[seg_idx], -1)
+            else:
+                # van Herk / Gil-Werman「块内前缀-后缀极值」：
+                # 把 v 补齐到 N 的整数倍后 reshape 成 (m, N)，行内分别做前缀/后缀累积。
+                # 长度恰为 N 的窗口 [l, i] 中：l 落在块 q-1、i 落在块 q（或同块），而
+                #   suf(l) = [l, 块尾(l)]  ⊆ [l, i]
+                #   pre(i) = [块首(i), i]  ⊆ [l, i]
+                # 两者**无缝拼成** [l, i]（相邻块边界处端点相接、不重叠不留缝），故合并即
+                # 答案；且两半都不会越出窗口 → 天然满足"窗口不跨段"，无需按段建块。
+                m = (n + N - 1) // N
+                padded = np.full(m * N, -np.inf if is_max else np.inf, dtype=np.float64)
+                padded[:n] = v                 # 尾部填充只在最后一块，且不会被读到
+                A = padded.reshape(m, N)
+                cols = np.arange(N)
+                base = (np.arange(m) * N)[:, None]
+                acc = np.fmax.accumulate if is_max else np.fmin.accumulate
+
+                # 前缀：行内 [块首, j] 的"最右极值"下标（无有限值 → -1）
+                cumP = acc(A, axis=1)
+                okP = (A == cumP) & np.isfinite(cumP)
+                locP = np.maximum.accumulate(np.where(okP, cols, -1), axis=1)
+                pre_idx = np.where(locP >= 0, base + locP, -1).reshape(-1)
+
+                # 后缀：行内 [j, 块尾] 的"最右极值"下标。
+                # ⚠ 不能照搬前缀那套（"等值 + maximum.accumulate"）：前缀公式给的是
+                # "**最后一次**达成"，搬到反转坐标上得到的是原坐标的"**最左**"，
+                # 方向正好相反（此处曾写错，被 202 用例对拍抓出 68 处失败）。
+                # 后缀要的是"原坐标最右" = "反转坐标**最左**" = "**首次**达成"
+                # → 用**严格递增**（jump）判定，再取"最后一个 jump"即 Bpremax 首次达成位。
+                Ar = A[:, ::-1]
+                cumS = acc(Ar, axis=1)
+                prevS = np.empty_like(cumS)
+                prevS[:, 0] = -np.inf if is_max else np.inf
+                prevS[:, 1:] = cumS[:, :-1]
+                jumpS = (cumS > prevS) if is_max else (cumS < prevS)
+                jumpS[:, 0] = True                  # 定义：块内首元素视为一次 jump
+                lastJump = np.maximum.accumulate(np.where(jumpS, cols, -1), axis=1)
+                locS = (N - 1) - lastJump[:, ::-1]  # 反转坐标 → 原坐标；恒在 [j, 块尾] 内
+                suf_idx = (base + locS).reshape(-1)
+
+                fi = np.flatnonzero(full)
+                best[fi] = _rightmost_arg_best(suf_idx[fi - (N - 1)], pre_idx[fi], vals, is_max)
 
         # 不满窗口（每段前 N-1 个）：段内前缀"到 r 为止的最右极值"
         need = np.flatnonzero(~full)
