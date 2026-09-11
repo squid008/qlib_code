@@ -327,7 +327,24 @@ def _test_one(
     fv = df[col]
     result["coverage"] = round(float(fv.notna().mean()), 4)
 
-    sub = df[[col, "LABEL"]].dropna()
+    # v1.18.34 性能：位置索引化。原实现在 _exclude / 分位段里对百万行做 `df.loc[g.index]`
+    # （MultiIndex 对齐）——全 A 单因子 `_test_one`（20s）cProfile 实测：`Index._get_indexer`
+    # 2.7s + `ndarray.take` 2.5s + `_take_nd_ndarray` 1.2s + `MultiIndex.equals` 3.1s。
+    # 现改为：先用布尔掩码定位 df 行位置，后续一律 `Index.take(pos)` / numpy 花式索引
+    # （位置操作，无 hash 查找/对齐），并把所需行情与标签列预取为 numpy 视图。
+    _NR = {
+        c: df[c].to_numpy(copy=False)
+        for c in (col, "LABEL", "CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE",
+                  "T1_IS_ST", "LIMIT_UP", "T1_LIMIT_UP", "IS_ST")
+        if c in df.columns
+    }
+    _sub_pos = np.nonzero((~pd.isna(_NR[col])) & (~pd.isna(_NR["LABEL"])))[0]
+
+    def _frame(pos, cols):
+        """按 df 行位置取列构造小 DataFrame（index 与等价的 df.loc[...] 一致）。"""
+        return pd.DataFrame({c: _NR[c][pos] for c in cols}, index=df.index.take(pos))
+
+    sub = _frame(_sub_pos, (col, "LABEL"))
     result["n_obs"] = int(len(sub))
     if len(sub) == 0:
         result["error"] = "无有效配对样本（因子或未来收益为空）"
@@ -357,57 +374,68 @@ def _test_one(
     # 触发 vs 未触发：0/1 稀疏信号按 >0.5 分组；连续因子按分位数分组
     # （触发 = 前 20% 高分位，未触发 = 后 20% 低分位）。否则连续因子几乎全部落入
     # 触发组，触发/未触发统计失去意义。
+    _sv = _NR[col][_sub_pos]
     if result["is_binary"]:
-        trig = sub[sub[col] > 0.5]
-        not_trig = sub[sub[col] <= 0.5]
+        _m_trig = _sv > 0.5
+        _m_not = _sv <= 0.5
         result["grouping"] = "binary"
     else:
         q_hi = float(sub[col].quantile(0.8))
         q_lo = float(sub[col].quantile(0.2))
-        trig = sub[sub[col] >= q_hi]
-        not_trig = sub[sub[col] <= q_lo]
+        _m_trig = _sv >= q_hi
+        _m_not = _sv <= q_lo
         result["grouping"] = "quantile"
+    # 组样本以「df 行位置」表示，后续剔除/构造都在位置层面进行（无索引对齐）
+    trig_pos = _sub_pos[np.nonzero(_m_trig)[0]]
+    not_pos = _sub_pos[np.nonzero(_m_not)[0]]
     # 剔除（信号组与非信号组应用相同开关，保证两组样本口径一致，diff 才公平）：
     #   1) 信号日（T）涨停：选股过滤（涨停追高风险，信号日收盘后已知，无前视）
     #   2) 成交日（T+1）涨停：真实撮合约束（调仓日封板买不到），与回测 BoardAwareExchange 口径一致
     #   3) 成交日（T+1）停牌/无行情：同样买不到
 
-    def _exclude(g: pd.DataFrame):
-        """对一组样本应用剔除开关，返回 (组, T涨停数, T+1涨停数, 停牌数, ST/板块剔除数)。
+    def _exclude(pos: np.ndarray):
+        """对一组样本（df 行位置）应用剔除开关。
 
+        返回 (pos, T涨停数, T+1涨停数, 停牌数, ST/板块剔除数)。
         涨停判定优先交易所标签列（df 含 LIMIT_UP/T1_LIMIT_UP 时 mark_limit_up 自动走标签，
         覆盖 ST 5% / 退市整理 10% / 创业科创 20%）；ST/板块剔除只用 T+1 当日已发布状态（日截面，无未来函数）。
+        实现上按位置切片（`_frame` / numpy 掩码），避免原 `df.loc[g.index]` 的 MultiIndex 对齐。
         """
         lu_t = lu_t1 = susp = extra = 0
-        if len(g) > 0:
+        if pos.size:
             if exclude_limit_up_signal and "CLOSE" in df.columns and "CHANGE" in df.columns:
-                mask = mark_limit_up(df.loc[g.index], "CLOSE", "CHANGE")
+                mask = mark_limit_up(_frame(pos, ("CLOSE", "CHANGE", "LIMIT_UP")),
+                                     "CLOSE", "CHANGE").to_numpy()
                 lu_t = int(mask.sum())
-                g = g[~mask]
+                pos = pos[~mask]
             if exclude_limit_up_trade and "T1_CLOSE" in df.columns and "T1_CHANGE" in df.columns:
-                mask = mark_limit_up(df.loc[g.index], "T1_CLOSE", "T1_CHANGE")
+                mask = mark_limit_up(_frame(pos, ("T1_CLOSE", "T1_CHANGE", "LIMIT_UP", "T1_LIMIT_UP")),
+                                     "T1_CLOSE", "T1_CHANGE").to_numpy()
                 lu_t1 = int(mask.sum())
-                g = g[~mask]
+                pos = pos[~mask]
             if exclude_suspended and "T1_CLOSE" in df.columns:
-                mask = df.loc[g.index, "T1_CLOSE"].isna()
+                mask = pd.isna(_NR["T1_CLOSE"][pos])
                 susp = int(mask.sum())
-                g = g[~mask]
+                pos = pos[~mask]
             # ST/板块剔除：日截面（T+1 当日状态/所属板块），无未来函数
-            if (exclude_st_t1 or exclude_stock_gem or exclude_stock_kcb) and len(g):
-                codes = _inst_codes(df.loc[g.index])
-                keep = pd.Series(True, index=g.index)
+            if (exclude_st_t1 or exclude_stock_gem or exclude_stock_kcb) and pos.size:
+                keep = np.ones(pos.size, dtype=bool)
                 if exclude_st_t1 and "T1_IS_ST" in df.columns:
-                    keep &= ~(df.loc[g.index, "T1_IS_ST"] > 0.5)
-                if exclude_stock_gem:
-                    keep &= ~codes.str.startswith("SZ30")
-                if exclude_stock_kcb:
-                    keep &= ~codes.str.startswith("SH688")
+                    keep &= ~(_NR["T1_IS_ST"][pos] > 0.5)
+                if exclude_stock_gem or exclude_stock_kcb:
+                    codes = _inst_codes(pd.DataFrame(index=df.index.take(pos)))
+                    if exclude_stock_gem:
+                        keep &= ~codes.str.startswith("SZ30").to_numpy()
+                    if exclude_stock_kcb:
+                        keep &= ~codes.str.startswith("SH688").to_numpy()
                 extra = int((~keep).sum())
-                g = g[keep]
-        return g, lu_t, lu_t1, susp, extra
+                pos = pos[keep]
+        return pos, lu_t, lu_t1, susp, extra
 
-    trig, t_lu_t, t_lu_t1, t_susp, t_extra = _exclude(trig)
-    not_trig, n_lu_t, n_lu_t1, n_susp, n_extra = _exclude(not_trig)
+    trig_pos, t_lu_t, t_lu_t1, t_susp, t_extra = _exclude(trig_pos)
+    not_pos, n_lu_t, n_lu_t1, n_susp, n_extra = _exclude(not_pos)
+    trig = _frame(trig_pos, (col, "LABEL"))
+    not_trig = _frame(not_pos, (col, "LABEL"))
     # 触发样本索引出参（可选）：供调用方顺带做事件研究（见 run_single_factor_tests）
     if trig_index_out is not None:
         try:
@@ -538,8 +566,8 @@ def _test_one(
             meta_cols = [c for c in ("CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE",
                                      "LIMIT_UP", "T1_LIMIT_UP", "IS_ST", "T1_IS_ST")
                          if c in df.columns]
-            meta = df.loc[sub.index, meta_cols]
-            excl = pd.Series(False, index=sub.index)
+            meta = _frame(_sub_pos, meta_cols)
+            excl = pd.Series(False, index=meta.index)
             if exclude_limit_up_signal:
                 excl = excl | mark_limit_up(meta, "CLOSE", "CHANGE")
             if exclude_limit_up_trade:
@@ -555,7 +583,7 @@ def _test_one(
                     excl = excl | codes.str.startswith("SZ30")
                 if exclude_stock_kcb:
                     excl = excl | codes.str.startswith("SH688")
-            quint = sub.loc[~excl]
+            quint = sub.iloc[np.nonzero(~excl.to_numpy())[0]]
             dt_pos = quint.index.names.index("datetime")
             tmp = quint[[col, "LABEL"]].copy()
             tmp["_q"] = tmp.groupby(level=dt_pos)[col].transform(
