@@ -814,6 +814,7 @@ class PanelEvaluator:
         # 读盘 LRU，不受影响）。清空对数值零影响，只改缓存生命周期。
         self._node_cache.clear()
         self._node_bytes = 0
+        _SEG_CACHE.clear()          # 段边界缓存与节点缓存同生命周期（v1.18.22）
         node = parse_expr(expr)
         # SR 语义：single_test 在 suspend_remove=True 时用 _sr_wrap_expr 把因子表达式
         # 的所有叶子字段包上 SR(...)。含 SR 的表达式整棵在"close 有效行压缩序列"上
@@ -1071,6 +1072,36 @@ def _seg_window_op(op: str, v: np.ndarray, N: int, q=None) -> np.ndarray:
     raise ValueError(f"panel_expr 不支持 {op}")
 
 
+def _seg_arrays(idx, n):
+    """按 index 对象缓存 (bnd, seg_start, seg_end)。
+
+    性能（v1.18.22）：`_by_group` 在一次求值内被调上百次（每个动态节点一次），
+    每次都重算 `_segment_bnd(idx)` 与 `seg_start_arr/seg_end_arr`（后者是
+    `np.repeat` 全表分配，cProfile 实测 1747 次 / 0.178s ≈ 3.8%）。而同一个
+    evaluator 内 `idx` 是**稳定对象**（`_active_index` 已缓存），段划分完全不变，
+    故可复用。**缓存键用 `(id(idx), n)` 且缓存中持有 idx 引用** —— 持有引用保证
+    对象不被回收、`id` 不会被复用，从而杜绝"地址复用导致取错缓存"的隐患
+    （idx 本就在 evaluator 生命周期内常驻，不产生额外内存）。缓存由 `eval_expr`
+    开头清空（与 `_node_cache` 同生命周期）。
+    """
+    key = (id(idx), n)
+    hit = _SEG_CACHE.get(key)
+    if hit is not None and hit[0] is idx:
+        return hit[1], hit[2], hit[3]
+    from . import ops_ext
+
+    bnd = _segment_bnd(idx)
+    ss = ops_ext.seg_start_arr(bnd, n)
+    se = ops_ext.seg_end_arr(bnd, n)
+    if len(_SEG_CACHE) > 64:      # 兜底上限（正常每表达式只有 1~2 个 idx）
+        _SEG_CACHE.clear()
+    _SEG_CACHE[key] = (idx, bnd, ss, se)
+    return bnd, ss, se
+
+
+_SEG_CACHE: "dict" = {}
+
+
 def _segment_bnd(idx) -> np.ndarray:
     """计算按 level0（instrument）分组的段边界数组 bnd。
 
@@ -1168,12 +1199,8 @@ def _by_group(s: pd.Series, ns, fn, seg_fn=None) -> pd.Series:
         ns_arr = None
     else:
         ns_arr = ns.to_numpy(dtype=np.float64)
-    bnd = _segment_bnd(idx)
+    bnd, ss, se = _seg_arrays(idx, n)
     if seg_fn is not None:
-        from . import ops_ext
-
-        ss = ops_ext.seg_start_arr(bnd, n)
-        se = ops_ext.seg_end_arr(bnd, n)
         res = seg_fn(arr, ns_arr, ss, se)
         if res is not None:
             out = np.asarray(res, dtype=np.float64)

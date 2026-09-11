@@ -3,6 +3,26 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.23] - 2026-09-11
+
+### Performance
+- **T2/T4：缓存段边界与段起止数组，大公式再提速 5.7%（累计相对 v1.18.21 提速 14.0%）**（`factors/panel_expr.py`）：
+  - **定位过程**：`_by_group` 内部拆解得出「非 `_by_group` 部分」占端到端 53.8%，但那是个杂项桶，无法直接优化 → 改用 **cProfile 的 `tottime`**（函数自身耗时）拆成可行动条目。
+    - ⚠ cProfile 输出里 `builtin/interp` 占 **51%**，那是**插桩自身开销**（100 万次调用 × ~2.4μs），不代表真实耗时；但它暴露了"链路上有 100 万次 Python 调用"这个真实信号。
+  - **实际可优化项（Top tottime）**：`nt.stat` 0.203s/2400 次、`ndarray.repeat` 0.178s/1747 次（= `seg_start/end_arr`）、`re.Pattern.match` 0.133s/49321 次、`parse_prefix` 0.113s（后两者属 `parse_expr`，共 ~8.4%）、`_operator.pow` 0.248s/84 次。
+  - **实施**：新增 `_seg_arrays(idx, n)` —— 按 `(id(idx), n)` 缓存 `(bnd, seg_start, seg_end)`。`_by_group` 在一次求值内被调上百次（每个动态节点一次），而同一 evaluator 内 `idx` 是**稳定对象**（`_active_index` 已缓存）、段划分完全不变，故可复用。
+    - **安全性**：缓存键用 `id(idx)` 且**缓存中持有 `idx` 引用** —— 持有引用保证对象不被回收、`id` 不会被复用，**杜绝"地址复用取错缓存"**；且取出时再用 `hit[0] is idx` 身份校验。`idx` 本就在 evaluator 生命周期内常驻，无额外内存。缓存由 `eval_expr` 开头 `_SEG_CACHE.clear()` 清空（与 `_node_cache` 同生命周期），另有 64 项兜底上限。
+  - **收益实测**：base **8.36s → 7.88s（−0.48s，−5.7%）**；`hhvbars_seg` 0.86s、`dyn_ref_vec_seg` 0.89s、`_dyn_rmq_vec_seg` 0.82s、`llvbars_seg` 0.47s（四项合计 3.04s / 38.6%，仍为后续目标）。
+  - **累计**：v1.18.21 基线 9.16s → T1 后 8.36s → **T2 后 7.88s，相对原始 −14.0%**。
+  - **数值验证**：面板快照 `--tag after2 --compare before` → **8 列全部 `exact=True`（maxabs=0、nan_mismatch=0）**。
+
+### Notes
+- **评估后未做**：
+  - **`_field_bin_meta` 的 `os.stat` 缓存** —— `_BIN_META_CACHE` 已存在（v1.18.4，含 mtime 校验），那 2400 次 `stat` 是**必要的变更检测开销**，跳过它就检测不到数据更新，**不值得**。
+  - **`parse_expr` AST 缓存**（~8.4%）—— `parse_expr` 内部有全局 `_CANON` 结构去重表且每次解析开头 `clear()`，缓存树会引入**跨表达式 `Node.key` 冲突**的微妙风险，收益亦不确定，**暂缓**。
+- cProfile 分析脚本：`ai_test/profile_cprofile.py`（本地专用）。
+- 版本 1.18.22 → 1.18.23。
+
 ## [1.18.22] - 2026-09-11
 
 ### Performance
