@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 import { cancelEventStudy, createEventStudy, getEventStudyProgress } from '../api'
 import type { EventStudyRequest, EventStudyResult } from '../api'
+import { excessThresholdOf, pairStabilityOf } from './verdictRules'
 
 interface Props {
   open: boolean
@@ -21,6 +22,11 @@ interface Props {
   req: EventStudyRequest | null
   /** 单因子测试顺带算出的结果（v1.18.7）：有值时直接展示，不再提交任务（秒开） */
   data?: EventStudyResult | null
+  /**
+   * 该行的日配对稳定性字段（t / 胜率，v1.18.32）：与表格「结论」列共用同一套门槛
+   * （超额门槛 max(0.5%, 0.025%×k) + 稳定性 |t|≥2 或 日胜率≥55%），避免两处口径漂移。
+   */
+  pair?: { t?: number | null; win?: number | null } | null
 }
 
 type EstStatus = 'idle' | 'running' | 'success' | 'failed' | 'cancelled'
@@ -32,7 +38,7 @@ const pct = (v: number | null | undefined, nd = 3) =>
 const num = (v: number | null | undefined, nd = 1) =>
   v == null || !Number.isFinite(v) ? '-' : `${(v * 100).toFixed(nd)}%`
 
-export default function EventStudyModal({ open, onClose, factorName, req, data }: Props) {
+export default function EventStudyModal({ open, onClose, factorName, req, data, pair }: Props) {
   const [status, setStatus] = useState<EstStatus>('idle')
   const [progress, setProgress] = useState(0)
   const [message, setMessage] = useState('')
@@ -277,29 +283,55 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
     const bi = bl && bl.ks ? bl.ks.indexOf(lastPoint.k) : -1
     const ex = bi >= 0 ? (bl?.excess?.[bi] ?? null) : null
     const pct = (v: number) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(3)}%`
+    // v1.18.32：与表格「结论」列共用门槛 —— 超额按持有期缩放（max(0.5%, 0.025%×k)）+ 日配对稳定性
+    const thr = excessThresholdOf(lastPoint.k)
+    const thrTxt = `${(thr * 100).toFixed(3)}%`
+    const st = pairStabilityOf({ t: pair?.t, win: pair?.win })
+    const scope = `（本提示按当前「最长持有 ${lastPoint.k ?? '?'} 日」口径；表格结论按该行「周期」列口径）`
     if (win >= 0.45 && win <= 0.55 && Math.abs(med) < 0.005) {
       return {
         tone: 'warn' as const,
-        text: '绝对收益胜率约 50%、中位数≈0：无方向优势，均值几乎全部来自少数尾部事件（典型"彩票型"分布），不可作为稳定 alpha。',
+        text:
+          '绝对收益胜率约 50%、中位数≈0：无方向优势，均值几乎全部来自少数尾部事件（典型"彩票型"分布），不可作为稳定 alpha。' +
+          scope,
       }
     }
-    // 中位数与胜率都好看，但跑不赢未触发组 → 不能算"正向事件效应"
-    if (med > 0 && win > 0.55 && ex != null && ex <= 0) {
+    // 中位数与胜率都好看，但未达超额门槛 / 日配对不稳定 → 不能算"正向事件效应"
+    if (med > 0 && win > 0.55 && ((ex != null && ex < thr) || !st.ok)) {
+      const bad: string[] = []
+      if (ex != null && ex < thr) {
+        bad.push(
+          `日配对超额 ${pct(ex)} 未达门槛 ${thrTxt}（门槛 = max(0.5%, 0.025%×持有期)，0.5% 约合覆盖一次往返交易成本）`,
+        )
+      }
+      if (!st.ok) {
+        bad.push(
+          st.missing
+            ? '日配对稳定性无法验证（配对日不足 2）'
+            : `日配对不稳定（|HAC t| ${st.tVal == null ? '-' : Math.abs(st.tVal).toFixed(2)} <2 且 日胜率 ${
+                st.winVal == null ? '-' : `${(st.winVal * 100).toFixed(2)}%`
+              } <55%）`,
+        )
+      }
       return {
         tone: 'warn' as const,
-        text:
-          `中位数为正、绝对收益胜率高于 50%，但日配对超额为负（${pct(ex)}）：` +
-          '触发组整体跑不赢同期未触发组 —— 收益靠少数「触发密集日」撑起，无横向选股价值，判定为「待观察」。',
+        text: `中位数为正、绝对收益胜率高于 50%，但${bad.join('；')} —— 收益不可交易 / 不可复现，判定为「待观察」。${scope}`,
       }
     }
     if (med > 0.01 && win > 0.55) {
-      return { tone: 'good' as const, text: '中位数为正、绝对收益胜率明显高于 50%，且超额为正：存在可复制的正向事件效应。' }
+      return {
+        tone: 'good' as const,
+        text: `中位数为正、绝对收益胜率明显高于 50%，且日配对超额 ≥${thrTxt}、日配对稳定：存在可复制的正向事件效应。${scope}`,
+      }
     }
     if (med < -0.005) {
-      return { tone: 'bad' as const, text: '中位数为负：多数触发事件是亏的，均值靠少数大赢家——需谨慎。' }
+      return { tone: 'bad' as const, text: `中位数为负：多数触发事件是亏的，均值靠少数大赢家——需谨慎。${scope}` }
     }
-    return { tone: 'plain' as const, text: '中位数与绝对收益胜率均处于临界区间，建议结合概率表与明细复核。' }
-  }, [result, lastPoint])
+    return {
+      tone: 'plain' as const,
+      text: `中位数与绝对收益胜率均处于临界区间，建议结合概率表与明细复核。${scope}`,
+    }
+  }, [result, lastPoint, pair])
 
   if (!open) return null
 

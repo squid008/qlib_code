@@ -16,6 +16,7 @@ import type {
 } from '../api'
 import type { FactorCatalog, FactorField } from '../types'
 import EventStudyModal from './EventStudyModal'
+import { excessThresholdOf, pairStabilityOf, type PairStability } from './verdictRules'
 
 interface SingleFactorTestPanelProps {
   customFormulas: CustomFormula[]
@@ -123,34 +124,45 @@ function esExcessOf(r: TestResult, k?: number | null): number | null {
 function watchReasonOfBinary(
   pt: NonNullable<ReturnType<typeof esPointOf>>,
   ex: number | null,
+  exThr: number,
+  st: PairStability,
 ) {
   const med = pt.median ?? 0
   const win = pt.win ?? 0
-  const pct = (v: number, d = 2) => `${(v * 100).toFixed(d)}%`
+  const pct = (v: number, d = 3) => `${(v * 100).toFixed(d)}%`
   const medOk = med >= 0.005
   const winOk = win >= 0.55
-  const exOk = ex != null && ex > 0
+  const exOk = ex == null || ex >= exThr
+  const sgn = (v: number) => `${v >= 0 ? '+' : ''}${pct(v)}`
   const medTxt = medOk
-    ? `中位数 ${pct(med, 3)} ≥0.50% ✓`
-    : `中位数 ${pct(med, 3)} <0.50%（差 ${pct(0.005 - med)}）✗`
+    ? `中位数 ${pct(med)} ≥0.50% ✓`
+    : `中位数 ${pct(med)} <0.50%（差 ${pct(0.005 - med)}）✗`
   const winTxt = winOk
-    ? `绝对收益胜率 ${pct(win)} ≥55% ✓`
-    : `绝对收益胜率 ${pct(win)} <55%（差 ${pct(0.55 - win)}）✗`
+    ? `绝对收益胜率 ${pct(win, 2)} ≥55% ✓`
+    : `绝对收益胜率 ${pct(win, 2)} <55%（差 ${pct(0.55 - win, 2)}）✗`
   const exTxt =
     ex == null
       ? '超额 无法计算（无基准，未参与判定）—'
       : exOk
-        ? `超额 ${ex >= 0 ? '+' : ''}${pct(ex)} >0 ✓`
-        : `超额 ${pct(ex)} ≤0（跑不赢未触发组，差 ${pct(-ex)}）✗`
+        ? `超额 ${sgn(ex)} ≥${pct(exThr)} ✓`
+        : `超额 ${sgn(ex)} <${pct(exThr)}（差 ${pct(exThr - ex)}）✗`
+  const stTxt = st.missing
+    ? '日配对稳定性 无法验证（配对日不足 2）✗'
+    : st.ok
+      ? st.tOk
+        ? `日配对稳定 |HAC t| ${Math.abs(st.tVal as number).toFixed(2)} ≥2 ✓`
+        : `日配对稳定 日胜率 ${pct(st.winVal as number, 2)} ≥55% ✓`
+      : `日配对不稳定 |HAC t| ${st.tVal == null ? '-' : Math.abs(st.tVal).toFixed(2)} <2 且 日胜率 ${st.winVal == null ? '-' : pct(st.winVal, 2)} <55% ✗`
   const why = [
     !medOk ? '中位数未达标' : '',
     !winOk ? '绝对收益胜率未达标' : '',
-    ex != null && !exOk ? '超额为负（跑不赢未触发组）' : '',
+    ex != null && !exOk ? `超额未达门槛（${pct(ex)} <${pct(exThr)}）` : '',
+    !st.ok ? '日配对未通过稳定性检验' : '',
   ].filter(Boolean).join('、') || '未达任何有效判定条件'
   return [
     `结论：待观察（${why}）`,
-    `事件研究（持有 ${pt.k ?? '?'} 交易日，n=${pt.n ?? '?'}）：${medTxt}；${winTxt}；${exTxt}`,
-    '「有效✓」需同时满足：中位数 ≥0.50%、绝对收益胜率 ≥55%、**超额（触发组−未触发组·日配对）>0**。',
+    `事件研究（持有 ${pt.k ?? '?'} 交易日，n=${pt.n ?? '?'}）：${medTxt}；${winTxt}；${exTxt}；${stTxt}`,
+    `「有效✓」需同时满足：① 中位数 ≥0.50%；② 绝对收益胜率 ≥55%；③ 超额 ≥ 门槛（max(0.5%, 0.025%×持有期)，本次持有 ${pt.k ?? '?'} 日 → ${pct(exThr)}）；④ 日配对稳定（|HAC t| ≥2 或 日胜率 ≥55%）。`,
     '「彩票型」需 |中位数| <1% 且绝对收益胜率 45%~55% 且均值 >max(0.50%, 中位数×3)。',
     '注：判定使用未舍入的原始值（上表绝对收益胜率已显示到 0.01%）。点右侧「事件研究」看各持有期明细与超额曲线。',
   ].join('\n')
@@ -217,18 +229,20 @@ function verdictOf(r: TestResult): VerdictStats {
     const med = pt.median ?? 0
     const win = pt.win ?? 0
     const mean = pt.mean ?? 0
-    // 超额（触发组 − 未触发组·日配对均值，与判定同一持有期 k）
+    // 超额（触发组 − 未触发组·日配对均值，与判定同一持有期 k）与门槛
     const ex = esExcessOf(r, pt.k)
-    // v1.18.20：把「超额 >0」纳入「有效」的必要条件。
-    // 动机：中位数为正只说明"典型一次触发赚钱"，但若整体跑不赢同期未触发组，
-    // 等于"什么都不选也比它强"，信号没有实用价值（实测「趋势顶底离开底部」即此情形：
-    // 事件级均值远高于基准，但日配对超额为负 —— 收益靠少数密集触发日撑起）。
-    // 反向同理：因子反向有效时，触发组本应跑输（超额为负）。
-    // ex == null（无基准/旧结果）时不加此门槛，避免因基准计算失败而误伤全部结论。
-    const exOk = ex == null || ex > 0
-    const exRevOk = ex == null || ex < 0
-    const esGood = med >= 0.005 && win >= 0.55 && exOk
-    const esReverse = med <= -0.005 && win <= 0.45 && exRevOk
+    const exThr = excessThresholdOf(pt.k)
+    // v1.18.20 引入「超额 >0」；v1.18.32 收紧为「超额 ≥ 门槛(k)」并追加「日配对稳定」：
+    // 实测出现过 0.081% 这种噪声级超额（连一次往返成本 0.2~0.35% 都覆盖不了）被判有效。
+    // 门槛 = max(0.5%, 0.025%×k)：0.5% 覆盖一次往返成本、0.025%/日 ≈ 年化 6% 机会成本。
+    // 稳定性：|HAC t| ≥2 或 日胜率 ≥55%（两者皆缺 → 不通过，宁严勿松）。
+    // ex == null（无基准/旧结果）时第③条不启用（向后兼容），第④条仍要求。
+    const st = pairStabilityOf({ t: r.daily_t_hac ?? r.daily_t, win: r.daily_win }, false)
+    const stRev = pairStabilityOf({ t: r.daily_t_hac ?? r.daily_t, win: r.daily_win }, true)
+    const exOk = ex == null || ex >= exThr
+    const exRevOk = ex == null || ex <= -exThr
+    const esGood = med >= 0.005 && win >= 0.55 && exOk && st.ok
+    const esReverse = med <= -0.005 && win <= 0.45 && exRevOk && stRev.ok
     const lottery =
       Math.abs(med) < 0.01 && win >= 0.45 && win <= 0.55 && mean > Math.max(0.005, med * 3)
     good = esGood
@@ -240,7 +254,7 @@ function verdictOf(r: TestResult): VerdictStats {
     else kind = 'watch'
     return {
       significant, goodBase, conflicting, goodReverseBase, dT, stable, good, goodReverse, kind,
-      watchReason: kind === 'watch' ? watchReasonOfBinary(pt, ex) : undefined,
+      watchReason: kind === 'watch' ? watchReasonOfBinary(pt, ex, exThr, st) : undefined,
     }
   }
 
@@ -354,6 +368,8 @@ export default function SingleFactorTestPanel({
   const [estReq, setEstReq] = useState<EventStudyRequest | null>(null)
   const [estData, setEstData] = useState<EventStudyResult | null>(null)
   const [estName, setEstName] = useState('')
+  // 该行的日配对稳定性字段（t/胜率）：供弹窗与表格共用同一套判定门槛（v1.18.32）
+  const [estPair, setEstPair] = useState<{ t?: number | null; win?: number | null } | null>(null)
 
   // 按当前面板参数为某一行结果发起事件研究（参数与单因子测试保持一致）
   const openEventStudy = (r: TestResult) => {
@@ -362,6 +378,7 @@ export default function SingleFactorTestPanel({
       warmupDaysText.trim() === '' || !Number.isFinite(wn) ? undefined : Math.max(0, wn)
     setEstData(r.event_study ?? null)
     setEstName(r.name)
+    setEstPair({ t: r.daily_t_hac ?? r.daily_t, win: r.daily_win })
     setEstReq({
       universe,
       start_date: startDate,
@@ -1375,7 +1392,7 @@ export default function SingleFactorTestPanel({
             触发分组：0/1 信号为"因子值&gt;0.5"；连续因子按分位数分组（触发 = 前 20% 高分位，未触发 = 后 20% 低分位）。触发数为按剔除开关过滤后的数量（涨停/停牌判定统一为涨停价四舍五入口径，板块 10%/20%/30%）：信号日(T)涨停 = 选股过滤无前视；成交日(T+1)涨停与停牌 = 调仓日实际买不到，与回测一致。
             差值 = 触发均值 − 未触发均值（正数说明触发组未来收益更高）；收益按信号日收盘价买入、持有"周期"列对应天数计算（同因子不同周期逐行对比，可看持有期长短对预测力的影响）；p值* 表示 Mann-Whitney U 检验显著（&lt;0.05）。
             IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.05（即×100后≥5，日频口径，市值为例0.1以上即为稳定负向）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
-            0/1 信号的「有效✓」需<b>同时</b>满足三条：① 事件研究中位数 ≥0.50%；② 绝对收益胜率 ≥55%；③ <b>超额（触发组 − 未触发组·日配对）&gt;0</b>。第③条用于排除「虽然典型触发是赚的、但整体跑不赢什么都不选」的信号 —— 中位数为正只说明典型一次触发赚钱，若超额为负则说明收益靠少数「触发密集日」撑起、不具备可复制的横向选股能力（详见事件研究弹窗的超额曲线）。无基准（旧结果或基准计算失败）时不启用第③条。
+            0/1 信号的「有效✓」需<b>同时</b>满足四条：① 事件研究中位数 ≥0.50%；② 绝对收益胜率 ≥55%；③ <b>日配对超额 ≥ 门槛</b>（门槛 = max(0.5%, 0.025%×持有期)：20 日即 0.50%、40 日 1.00%）—— 0.5% 约合覆盖一次往返交易成本，0.025%/日 约合年化 6% 机会成本，避免 0.08% 这类噪声级超额被判有效；④ <b>日配对稳定</b>（|HAC t| ≥2 或 日胜率 ≥55%）。第③④条用于排除「典型触发赚钱、但整体跑不赢什么都不选 / 逐日无稳定超额」的信号。无基准（旧结果或基准计算失败）时不启用第③条，但第④条仍要求。
             0/1 信号的分位收益列显示"信号组 vs 非信号组"的逐日截面收益均值双柱（每天先算各组平均未来收益，再对所有交易日取均值，防信号聚集虚高），悬停可查看两组数值与配对日差。
             分位收益：连续因子按每日横截面分 5 组（1=最低值组…5=最高值组），每组为日截面平均收益（每天先算组内均值、再对所有参与交易日取平均，与 0/1 双柱同口径，避免少数日子集中主导），柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益；勾选剔除开关时，分位样本先按剔除开关过滤再分组，悬停显示 5 组日截面收益与配对日数。
             若出现"方向矛盾"：diff 为正但 IC/ICIR 稳定为负，说明信号由少数触发日主导，逐日横截面方向相反，慎用。
@@ -1394,6 +1411,7 @@ export default function SingleFactorTestPanel({
           factorName={estName}
           req={estReq}
           data={estData}
+          pair={estPair}
         />
       </EsErrorBoundary>
     </div>
