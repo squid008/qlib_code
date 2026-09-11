@@ -148,30 +148,42 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
     [result, maxK],
   )
 
-  // 图表数据：curve → {k, mean, median, p25, p75} + 两条基准线
-  //   baseline        = 未触发组·均值口径（日配对）→ 与 mean 同口径
-  //   baseline_median = 未触发组·中位数口径（事件级）→ 与 median 同口径
-  // 两条基准线分别对应触发组的均值/中位数，避免跨口径误读。
+  // 图表数据：curve → {k, mean, median, p25, p75} + 触发组/基准各两条线
+  //
+  // ⚠ 口径必须分开看（本项目曾因此误读）：同一持有期 k 有**两套互不可比的均值口径**。
+  //   · 事件级（每个事件 1 票）：curve[].mean / curve[].median（触发组）、baseline_median
+  //     —— 743 个事件等权平均；极少数暴涨事件会主导均值。
+  //   · 日配对（每个配对日 1 票）：trigger_pair（触发组）、baseline
+  //     —— 先按触发日取截面均值，再对各配对日平均；等价于"每天等权"。
+  //   **只有 trigger_pair 与 baseline 是同口径，可以相减**（= excess）；
+  //   **mean 与 baseline 不同口径，相减没有意义**（curve.mean 是事件级）。
+  //   trigger_pair 来自后端 baseline.trigger_pair（v1.18.8 起返回）。
   const chartData = useMemo(() => {
     const bl = result?.baseline
     const baseMap = new Map<number, number | null>()
     const baseMedMap = new Map<number, number | null>()
+    const trigPairMap = new Map<number, number | null>()
     if (bl && bl.ks) {
       bl.ks.forEach((k, i) => {
         baseMap.set(k, bl.baseline?.[i] ?? null)
         baseMedMap.set(k, bl.baseline_median?.[i] ?? null)
+        trigPairMap.set(k, bl.trigger_pair?.[i] ?? null)
       })
     }
     return viewCurve.map((c) => {
       const b = baseMap.get(c.k)
       const bm = baseMedMap.get(c.k)
+      const tp = trigPairMap.get(c.k)
       return {
         k: c.k,
         mean: c.mean == null ? null : c.mean * 100,
         median: c.median == null ? null : c.median * 100,
         p25: c.p25 == null ? null : c.p25 * 100,
         p75: c.p75 == null ? null : c.p75 * 100,
+        // 日配对口径（与 baseline 同口径，可相减）
+        trigger_pair: tp == null ? null : tp * 100,
         baseline: b == null ? null : b * 100,
+        // 事件级口径（与 median 同口径）
         baseline_median: bm == null ? null : bm * 100,
       }
     })
@@ -441,6 +453,11 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
             <div className="border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
               <div className="text-slate-500 mb-1">
                 持有期收益曲线（T+1 收盘买入，持有 k 个交易日；单位 %）
+                <span className="text-amber-600 dark:text-amber-400 ml-2">
+                  ⚠ 两套口径不可混算：「均值」「中位数」= 事件级（每个事件 1 票，易被少数暴涨事件主导）；
+                  「触发组(日配对)」与「基准(日配对)」= 每个配对日 1 票。
+                  只有后两条同口径、可相减（差值见下方超额曲线）。
+                </span>
               </div>
               <ResponsiveContainer width="100%" height={260}>
                 <LineChart data={chartData} margin={{ top: 5, right: 12, left: 0, bottom: 4 }}>
@@ -455,12 +472,15 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                     wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
                     onClick={(d) => toggleSeries((d as { dataKey?: string }).dataKey)}
                   />
-                  <Line type="monotone" dataKey="baseline" name="基准(未触发组·均值口径)" stroke="#94a3b8" dot={false} strokeWidth={1.5} strokeDasharray="4 4" hide={!!hidden.baseline} />
+                  {/* 日配对口径一对（同口径、可相减 → 差值即下方超额曲线）：
+                      触发组实线 + 未触发组虚线。基准线紧跟其后便于横向比对。 */}
+                  <Line type="monotone" dataKey="trigger_pair" name="触发组(日配对·与基准同口径)" stroke="#7c3aed" dot={false} strokeWidth={2} hide={!!hidden.trigger_pair} />
+                  <Line type="monotone" dataKey="baseline" name="基准(未触发组·日配对)" stroke="#94a3b8" dot={false} strokeWidth={1.5} strokeDasharray="4 4" hide={!!hidden.baseline} />
                   <Line type="monotone" dataKey="baseline_median" name="基准中位数(未触发组·事件级)" stroke="#0e7490" dot={false} strokeWidth={1.5} strokeDasharray="2 2" hide={!!hidden.baseline_median} />
                   <Line type="monotone" dataKey="p75" name="p75" stroke="#cbd5e1" dot={false} strokeWidth={1} hide={!!hidden.p75} />
                   <Line type="monotone" dataKey="p25" name="p25" stroke="#cbd5e1" dot={false} strokeWidth={1} hide={!!hidden.p25} />
-                  <Line type="monotone" dataKey="median" name="中位数" stroke="#0284c7" dot={false} strokeWidth={2} hide={!!hidden.median} />
-                  <Line type="monotone" dataKey="mean" name="均值" stroke="#dc2626" dot={false} strokeWidth={2} hide={!!hidden.mean} />
+                  <Line type="monotone" dataKey="median" name="中位数(事件级)" stroke="#0284c7" dot={false} strokeWidth={2} hide={!!hidden.median} />
+                  <Line type="monotone" dataKey="mean" name="均值(事件级·勿直接减基准)" stroke="#dc2626" dot={false} strokeWidth={2} hide={!!hidden.mean} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
