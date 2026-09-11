@@ -26,6 +26,7 @@ import contextlib
 import os
 import re
 import sys
+import time
 from collections import OrderedDict
 from typing import Dict, Optional, Sequence, Tuple
 
@@ -81,6 +82,7 @@ def clear_bin_cache() -> None:
     _BIN_CACHE.clear()
     _BIN_CACHE_BYTES = 0
     _BIN_META_CACHE.clear()
+    _DIR_META_CACHE.clear()   # v1.18.36：目录级元信息快照
 
 
 def set_bin_cache_mb(mb: int) -> None:
@@ -169,6 +171,11 @@ def set_panel_runtime(calendar=None, feature_dir=None):
     if calendar is not None:
         _CAL = pd.to_datetime(calendar)
     if feature_dir is not None:
+        if _FEATURE_DIR and _FEATURE_DIR != feature_dir:
+            # 数据目录切换：目录快照/元信息缓存立即失效（避免跨数据源串用）
+            _DIR_META_CACHE.clear()
+            _BIN_META_CACHE.clear()
+            _BIN_CACHE.clear()
         _FEATURE_DIR = feature_dir
 
 
@@ -229,6 +236,60 @@ _BIN_META_CACHE: "OrderedDict[Tuple[str, str], Tuple[int, int, int]]" = OrderedD
 _BIN_META_CACHE_MAX = 131072  # 全 A × 数十字段量级（每项 ~100B）
 
 
+# 目录级元信息快照（v1.18.36）：一次 scandir 取该股票目录下全部 .bin 的 (mtime_ns, size)，
+# 替代「每个字段一次 os.stat」—— 全 A 冷加载实测 os.stat 35643 次 ≈ 3.4s（`_field_bin_meta`
+# 每次都 stat 做变更检测）。快照按**目录 mtime** 校验：数据重 dump（删/建目录、增删文件）
+# 会更新目录 mtime → 自动失效。LRU 上限 512（每项约几十条记录）。
+_DIR_META_CACHE: "OrderedDict[str, Tuple[int, dict, float]]" = OrderedDict()
+_DIR_META_MAX = 512
+# 快照有效期（秒）：TTL 内直接命中、**不再做任何 syscall**（这才是省 stat 的关键 ——
+# 一次 panel 求值里同一 (股票, 字段) 会被 union_index / 各字段加载重复查询多次）。
+# 超时才用目录 mtime 校验；数据重 dump 亦可通过 clear_bin_cache() 立即失效。
+# QLIB_PANEL_DIR_META_TTL=0 表示每次都校验（保守模式）。
+_DIR_META_TTL_S = float(os.environ.get("QLIB_PANEL_DIR_META_TTL", "60"))
+
+
+def _dir_meta(inst: str):
+    """该股票目录下 {文件名: (mtime_ns, size)}；目录不存在返回 None。
+
+    TTL 内命中 → 零 syscall；过期 → 用目录 mtime 校验后顺延 TTL；
+    Windows 上 `DirEntry.stat()` 复用 scandir 已取得的属性，故重建也远快于逐字段 os.stat。
+    """
+    d = os.path.join(_feature_dir(), inst)
+    hit = _DIR_META_CACHE.get(inst)
+    now = time.monotonic()
+    if hit is not None:
+        if _DIR_META_TTL_S > 0 and (now - hit[2]) < _DIR_META_TTL_S:
+            _DIR_META_CACHE.move_to_end(inst)
+            return hit[1]
+        try:
+            if os.stat(d).st_mtime_ns == hit[0]:
+                _DIR_META_CACHE[inst] = (hit[0], hit[1], now)
+                _DIR_META_CACHE.move_to_end(inst)
+                return hit[1]
+        except OSError:
+            return None
+    try:
+        dm = os.stat(d).st_mtime_ns
+    except OSError:
+        return None
+    info: Dict[str, Tuple[int, int]] = {}
+    try:
+        with os.scandir(d) as it:
+            for ent in it:
+                try:
+                    stt = ent.stat()
+                except OSError:
+                    continue
+                info[ent.name] = (stt.st_mtime_ns, stt.st_size)
+    except OSError:
+        return None
+    _DIR_META_CACHE[inst] = (dm, info, now)
+    while len(_DIR_META_CACHE) > _DIR_META_MAX:
+        _DIR_META_CACHE.popitem(last=False)
+    return info
+
+
 def _field_bin_meta(inst: str, field: str):
     """[只 stat，不读数据] → (mtime_ns, start_idx, n_rows)；缺失/过短返回 None。
 
@@ -239,23 +300,36 @@ def _field_bin_meta(inst: str, field: str):
     idx（_read_field_bin 用 np.fromfile(dtype='<f4') + int(arr[0])）。若误用 '<i4'
     读，得到的是 float32 位模式（如真实 791 → 0x44480000 = 1145421824），会让
     _union_index 把绝大多数股票判为"无覆盖"而丢行（v1.18.4 实测 144306→64895）。
+
+    v1.18.36 性能：① 若该字段已整列读过（`_BIN_CACHE` 命中，条目即含 mtime/start/值数组），
+    直接由缓存给出元信息 —— 免 stat 免开文件；② 否则走**目录快照**（一次 scandir 覆盖该股
+    全部字段），不再逐字段 os.stat；③ 头部 4 字节只在快照未命中时读。
     """
-    p = os.path.join(_feature_dir(), inst, f"{field}.day.bin")
-    try:
-        st = os.stat(p)
-    except OSError:
+    key = (inst, field)
+    hit_col = _BIN_CACHE.get(key)
+    if hit_col is not None:
+        return (hit_col[0], hit_col[1], int(hit_col[2].size))
+    info = _dir_meta(inst)
+    if not info:
         return None
-    n_words = st.st_size // 4
+    ent_dir = info.get(f"{field}.day.bin")
+    if ent_dir is None:
+        return None
+    mtime_ns, size = ent_dir
+    n_words = size // 4
     if n_words < 2:  # 与 _read_field_bin 的 arr.size < 2 对齐
         return None
-    key = (inst, field)
     hit = _BIN_META_CACHE.get(key)
-    if hit is not None and hit[0] == st.st_mtime_ns:
+    if hit is not None and hit[0] == mtime_ns:
         _BIN_META_CACHE.move_to_end(key)
         return hit
-    with open(p, "rb") as fh:
-        start = int(np.frombuffer(fh.read(4), dtype="<f4")[0])
-    ent = (st.st_mtime_ns, start, int(n_words - 1))
+    p = os.path.join(_feature_dir(), inst, f"{field}.day.bin")
+    try:
+        with open(p, "rb") as fh:
+            start = int(np.frombuffer(fh.read(4), dtype="<f4")[0])
+    except OSError:
+        return None
+    ent = (mtime_ns, start, int(n_words - 1))
     _BIN_META_CACHE[key] = ent
     while len(_BIN_META_CACHE) > _BIN_META_CACHE_MAX:
         _BIN_META_CACHE.popitem(last=False)

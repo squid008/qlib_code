@@ -3,6 +3,18 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.36] - 2026-09-12
+
+### Performance
+- **特征加载（面板求值）两处优化：单进程同口径 `_load_feature_panel` 56.73s → 53.54s（−5.6%）；数值零变化**（`factors/panel_expr.py` / `factors/ops_ext.py`）：
+  - **背景（给并行 worker 内部做 profile）**：强制单进程面板（`QLIB_SFT_PANEL_MAX=999999`）+ cProfile 包住 `_load_feature_panel`（csi1000 规模；代码路径与并行 worker 内的 `_panel_features_chunk` 完全一致）。热点：`_dyn_best_idx` 7.8s、`pandas.rolling.calc` 3.7s、`Index._get_indexer` 3.5s、**`os.stat` 3.4s / 35643 次**、`np.fromfile` 3.0s / 17819 次。
+  - **① `os.stat` 消除（35643 → 19803 次；3.44s → 1.98s）**：`_field_bin_meta` 原两条路径都先 stat。新增 **`_BIN_CACHE` 优先分支**（该字段已整列读过 → 直接由缓存给出 mtime / start / n_rows，免 stat 免开文件）与**目录级快照 `_dir_meta`**（一次 `os.scandir` 取该股票目录下全部 .bin 的 `(mtime_ns, size)`，替代逐字段 `os.stat`；**TTL 60s** 内命中零 syscall，`QLIB_PANEL_DIR_META_TTL` 可调、`0` = 每次校验；失效由目录 mtime 校验与 `clear_bin_cache()` 兜底；`set_panel_runtime` 切换数据目录时自动清空）。
+  - **② 稀疏表层合并改「扩展数组」版 `_dyn_best_idx_ext`**：原 `_dyn_best_idx` 每次合并需 `np.maximum(ai,0)` ×2 + `vals[...]` ×2 + `np.where(..., nan)` ×2 + `isnan` ×2；现**一次构造 `_make_dyn_ext(vals)`**（index 0 = NaN 哨兵、i+1 = vals[i]），合并时用 `vals_ext[idx + 1]` 一次取候选值、NaN 判定改 `av != av`：**7.82s → 5.71s（−27%）**；语义逐位等价。
+  - **实测**：单进程口径 `_load_feature_panel` **56.73s → 53.54s（−5.6%）**；并行全 A 端到端 66.10s（与 v1.18.35 的 66.26s 持平 —— 收益约 2.7s 落在并行/磁盘波动范围内，但两处热点的下降在单进程同口径下明确可复现）。
+  - **验证**：① `_dyn_best_idx_ext` vs `_dyn_best_idx` 200 组 × max/min（含 -1 无效下标、NaN、±inf、大量等值）**全部逐位 PASS**；② `_field_bin_meta` 与原逻辑（逐字段 `os.stat`）在真实数据 600 组抽查**精确一致**，同规模查询 0.205s → 0.090s（**2.3×**）；③ 全 A 三因子 `results` 逐字段 **0 差异**；④ `pytest tests -q` 全绿。
+- **剩余大头（下一刀候选）**：`pandas.rolling.calc` 3.6s / 43560 次（`_seg_roll` 的 2D rolling）｜`Index._get_indexer` 3.4s｜读盘 `np.fromfile` + `io.open` 4.6s（17819 次，冷缓存不可避免；可考虑 memmap / 合并字段读）｜`_dyn_rmq_vec_seg` / `_dyn_arg_idx_vec_seg` 各 ~2s。
+- 版本 1.18.35 → 1.18.36。
+
 ## [1.18.35] - 2026-09-12
 
 ### Performance

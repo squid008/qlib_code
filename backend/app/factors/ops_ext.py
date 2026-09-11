@@ -347,11 +347,52 @@ def _dyn_best_idx(ai: np.ndarray, bi: np.ndarray, vals: np.ndarray, is_max: bool
     return np.where(b_wins, bi, ai)
 
 
+def _make_dyn_ext(vals: np.ndarray) -> np.ndarray:
+    """哨兵扩展数组（v1.18.36）：index 0 = NaN 哨兵，index i+1 = vals[i]。
+
+    供 `_dyn_best_idx_ext` 用 `vals_ext[idx + 1]` 一次花式索引取候选值 —— 无效下标 -1
+    直接落到 index 0 的 NaN 哨兵，等价于原实现的 `np.where(a_ok, vals[max(ai,0)], nan)`
+    （省掉每层合并的 `np.maximum` ×2 与 `np.where` ×2）。
+    **前置不变量**：传入的下标只可能是 -1（无效）或 [0, n)（有效），与建表 `st[0]` 一致。
+    """
+    out = np.empty(vals.size + 1, dtype=np.float64)
+    out[0] = np.nan
+    out[1:] = vals
+    return out
+
+
+def _dyn_best_idx_ext(ai: np.ndarray, bi: np.ndarray, vals_ext: np.ndarray,
+                      is_max: bool) -> np.ndarray:
+    """`_dyn_best_idx` 的扩展数组版（v1.18.36，语义逐位等价）。
+
+    与 `_dyn_best_idx` 唯一区别：候选值由 `vals_ext[idx + 1]` 一次取出（NaN 哨兵承载
+    「无效下标」语义），省掉 `np.maximum(ai, 0)` 与 `np.where(..., nan)` 各两次；
+    NaN 判定改用 `av != av`（免一次 `np.isnan` 分派）。比较/等值取右等逻辑一字未动。
+    """
+    a_ok = ai >= 0
+    b_ok = bi >= 0
+    av = vals_ext[ai + 1]
+    bv = vals_ext[bi + 1]
+    a_nan = av != av
+    b_nan = bv != bv
+    if is_max:
+        b_better = (bv > av) | (a_nan & ~b_nan)
+    else:
+        b_better = (bv < av) | (a_nan & ~b_nan)
+    tie = av == bv
+    b_wins = b_ok & ((~a_ok) | b_better | (tie & (bi > ai)))
+    return np.where(b_wins, bi, ai)
+
+
 def _build_argmax_sparse(vals: np.ndarray, is_max: bool, k_max: int = None) -> np.ndarray:
     """稀疏表（RMQ）变体：每层存"区间极值的最右下标"，同值取更右（等值取最近）。
 
     与 `_build_sparse`（存极值）同构，同样返回 **2D 连续数组** 且支持 `k_max` 只建所需层；
-    层合并比较见 `_dyn_best_idx`。NaN 位用 -1 占位。
+    层合并比较见 `_dyn_best_idx_ext`。NaN 位用 -1 占位。
+
+    v1.18.36 性能：层合并改用**哨兵扩展数组**（`_make_dyn_ext`，建表前一次构造），
+    免去每次合并的 `np.maximum` ×2 / `np.where` ×2 / `~isnan` 分支（全 A 实测
+    `_dyn_best_idx` 占特征加载 tottime 首位）。
     """
     n = len(vals)
     if n == 0:
@@ -361,11 +402,13 @@ def _build_argmax_sparse(vals: np.ndarray, is_max: bool, k_max: int = None) -> n
         k = max(1, min(k, int(k_max) + 1))
     st = np.empty((k, n), dtype=np.int64)
     st[0] = np.where(np.isnan(vals), -1, np.arange(n))
-    for j in range(1, k):
-        prev = st[j - 1]
-        half = 1 << (j - 1)
-        st[j, : n - half] = _dyn_best_idx(prev[: n - half], prev[half:], vals, is_max)
-        st[j, n - half :] = prev[n - half :]
+    if k > 1:
+        vext = _make_dyn_ext(vals)
+        for j in range(1, k):
+            prev = st[j - 1]
+            half = 1 << (j - 1)
+            st[j, : n - half] = _dyn_best_idx_ext(prev[: n - half], prev[half:], vext, is_max)
+            st[j, n - half :] = prev[n - half :]
     return st
 
 
@@ -383,7 +426,8 @@ def _dyn_arg_idx_vec(vals: np.ndarray, nvals: np.ndarray, is_max: bool) -> np.nd
     lens = np.minimum(Ns, idx + 1)
     js = np.floor(np.log2(lens)).astype(np.int64)
     st = _build_argmax_sparse(vals, is_max, int(js.max()) if n else 0)
-    return _dyn_best_idx(st[js, idx - lens + 1], st[js, idx - (1 << js) + 1], vals, is_max)
+    return _dyn_best_idx_ext(st[js, idx - lens + 1], st[js, idx - (1 << js) + 1],
+                             _make_dyn_ext(vals), is_max)
 
 
 def dyn_bars_vec(vals: np.ndarray, nvals: np.ndarray, is_max: bool) -> np.ndarray:
@@ -1195,7 +1239,8 @@ def _dyn_arg_idx_vec_seg(vals, nvals, is_max, seg_start) -> np.ndarray:
     lens = np.minimum(Ns, idx - seg_start + 1)
     js = np.floor(np.log2(lens)).astype(np.int64)
     st = _build_argmax_sparse(vals, is_max, int(js.max()) if n else 0)
-    return _dyn_best_idx(st[js, idx - lens + 1], st[js, idx - (1 << js) + 1], vals, is_max)
+    return _dyn_best_idx_ext(st[js, idx - lens + 1], st[js, idx - (1 << js) + 1],
+                             _make_dyn_ext(vals), is_max)
 
 
 def dyn_bars_vec_seg(vals, nvals, is_max, seg_start) -> np.ndarray:
