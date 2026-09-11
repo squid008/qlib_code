@@ -3,6 +3,34 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.31] - 2026-09-11
+
+### Performance
+- **小公式的「固定开销」大修：并集 index 免 factorize + 字段按位铺值 + 出口免两次全量 MultiIndex 运算**（`factors/panel_expr.py`，**数值零变化**）：
+  - **背景**：v1.18.30 之后，短公式的耗时**与公式无关** —— 用户因子 `负市值对数`（35 字符）实测 `_apply` 仅占 **0.4%**，**99.6% 是 `load_field_series` 38.5% + `_union_index` 21.7% + `[其余]` 39.1%**。
+  - **逐项定因**（新增 `ai_test/profile_fixed.py` / `profile_fixed2.py`，300 只 / 2 字段 / 354977 行）：
+    - **`_union_index` 131.7ms/次**：逐股循环（含 600 次 `_field_bin_meta`）**76.2ms** + **`MultiIndex.from_arrays` 45.4ms** + `np.repeat` 5.6 + concatenate 4.0
+    - **每个字段**：`from_arrays` ~48ms + `sort_index()` 6.5ms + `Series.reindex(_full)` 25ms + 逐股循环 25ms
+    - **出口**：`df.index.union(full_out)` 21.0ms + `reindex(full_out)` 21.2ms + 时间戳掩码 5.2ms —— 而当 `read_start == start_time`（无预热前移）时 `df.index` **已正好等于** `full_out`，这三步**全是恒等操作**
+  - **免 factorize 构造 MultiIndex**（新增 `_build_multiindex`）：`from_arrays` 的价值只在于对 35 万个 object 字符串做 hash-factorize；改为直接给 levels+codes —— level0 用「各段 instrument 的首次出现序」+ `np.repeat(段序号, 段长)`（300 次 Python 操作 + O(n) numpy），level1 用 `pd.factorize(拼接日期)` 复现同一「首次出现序」。**实测 21.5ms → 8.4ms（2.6×）**。
+    - ⚠ **绝不能在 Python 里遍历那 35 万个 object**（第一版用 `dict.fromkeys(cc)` + `np.fromiter(... for v in cc)` → 反而 **43ms**，比 `from_arrays` 还慢）；codes 必须只由「段」列表构造。
+    - ⚠ **level1 必须保持「首次出现序」、不能换成升序**：`MultiIndex` 的 codes 比较 / lexsort 依赖 levels 顺序，换成升序会让 `sort_index()` 结果与原来不同（`ai_test/probe_mi_build.py` 专门验证）。
+  - **字段按位铺值**（新增 `_union_layout` / `_load_field_on`）：`_union_layout` 一次遍历同时产出 (并集 index, **各股在 index 中的行区间 layout**, req_lo, req_hi)；`_load_field_on` 按「日历下标差」把字段值直接铺到并集 index 上（`field()` 原来要 `load_field_series(...)` + `reindex(_full)`）。等价性：字段在某股的可用区间 `[max(start_idx,req_lo), min(start_idx+n-1,req_hi)]` 必落在该股 union 区间内（union 取的是各字段覆盖的 min-start / max-end），其余位置填 NaN —— 与原 `reindex` 补 NaN 一致。**省掉每字段一次的 `from_arrays` + `sort_index` + `reindex(_full)`（~80ms/字段）**。
+  - **出口两条免算快路**：① `df.index.equals(full_out)` 时直接返回（union + 两次 reindex + 掩码全免，35 万行约 48ms）；② 若 `df.index.equals(last_ev._full)` 则 `df.index ⊇ full_out`，`union` 必等于 `df.index`，跳过这次 `MultiIndex.union`（约 21ms）。
+  - **实测**：
+    - **固定开销型因子 `负市值对数`：0.744s → 0.222s（−0.522s，−70.2%）**，而 `_apply` 独占**不变**（0.005s → 0.004s）⇒ 收益全在固定开销
+    - **用户三因子**：`趋势顶底离开底部` **1.201s → 0.541s（−55%）**、`CWH_MIX_D_PCT_R40` **2.050s → 1.476s（−28%）**
+    - **CUP_POOL**：8.359s → 8.003s（−4.3%；样本区间有重叠，量级与「4 字段 × 索引/reindex ≈ 0.35s」相符）
+    - `cd backend && pytest tests -q` 自身也从 **129s → 107s**
+    - 改后归因（剖面工具已同步包住新热路径）：`_union_layout` 0.097s（36%）+ `_load_field_on` 0.072s（27%）+ `[其余]` 0.094s（35%）
+  - **验证（三重）**：① **新增 `ai_test/test_field_layout.py` 1138 用例 0 失败** —— `_build_multiindex` vs `from_arrays` 的 `equals` / `get_level_values` / `_segment_bnd` / `_seg_arrays` / `sort_index`，layout 与 index 自洽性（行区间连续、段内 instrument 与日期、全覆盖），以及 `_load_field_on` vs `load_field_series(...).reindex(idx)` **逐位**（5 组 universe/区间/字段组合，含 `close+market_cap`、`close+limit_up+is_st`）；② `backend/tests` **180 passed**；③ `snapshot_panel.py --tag fixed31 --compare powbase` → **18 列全部 `exact=True`**。
+- 版本 1.18.30 → 1.18.31。
+
+### Notes
+- 本次只动 `panel_expr.py` 的字段读取与出口组装路径；**算子求值、`_by_group`、`_roll`/`_ref`、各 DYN 内核未动**（`_apply` 独占耗时不变，可作为「只改开销、不改算法」的佐证）。
+- `load_field_series` / `_union_index` 保留（前者成为对拍用的参考实现，后者是 `_union_layout` 的薄封装）。
+- **剩余（下一步候选）**：`_union_layout` 的 **78% 是逐股循环里的 `_field_bin_meta`**（每次都先 `os.stat` 再查缓存，实测 ~127µs/次 × 600 次 = 76ms）；可考虑「先查 `_BIN_CACHE`（已整列读过的字段免 stat）」或给 meta 缓存加 TTL。
+
 ## [1.18.30] - 2026-09-11
 
 ### Performance

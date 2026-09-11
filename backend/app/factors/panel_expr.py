@@ -300,25 +300,60 @@ def load_field_series(instruments, field: str, start_time, end_time) -> pd.Serie
     return pd.Series(np.concatenate(seg_parts), index=index).sort_index()
 
 
-def _union_index(instruments, start_time, end_time, fields=("close",)) -> pd.MultiIndex:
-    """每只股票在其【参与字段】数据区间并集 ∩ [start,end] 上的全历 index。
+def _build_multiindex(cal, seg_insts, seg_lens, seg_cal_lo) -> pd.MultiIndex:
+    """免 factorize 构造与 `MultiIndex.from_arrays` **取值完全等价**的 MultiIndex。
 
+    性能（v1.18.31）：`from_arrays` 要对 35 万个 object 字符串做 hash-factorize，
+    实测 **21.5ms/次**，而一轮求值至少 3 次（并集 1 次 + 每字段 1 次）= 40~135ms。
+    改为直接给 levels+codes：
+      · level0 = 各段 instrument 的**首次出现序**（`dict.fromkeys`，300 项）；
+        codes0 = `np.repeat(段序号, 段长)` —— 300 次 Python 操作 + O(n) numpy，
+        **绝不在 Python 里遍历 35 万个 object**（那样反而更慢，实测 43ms）。
+      · level1 = 各段日期的**首次出现序**，用 `pd.factorize(拼接日期)` 复现
+        （datetime64 走整数哈希，5~8ms）。
+    实测 21.5ms → 8.4ms，且 `equals` / `get_level_values` / `sort_index` / `union` /
+    布尔掩码 / `reindex` 全部一致（`ai_test/probe_mi_build.py` 验证；仅内部
+    codes/levels 的**表示**不同，取值层面等价）。
+
+    ⚠ level1 必须保持「首次出现序」而不能换成升序：`MultiIndex` 的 codes 比较 /
+    lexsort 都依赖 levels 顺序，换成升序会让 `sort_index()` 的结果与原来不同。
+    """
+    if not seg_insts:
+        return pd.MultiIndex.from_arrays([[], []], names=["instrument", "datetime"])
+    uniq0 = list(dict.fromkeys(seg_insts))
+    pos_of = {v: i for i, v in enumerate(uniq0)}
+    codes0 = np.repeat(np.array([pos_of[v] for v in seg_insts], dtype=np.int64), seg_lens)
+    dates = np.concatenate([cal[a : a + L] for a, L in zip(seg_cal_lo, seg_lens)])
+    codes1, uniq1 = pd.factorize(dates)
+    return pd.MultiIndex(
+        levels=[pd.Index(uniq0, dtype=object), pd.DatetimeIndex(uniq1)],
+        codes=[codes0, codes1], names=["instrument", "datetime"])
+
+
+def _union_layout(instruments, start_time, end_time, fields=("close",)):
+    """一次遍历同时产出 (并集 index, layout, req_lo, req_hi)。
+
+    每只股票在其【参与字段】数据区间并集 ∩ [start,end] 上的全历 index ——
     与 qlib D.features 对齐：不同字段 .day.bin 覆盖范围可能不同（如长期停牌股
-    close 止于某日、limit_up/is_st 标签覆盖更长），qlib concat 各列取 union 行集。
+    close 止于某日、limit_up/is_st 标签覆盖更长），qlib concat 各列取 union 行集，
     单字段索引无法代表"全历"，必须取全部参与字段的覆盖并集。
+
+    layout = [(inst, row0, row1, cal_lo), ...]：该股占用 index 的 [row0, row1) 行，
+    对应交易日历下标 [cal_lo, cal_lo + (row1-row0))。供 `_load_field_on` 把字段值
+    **按位铺到 index 上**，免去「每字段一次 `MultiIndex.from_arrays` + `sort_index` +
+    `Series.reindex(_full)`」（实测三项合计 ~80ms/字段）。
+
+    性能沿革：v1.17.7 改「收集后一次 from_arrays」（原为逐股 append，O(k²)）；
+    v1.18.4 字段覆盖改走 `_field_bin_meta`（只 stat、不读整列数据，全 A 曾达 1.1GB
+    反复逐出）；v1.18.31 顺带产出 layout 并改用 `_build_multiindex`。
     """
     cal = _calendar()
-    t0 = pd.Timestamp(start_time)
-    t1 = pd.Timestamp(end_time)
-    req_lo = int(np.searchsorted(cal, t0, side="left"))
-    req_hi = int(np.searchsorted(cal, t1, side="right")) - 1
-    # 性能（v1.17.7）：原实现每股构造 MultiIndex 后链式 append（O(k²) 拷贝 + 数千次
-    # from_arrays/factorize）；改为收集 codes/dates 后一次 from_arrays，顺序等价。
-    # v1.18.4：字段覆盖区间改用 _field_bin_meta（只 stat、不读整列数据）——本函数只需
-    # "各字段覆盖到哪天"，原实现把数据读进 BIN_CACHE 属纯浪费（全 A 可达 1.1GB 反复逐出）。
-    codes = []
-    dates_parts = []
+    req_lo = int(np.searchsorted(cal, pd.Timestamp(start_time), side="left"))
+    req_hi = int(np.searchsorted(cal, pd.Timestamp(end_time), side="right")) - 1
     fields = tuple(dict.fromkeys(fields))
+    seg_insts, seg_lens, seg_cal_lo = [], [], []
+    layout = []
+    pos = 0
     for inst in instruments:
         lo_max, hi_min = None, None
         for fld in fields:
@@ -334,14 +369,49 @@ def _union_index(instruments, start_time, end_time, fields=("close",)) -> pd.Mul
             hi_min = b if hi_min is None else max(hi_min, b)
         if lo_max is None or hi_min < lo_max:
             continue
-        dates = cal[lo_max : hi_min + 1]
-        codes.append(np.repeat(inst, len(dates)))
-        dates_parts.append(dates)
-    if not codes:
-        return pd.MultiIndex.from_arrays([[], []], names=["instrument", "datetime"])
-    return pd.MultiIndex.from_arrays(
-        [np.concatenate(codes), np.concatenate(dates_parts)],
-        names=["instrument", "datetime"])
+        n = hi_min - lo_max + 1
+        seg_insts.append(inst)
+        seg_lens.append(n)
+        seg_cal_lo.append(lo_max)
+        layout.append((inst, pos, pos + n, lo_max))
+        pos += n
+    idx = _build_multiindex(cal, seg_insts, seg_lens, seg_cal_lo)
+    return idx, layout, req_lo, req_hi
+
+
+def _union_index(instruments, start_time, end_time, fields=("close",)) -> pd.MultiIndex:
+    """`_union_layout` 的薄封装：只要并集 index（保留原签名，供外部/工具调用）。"""
+    return _union_layout(instruments, start_time, end_time, fields)[0]
+
+
+def _load_field_on(idx, layout, req_lo, req_hi, field: str) -> np.ndarray:
+    """读一字段的值数组，**直接按位铺到 `idx`（= `_union_layout` 的并集 index）上**。
+
+    等价于 `load_field_series(instruments, field, start, end).reindex(idx)`：
+    该字段在某股上的可用区间 `[max(start_idx,req_lo), min(start_idx+n-1,req_hi)]`
+    必落在该股的 union 区间 `[cal_lo, cal_lo+len)` 内（union 取的是各字段覆盖的
+    min-start / max-end），故按「日历下标差」定位即可；其余位置留 NaN —— 与原
+    `reindex` 对缺失标签补 NaN 完全一致。
+
+    性能（v1.18.31）：省掉每字段一次的 `MultiIndex.from_arrays`（21.5ms）、
+    `sort_index()`（6.5ms）与 `Series.reindex(_full)`（25ms）。
+    """
+    n = len(idx)
+    out = np.full(n, np.nan, dtype=np.float64)
+    for inst, r0, _r1, cal_lo in layout:
+        r = _read_field_bin(inst, field)
+        if r is None:
+            continue
+        start_idx, vals = r
+        lo = start_idx if start_idx > req_lo else req_lo
+        hi = start_idx + len(vals) - 1
+        if hi > req_hi:
+            hi = req_hi
+        if hi < lo:
+            continue
+        a = r0 + (lo - cal_lo)
+        out[a : a + (hi - lo) + 1] = vals[lo - start_idx : hi - start_idx + 1]
+    return out
 
 
 def _trim_index_from(idx: pd.MultiIndex, start_time) -> pd.MultiIndex:
@@ -594,7 +664,12 @@ class PanelEvaluator:
         # 开始（预热窗口），输出仍由 panel_features reindex 回 [start_time, end_time]。
         self.read_start = read_start or start_time
         self._union_fields = tuple(dict.fromkeys(union_fields))
-        self._full = _union_index(instruments, self.read_start, end_time, self._union_fields)
+        # v1.18.31：一次拿到 (并集 index, 各股行区间 layout, 请求日历区间) —— 字段加载
+        # 由此改为「按位铺值」（`_load_field_on`），免掉每字段一次的 MultiIndex 构造 +
+        # sort_index + reindex(_full)（实测 ~80ms/字段）
+        (self._full, self._layout,
+         self._req_lo, self._req_hi) = _union_layout(
+            instruments, self.read_start, end_time, self._union_fields)
         self._active_cache: Dict[bool, pd.MultiIndex] = {}
         self._field_cache: Dict[str, pd.Series] = {}
         self._node_cache: "OrderedDict[Tuple[object, bool], pd.Series]" = OrderedDict()
@@ -619,10 +694,12 @@ class PanelEvaluator:
         key = name.lstrip("$")
         s = self._field_cache.get(key)
         if s is None:
-            raw = load_field_series(self.instruments, key, self.read_start, self.end_time)
-            # 所有字段统一对齐到全池全日历基准（缺失股/缺失行补 NaN），
-            # 保证跨字段 Series 天然同 index（_align 恒等路径，避免 union 类型问题）
-            s = raw.reindex(self._full)
+            # v1.18.31：直接按位铺到 _full（等价于原 `load_field_series(...).reindex(_full)`，
+            # 见 _load_field_on）。所有字段仍统一对齐到全池全日历基准（缺失股/缺失行补 NaN），
+            # 保证跨字段 Series 天然同 index（_align 恒等路径，避免 union 类型问题）。
+            vals = _load_field_on(self._full, self._layout,
+                                  self._req_lo, self._req_hi, key)
+            s = pd.Series(vals, index=self._full)
             self._field_cache[key] = s
         return s
 
@@ -1632,8 +1709,16 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
     if not cols:
         return pd.DataFrame(index=full_out)
     df = pd.DataFrame(cols)
-    # 不同 read_start 的列 index 覆盖范围不同 → 统一 reindex 到各列并集再裁剪
-    df = df.reindex(df.index.union(full_out))
+    # v1.18.31：两处全量 MultiIndex 运算按需免算（35 万行实测分别为 21ms / 21ms / 5ms）
+    #  · 列 index 已正好等于目标行集（无预热前移时：read_start == start_time 且只有一个
+    #    evaluator）⇒ union + 两次 reindex + 时间戳掩码全是恒等操作，直接返回；
+    #  · 否则若列 index 正好等于最后一个 evaluator 的 _full，则 df.index ⊇ full_out
+    #    （full_out 由它裁剪而来）⇒ union 必等于 df.index，跳过这次 union。
+    if df.index.equals(full_out):
+        return _cast_output_f32(df)
+    if last_ev is None or not df.index.equals(last_ev._full):
+        # 不同 read_start 的列 index 覆盖范围不同 → 统一 reindex 到各列并集再裁剪
+        df = df.reindex(df.index.union(full_out))
     df = df[df.index.get_level_values("datetime") >= pd.Timestamp(start_time)]
     df = df.reindex(full_out)
     return _cast_output_f32(df)
