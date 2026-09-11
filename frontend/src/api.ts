@@ -393,6 +393,19 @@ export interface EventStudyResult {
   worst_events: EventStudyEvent[]
   // 基准（未触发组）与超额曲线（日配对口径）：仅 0/1 信号有；仅展示、不参与判定
   baseline?: EventStudyBaseline | null
+  // 逐 k 榜单（键为字符串化的 k）：前端按当前「最长持有」取对应那份，
+  // 保证「表头写持有 k 日」与「数值确实是 k 期收益」口径一致；
+  // 同时让「未持满 max_k 期、但在更短的 k 上有效」的事件也能出现在榜单里。
+  top_by_k?: Record<string, EventStudyEvent[]>
+  worst_by_k?: Record<string, EventStudyEvent[]>
+  // 数据不足的事件统计（避免"静默丢弃"）：
+  //   场景 = 把 end_date 设到接近数据尾部时，靠近末尾的触发在 T+1..T+1+max_k 上
+  //   拿不到全部收盘价（"到截止日还没平仓"）→ 不进入对应 k 的统计、也不出现在
+  //   top/worst 明细里。此前界面上完全看不出来，容易被误读为"样本凭空变少"。
+  max_k?: number // 本次实际计算到的最长持有期
+  n_unaligned?: number // 连买入价都拿不到（完全无法对齐）的事件数
+  n_short?: number // 能买入但有效期数 < max_k 的事件数（典型的「未平仓」）
+  short_events?: { code: string; dt: string; n_valid_k: number }[] // 明细（缺得最多的在前，最多 200 条）
 }
 export interface EventStudyProgress {
   task_id: string

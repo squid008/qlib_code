@@ -226,6 +226,24 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
 
   const lastPoint = viewCurve.length > 0 ? viewCurve[viewCurve.length - 1] : null
 
+  // Top / 最差事件：取「逐 k 榜单」里当前 k 的那份，保证与表头「持有 k 日收益」口径一致。
+  // 旧结果（无 top_by_k）回退到顶层字段（= max_k 期口径）。
+  // 之所以逐 k 取：① 固定用 max_k 期会与表头写明的 k 不符（滑到 2 日却显示 40 日收益）；
+  // ② 未持满 max_k 期但在更短 k 上有效的事件（如区间末端贴近数据末尾的触发）会漏掉。
+  const topEvents = useMemo(() => {
+    const k = lastPoint?.k
+    const byK = result?.top_by_k
+    if (k != null && byK && byK[String(k)]) return byK[String(k)]
+    return result?.top_events ?? []
+  }, [result, lastPoint])
+
+  const worstEvents = useMemo(() => {
+    const k = lastPoint?.k
+    const byK = result?.worst_by_k
+    if (k != null && byK && byK[String(k)]) return byK[String(k)]
+    return result?.worst_events ?? []
+  }, [result, lastPoint])
+
   const verdictHint = useMemo(() => {
     if (!result || !lastPoint) return null
     const win = lastPoint.win ?? 0
@@ -346,7 +364,25 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
               <div className="rounded border border-slate-200 dark:border-slate-700 p-2">
                 <div className="text-slate-400">触发事件数</div>
                 <div className="text-base font-semibold">{result.n_events}</div>
-                <div className="text-slate-400">剔除前 {result.n_raw}</div>
+                <div className="text-slate-400">
+                  剔除前 {result.n_raw}
+                  {result.n_short != null && result.n_short > 0 && (
+                    <>
+                      　·　
+                      <span
+                        className="text-amber-600 dark:text-amber-400 cursor-help"
+                        title={
+                          `在 ${result.max_k ?? computedMaxK} 期口径下可统计 ${result.n_aligned ?? '-'} 个；` +
+                          `另有 ${result.n_short} 个因信号日贴近数据末尾（未平仓）未计入该期` +
+                          (result.n_unaligned ? `，${result.n_unaligned} 个完全无法对齐` : '') +
+                          `。各期的有效样本数见曲线 hover；明细见页面底部「未纳入统计的触发（数据不足）」`
+                        }
+                      >
+                        {result.n_short} 个未平仓
+                      </span>
+                    </>
+                  )}
+                </div>
               </div>
               <div className="rounded border border-slate-200 dark:border-slate-700 p-2">
                 <div className="text-slate-400">持有 {lastPoint?.k ?? '-'} 日中位数</div>
@@ -521,6 +557,12 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                 </table>
                 <div className="text-slate-400 mt-1">
                   （T+1 收盘买入、持有 k 日；已剔除 T 涨停 / T+1 涨停 / T+1 停牌样本）
+                  {result.n_short != null && result.n_short > 0 && (
+                    <span className="text-amber-600 dark:text-amber-400">
+                      {' '}
+                      另有 {result.n_short} 个触发在 {result.max_k ?? computedMaxK} 期上尚未平仓（数据不足），未计入对应 k
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -537,7 +579,7 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                     </tr>
                   </thead>
                   <tbody>
-                    {(result.top_events ?? []).slice(0, 8).map((e, i) => (
+                    {topEvents.slice(0, 8).map((e, i) => (
                       <tr key={`${e.code}:${e.dt}:${i}`} className="border-t border-slate-100 dark:border-slate-700">
                         <td>{e.code}</td>
                         <td>{e.dt}</td>
@@ -554,7 +596,7 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
             <div className="mt-3 border border-slate-200 dark:border-slate-700 rounded p-2">
               <div className="text-slate-500 mb-1">最差的事件（持有 {lastPoint?.k ?? '-'} 日收益）</div>
               <div className="flex flex-wrap gap-x-4 gap-y-1">
-                {(result.worst_events ?? []).map((e, i) => (
+                {worstEvents.map((e, i) => (
                   <span key={`${e.code}:${e.dt}:${i}`} className="text-slate-500">
                     {e.code} <span className="text-slate-400">{e.dt}</span>{' '}
                     <span className="text-red-500">{pct(e.ret, 2)}</span>
@@ -562,6 +604,48 @@ export default function EventStudyModal({ open, onClose, factorName, req, data }
                 ))}
               </div>
             </div>
+
+            {/* 数据不足（未平仓 / 无法对齐）的事件：此前被静默丢弃，界面上看不出来 */}
+            {(result.n_short != null && result.n_short > 0) ||
+            (result.n_unaligned != null && result.n_unaligned > 0) ? (
+              <div className="mt-3 border border-amber-300 dark:border-amber-700/60 rounded p-2 bg-amber-50/50 dark:bg-amber-900/10">
+                <div className="text-amber-700 dark:text-amber-400 mb-1">
+                  未纳入统计的触发（数据不足）
+                  {result.n_short != null && result.n_short > 0 && (
+                    <>
+                      　·　<span className="font-semibold">{result.n_short}</span> 个触发未平仓
+                      （信号日距数据末尾不足 {result.max_k ?? computedMaxK} 个交易日，无法持满 {result.max_k ?? computedMaxK} 日）
+                    </>
+                  )}
+                  {result.n_unaligned != null && result.n_unaligned > 0 && (
+                    <>
+                      　·　<span className="font-semibold">{result.n_unaligned}</span> 个无法对齐
+                      （信号日或 T+1 缺行情：连买入价都取不到）
+                    </>
+                  )}
+                </div>
+                <div className="text-slate-500 mb-1">
+                  这些事件不会出现在上面的曲线与「贡献最大 / 最差事件」里（对应 k 的样本数会相应变少）。
+                  若数量偏多，说明 <span className="font-semibold">评估区间末端已接近数据末尾</span>，
+                  建议把结束日期提前 {result.max_k ?? computedMaxK} 个交易日以上。
+                </div>
+                {(result.short_events ?? []).length > 0 && (
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 max-h-24 overflow-auto">
+                    {(result.short_events ?? []).slice(0, 30).map((e, i) => (
+                      <span key={`${e.code}:${e.dt}:${i}`} className="text-slate-500">
+                        {e.code} <span className="text-slate-400">{e.dt}</span>{' '}
+                        <span className="text-amber-600 dark:text-amber-400">已得 {e.n_valid_k} 期</span>
+                      </span>
+                    ))}
+                    {(result.short_events ?? []).length > 30 && (
+                      <span className="text-slate-400">
+                        …另有 {(result.short_events ?? []).length - 30} 个
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : null}
           </div>
         )}
       </div>

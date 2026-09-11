@@ -167,6 +167,36 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
         "dn_min": _r(mn.min()) if mn.size else None,
     }
 
+    # 逐 k 的榜单（top_by_k / worst_by_k）：
+    #   × 旧实现固定用 `mat[:, -1]`（= max_k 期）排序，导致「表头写"持有 k 日"、数值却是
+    #     max_k 期」的错配，且会漏掉「未持满 max_k 期、但在更短的 k 上完全有效」的事件
+    #     （典型场景：评估区间末端贴近数据末尾，末尾触发的后几期取不到价格）。
+    #   √ 改为每个 k 各出一份榜单；前端按当前「最长持有」取对应那份。
+    # 兼容：仍保留顶层 top_events / worst_events（= max_k 期口径），不破坏既有调用方。
+    codes_str = [str(c) for c in code_arr]
+    dts_str = [str(pd.Timestamp(d).date()) for d in dt_arr]
+    lead = np.fmax.accumulate(mat, axis=1)      # 期内最高（到 j 期为止的最大值，忽略 NaN）
+    top_by_k: dict = {}
+    worst_by_k: dict = {}
+    for j, k in enumerate(ks):
+        x = mat[:, j]
+        ok = np.where(np.isfinite(x))[0]
+        if ok.size == 0:
+            continue
+        o = ok[np.argsort(-x[ok])]
+        top_by_k[str(k)] = [{
+            "code": codes_str[i],
+            "dt": dts_str[i],
+            "ret": _r(x[i]),
+            "max_ret": _r(lead[i, j]),
+        } for i in o[:20]]
+        o2 = ok[np.argsort(x[ok])]
+        worst_by_k[str(k)] = [{
+            "code": codes_str[i],
+            "dt": dts_str[i],
+            "ret": _r(x[i]),
+        } for i in o2[:10]]
+
     last = mat[:, -1]
     order = np.argsort(-np.nan_to_num(last, nan=-9e9))
     top_events = []
@@ -174,8 +204,8 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
         if not np.isfinite(last[idx]):
             continue
         top_events.append({
-            "code": str(code_arr[idx]),
-            "dt": str(pd.Timestamp(dt_arr[idx]).date()),
+            "code": codes_str[idx],
+            "dt": dts_str[idx],
             "ret": _r(last[idx]),
             "max_ret": _r(max_ret[idx]),
         })
@@ -184,19 +214,46 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
         if not np.isfinite(last[idx]):
             continue
         worst_events.append({
-            "code": str(code_arr[idx]),
-            "dt": str(pd.Timestamp(dt_arr[idx]).date()),
+            "code": codes_str[idx],
+            "dt": dts_str[idx],
             "ret": _r(last[idx]),
         })
+
+    # ---- 数据不足的事件清单（避免"静默丢弃"）----
+    # 场景：用户把 end_date 设到接近数据尾部（或数据本身没更新到该日）时，靠近末尾的
+    # 触发在 T+1..T+1+max_k 上拿不到全部收盘价 —— 也就是"到截止日还没平仓"。
+    # 这类事件不会进入 curve 的对应 k（该 k 的 n 会偏小），也不会出现在 top/worst 里，
+    # 界面上完全看不出来，容易被误读为"全部触发都统计了 / 样本凭空变少"。
+    # 故单独统计：
+    #   n_unaligned —— 连买入价都拿不到（完全无法对齐）
+    #   n_short     —— 能买入但有效期数 < max_k（典型的"未平仓"）
+    valid_cnt = np.isfinite(mat).sum(axis=1)
+    n_unaligned = int((valid_cnt == 0).sum())
+    short_idx = np.where((valid_cnt > 0) & (valid_cnt < max_k))[0]
+    short_idx = short_idx[np.argsort(valid_cnt[short_idx])]      # 缺得最多的排前面
+    short_events = [{
+        "code": str(code_arr[i]),
+        "dt": str(pd.Timestamp(dt_arr[i]).date()),
+        "n_valid_k": int(valid_cnt[i]),
+    } for i in short_idx[:200]]
 
     return {
         "n_events": int(n_ev),
         "n_aligned": int(np.isfinite(last).sum()),
         "n_raw": int(n_raw or n_ev),
+        "max_k": int(max_k),
+        # 数据不足（未平仓 / 完全无法对齐）的统计与明细，供界面提示
+        "n_unaligned": n_unaligned,
+        "n_short": int(short_idx.size),
+        "short_events": short_events,
         "ks": ks,
         "curve": curve,
         "prob": prob,
         "upside": upside,
+        # 逐 k 榜单（前端按当前「最长持有」取对应那份，键为字符串化的 k）
+        "top_by_k": top_by_k,
+        "worst_by_k": worst_by_k,
+        # 兼容保留：max_k 期口径的榜单
         "top_events": top_events,
         "worst_events": worst_events,
     }
@@ -440,7 +497,12 @@ def run_event_study(
     _prog(60.0, "对齐 %d 个事件..." % len(ev))
     stats = build_event_stats(piv, ev, max_k, n_raw=n_raw, cancel_check=_check)
     if stats.get("n_aligned", 0) == 0:
-        return {"error": "触发事件无法对齐到买入价（行情缺失）"}
+        _ns = int(stats.get("n_short") or 0)
+        _na = int(stats.get("n_unaligned") or 0)
+        if _ns and not _na:
+            return {"error": "全部 %d 个触发在 %d 期上均未平仓（信号日距数据末尾不足 %d 个交易日）"
+                             "——请把结束日期提前 %d 个交易日以上，或延后数据" % (_ns, max_k, max_k, max_k)}
+        return {"error": "触发事件无法对齐到买入价（行情缺失：无法对齐 %d 个 / 未平仓 %d 个）" % (_na, _ns)}
 
     # ---------- 7. 基准（未触发组）与超额曲线（日配对口径，仅供展示） ----------
     # 口径与单因子测试「顺带计算」时完全一致（全样本宽表 → 每日剔除当日触发股后取等权均值）。
