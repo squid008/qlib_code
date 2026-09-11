@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -64,6 +65,23 @@ def _hac_t(x: np.ndarray, maxlags: int = None) -> Optional[float]:
     var = gam[0] + 2.0 * np.sum((1 - np.arange(1, maxlags + 1) / (maxlags + 1)) * gam[1:])
     se = np.sqrt(max(var, 1e-18) / n)
     return float(m / se)
+
+
+def _bad_date_arg(start_date, end_date) -> str:
+    """校验区间日期是 YYYY-MM-DD 且**真实存在**（如 2026-06-31 非法；6 月只有 30 天）。
+
+    返回可读的中文错误信息，全部合法返回 ""。非法日期若放行，会在后续 pandas 解析处
+    报成难懂的「特征计算失败: day is out of range for month: 2026-06-31」（v1.18.24 修复）。
+    """
+    for lbl, v in (("开始日期", start_date), ("结束日期", end_date)):
+        s = str(v or "").strip()
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+            return f"{lbl}格式无效：{v}（需为 YYYY-MM-DD）"
+        try:
+            pd.Timestamp(s)
+        except Exception:
+            return f"{lbl}无效：{v}（该日期不存在，请检查年/月/日，如 6 月没有 31 日）"
+    return ""
 
 
 class FactorTestCancelled(Exception):
@@ -653,6 +671,12 @@ def run_single_factor_tests(
     horizons = sorted({max(1, int(h or 2)) for h in (label_horizons or [])})
     if not horizons or not factors:
         return {h: [] for h in horizons}
+    # 区间日期合法性前置校验：非法日期（如 2026-06-31）放行后会在 pandas 解析处
+    # 报成「特征计算失败: day is out of range for month」，掩盖真正的原因。
+    _bad = _bad_date_arg(start_date, end_date)
+    if _bad:
+        err = [{**_test_one(pd.DataFrame(), f, ""), "error": _bad} for f in factors]
+        return {h: err for h in horizons}
     _ensure_qlib_init()
 
     if progress_cb:
@@ -683,6 +707,7 @@ def run_single_factor_tests(
             n_need = max(n_max, es_k)
             load_end = str(cal_ts[min(pos + n_need + 3, len(cal_ts) - 1)].date())
         except Exception:
+            # 日历不可用时退回 end_date 原样加载（其合法性已在函数入口校验过）
             load_end = end_date
 
     # 预热缓冲（v1.18.6）：多前移 warmup_days 个交易日加载，仅供状态类/动态窗口算子

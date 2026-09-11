@@ -41,11 +41,28 @@ function joinParts(p: string[]): string {
     : ''
 }
 
+// 该年该月的实际天数（含闰年）；年月不合法时返回 31（交给 validDate 判否）。
+// 注：组件内已有同名局部变量 daysInMonth（当月天数数字），故此处命名 monthDays 避免遮蔽。
+function monthDays(y: string, m: string): number {
+  const Y = +y
+  const M = +m
+  if (!(Y >= 1900 && Y <= 2100 && M >= 1 && M <= 12)) return 31
+  return new Date(Y, M, 0).getDate()
+}
+
 function validDate(y: string, m: string, d: string): boolean {
   const Y = +y
   const M = +m
   const D = +d
-  return Y >= 1900 && Y <= 2100 && M >= 1 && M <= 12 && D >= 1 && D <= 31
+  // 必须校验「该月真有这一天」：仅卡 D<=31 会让 2026-06-31 这类非法日期提交给后端，
+  // pandas 解析直接抛「day is out of range for month」（v1.18.24 修复）。
+  return Y >= 1900 && Y <= 2100 && M >= 1 && M <= 12 && D >= 1 && D <= monthDays(y, m)
+}
+
+// 供其它表单复用：YYYY-MM-DD 且日期真实存在（2026-06-31 判否）
+export function isValidDateStr(v: string): boolean {
+  const p = splitValue(v || '')
+  return !!joinParts(p) && validDate(p[0], p[1], p[2])
 }
 
 const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput(
@@ -90,6 +107,13 @@ const DateInput = forwardRef<DateInputHandle, DateInputProps>(function DateInput
   }))
 
   const emit = (p: string[]) => {
+    // 日超出当月天数时钳到月末（如 2026-06-31 → 2026-06-30）并回写输入框，
+    // 让用户看到被修正，而不是静默丢弃这次输入。
+    const dim = monthDays(p[0], p[1])
+    if (+p[2] > dim) {
+      p[2] = String(dim).padStart(2, '0')
+      setSeg(2, p[2])
+    }
     const v = joinParts(p)
     if (v && validDate(p[0], p[1], p[2])) onChange(v)
   }

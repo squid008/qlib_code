@@ -3,6 +3,18 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.24] - 2026-09-11
+
+### Fixed
+- **修复「结束日期填成 6 月 31 日」导致单因子测试 / 事件研究报 `day is out of range for month: 2026-06-31`**（三层防御，根治在前端 `DateInput`）：
+  - **根因（前端）**：`components/DateInput.tsx` 的 `validDate()` 只校验 `D >= 1 && D <= 31`，**未校验该月是否真有这一天**。日历弹层本身正确（用 `new Date(y, m, 0).getDate()` 取当月天数），但**键盘手输** `2026` / `06` / `31` 能通过校验并被提交；`SingleFactorTestPanel` 与 `App.tsx` 提交前又只校验 `^\d{4}-\d{2}-\d{2}$`（**仅格式、不校验真实性**）→ 非法日期一路放行到后端，`panel_expr._union_index` 的 `pd.Timestamp(end_time)` 抛 `DateParseError`，而 `single_test.py` 的 `except Exception: load_end = end_date` 把非法值**原样透传**，最终报成误导性的「**特征计算失败**」。
+  - **修复 ①（根治，前端）**：`DateInput.tsx` 新增 `monthDays(y, m)`（该月实际天数，含闰年），`validDate()` 改为 `D <= monthDays(y, m)`；`emit()` 对超界日**自动钳到月末并回写输入框**（`2026-06-31` → `2026-06-30`，用户可见被修正，而非静默丢弃）；并 `export isValidDateStr(v)` 供各表单复用。
+  - **修复 ②（前端提交校验）**：`SingleFactorTestPanel.run()` 与 `App.startBacktest()` 改用 `isValidDateStr()` 做「格式 + 日期真实存在」校验，非法时提示「日期无效（如 6 月没有 31 日）」。
+  - **修复 ③（后端兜底，防 API 直连）**：`factors/single_test.py` 新增 `_bad_date_arg(start, end)`；`routers/factors.py` 的 `/single-factor-test` 与 `/event-study` 前置校验并返回 **HTTP 400** 明确信息（此前会是「特征计算失败」）；`run_single_factor_tests` 入口同步前置校验并返回可读错误。
+  - **实测**：`POST /api/factors/single-factor-test` 与 `/event-study` 传 `end_date=2026-06-31` → **HTTP 400** `{"detail":"结束日期无效：2026-06-31（该日期不存在，请检查年/月/日，如 6 月没有 31 日）"}`；合法日期回归（csi300 / 2024-01-01~2025-12-31 / 周期 40）→ `status=success`、IC/RankIC 正常。
+  - 附：辅助函数命名为 `monthDays` 而非 `daysInMonth` —— 组件内已有同名局部变量（当月天数数字），否则 `tsc` 报 `TS2349: This expression is not callable`。
+- 版本 1.18.23 → 1.18.24。
+
 ## [1.18.23] - 2026-09-11
 
 ### Performance

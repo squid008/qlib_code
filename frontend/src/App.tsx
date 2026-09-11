@@ -31,7 +31,7 @@ import HistoryPanel from './components/HistoryPanel'
 import FormulaPanel from './components/FormulaPanel'
 import FeatureSelectPanel from './components/FeatureSelectPanel'
 import SingleFactorTestPanel from './components/SingleFactorTestPanel'
-import DateInput, { type DateInputHandle } from './components/DateInput'
+import DateInput, { type DateInputHandle, isValidDateStr } from './components/DateInput'
 import ModelParamsForm from './components/ModelParamsForm'
 import TaskStatusPanel from './components/TaskStatusPanel'
 
@@ -935,10 +935,9 @@ export default function App() {
 
   const startBacktest = async () => {
     setError('')
-    // 校验日期格式：必须是完整的 YYYY-MM-DD（避免键盘输入不完整日期导致 bug）
-    const dateRe = /^\d{4}-\d{2}-\d{2}$/
-    if (!dateRe.test(form.start_date) || !dateRe.test(form.end_date)) {
-      setError('请通过日历完整选择开始/结束日期（格式 YYYY-MM-DD），避免键盘输入不完整的日期')
+    // 校验日期：格式完整且真实存在（避免键盘输入不完整日期，或「6 月 31 日」这类非法日期）
+    if (!isValidDateStr(form.start_date) || !isValidDateStr(form.end_date)) {
+      setError('请通过日历完整选择开始/结束日期（YYYY-MM-DD 且真实存在），避免键盘输入不完整或非法的日期')
       setLoading(false)
       return
     }

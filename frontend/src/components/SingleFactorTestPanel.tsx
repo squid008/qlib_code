@@ -1,5 +1,5 @@
 import { Component, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
-import DateInput, { type DateInputHandle } from './DateInput'
+import DateInput, { type DateInputHandle, isValidDateStr } from './DateInput'
 import {
   createSingleFactorTest,
   getSingleFactorTestProgress,
@@ -573,6 +573,12 @@ export default function SingleFactorTestPanel({
   const run = async () => {
     if (!startDate || !endDate) {
       setError('请填写测试区间')
+      return
+    }
+    // 日期真实性校验：键盘可绕过三段输入的即时校验（如敲出「6 月 31 日」），
+    // 必须在此拦下，否则后端会抛「day is out of range for month」。
+    if (!isValidDateStr(startDate) || !isValidDateStr(endDate)) {
+      setError('日期无效（如 6 月没有 31 日），请重新选择开始/结束日期')
       return
     }
     if (endDate < startDate) {

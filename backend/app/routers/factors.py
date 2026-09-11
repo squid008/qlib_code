@@ -25,7 +25,7 @@ from ..services.custom_formulas import (
 )
 from .. import config
 from ..engine.task_manager import get_task_manager
-from ..factors.single_test import FactorTestCancelled, run_single_factor_tests
+from ..factors.single_test import FactorTestCancelled, _bad_date_arg, run_single_factor_tests
 from ..factors.event_study import run_event_study
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
@@ -311,6 +311,11 @@ def single_factor_test(req: SingleFactorTestRequest):
         raise HTTPException(status_code=400, detail="请至少勾选一个因子")
     if not req.start_date or not req.end_date:
         raise HTTPException(status_code=400, detail="请填写测试区间")
+    # 日期合法性兜底（前端已校验，此处防 API 直连）：如 2026-06-31 非法，
+    # 放行会在 pandas 解析处报成「特征计算失败: day is out of range for month」。
+    _bad = _bad_date_arg(req.start_date, req.end_date)
+    if _bad:
+        raise HTTPException(status_code=400, detail=_bad)
 
     # 归并预测周期：label_horizons 优先；否则退化为 label_horizon（单周期，历史行为）
     raw = req.label_horizons if req.label_horizons else ([req.label_horizon] if req.label_horizon else [])
@@ -667,6 +672,9 @@ def event_study(req: EventStudyRequest):
     """
     if not req.start_date or not req.end_date:
         raise HTTPException(status_code=400, detail="请填写测试区间")
+    _bad = _bad_date_arg(req.start_date, req.end_date)
+    if _bad:
+        raise HTTPException(status_code=400, detail=_bad)
     if not (req.factor and req.factor.expression):
         raise HTTPException(status_code=400, detail="请提供因子表达式")
     max_k = int(req.max_k or 40)
