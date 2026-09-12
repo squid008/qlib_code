@@ -645,7 +645,9 @@ def _test_one(
 
                 _REBAL_PERIOD = 5          # 调仓期（交易日）；待接线为 API 参数
                 inst_pos = tmp.index.names.index("instrument")
-                k10 = max(1, int(float(tmp.groupby(level=dt_pos).size().median()) * 0.1))
+                # 日均有效只数（10% 默认档 + K 敏感度表的两档百分比共用，只算一次）
+                _med = float(tmp.groupby(level=dt_pos).size().median())
+                k10 = max(1, int(_med * 0.1))
                 top = tmp[tmp["_rk"] <= k10]
                 dm10 = top.groupby(level=dt_pos)["LABEL"].mean().dropna()
                 if len(dm10) >= 2:
@@ -672,6 +674,21 @@ def _test_one(
                         "curves": {kk: [round(float(x), 6) for x in vv]
                                    for kk, vv in cc["curves"].items()},
                     }
+                    # ---- K 敏感度汇总表（换手 / 三档年化 / 成本吞噬比例）--------------
+                    # 复用**同一份** `_rk`、**同一批**调仓日 ⇒ 与 `topk_curves` 是同一组合的
+                    # 两个视图；适配+组装在独立小模块 `factors/topk_sensitivity.py`，
+                    # 算法在 `engine/cost_curves.py`（**勿在此重写**）。
+                    # 自检②：默认 K 那一行的逐期换手必须与 `topk_curves` **逐位相同**。
+                    try:
+                        from app.factors.topk_sensitivity import build_k_sensitivity
+
+                        result["topk_sensitivity"] = build_k_sensitivity(
+                            tmp, dt_pos, inst_pos, dts, _REBAL_PERIOD,
+                            median_daily=_med, default_k=k10,
+                            verify_turnover=cc["turnover"])
+                    except Exception as _e2:      # 与 `event_study_error` 同一处理风格
+                        result["topk_sensitivity_error"] = "%r @ %s" % (
+                            _e2, __import__("traceback").format_exc().strip().splitlines()[-1])
             except Exception as _e:        # 与 `event_study_error` 同一处理风格
                 result["topk_curves_error"] = "%r @ %s" % (
                     _e, __import__("traceback").format_exc().strip().splitlines()[-1])

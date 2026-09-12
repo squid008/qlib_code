@@ -18,39 +18,63 @@
   · 默认 K = **10%**（最强一档）；十分位第 1 组与「TopK=10%」是同一批股票；
   · **首期建仓不计费**；
   · 曲线与既有分层展示同口径用 **cumsum**；
+  · 年化用 **252 交易日/年**（与回测页 `engine/metrics.py` 口径一致）；
   · ⚠ **简化估算：未考虑涨跌停、停牌、流动性冲击**（展示时必须注明）。
 
-自检：`ai_test/test_cost_curves.py`（总失败 0；含随机 200 期与朴素实现逐位对拍）。
+自检：`ai_test/test_cost_curves.py`（总失败 0；含随机 200 期与朴素实现逐位对拍、
+`_turnover_by_k` 与集合版 `_topgroup_cost_curves` 逐位交叉验证）。
 """
 import numpy as np
 
+TRADING_DAYS_PER_YEAR = 252.0        # 年化换算（与 `engine/metrics.py` 的 252 一致）
 
-def _turnover_by_k(rank_cur, rank_prev, ks):
-    """各 K 的**单边换手**（一次掩码计数；**不逐 K 重排、不用 Python 集合**）。
 
-    `换手_K = |{今在前 K 名} \\ {昨在前 K 名}| / |今在前 K 名|`
+def _turnover_by_k(rank_mat, ks):
+    """名次矩阵 → **各 K 的逐期单边换手**（一次掩码计数；**不逐 K 重排、不用 Python 集合**）。
 
-    · `rank` = **组内名次，1 = 最好**（一次 argsort 得到，供 TopK 与十分位**共用**）；
-    · **NaN（不可买/停牌/数据缺失）视为"未持有"** ⇒ 昨日 NaN 一律算"新建仓"；
-    · 分母用**实际持仓数**（并列/样本不足时 ≠ K），保证换手 ∈ [0,1]；
-    · `rank_prev=None`（首期）⇒ 全 0（**首期建仓不计费**）；
-    · 内存 O(n)：按 K 循环（每个 K 3 遍 n 长掩码），10 个 K ≈ 30~50ms。
+    `rank_mat` —— `(n_rebal, n_inst)`：**行 = 调仓日（按时间序）**、**列 = 同一股票轴**
+      （当日没有该股：未上市/停牌/被剔除/无行情 ⇒ 填 **NaN**，NaN 一律视为"未持有"）。
+    `ks` —— 目标持仓只数（如 `[1, 3, …, 200, 187, 374]`），可含重复，按序输出。
+
+    返回 `(n_k, n_rebal - 1)`：第 j 行 = `K = ks[j]` 的逐期换手，第 t 列 = 第 t → t+1 个调仓期
+    （`n_rebal < 2` 时形状为 `(n_k, 0)`）。
+
+    **口径与 `_topgroup_cost_curves` 完全一致**（两者必须同口径，否则同一组合两张表对不上）：
+      · `换手_t = |持仓_{t-1} \\ 持仓_t| / K` —— 分子是**卖出只数**、分母是**目标持仓数 K**；
+      · **昨日没有、今日持有**（新建仓，含首期建仓）**不计入换手** ⇒ 天然满足"首期建仓不计费"；
+      · **当期持仓为空**（清仓/全不可买；名次列全 NaN）⇒ **该期不计费**（与
+        `_topgroup_cost_curves` 的"当期空集"行为一致，见自检 B4）。
+    ⇒ 「K = 默认 10%」那一行能与已上线的 `topk_curves` **逐位对上**（生产侧内建该断言，
+      见 `factors/topk_sensitivity.py` 的 `verify_turnover`）。
+
+    ⚠ 与 `_topgroup_cost_curves` 的分工：本函数吃**名次矩阵**、一次算**全部 K**
+      （K 只影响一次 `<=` 比较，10 个 K 都只是几次 n 长布尔运算），服务「K 敏感度汇总表」；
+      后者吃**持仓集合**、产出**三档累计曲线 + 单期明细**，服务「持仓期收益曲线」。
     """
-    rc = np.asarray(rank_cur, dtype=np.float64)
-    ks = np.asarray(ks, dtype=np.float64)
-    if rank_prev is None:
-        return np.zeros(ks.shape[0], dtype=np.float64)
-    rp = np.asarray(rank_prev, dtype=np.float64)
-    out = np.zeros(ks.shape[0], dtype=np.float64)
-    for j in range(ks.shape[0]):
-        k = ks[j]
-        held_cur = rc <= k                 # NaN → False ✓
-        n_cur = int(np.count_nonzero(held_cur))
-        if n_cur == 0:
+    rm = np.asarray(rank_mat, dtype=np.float64)
+    ks_arr = np.asarray(ks, dtype=np.float64)
+    n_slot = rm.shape[0]
+    out = np.zeros((ks_arr.shape[0], max(n_slot - 1, 0)), dtype=np.float64)
+    if n_slot < 2:
+        return out
+    for j in range(ks_arr.shape[0]):
+        k = ks_arr[j]
+        if not (k > 0):                      # K ≤ 0 / NaN：无持仓 ⇒ 换手 0（不除零）
             continue
-        held_prev = rp <= k                # NaN → False ✓（昨日未持有）
-        out[j] = np.count_nonzero(held_cur & ~held_prev) / float(n_cur)
+        held = rm <= k                       # NaN → False ✓
+        sold = np.count_nonzero(held[:-1] & ~held[1:], axis=1)   # 昨持有、今不持有 = 卖出
+        n_cur = np.count_nonzero(held[1:], axis=1)               # 当期实际持仓只数
+        out[j] = np.where(n_cur > 0, sold / k, 0.0)              # 当期空仓 ⇒ 不计费
     return out
+
+
+def _annualize_cost(avg_turnover, rate, rebalance_period, trading_days=TRADING_DAYS_PER_YEAR):
+    """单期平均换手 → **年化成本**（小数；`0.0119` = 1.19%/年）。
+
+    `年化 = 单期平均换手 × 往返费率 × 每年调仓期数`，`每年调仓期数 = 交易日 / 调仓期`。
+    用**算术**累加（成本是每期固定扣减，不随净值复利），与 `metrics.py` 的几何年化略有不同。
+    """
+    return float(avg_turnover) * float(rate) * (float(trading_days) / float(rebalance_period))
 
 
 def _topgroup_cost_curves(period_ret, holdings, n_hold, rates=(0.0, 0.004, 0.008)):
