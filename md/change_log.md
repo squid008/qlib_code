@@ -3,6 +3,19 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.43] - 2026-09-12
+
+### Added
+- **阶段计时（可观测性）：单因子测试结果新增 `timing` 字段，前端可直接显示「初始化 / 特征加载 / 该因子统计」三段耗时**（`factors/single_test.py::run_single_factor_tests`）：
+  - 动机：用户反馈「前端开头十几秒，看不出慢在哪」。此前判断性能问题要靠外部探针（`profile_*` / `probe_*`）或 cProfile，费时且**容易得出自相矛盾的结论**（本轮已两次：cProfile 给旧实现注水、隔离基准把 `os.stat` 算进去导致虚高）。把它做成**每次测试都自带的现场数据**最省事。
+  - 实现：只在 **3 个阶段边界**各打 `perf_counter()`（一次性 `qlib 初始化` / `_load_feature_panel` / 每个因子的 `_test_one`+事件研究），**每个因子约 0.4 µs**，无性能影响。结果写进每个因子结果的 `timing`：
+    `{"init_s": 一次性 qlib 初始化, "feature_s": 面板/特征加载（全池共享、各因子相同）, "item_s": 本因子统计+事件研究, "total_s": 三者之和}`
+  - ⚠ `total_s` **不等于**前端看到的 wall：剩余部分是 HTTP 往返 + 任务排队 + **股票池成分股解析 / label 表达式构建**（实测 `regress`：total 1.89s vs wall 4.03s；`CUP_POOL`：8.53s vs 10.09s）。
+  - **实测样例**：`regress`（csi300）→ `{init 0.0, feature 1.169, item 0.721, total 1.89}`；`CUP_POOL` → `{init 0.0, feature **8.118**, item 0.415, total 8.53}` ⇒ 大公式的耗时**几乎全在特征加载**，一眼可见。
+  - ⚠ `init_s` 只在**首个任务**有值（之后 `_ensure_qlib_init()` 是空操作）—— 首次请求的「开头十几秒」若含 qlib 初始化，看这个值。
+  - 验证：`backend/tests` **180 passed**、lint 干净、API 回归 `regress` IC/RankIC 与历史**逐位一致**（`ai_test/sft_arith_regress.py` 顺带打印 `timing`）。
+- 版本 1.18.42 → 1.18.43。
+
 ## [1.18.42] - 2026-09-12
 
 ### Added（默认关闭，**未启用**）

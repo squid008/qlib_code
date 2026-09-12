@@ -782,7 +782,15 @@ def run_single_factor_tests(
     if _bad:
         err = [{**_test_one(pd.DataFrame(), f, ""), "error": _bad} for f in factors]
         return {h: err for h in horizons}
+    # 阶段计时（v1.18.43）：只在 3 个阶段边界各打 3 次 perf_counter（每个因子约 0.4µs，
+    # 实测无性能影响）。结果挂在每个因子结果的 `timing` 上，前端可直接显示
+    # 「初始化 / 特征加载 / 该因子统计」三段耗时 —— 便于一眼看出"从哪里慢"。
+    import time as _tmod
+
+    _ph_t0 = _tmod.perf_counter()
     _ensure_qlib_init()
+    _ph_init = _tmod.perf_counter() - _ph_t0
+    _ph_feat = 0.0
 
     if progress_cb:
         progress_cb(None, 2.0, "解析股票池成分股...")
@@ -897,12 +905,14 @@ def run_single_factor_tests(
     fields = tuple(adj_exprs) + tuple(label_exprs.values()) + tuple(base_fields) + (px_field,) + tuple(tag_fields)
     all_cols = factor_cols + list(label_cols.values()) + base_names + ["PX"] + tag_names
 
+    _ph_t0 = _tmod.perf_counter()
     df = _load_feature_panel(
         instruments, fields, all_cols, start_date, load_end,
         freeze_suspended_price=freeze_suspended_price, end_date=end_date,
         cancelled=cancelled, progress_cb=progress_cb, factors=factors,
         warmup_days=warmup_days,
     )
+    _ph_feat = _tmod.perf_counter() - _ph_t0
     if df is None:
         # 面板加载失败（不支持的算子/数据异常）→ 回退 qlib D.features
         frames = []
@@ -998,6 +1008,7 @@ def run_single_factor_tests(
                 results.append({**_test_one(pd.DataFrame(), f, ""), "error": "因子表达式为空"})
                 continue
             trig_out: list = []
+            _ph_t0 = _tmod.perf_counter()
             r = _test_one(
                 sub,
                 f,
@@ -1069,6 +1080,13 @@ def run_single_factor_tests(
                     import traceback as _tb
                     r["event_study_error"] = "%r @ %s" % (
                         _es_e, _tb.format_exc().strip().splitlines()[-1])
+            _ph_item = _tmod.perf_counter() - _ph_t0
+            r["timing"] = {
+                "init_s": round(_ph_init, 3),       # 一次性 qlib 初始化（仅首个任务有值）
+                "feature_s": round(_ph_feat, 3),    # 面板/特征加载（全池共享，各因子相同）
+                "item_s": round(_ph_item, 3),       # 本因子：统计 + 事件研究
+                "total_s": round(_ph_init + _ph_feat + _ph_item, 3),
+            }
             results.append(r)
         out[h] = results
         if progress_cb:
