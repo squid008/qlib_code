@@ -16,6 +16,7 @@ import type {
 } from '../api'
 import type { FactorCatalog, FactorField } from '../types'
 import EventStudyModal from './EventStudyModal'
+import TopkCurveModal from './TopkCurveModal'
 import { excessThresholdOf, pairStabilityOf, type PairStability } from './verdictRules'
 
 interface SingleFactorTestPanelProps {
@@ -56,8 +57,11 @@ interface VerdictStats {
   // （例：win=0.549694 → 显示 55.0%，但 0.549694 < 0.55 → 判待观察）。
   watchReason?: string
 }
-/** 事件研究弹窗的错误边界：渲染异常时显示错误信息，而不是让整个页面白屏。 */
-class EsErrorBoundary extends Component<{ children: ReactNode }, { err: Error | null }> {
+/** 弹窗的错误边界：渲染异常时显示错误信息，而不是让整个页面白屏（事件研究 / 持仓曲线共用）。 */
+class EsErrorBoundary extends Component<
+  { children: ReactNode; label?: string },
+  { err: Error | null }
+> {
   state: { err: Error | null } = { err: null }
 
   static getDerivedStateFromError(err: Error) {
@@ -69,7 +73,9 @@ class EsErrorBoundary extends Component<{ children: ReactNode }, { err: Error | 
       return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="bg-white dark:bg-slate-800 rounded-lg shadow-xl p-4 max-w-[640px] text-xs">
-            <div className="text-red-500 font-semibold mb-1">事件研究弹窗渲染出错</div>
+            <div className="text-red-500 font-semibold mb-1">
+              {this.props.label ?? '事件研究弹窗'}渲染出错
+            </div>
             <div className="text-slate-500 break-all">{String(this.state.err)}</div>
             <div className="text-slate-400 mt-2">
               页面其余部分未受影响；按 F5 刷新可重置。请把上面的错误信息反馈给开发者。
@@ -372,6 +378,17 @@ export default function SingleFactorTestPanel({
   const [estName, setEstName] = useState('')
   // 该行的日配对稳定性字段（t/胜率）：供弹窗与表格共用同一套判定门槛（v1.18.32）
   const [estPair, setEstPair] = useState<{ t?: number | null; win?: number | null } | null>(null)
+
+  // 持仓期收益曲线弹窗（v1.18.45，连续因子）：曲线/敏感度数据**随本次测试结果一并返回**
+  // ⇒ 打开即看（零重算、纯前端切换 K）；0/1 稀疏信号走「事件研究」那套。
+  const [curveOpen, setCurveOpen] = useState(false)
+  const [curveRow, setCurveRow] = useState<TestResult | null>(null)
+  const [curveName, setCurveName] = useState('')
+  const openCurve = (r: TestResult) => {
+    setCurveRow(r)
+    setCurveName(r.name)
+    setCurveOpen(true)
+  }
 
   // 按当前面板参数为某一行结果发起事件研究（参数与单因子测试保持一致）
   const openEventStudy = (r: TestResult) => {
@@ -1145,6 +1162,12 @@ export default function SingleFactorTestPanel({
                   中位数
                 </th>
                 <th className="text-center px-1">事件研究</th>
+                <th
+                  className="text-center px-1"
+                  title="持仓期收益曲线（连续因子）：默认 = 超额收益最强的分位组，含三档往返成本；可切换固定 K 档；另有十分位累计收益曲线与成本敏感度表"
+                >
+                  持仓曲线
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -1387,6 +1410,24 @@ export default function SingleFactorTestPanel({
                             </span>
                           )}
                         </td>
+                        <td className="text-center px-1">
+                          {r.topk_curves || r.quantile_curves ? (
+                            <button
+                              onClick={() => openCurve(r)}
+                              className="px-1.5 py-0.5 rounded border border-emerald-400 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 text-[11px] whitespace-nowrap"
+                              title="连续因子持仓期收益曲线：默认展示**超额收益最强的分位组**（含三档成本），可纯前端切换固定 K 档；另有十分位累计收益曲线与成本敏感度表。数据随本次测试返回，点开即看（零重算）。⚠ 简化估算，未考虑涨跌停/停牌/流动性冲击，曲线非净值"
+                            >
+                              持仓曲线
+                            </button>
+                          ) : (
+                            <span
+                              className="text-slate-300"
+                              title="持仓期曲线仅适用于连续因子（0/1 信号请用左侧「事件研究」）"
+                            >
+                              -
+                            </span>
+                          )}
+                        </td>
                       </>
                     )}
                   </tr>
@@ -1418,6 +1459,16 @@ export default function SingleFactorTestPanel({
           req={estReq}
           data={estData}
           pair={estPair}
+        />
+      </EsErrorBoundary>
+
+      {/* 持仓期收益曲线弹窗（连续因子）：数据已在结果里 ⇒ 秒开、纯前端切换 K。 */}
+      <EsErrorBoundary label="持仓曲线弹窗">
+        <TopkCurveModal
+          open={curveOpen}
+          onClose={() => setCurveOpen(false)}
+          name={curveName}
+          row={curveRow}
         />
       </EsErrorBoundary>
     </div>

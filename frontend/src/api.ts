@@ -228,13 +228,22 @@ export interface QuintileGroup {
 export interface QuantileCurves {
   n_groups: number
   dates: string[] // YYYY-MM-DD；各分组都有值的交易日
-  groups: { quantile: number; cum: number[] }[] // 累计收益（cumsum 口径，原始小数）
+  baseline_mean: number // 各组均值的平均（等频分组 ⇒ = 全样本日均，超额的同口径基准）
+  best_quantile: number // **超额收益最强的分位组**（默认档展示的那一档，可能是 Q10/Q9/Q2…）
+  groups: {
+    quantile: number
+    mean_ret: number // 对齐日轴后的日截面平均收益（原始小数）
+    excess: number // 相对 baseline_mean 的超额（与 mean_ret 排序等价）
+    cum: number[] // 累计收益（cumsum 口径，原始小数）
+  }[]
   // ⚠ 多空 = 第 1 组 − 最后一组：A 股空头收益拿不到，**不可实现，仅作有效性参考**
   long_short: { quantile: [number, number]; cum: number[] }
 }
-// TopK 持仓期收益曲线（含三档成本）：items[0] 恒为默认档（K=10%）
+// TopK 持仓期收益曲线（含三档成本）
 export interface TopKCurveItem {
-  k: number // 目标持仓只数
+  kind: 'decile' | 'topk' // decile = 分位组（逐日等分，只数逐日变化）；topk = 固定只数
+  k: number // 目标持仓只数（分位档为其中位只数，仅作展示）
+  quantile?: number // 仅 kind='decile'：该档是第几分位组
   turnover: number[] // 逐日换手（仅调仓日非零；首期建仓为 0）
   curves: Record<string, number[]> // 三档成本累计曲线，键 "0.0000"/"0.0040"/"0.0080"
 }
@@ -242,7 +251,9 @@ export interface TopKCurves {
   rebalance_period: number // 调仓期（交易日）
   n: number // 共享日期轴长度
   dates: string[] // YYYY-MM-DD
-  items: TopKCurveItem[]
+  side: 'high' | 'low' // 曲线取的那一端（由 best_quantile 决定，高/低分位侧）
+  default_quantile: number | null // 最强分位组（items[0] 的 quantile）
+  items: TopKCurveItem[] // items[0] = 默认档 = 最强分位组；其后为固定 K 档
 }
 // K 敏感度汇总表：各 K 的换手 / 三档年化成本 / 成本吞噬比例
 export interface TopKSensitivityRow {
