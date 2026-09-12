@@ -612,8 +612,13 @@ def _test_one(
             quint = sub.iloc[np.nonzero(~excl.to_numpy())[0]]
             dt_pos = quint.index.names.index("datetime")
             tmp = quint[[col, "LABEL"]].copy()
-            tmp["_q"] = tmp.groupby(level=dt_pos)[col].transform(
-                lambda x: pd.qcut(x.rank(method="first"), 5, labels=False, duplicates="drop") + 1
+            # 组内名次**只算一次**（v1.18.45）：原实现把 `rank(method="first")` 放在 `_q` 的
+            # lambda 里，下方 TopK 曲线又独立算一遍 ⇒ 同一次 226 万行组内排名算两遍（实测
+            # item_s +1.6s）。现在显式算一次 `_rk`，`_q` 与 TopK 共用（数值完全不变：
+            # `qcut` 的输入仍是同一列的名次）。
+            tmp["_rk"] = tmp.groupby(level=dt_pos)[col].rank(method="first")
+            tmp["_q"] = tmp.groupby(level=dt_pos)["_rk"].transform(
+                lambda x: pd.qcut(x, 5, labels=False, duplicates="drop") + 1
             )
             tmp = tmp.dropna(subset=["_q"])
             groups = []
@@ -640,17 +645,20 @@ def _test_one(
 
                 _REBAL_PERIOD = 5          # 调仓期（交易日）；待接线为 API 参数
                 inst_pos = tmp.index.names.index("instrument")
-                tmp["_rk"] = tmp.groupby(level=dt_pos)[col].rank(method="first")
                 k10 = max(1, int(float(tmp.groupby(level=dt_pos).size().median()) * 0.1))
                 top = tmp[tmp["_rk"] <= k10]
                 dm10 = top.groupby(level=dt_pos)["LABEL"].mean().dropna()
                 if len(dm10) >= 2:
                     dts = list(dm10.index)
+                    # 「每日 → 当日 TopK 名单」**一次 groupby** 取出（原先在调仓日循环里
+                    # 逐日做 `index.get_level_values(...) == _dt` 全表扫描：242 次 × 22.5 万行
+                    # ≈ 5400 万次比较，实测 item_s +1.6s）。
+                    _sets = {_d: set(_g.index.get_level_values(inst_pos))
+                             for _d, _g in top.groupby(level=dt_pos, sort=True)}
                     cur, hold_seq = None, []
                     for _i, _dt in enumerate(dts):
                         if _i % _REBAL_PERIOD == 0:       # 调仓日：重取 TopK，其余日沿用
-                            _sel = top[top.index.get_level_values(dt_pos) == _dt]
-                            cur = set(_sel.index.get_level_values(inst_pos))
+                            cur = _sets.get(_dt)
                         hold_seq.append(cur)
                     _ret = dm10.to_numpy(dtype=np.float64)
                     cc = _topgroup_cost_curves(_ret, hold_seq, k10)
