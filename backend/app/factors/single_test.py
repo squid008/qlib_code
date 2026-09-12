@@ -628,6 +628,45 @@ def _test_one(
                 })
             if len(groups) >= 2:
                 result["quintile_ret"] = groups
+            # ---- 连续因子：持仓期收益曲线（含三档成本）----------------------------
+            # 纯算法在 `engine/cost_curves.py`（跨路径共用，**勿在此重写**）；本段只做
+            # 「取现成序列 + 调纯函数 + 组装」：
+            #   · `tmp` 已有分位 `_q`（来自 `rank(method="first")`）⇒ 名次现成、无需二次排序；
+            #   · `dm` 那类 groupby 切片就是**逐日收益序列**（原先被 `.mean()` 压成标量）；
+            #   · **默认 K = 10%**（最强一档）；十分位第 1 组与 TopK=10% 是同一批股票。
+            # ⚠ **简化估算：未考虑涨跌停、停牌、流动性冲击**（前端须注明）；首期建仓不计费。
+            try:
+                from app.engine.cost_curves import _topgroup_cost_curves
+
+                _REBAL_PERIOD = 5          # 调仓期（交易日）；待接线为 API 参数
+                inst_pos = tmp.index.names.index("instrument")
+                tmp["_rk"] = tmp.groupby(level=dt_pos)[col].rank(method="first")
+                k10 = max(1, int(float(tmp.groupby(level=dt_pos).size().median()) * 0.1))
+                top = tmp[tmp["_rk"] <= k10]
+                dm10 = top.groupby(level=dt_pos)["LABEL"].mean().dropna()
+                if len(dm10) >= 2:
+                    dts = list(dm10.index)
+                    cur, hold_seq = None, []
+                    for _i, _dt in enumerate(dts):
+                        if _i % _REBAL_PERIOD == 0:       # 调仓日：重取 TopK，其余日沿用
+                            _sel = top[top.index.get_level_values(dt_pos) == _dt]
+                            cur = set(_sel.index.get_level_values(inst_pos))
+                        hold_seq.append(cur)
+                    _ret = dm10.to_numpy(dtype=np.float64)
+                    cc = _topgroup_cost_curves(_ret, hold_seq, k10)
+                    # 自检①：无成本档必须与原曲线**逐位相同**（＝本段没改坏任何数值）
+                    if not np.array_equal(cc["curves"]["0.0000"], np.cumsum(_ret)):
+                        raise AssertionError("无成本档应等于 cumsum(逐日收益)")
+                    result["topk_curves"] = {
+                        "k": k10, "rebalance_period": _REBAL_PERIOD, "n": int(len(dts)),
+                        "dates": [pd.Timestamp(d).strftime("%Y-%m-%d") for d in dts],
+                        "turnover": [round(float(x), 6) for x in cc["turnover"]],
+                        "curves": {kk: [round(float(x), 6) for x in vv]
+                                   for kk, vv in cc["curves"].items()},
+                    }
+            except Exception as _e:        # 与 `event_study_error` 同一处理风格
+                result["topk_curves_error"] = "%r @ %s" % (
+                    _e, __import__("traceback").format_exc().strip().splitlines()[-1])
         except FactorTestCancelled:
             raise
         except Exception:
