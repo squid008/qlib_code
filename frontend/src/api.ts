@@ -207,6 +207,10 @@ export interface SingleFactorTestRequest {
   // 0=关闭。用于长回看/动态窗口公式（DYN_*/BARSCOUNT/HHVBARS+Ref 嵌套）在区间首日
   // 即有收敛值；出口仍裁剪回评估区间，固定窗口公式结果不变
   warmup_days?: number
+  // ---- 连续因子「分位 / 持仓期曲线」参数（v1.18.45）----
+  quantiles?: number // 分位组数（缺省 10 = 十分位；5 = 旧五分位）
+  rebalance_period?: number | null // 调仓期（交易日）；**不传/null ⇒ 跟随预测周期 h**
+  topk_list?: number[] // 明细曲线要算的 K：≤1 视为「日均只数的百分比」（0.2 = 20%），>1 视为只数
 }
 export interface FactorTestGroupStats {
   count: number
@@ -227,16 +231,18 @@ export interface QuintileGroup {
 // 分位「累计收益曲线」（十分位图数据；与 quintile_ret 的 mean_ret 同源，故数字自洽）
 export interface QuantileCurves {
   n_groups: number
-  dates: string[] // YYYY-MM-DD；各分组都有值的交易日
-  baseline_mean: number // 各组均值的平均（等频分组 ⇒ = 全样本日均，超额的同口径基准）
+  n_periods: number // 调仓期数（= 曲线点数）
+  dates: string[] // 调仓日 YYYY-MM-DD（每期一个点）
+  baseline_mean: number // 各组均值之平均（等频分组 ⇒ = 全样本均值，超额的同口径基准）
   best_quantile: number // **超额收益最强的分位组**（默认档展示的那一档，可能是 Q10/Q9/Q2…）
+  worst_quantile: number // 最弱分位组
   groups: {
     quantile: number
-    mean_ret: number // 对齐日轴后的日截面平均收益（原始小数）
+    mean_ret: number // 各调仓期收益均值（原始小数）
     excess: number // 相对 baseline_mean 的超额（与 mean_ret 排序等价）
-    cum: number[] // 累计收益（cumsum 口径，原始小数）
+    cum: number[] // 累计收益（逐期 cumsum，原始小数）
   }[]
-  // ⚠ 多空 = 第 1 组 − 最后一组：A 股空头收益拿不到，**不可实现，仅作有效性参考**
+  // ⚠ 多空 = **最强组 − 最弱组**：A 股空头收益拿不到，**不可实现，仅作有效性参考**
   long_short: { quantile: [number, number]; cum: number[] }
 }
 // TopK 持仓期收益曲线（含三档成本）
@@ -248,9 +254,11 @@ export interface TopKCurveItem {
   curves: Record<string, number[]> // 三档成本累计曲线，键 "0.0000"/"0.0040"/"0.0080"
 }
 export interface TopKCurves {
-  rebalance_period: number // 调仓期（交易日）
-  n: number // 共享日期轴长度
-  dates: string[] // YYYY-MM-DD
+  rebalance_period: number // 调仓期（交易日）；默认 = 预测周期 h
+  horizon: number | null // 该行的预测周期 h（调仓期默认值来源）
+  n_days: number // 日轴长度（交易日）
+  n: number // **调仓次数**（= 曲线点数 = 期数）
+  dates: string[] // 调仓日 YYYY-MM-DD（每期一个点）
   side: 'high' | 'low' // 曲线取的那一端（由 best_quantile 决定，高/低分位侧）
   default_quantile: number | null // 最强分位组（items[0] 的 quantile）
   items: TopKCurveItem[] // items[0] = 默认档 = 最强分位组；其后为固定 K 档

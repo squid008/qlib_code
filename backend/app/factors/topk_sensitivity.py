@@ -31,8 +31,8 @@ from app.engine.cost_curves import (TRADING_DAYS_PER_YEAR, _annualize_cost,
                                     _turnover_by_k)
 
 BASE_KS = (1, 3, 5, 10, 20, 50, 100, 200)     # 固定候选（只数）；另加 10%/20% 两档
-NOTE = ("简化估算：未考虑涨跌停、停牌、流动性冲击；成本按调仓期扣、只扣实际调仓的股票；"
-        "首期建仓不计费；K=1/3 仅供边界参考。"
+NOTE = ("简化估算：未考虑涨跌停、停牌、流动性冲击；**调仓期默认 = 预测周期 h**（按预测周期调仓换股），"
+        "成本按调仓期扣、只扣实际调仓的股票；首期建仓不计费；K=1/3 仅供边界参考。"
         "⚠ 本表按**固定持仓只数 K**（同一方向：超额收益最强分位组所在的那一端）计算；"
         "默认档（最强分位组）是**逐日等分**、只数逐日变化，与固定 K 略有差异（实测成员中位差 4 只）。"
         "⚠ `gross_per_period` 是 **label（h 期前视）口径**的每期累加毛收益，"
@@ -60,7 +60,8 @@ def build_k_sensitivity(tmp, dt_pos, inst_pos, dts, rebalance_period,
     `rebalance_period` —— 调仓期（交易日）。
     `median_daily` —— 日均有效只数（用于定 10%/20% 两档；`None` 则现算）。
     `default_k` —— 默认档（会被 `verify_turnover` 钉住，也回传给前端做高亮）。
-    `verify_turnover` —— **固定 K 档明细的 `turnover`**（逐日序列）；给了就做**逐位**自检。
+    `verify_turnover` —— **固定 K 档明细的逐期 `turnover`**（长度 = 调仓次数，**首期建仓为 0**）；
+                 给了就丢掉首期后与本表矩阵行做**逐位**自检（两条独立路径钉同一组合）。
     `rk_col`  —— 名次列名，默认 `"_rk"`。**方向由此列决定**：调用方按「超额收益最强的
                  分位组在哪一端」传 `"_rk"`（低分端）或镜像列 `"_rkd"`（高分端），
                  这样本表与默认档明细**同一方向**（否则会去分析最弱的那一端）。
@@ -110,12 +111,17 @@ def build_k_sensitivity(tmp, dt_pos, inst_pos, dts, rebalance_period,
     # ---- 2. 各 K 的逐期换手（纯函数）+ 逐位自检 --------------------------------
     turnover = _turnover_by_k(rank_mat, ks)
     if verify_turnover is not None and default_k is not None and int(default_k) in ks:
-        ref = np.asarray(verify_turnover, dtype=np.float64)[rebal::rebal]
+        ref = np.asarray(verify_turnover, dtype=np.float64)
+        # 明细是**逐调仓期**换手且首期建仓不计费（= 0）⇒ 丢掉首期后与矩阵行逐位比
+        if ref.shape[0] == turnover.shape[1] + 1:
+            ref = ref[1:]
         got = turnover[ks.index(int(default_k))]
         if ref.shape != got.shape or not np.array_equal(ref, got):
             raise AssertionError(
-                "默认 K=%s 的逐期换手与已上线的 topk_curves 不一致（两条路径口径应逐位相同）"
-                % (default_k,))
+                "K=%s 的逐期换手与 topk_curves 明细不一致（两条路径口径应逐位相同）："
+                "shape %s vs %s，max|Δ|=%s" % (default_k, ref.shape, got.shape,
+                                              (float(np.max(np.abs(ref - got)))
+                                               if ref.shape == got.shape else "nan")))
 
     # ---- 3. 各 K 的「每期毛收益」（label 口径；只用于算「成本吞噬比例」）------------
     lab = tmp["LABEL"].to_numpy(dtype=np.float64)

@@ -211,30 +211,38 @@ def _decile_matrix(dms: dict) -> Optional[pd.DataFrame]:
 
 
 def _quantile_curves(mat: pd.DataFrame) -> dict:
-    """由对齐矩阵产出分位累计收益曲线（十分位图数据）。
+    """由**调仓期口径**的分位收益矩阵产出分位累计收益曲线（十分位图数据）。
 
-    · `groups[].cum` = 该组逐日截面均值 cumsum（与 `topk_curves` 无成本档同口径）；
-    · `groups[].mean_ret` / `excess` —— **对齐日轴后**的日截面均值 / 相对基准的超额；
-      `baseline_mean` = 各组均值的平均（等频分组 ⇒ 等于全样本日均，故 `excess` 与
-      `mean_ret` 的排序完全一致）；
-    · `best_quantile` = **超额收益最强的分位组**（默认档要展示的那一档，可能是 Q10/Q9/Q2…）；
-    · **多空 = 第 1 组 − 最后一组**（⚠ A 股空头收益拿不到，**不可实现，仅作有效性参考**）。
+    `mat` —— 行 = **调仓日**（每 `rebalance_period` 个交易日一个）、列 = 分位组；
+             单元格 = 该调仓日（信号日 T，T+1 买入）该组样本的 `LABEL` 均值
+             = **持有到下一个调仓日的组合收益**（默认调仓期 = 预测周期 h ⇒ 「按预测周期调仓换股」）。
+
+    · `groups[].cum`  = 该组逐期收益 cumsum（**算术累加**，与 `topk_curves` 无成本档同口径）；
+    · `groups[].mean_ret` / `excess` = 各期收益均值 / 相对基准的超额；`baseline_mean` =
+      各组均值的平均（等频分组 ⇒ 等于全样本均值，故 `argmax(mean_ret) ≡ argmax(excess)`）；
+    · `best_quantile` / `worst_quantile` = 最强 / 最弱分位组（方向由数据定，不硬编码）；
+    · **多空 = 最强组 − 最弱组**（⚠ 实盘不可实现，仅作有效性参考）。
+      ⚠ 此前误用「第 1 组 − 最后一组」⇒ **负向因子（如负市值对数）的多空曲线朝下、方向反了**，
+      用户 2026-09-12 发现并纠正。
     """
     qs = [int(q) for q in mat.columns]
     means = mat.mean()
-    base = float(means.mean())          # 等频分组 ⇒ 各组均值之平均 = 全样本日均（同口径基准）
-    ls = (mat[qs[0]] - mat[qs[-1]]).cumsum()
+    base = float(means.mean())          # 等频分组 ⇒ 各组均值之平均 = 全样本均值（同口径基准）
+    best, worst = int(means.idxmax()), int(means.idxmin())
+    ls = (mat[best] - mat[worst]).cumsum()
     return {
         "n_groups": len(qs),
+        "n_periods": int(len(mat)),
         "dates": [pd.Timestamp(d).strftime("%Y-%m-%d") for d in mat.index],
         "baseline_mean": round(base, 6),
-        "best_quantile": int(means.idxmax()),
+        "best_quantile": best,
+        "worst_quantile": worst,
         "groups": [{"quantile": q,
                     "mean_ret": round(float(means[q]), 6),
                     "excess": round(float(means[q]) - base, 6),
                     "cum": [round(float(x), 6) for x in mat[q].cumsum()]}
                    for q in qs],
-        "long_short": {"quantile": [qs[0], qs[-1]],
+        "long_short": {"quantile": [best, worst],
                        "cum": [round(float(x), 6) for x in ls]},
     }
 
@@ -343,9 +351,11 @@ def _test_one(
     cancelled=None,  # 取消检查回调：返回 True 表示用户已取消，在重计算步骤间调用（可空）
     trig_index_out: Optional[list] = None,  # 出参：回传触发样本索引（供事件研究复用，可空）
     quantiles: int = 10,               # 连续因子分位组数（默认 10=十分位；5=旧五分位，保留兼容）
-    rebalance_period: int = 5,         # TopK 持仓期曲线的调仓期（交易日）
+    rebalance_period: Optional[int] = None,  # 调仓期（交易日）；None ⇒ **跟随预测周期 horizon**
+    #                                   （= 「用预测周期调仓换股」的默认口径，v1.18.45 起）
     topk_list: Optional[list] = None,  # 明细曲线要算的 K：≤1 视为「日均只数的百分比」（0.1=10%），
     #                                   >1 视为只数；None ⇒ 只算默认档（10%）。默认档恒算且排在最前
+    horizon: Optional[int] = None,     # 该次统计的预测周期 h（用于「调仓期默认 = h」；可空）
 ) -> dict:
     """测试单个因子列（df 含 col 与 LABEL 两列）。
 
@@ -689,11 +699,16 @@ def _test_one(
                     "mean_ret": round(float(dm.mean()), 6),      # 日截面平均收益
                 })
             _dec_mat = _decile_matrix(_q_dms) if len(groups) >= 2 else None
+            # 调仓期（v1.18.45）：默认跟随**预测周期 h**（= 「用预测周期调仓换股」），
+            # API 可用 `rebalance_period` 覆盖；调仓日 = 日轴上每 `_REBAL` 个交易日取一个。
+            _REBAL = max(1, int(rebalance_period if rebalance_period is not None else (horizon or 5)))
+            _reb_pos = list(range(0, len(_dec_mat), _REBAL)) if _dec_mat is not None else []
+            _dec_p = _dec_mat.iloc[_reb_pos] if _dec_mat is not None else None
             if len(groups) >= 2:
                 result["quintile_ret"] = groups
-                # 分位累计收益曲线（十分位图数据）：直接复用上面的逐日序列 cumsum，几乎零增量
-                if _dec_mat is not None:
-                    result["quantile_curves"] = _quantile_curves(_dec_mat)
+                # 分位累计收益曲线（十分位图数据）：**调仓期口径**（每期 = 持有到下一个调仓日）
+                if _dec_p is not None and len(_dec_p) >= 2:
+                    result["quantile_curves"] = _quantile_curves(_dec_p)
             # ---- 连续因子：持仓期收益曲线（含三档成本）----------------------------
             # 纯算法在 `engine/cost_curves.py`（跨路径共用，**勿在此重写**）；本段只做
             # 「取现成序列 + 调纯函数 + 组装」：
@@ -707,8 +722,6 @@ def _test_one(
             try:
                 from app.engine.cost_curves import _topgroup_cost_curves
 
-                # 调仓期（API 参数，默认 5 交易日；同样不用 `or` 兜底，0 由 API 校验拦下）
-                _REBAL = max(1, int(5 if rebalance_period is None else rebalance_period))
                 inst_pos = tmp.index.names.index("instrument")
                 # 日均有效只数（10% 固定档 + K 敏感度表的两档百分比共用，只算一次）
                 _med = float(tmp.groupby(level=dt_pos).size().median())
@@ -723,30 +736,37 @@ def _test_one(
                 _rkcol = "_rkd" if _side > 0 else "_rk"
                 top = tmp[tmp[_rkcol] <= k10]
                 dm10 = top.groupby(level=dt_pos)["LABEL"].mean().dropna()
-                # 共享日期轴优先取分位对齐矩阵（默认档与分位曲线同轴）；退化时才用固定档的
+                # 共享日轴优先取分位对齐矩阵（默认档与分位曲线同轴）；退化时才用固定档的
                 _dts = list(_dec_mat.index) if _dec_mat is not None else list(dm10.index)
                 if len(_dts) >= 2:
                     _idx_dts = pd.Index(_dts)
-                    _dts_str = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in _dts]
+                    # 调仓日（**逐期**口径）：每 `_REBAL` 个交易日一个 ⇒ 每期收益 = 持有到下一
+                    # 个调仓日（默认调仓期 = 预测周期 h，即「用预测周期调仓换股」）
+                    _reb_pos = list(range(0, len(_dts), _REBAL))
+                    _reb_dates = [_dts[_i] for _i in _reb_pos]
+                    _reb_str = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in _reb_dates]
                     _items, _cc_fixed_default = [], None
 
-                    def _append_item(_kind, _k, _dm, _sub, _n_hold, _quantile=None):
-                        """取现成逐日序列 + 调纯函数 + 追加一条明细（三条自检都在这里）。"""
-                        # 「每日 → 当日名单」**一次 groupby** 取出（原先在调仓日循环里逐日做
+                    def _append_item(_kind, _k, _ret, _sub, _n_hold=None, _quantile=None):
+                        """调纯函数 + 追加一条明细（三个自检都在这里）。
+
+                        `_ret`  —— **逐调仓期**组合收益（长度 = 调仓次数）
+                        `_sub`  —— 用于取每期名单的样本（分位组 / 固定 K 档）
+                        `_n_hold` —— 换手分母；`None` ⇒ 分位组（只数逐期变化）用**当期在手只数**
+                        """
+                        # 「调仓日 → 当日名单」**一次 groupby** 取出（原先在调仓日循环里逐日做
                         # `index.get_level_values(...) == _dt` 全表扫描：242 次 × 22.5 万行
                         # ≈ 5400 万次比较，实测 item_s +1.6s）。
                         _sets = {_d: set(_g.index.get_level_values(inst_pos))
                                  for _d, _g in _sub.groupby(level=dt_pos, sort=True)}
-                        cur, hold_seq = None, []
-                        for _i, _dt in enumerate(_dts):
-                            if _i % _REBAL == 0:        # 调仓日：重取名单，其余日沿用
-                                cur = _sets.get(_dt)
-                            hold_seq.append(cur)
-                        _ret = _dm.to_numpy(dtype=np.float64)
+                        hold_seq = [_sets.get(_d) for _d in _reb_dates]
+                        if _n_hold is None:
+                            _n_hold = np.asarray([len(_s) if _s else 0 for _s in hold_seq],
+                                                 dtype=np.float64)
                         cc = _topgroup_cost_curves(_ret, hold_seq, _n_hold)
                         # 自检①：无成本档必须与 cumsum 逐位相同（＝本段没改坏任何数值）
                         if not np.array_equal(cc["curves"]["0.0000"], np.cumsum(_ret)):
-                            raise AssertionError("无成本档应等于 cumsum(逐日收益)（%s）" % _kind)
+                            raise AssertionError("无成本档应等于 cumsum(逐期收益)（%s）" % _kind)
                         if _kind == "decile":
                             # 自检②：默认档（分位组）的无成本档必须与 `quantile_curves` 里
                             # 该分位组的曲线一致 —— 两条独立组装路径互相钉住。
@@ -754,7 +774,7 @@ def _test_one(
                             #   `Series.cumsum`，同一组同一序列下可能差 1 ULP；1e-9 对
                             #   累加量级（~1e-13 误差）有 1e4 倍余量，但结构性错误（串组/错轴）
                             #   差异在 1e-2 量级，照样能抓到。
-                            _refc = _dec_mat[int(_quantile)].cumsum().to_numpy(dtype=np.float64)
+                            _refc = _dec_p[int(_quantile)].cumsum().to_numpy(dtype=np.float64)
                             _gotc = np.asarray(cc["curves"]["0.0000"], dtype=np.float64)
                             _dmax = (float(np.max(np.abs(_gotc - _refc)))
                                      if _gotc.shape == _refc.shape else float("nan"))
@@ -775,19 +795,11 @@ def _test_one(
                         _items.append(item)
                         return cc
 
-                    # ① 默认档 = 最强分位组（逐日等权；换手分母 = 当期在手只数）
-                    if _dec_mat is not None and _qbest is not None:
-                        _grp = tmp[tmp["_q"] == _qbest]
-                        _nseq = np.zeros(len(_dts), dtype=np.float64)
-                        _sets_b = {_d: set(_g.index.get_level_values(inst_pos))
-                                   for _d, _g in _grp.groupby(level=dt_pos, sort=True)}
-                        _cur = None
-                        for _i, _dt in enumerate(_dts):
-                            if _i % _REBAL == 0:
-                                _cur = _sets_b.get(_dt)
-                            _nseq[_i] = len(_cur) if _cur else 0
-                        _append_item("decile", 0, _dec_mat[int(_qbest)], _grp, _nseq,
-                                     _quantile=int(_qbest))
+                    # ① 默认档 = 最强分位组（每期等权；换手分母 = 当期在手只数）
+                    if _dec_p is not None and _qbest is not None:
+                        _append_item("decile", 0,
+                                     _dec_p[int(_qbest)].to_numpy(dtype=np.float64),
+                                     tmp[tmp["_q"] == _qbest], None, _quantile=int(_qbest))
 
                     # ② 固定 K 档（TopK；与 K 敏感度表同一口径 ⇒ 自检③）
                     # K 清单：默认含 10% 档；≤1 视为「日均只数的百分比」（0.1 ⇒ 10%），
@@ -814,11 +826,17 @@ def _test_one(
                                 continue
                         if not _dm.index.equals(_idx_dts):
                             _dm = _dm.reindex(_dts).fillna(0.0)   # 缺失日按 0（= 空仓不计费）
-                        _cc = _append_item("topk", _k, _dm, _sub, _k)
+                        # 只取**调仓期**那几天的收益（每期持有到下一个调仓日）
+                        _cc = _append_item("topk", _k,
+                                           _dm.to_numpy(dtype=np.float64)[_reb_pos], _sub, _k)
                         if _k == k10:
                             _cc_fixed_default = _cc
                     result["topk_curves"] = {
-                        "rebalance_period": _REBAL, "n": int(len(_dts)), "dates": _dts_str,
+                        "rebalance_period": _REBAL,
+                        "horizon": (int(horizon) if horizon else None),
+                        "n_days": int(len(_dts)),        # 日轴长度（交易日）
+                        "n": int(len(_reb_dates)),       # **调仓次数**（= 曲线点数 / 期数）
+                        "dates": _reb_str,               # 调仓日（每期一个点）
                         "side": ("high" if _side > 0 else "low"),
                         "default_quantile": (int(_qbest) if _qbest is not None else None),
                         "items": _items,   # items[0] = 默认档（最强分位组，kind="decile"）
@@ -966,7 +984,7 @@ def run_single_factor_tests(
     price_round: bool = True,
     warmup_days: Optional[int] = None,
     quantiles: int = 10,
-    rebalance_period: int = 5,
+    rebalance_period: Optional[int] = None,
     topk_list: Optional[list] = None,
 ) -> Dict[int, list]:
     """多预测周期单因子测试：所有周期【共享一次特征加载】，再逐周期分别统计。
@@ -1241,6 +1259,7 @@ def run_single_factor_tests(
                 quantiles=quantiles,
                 rebalance_period=rebalance_period,
                 topk_list=topk_list,
+                horizon=h,          # 调仓期默认跟随预测周期（「用预测周期调仓换股」）
             )
             # 事件研究（0/1 信号顺带计算，v1.18.7）：稀疏信号按日配对会退化成单票
             # 收益序列（触发日只有 1 只票），须以「每次触发」为样本单位才有意义。

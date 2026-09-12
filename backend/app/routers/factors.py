@@ -172,7 +172,9 @@ class SingleFactorTestRequest(BaseModel):
     #   出口仍裁剪回 [start_date, ...]，固定窗口公式结果不变。
     # ---- 连续因子「分位 / 持仓期收益曲线」参数（v1.18.45 起由 API 传入，不再硬编码）----
     quantiles: int = 10                   # 分位组数（默认 10=十分位；5=旧五分位，保留兼容）
-    rebalance_period: int = 5             # TopK 持仓期曲线的调仓期（交易日）
+    rebalance_period: Optional[int] = None
+    #   调仓期（交易日）；**None ⇒ 跟随预测周期 h**（= 「用预测周期调仓换股」，默认口径）；
+    #   传值则按固定调仓期（如 5/10/20）覆盖
     topk_list: Optional[List[float]] = None
     #   明细曲线要算的 K 列表：**≤1 视为「日均有效只数的百分比」**（0.1 = 10%），>1 视为只数；
     #   与默认档**同一取整口径**（`int(日均中位只数 × 百分比)`，截断）⇒ 0.1 就是默认档。
@@ -352,10 +354,12 @@ def single_factor_test(req: SingleFactorTestRequest):
     if not (2 <= quantiles <= 20):
         raise HTTPException(status_code=400, detail=f"分位组数需在 2~20 之间：{quantiles}")
     try:
-        rebalance_period = int(5 if req.rebalance_period is None else req.rebalance_period)
+        # None 表示"跟随预测周期 h"（默认口径），原样透传；给了值才校验范围
+        rebalance_period = (None if req.rebalance_period is None
+                            else int(req.rebalance_period))
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail=f"调仓期必须为整数：{req.rebalance_period!r}")
-    if not (1 <= rebalance_period <= 250):
+    if rebalance_period is not None and not (1 <= rebalance_period <= 250):
         raise HTTPException(status_code=400, detail=f"调仓期需在 1~250 个交易日之间：{rebalance_period}")
     topk_list: List[float] = []
     if req.topk_list:

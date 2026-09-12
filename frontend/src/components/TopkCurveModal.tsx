@@ -136,8 +136,12 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
             </span>
             <span className="text-slate-400 ml-2 text-xs">
               {name}
-              {tc ? `　调仓期 ${tc.rebalance_period} 交易日　${tc.n} 个交易日` : ''}
-              {qc ? `　分位档：最强 = Q${qc.best_quantile}` : ''}
+              {tc
+                ? `　调仓期 ${tc.rebalance_period} 交易日（默认 = 预测周期${
+                    tc.horizon ? ` h=${tc.horizon}` : ''
+                  }）　${tc.n} 次调仓`
+                : ''}
+              {qc ? `　分位档：最强 Q${qc.best_quantile} / 最弱 Q${qc.worst_quantile}` : ''}
             </span>
           </div>
           <button onClick={onClose} className="px-2 py-1 text-xs rounded border">
@@ -149,9 +153,10 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
         <div className="mx-4 mt-3 px-3 py-2 rounded bg-amber-50 dark:bg-amber-900/20 text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">
           <b>简化估算，读图前请先看口径</b>：① 费率是<b>往返（买+卖）合计</b>，按<b>调仓期</b>扣、
           只扣<b>实际调仓</b>的股票（首期建仓不计费）；② <b>未考虑涨跌停、停牌、流动性冲击</b>；
-          ③ 曲线是 <code>LABEL</code>（未来 h 日收益）逐日累加，<b>不是净值</b>，量级不可当收益率读；
-          ④ 默认档 = <b>超额收益最强的分位组</b>（逐日等分，只数与固定 K 档略有差异）；
-          ⑤ <b>多空不可实现</b>（A 股空头收益拿不到），仅作有效性参考。
+          ③ 曲线 = <b>每期持有组合的收益累加</b>（调仓日取信号、T+1 买入、持有到下一个调仓日；
+          调仓期默认 = 预测周期 h）——算术累加、未复利，<b>近似净值但不是逐日盯市净值</b>；
+          ④ 默认档 = <b>超额收益最强的分位组</b>（逐期等分，只数与固定 K 档略有差异）；
+          ⑤ <b>多空 = 最强组 − 最弱组</b>，A 股空头收益拿不到 ⇒ <b>不可实现</b>，仅作有效性参考。
         </div>
 
         {empty ? (
@@ -182,8 +187,9 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               ))}
             </div>
             <div className="text-[11px] text-slate-400 mb-1">
+              {tc ? `每 ${tc.rebalance_period} 个交易日调仓一次（调仓日取信号、T+1 买入、持有到下一个调仓日）；` : ''}
               {item?.kind === 'decile'
-                ? `每日取因子最强/最弱端的 1/${qc?.n_groups ?? 10}（等分）⇒ 持仓约 ${item.k} 只，只数逐日变化；换手分母 = 当期在手只数`
+                ? `每日取因子最强端的 1/${qc?.n_groups ?? 10}（等分）⇒ 持仓约 ${item.k} 只，只数逐期变化；换手分母 = 当期在手只数`
                 : `固定持仓 ${item?.k} 只（按名次取，与分位组口径略有差异）`}
             </div>
             <ResponsiveContainer width="100%" height={250}>
@@ -205,10 +211,10 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               <>
                 <div className="flex items-center gap-2 mt-4 mb-1">
                   <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                    十分位累计收益曲线（1 = 最低值组 … {qc.n_groups} = 最高值组）
+                    十分位累计收益曲线（逐期收益累加；1 = 最低值组 … {qc.n_groups} = 最高值组）
                   </span>
                   <span className="text-[11px] text-slate-400">
-                    最强档 = Q{qc.best_quantile}（点图例可显隐曲线；多空不可实现，仅作参考）
+                    最强 Q{qc.best_quantile} / 最弱 Q{qc.worst_quantile}（点图例可显隐曲线；多空不可实现，仅作参考）
                   </span>
                 </div>
                 <ResponsiveContainer width="100%" height={250}>
@@ -237,7 +243,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                     <Line
                       type="monotone"
                       dataKey="ls"
-                      name={`多空 Q${qc.long_short.quantile[0]}−Q${qc.long_short.quantile[1]}（不可实现）`}
+                      name={`多空 Q${qc.long_short.quantile[0]}−Q${qc.long_short.quantile[1]}（最强−最弱·不可实现）`}
                       stroke="#111827"
                       dot={false}
                       strokeWidth={2}
