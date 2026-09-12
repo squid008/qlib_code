@@ -78,11 +78,14 @@ def _put_bin_cache(key: Tuple[str, str], mtime: int, start: int, vals: np.ndarra
 
 def clear_bin_cache() -> None:
     """清空进程级 .bin 读盘缓存与字段元信息缓存（数据重 dump 后调用；测试用）。"""
-    global _BIN_CACHE_BYTES
+    global _BIN_CACHE_BYTES, _MERGED_DIR
     _BIN_CACHE.clear()
     _BIN_CACHE_BYTES = 0
     _BIN_META_CACHE.clear()
     _DIR_META_CACHE.clear()   # v1.18.36：目录级元信息快照
+    _MERGED_IDX.clear()       # v1.18.42：合并层索引与 memmap 一并失效
+    _MERGED_MM.clear()
+    _MERGED_DIR = None        # 允许下次重新探测（manifest 出现/消失）
 
 
 def set_bin_cache_mb(mb: int) -> None:
@@ -202,12 +205,143 @@ def _feature_dir() -> str:
     return os.path.join(os.path.abspath("."), "..", "data", "cn_data", "features")
 
 
+# ---------------- 特征合并层（features_merged/，v1.18.42 / T2 §7.7-E #7）----------------
+# 背景：`features/<inst>/<field>.day.bin` = 6142 目录 / 321249 文件 / 3.2GB，**单文件仅 1.9~2.3KB**；
+# 实测单次 `stat+fromfile` ≈ **205us**（只 stat 就 71us）⇒ 有效 9.5MB/s，比 NVMe 慢 20~50×，
+# 且**并发救不了**（thread-4/8/16 均 ~1.8×、同路径重复读也一样慢）⇒ 只能减少 open 次数。
+# 合并层把「每股每字段一个小文件」变成「**每字段一个大文件**」：全池面板的读盘次数
+# 从 `股票数×字段数` 降到 `字段数`（3213 次 → 7 次，实测 **65×**）。
+#
+# 布局（与 `features/` **同级**，qlib 原生目录一个字节都不动）：
+#     features_merged/<field>.bin      该字段全股票按代码升序拼接（逐股原样字节，
+#                                      仍 `<f4`、首元素 = start_idx）
+#     features_merged/<field>.idx.json 列式索引 {n, inst[], off[], cnt[], start[]}
+#     features_merged/manifest.json    {version, built_at, fields, words, ...}
+# 由 `backend/tools/build_merged_features.py` 生成（全量 3.2GB / ~153s / 抽样 3009 对逐字节 0 失败）。
+#
+# ⚠ 这是**派生数据**：源数据重 dump 后必须重建本层，或设 `QLIB_PANEL_MERGED=0` 停用
+#   （`clear_bin_cache()` 也会清掉本层的进程内缓存并在下次重新探测）。
+#
+# ⚠⚠ **默认关闭**（2026-09-12 实测后定案）：合并层只是在「**纯 I/O**」口径下快（隔离基准
+# 51×，0.676s→0.013s），但**真实面板求值里根本没有这么多 I/O 可省** —— 探针实测
+# （`ai_test/probe_readfield.py`，csi300 / 3 因子 / 4131 次读）：
+#     OFF：`_read_field_bin` 4131 次 / **0.395s（95 µs/次）**，占 wall 7.0%
+#     ON ：同一批   4131 次 / **0.437s（106 µs/次）**，占 wall 7.6%   ← **更慢**
+# 原因：① 我最初 205 µs/次 的基准**每次读都带 `os.stat`（71 µs）**，而真实代码早已用
+# `_dir_meta` TTL 避开 stat；② 热页缓存下「开一个 1.9KB 小文件」比
+# 「memmap 切片 + 软件缺页」**更便宜**。⇒ 合并层的收益上限只有 wall 的 ~7%，且被
+# memmap 缺页成本吃掉。**冷缓存 / 更大股票池（全 A 5.3 万次读）下请自行复测后再开**。
+_MERGED_ENABLED = os.environ.get("QLIB_PANEL_MERGED", "0") != "0"
+# ⚠ TTL 不可省（实测教训）：`_merged_index` 若每次都 `os.stat` 那个 71MB 大文件校验 mtime，
+# 而本机 stat = **71 µs**、面板求值里本函数会被调上万次 ⇒ 端到端**反而慢 0.7s**
+# （与 v1.18.36 给 `_dir_meta` 加 TTL 是同一个坑）。TTL 内零 syscall；`clear_bin_cache()`
+# 或重建数据后立刻失效。设 0 表示每次都校验（保守模式）。
+_MERGED_TTL_S = float(os.environ.get("QLIB_PANEL_MERGED_TTL", "60"))
+_MERGED_DIR: Optional[str] = None
+_MERGED_IDX: "dict" = {}      # field -> (bin_mtime_ns, {inst: (off, cnt, start)}, ttl_stamp)
+_MERGED_MM: "dict" = {}       # field -> np.memmap
+
+
+def _merged_dir() -> Optional[str]:
+    """合并层目录；未启用/不存在返回 None（只探测一次，命中与否都缓存结论）。"""
+    global _MERGED_DIR
+    if not _MERGED_ENABLED:
+        return None
+    if _MERGED_DIR is None:
+        d = os.path.join(os.path.dirname(_feature_dir().rstrip("\\/")), "features_merged")
+        _MERGED_DIR = d if os.path.isfile(os.path.join(d, "manifest.json")) else ""
+    return _MERGED_DIR or None
+
+
+def _merged_index(field: str):
+    """→ (memmap, {inst: (off, cnt, start)})；缺该字段 / 索引与 .bin 不符则 None。
+
+    以 `<field>.bin` 的 mtime 作失效键（重建合并层后自动重载）；额外校验
+    `words*4 == 文件字节数`，防索引与数据不同步（截断/写一半）。
+    """
+    d = _merged_dir()
+    if d is None:
+        return None
+    p = os.path.join(d, field + ".bin")
+    hit = _MERGED_IDX.get(field)
+    if hit is not None:
+        if _MERGED_TTL_S > 0 and (time.monotonic() - hit[2]) < _MERGED_TTL_S:
+            return _MERGED_MM[field], hit[1]          # TTL 内**零 syscall**
+        try:
+            if os.stat(p).st_mtime_ns == hit[0]:      # 过期才校验
+                _MERGED_IDX[field] = (hit[0], hit[1], time.monotonic())
+                return _MERGED_MM[field], hit[1]
+        except OSError:
+            return None
+    try:
+        st = os.stat(p)
+    except OSError:
+        return None
+    try:
+        import json as _json
+
+        with open(os.path.join(d, field + ".idx.json"), encoding="utf-8") as fh:
+            raw = _json.load(fh)
+        if int(raw.get("words", -1)) * 4 != st.st_size:
+            return None
+        insts, off, cnt, stt = raw["inst"], raw["off"], raw["cnt"], raw["start"]
+        m = {insts[i]: (off[i], cnt[i], stt[i]) for i in range(len(insts))}
+    except Exception:
+        return None
+    _MERGED_IDX[field] = (st.st_mtime_ns, m, time.monotonic())
+    _MERGED_MM[field] = np.memmap(p, dtype="<f4", mode="r")
+    return _MERGED_MM[field], m
+
+
+def _merged_meta(inst: str, field: str):
+    """[零 syscall] → (bin_mtime_ns, start_idx, n_rows)；未收录该 (股票,字段) 返回 None。"""
+    r = _merged_index(field)
+    if r is None:
+        return None
+    e = r[1].get(inst)
+    if e is None:
+        return None
+    return (_MERGED_IDX[field][0], int(e[2]), int(e[1]) - 1)
+
+
+def _merged_values(inst: str, field: str):
+    """→ (start_idx, float64 值数组)；未收录返回 None。语义与 `np.fromfile` 路径逐位一致。"""
+    r = _merged_index(field)
+    if r is None:
+        return None
+    e = r[1].get(inst)
+    if e is None:
+        return None
+    mm, off, cnt = r[0], e[0], e[1]
+    return int(e[2]), np.asarray(mm[off + 1: off + cnt], dtype=np.float64)
+
+
 def _read_field_bin(inst: str, field: str):
     """读 .day.bin → (start_idx, float64 数组)；缺失返回 None。
 
     命中进程级 LRU 缓存（_BIN_CACHE，mtime 校验）时跳过 np.fromfile；未命中读取
     后写入缓存。语义与原实现完全一致，仅消除同一文件的重复全量读盘。
+
+    v1.18.42（#7）：**优先走合并层**（`features_merged/<field>.bin`，一次 memmap + 切片）
+    —— 把「每股每字段一次 open」变成「每字段一次 open」，全池面板读盘次数 3213 → 7
+    （实测 65×）；未收录该 (股票,字段) 时回退下面原路径。三条路径产出的 `(start, vals)`
+    **逐位相同**。
     """
+    key0 = (inst, field)
+    if _MERGED_ENABLED:
+        m = _merged_meta(inst, field)
+        if m is not None:
+            mtime = m[0]
+            hit = _BIN_CACHE.get(key0)
+            if hit is not None and hit[0] == mtime:
+                _BIN_CACHE.move_to_end(key0)   # LRU 刷新
+                return hit[1], hit[2]
+            r = _merged_values(inst, field)
+            if r is None:
+                return None
+            start, vals = r
+            _put_bin_cache(key0, mtime, start, vals)
+            return start, vals
     p = os.path.join(_feature_dir(), inst, f"{field}.day.bin")
     try:
         st = os.stat(p)
@@ -309,6 +443,11 @@ def _field_bin_meta(inst: str, field: str):
     hit_col = _BIN_CACHE.get(key)
     if hit_col is not None:
         return (hit_col[0], hit_col[1], int(hit_col[2].size))
+    if _MERGED_ENABLED:                      # v1.18.42：合并层零 syscall 给元信息
+        m = _merged_meta(inst, field)
+        if m is not None:
+            _BIN_META_CACHE[key] = m
+            return m
     info = _dir_meta(inst)
     if not info:
         return None

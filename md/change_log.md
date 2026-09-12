@@ -3,6 +3,27 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.42] - 2026-09-12
+
+### Added（默认关闭，**未启用**）
+- **特征合并层 `features_merged/`（T2 §7.7-E #7）—— 完整实现 + 全量构建 + 全量逐位验证，但实测「无收益」，故默认关闭**：
+  - **背景**：`features/<inst>/<field>.day.bin` = 6142 目录 / **321249 文件 / 3.2GB**，单文件仅 1.9~2.3KB。隔离基准（`ai_test/bench_io_format.py` / `bench_io_h5.py`）显示「字段级合并」把全池读盘从 `股票数×字段数` 降到 `字段数`（3213→7 次，**65×**）；**HDF5 无优势**（同粒度 1.57×；"单文件"红利来自合并而非格式，且裸二进制 64.1× > h5 单文件 61.0×）⇒ 定案「每字段一个大裸文件 + 列式索引」，而非 H5。
+  - **实现**：
+    - `backend/tools/build_merged_features.py`：构建 `features_merged/<field>.bin`（该字段全股票按代码升序拼接，逐股**原样字节**，仍 `<f4`+首元素=start_idx）+ `<field>.idx.json`（列式 `{inst, off, cnt, start}`）+ `manifest.json`；带 `--verify N` 抽样逐字节校验。
+    - `panel_expr.py`：`_merged_dir/_merged_index/_merged_meta/_merged_values` + `_read_field_bin`/`_field_bin_meta` 的**旁路快路**（`QLIB_PANEL_MERGED=1` 开启，默认 **0**）；`clear_bin_cache()` 一并清合并层缓存。
+  - **全量构建**：59 字段 / **3.20 GB / 153s** / 抽样 3009 对逐字节 **0 失败**。
+  - **全量逐位验证**（新增 `ai_test/test_merged_layer.py`）：**321249 对全部 0 失败** —— ① 完整性对账（源 size≥8 的对 vs 索引集）**仅源有 0 / 仅合并层有 0**；② `_read_field_bin` ON vs OFF 返回的 `(start, float64 数组)` 逐位相同（含 NaN）；③ `_field_bin_meta` 元信息一致。（耗时 ~20min，OFF 侧把 32 万个文件逐个开了一遍。）
+  - **⚠ 实测结论：端到端没有收益，反而略慢 ⇒ 默认关闭**（`ai_test/probe_readfield.py`，csi300 / 3 因子 / 4131 次读）：
+    | | 整轮 wall | 特征加载段 | `_read_field_bin` |
+    |---|---|---|---|
+    | ON（走合并层） | 5.76s | 2.85s | 4131 次 / **0.437s（106µs/次）** |
+    | OFF（原路径） | 5.67s | 2.78s | 4131 次 / **0.395s（95µs/次）** |
+    逐轮交错 4 轮（`profile_feature_load.py --no-profile`）结论一致：ON ≈ OFF，无可辨识收益。
+    **真因**：① 我最初「205 µs/次」的基准**每次读都带 `os.stat`（本机 71 µs）**，而真实代码早已用 `_dir_meta` TTL 避开 stat，真实单次读只有 **95 µs**；② 热页缓存下「开一个 1.9KB 小文件」比「memmap 切片 + 软件缺页」**更便宜**。⇒ 合并层的**收益上限只有 wall 的 ~7%**，且被 memmap 缺页成本吃掉。
+  - ⚠ **过程中踩到的两个坑**：① 第一版读取侧**每次调用都 `os.stat` 那个 71MB 大文件**校验 mtime，被调上万次 ⇒ 端到端**反而慢 0.7s**（与 v1.18.36 给 `_dir_meta` 加 TTL 是同一个坑，已加 `QLIB_PANEL_MERGED_TTL`，默认 60s）；② 校验器用 `np.array_equal` 判等，**必须 `equal_nan=True`**（close 等字段含 NaN，否则整片误报 —— 今天第二次踩）。
+  - **保留状态**：代码 + 工具 + 数据（3.2GB）都在，**默认关闭**。冷缓存 / 更大股票池（全 A 约 5.3 万次读）下可能仍有价值 ⇒ 用 `QLIB_PANEL_MERGED=1` 自行复测后再定；不需要可直接删除 `data/cn_data/features_merged/`。
+- 版本 1.18.41 → 1.18.42。
+
 ## [1.18.41] - 2026-09-12
 
 ### Performance
