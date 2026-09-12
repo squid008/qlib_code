@@ -79,6 +79,13 @@ def load_bench_close(codes: Iterable[str] = BENCH_CODES, start=None, end=None,
     wide = wide.reindex(columns=[c for c in want if c in wide.columns])
     if not wide.shape[1] or len(wide) < 2:
         return None
+    # ⚠ 指数是**价格水平**，缺日（数据洞/临时无行情）按**前收盘延续** —— 只改 NaN 那两个点，
+    #   非 NaN 的值一个不动。
+    #   动机（2026-09-12 用户反馈「中证1000 只到 2025-04」）：面板里 `SH000852` 在
+    #   **2025-04-16 恰好有一个 NaN**，而 `period_return_cums` 原本「一期取不到价 ⇒ 其后全
+    #   None」⇒ 整条基准线从那天断掉（`ai_test/diag_bench_range.py` 定位）。
+    #   开盘那段（序列头部）的 NaN 仍保留 ⇒ 对应期仍是 None（不往前编数据）。
+    wide = wide.ffill()
     return wide
 
 
@@ -88,8 +95,13 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
     `close` —— `load_bench_close()` 的宽表（index 必须覆盖调仓日**及之后 h+1 个交易日**）。
     每期 = `close[T+1] → close[T+h+1]`（与组合 `LABEL` **完全同口径**），各期**算术累加**。
 
-    ⚠ 某期数据不足（T+h+1 超出可用区间、或该日无价）⇒ **该期及其后全部 `None`**：
-    前端 Recharts 遇 null 会断线，比"猜一个数接着画"诚实。
+    缺失语义（两档，**不要混**）：
+      · **尾部越界**（`T+h+1` 超出可用区间）⇒ 该期**及其后全部** `None`（后面的期必然也不够）；
+      · **中间某期取不到价**（单个空洞/停牌）⇒ **只有该期** `None`，**后续照算**。
+        ⚠ 曾经两种都按"其后全 None"处理 ⇒ 面板里 `SH000852` 2025-04-16 的一个空洞
+        把整条基准线从那天截断（用户当场发现）；`load_bench_close` 的 `ffill` + 这里的
+        "只断当期"是两道独立防线。
+    前端 Recharts 遇 null 会断开该点，比"猜一个数接着画"诚实。
     """
     h = max(0, int(horizon or 0))
     idx = close.index
@@ -97,10 +109,10 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
     out = {}
     for code in close.columns:
         s = close[code]
-        cums, cum, ok = [], 0.0, True
+        cums, cum, truncated = [], 0.0, False
         for d in reb_dates:
             t = pd.Timestamp(d)
-            if not ok:
+            if truncated:                        # 尾部越界后：后面必然也越界
                 cums.append(None)
                 continue
             pos = int(idx.searchsorted(t))
@@ -108,10 +120,12 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
             # ⚠ 先判长度再 iloc（越界会抛 IndexError 而不是给 NaN）
             p1 = float(s.iloc[i1]) if (0 <= i1 < n) else float("nan")
             p2 = float(s.iloc[i2]) if (0 <= i2 < n) else float("nan")
-            if (pos >= n or idx[pos] != t or i1 >= n or i2 >= n
-                    or not np.isfinite(p1) or not np.isfinite(p2) or p1 <= 0):
-                ok = False
+            if pos >= n or idx[pos] != t or i1 >= n or i2 >= n:
+                truncated = True                 # 尾部不够 ⇒ 其后全 None
                 cums.append(None)
+                continue
+            if not np.isfinite(p1) or not np.isfinite(p2) or p1 <= 0:
+                cums.append(None)                # 仅当期缺（后续照算）
                 continue
             cum += (p2 / p1 - 1.0)
             cums.append(round(cum, 6))

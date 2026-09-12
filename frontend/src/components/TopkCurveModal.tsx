@@ -42,6 +42,11 @@ const pct = (v: number | null | undefined, nd = 2) =>
 const signedPct = (v: number | null | undefined, nd = 2) =>
   v == null || !Number.isFinite(v) ? '-' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(nd)}%`
 
+/** 累加值 → **近似净值（从 1 开始）**；缺失保持 null（前端断线）。
+ *  后端给的是「各期收益的算术累加」（未复利），+1 只是为了读起来是净值口径。 */
+const nav = (v: number | null | undefined) =>
+  v == null || !Number.isFinite(v) ? null : 1 + v
+
 /** 明细档显示名：分位组标「最强分位组 Q几」；固定 K 档标「固定 K=…」（默认档加注）。 */
 function itemLabel(it: TopKCurveItem, defaultK: number | null) {
   if (it.kind === 'decile') return `最强分位组 Q${it.quantile}`
@@ -77,6 +82,8 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
     benchList[0]?.code ??
     ''
   const benchItem = benchList.find((b) => b.code === benchCode) ?? null
+  // 固定 K 档（由表单「明细 K」决定，弹窗内只能切换、不能改 ⇒ 提示回表单重跑）
+  const fixedKs = items.filter((it) => it.kind === 'topk').map((it) => it.k)
 
   // 图 1：选中档的三档累计曲线（0 / 0.004 / 0.008，均按调仓期扣费）+ 选中基准
   const detailData = useMemo(() => {
@@ -84,10 +91,10 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
     const st = stride(tc.dates.length)
     const pick = (i: number) => ({
       d: tc.dates[i],
-      c0: item.curves['0.0000']?.[i] ?? null,
-      c4: item.curves['0.0040']?.[i] ?? null,
-      c8: item.curves['0.0080']?.[i] ?? null,
-      b: benchItem?.cum?.[i] ?? null,
+      c0: nav(item.curves['0.0000']?.[i]),
+      c4: nav(item.curves['0.0040']?.[i]),
+      c8: nav(item.curves['0.0080']?.[i]),
+      b: nav(benchItem?.cum?.[i]),
     })
     const out: Record<string, number | string | null>[] = []
     for (let i = 0; i < tc.dates.length; i += st) out.push(pick(i))
@@ -115,17 +122,18 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
   const decileData = useMemo(() => {
     if (!qc || !qc.groups?.length) return []
     const st = stride(qc.dates.length)
-    const out: Record<string, number | string>[] = []
+    const out: Record<string, number | string | null>[] = []
     for (let i = 0; i < qc.dates.length; i += st) {
-      const p: Record<string, number | string> = { d: qc.dates[i] }
-      for (const g of qc.groups) p[`q${g.quantile}`] = g.cum[i] ?? null
+      const p: Record<string, number | string | null> = { d: qc.dates[i] }
+      for (const g of qc.groups) p[`q${g.quantile}`] = nav(g.cum[i])
+      // ⚠ 多空 = 最强−最弱 的**差值曲线**（不是净值）⇒ 不 +1，走右轴单独看（起点 0）
       p.ls = qc.long_short.cum[i] ?? null
       out.push(p)
     }
     const last = qc.dates.length - 1
     if (last >= 0 && out.length && out[out.length - 1].d !== qc.dates[last]) {
-      const p: Record<string, number | string> = { d: qc.dates[last] }
-      for (const g of qc.groups) p[`q${g.quantile}`] = g.cum[last] ?? null
+      const p: Record<string, number | string | null> = { d: qc.dates[last] }
+      for (const g of qc.groups) p[`q${g.quantile}`] = nav(g.cum[last])
       p.ls = qc.long_short.cum[last] ?? null
       out.push(p)
     }
@@ -175,7 +183,8 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
           <b>简化估算，读图前请先看口径</b>：① 费率是<b>往返（买+卖）合计</b>，按<b>调仓期</b>扣、
           只扣<b>实际调仓</b>的股票（首期建仓不计费）；② <b>未考虑涨跌停、停牌、流动性冲击</b>；
           ③ 曲线 = <b>每期持有组合的收益累加</b>（调仓日取信号、T+1 买入、持有到下一个调仓日；
-          调仓期默认 = 预测周期 h）——算术累加、未复利，<b>近似净值但不是逐日盯市净值</b>；
+          调仓期默认 = 预测周期 h）——<b>以 1 为起点</b>、算术累加未复利，
+          <b>近似净值但不是逐日盯市净值</b>；
           ④ 默认档 = <b>超额收益最强的分位组</b>（逐期等分，只数与固定 K 档略有差异）；
           ⑤ <b>多空 = 最强组 − 最弱组</b>，A 股空头收益拿不到 ⇒ <b>不可实现</b>，仅作有效性参考；
           ⑥ <b>基准与组合同口径</b>：指数在<b>同一调仓日</b>的 T+1 → T+h+1 收益、各期算术累加
@@ -192,7 +201,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
             {/* ---- 图 1：明细档（默认 = 最强分位组）---- */}
             <div className="flex items-center gap-2 mb-1 flex-wrap">
               <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                持仓期累计收益（三档成本 · 同一组合）
+                持仓期净值曲线（三档成本 · 同一组合 · <b>起点 = 1</b>）
               </span>
               <span className="text-[11px] text-slate-400">切换组合（纯前端，零重算）：</span>
               <span className="text-[11px] text-slate-400 ml-1">｜基准：</span>
@@ -232,18 +241,51 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               {item?.kind === 'decile'
                 ? `每日取因子最强端的 1/${qc?.n_groups ?? 10}（等分）⇒ 持仓约 ${item.k} 只，只数逐期变化；换手分母 = 当期在手只数`
                 : `固定持仓 ${item?.k} 只（按名次取，与分位组口径略有差异）`}
+              {'；'}
+              {fixedKs.length > 0
+                ? `固定 K 档（${fixedKs.join(' / ')} 只）来自表单「明细 K」—— 改 K 需回表单重跑（每个额外 K 约 +0.1~0.2s）`
+                : '想要更多固定 K 档？在表单「明细 K」里填只数或百分比（如 0.2,50）后重跑'}
+              {'；点图例可显隐曲线'}
             </div>
             <ResponsiveContainer width="100%" height={250}>
               <LineChart data={detailData} margin={{ top: 5, right: 12, left: 0, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
                 <XAxis dataKey="d" tick={{ fontSize: 10 }} minTickGap={48} />
-                <YAxis tick={{ fontSize: 10 }} width={52} />
+                <YAxis tick={{ fontSize: 10 }} width={52} domain={['auto', 'auto']} />
                 <Tooltip formatter={(v: number | string) => (typeof v === 'number' ? v.toFixed(4) : v)} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="3 3" />
-                <Line type="monotone" dataKey="c0" name="无成本" stroke="#0f766e" dot={false} strokeWidth={2} />
-                <Line type="monotone" dataKey="c4" name="往返 0.004" stroke="#0284c7" dot={false} strokeWidth={1.6} />
-                <Line type="monotone" dataKey="c8" name="往返 0.008" stroke="#b45309" dot={false} strokeWidth={1.6} />
+                <Legend
+                  wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
+                  onClick={(d) => toggleSeries((d as { dataKey?: string }).dataKey)}
+                />
+                {/* 净值口径 ⇒ 参考线在 1（起点） */}
+                <ReferenceLine y={1} stroke="#94a3b8" strokeDasharray="3 3" />
+                <Line
+                  type="monotone"
+                  dataKey="c0"
+                  name="无成本"
+                  stroke="#0f766e"
+                  dot={false}
+                  strokeWidth={2}
+                  hide={!!hidden.c0}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="c4"
+                  name="往返 0.004"
+                  stroke="#0284c7"
+                  dot={false}
+                  strokeWidth={1.6}
+                  hide={!!hidden.c4}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="c8"
+                  name="往返 0.008"
+                  stroke="#b45309"
+                  dot={false}
+                  strokeWidth={1.6}
+                  hide={!!hidden.c8}
+                />
                 {benchItem && (
                   <Line
                     type="monotone"
@@ -277,23 +319,32 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               <>
                 <div className="flex items-center gap-2 mt-4 mb-1">
                   <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                    十分位累计收益曲线（逐期收益累加；1 = 最低值组 … {qc.n_groups} = 最高值组）
+                    十分位净值曲线（<b>起点 = 1</b>；1 = 最低值组 … {qc.n_groups} = 最高值组）
                   </span>
                   <span className="text-[11px] text-slate-400">
-                    最强 Q{qc.best_quantile} / 最弱 Q{qc.worst_quantile}（点图例可显隐曲线；多空不可实现，仅作参考）
+                    最强 Q{qc.best_quantile} / 最弱 Q{qc.worst_quantile}；<b>右轴 = 多空</b>
+                    （最强−最弱，起点 0；不可实现，仅作参考）；点图例可显隐曲线
                   </span>
                 </div>
                 <ResponsiveContainer width="100%" height={250}>
                   <LineChart data={decileData} margin={{ top: 5, right: 12, left: 0, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
                     <XAxis dataKey="d" tick={{ fontSize: 10 }} minTickGap={48} />
-                    <YAxis tick={{ fontSize: 10 }} width={52} />
+                    <YAxis tick={{ fontSize: 10 }} width={52} domain={['auto', 'auto']} />
+                    {/* 多空是**差值**曲线（不是净值）⇒ 单独一根右轴，避免把净值曲线压扁 */}
+                    <YAxis
+                      yAxisId="r"
+                      orientation="right"
+                      tick={{ fontSize: 10 }}
+                      width={52}
+                      domain={['auto', 'auto']}
+                    />
                     <Tooltip formatter={(v: number | string) => (typeof v === 'number' ? v.toFixed(4) : v)} />
                     <Legend
                       wrapperStyle={{ fontSize: 10, cursor: 'pointer' }}
                       onClick={(d) => toggleSeries((d as { dataKey?: string }).dataKey)}
                     />
-                    <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="3 3" />
+                    <ReferenceLine y={1} stroke="#94a3b8" strokeDasharray="3 3" />
                     {qc.groups.map((g) => (
                       <Line
                         key={g.quantile}
@@ -307,9 +358,10 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                       />
                     ))}
                     <Line
+                      yAxisId="r"
                       type="monotone"
                       dataKey="ls"
-                      name={`多空 Q${qc.long_short.quantile[0]}−Q${qc.long_short.quantile[1]}（最强−最弱·不可实现）`}
+                      name={`多空 Q${qc.long_short.quantile[0]}−Q${qc.long_short.quantile[1]}（最强−最弱·右轴·不可实现）`}
                       stroke="#111827"
                       dot={false}
                       strokeWidth={2}

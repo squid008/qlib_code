@@ -1210,12 +1210,11 @@ export default function SingleFactorTestPanel({
                 >
                   中位数
                 </th>
-                <th className="text-center px-1">事件研究</th>
                 <th
                   className="text-center px-1"
-                  title="持仓期收益曲线（连续因子）：默认 = 超额收益最强的分位组，含三档往返成本；可切换固定 K 档；另有十分位累计收益曲线与成本敏感度表"
+                  title="因子研究（两块，按因子类型自动出现一个）：0/1 二值信号 → 事件研究（触发对齐 T=0 的收益分布）；连续因子 → 持仓期曲线（净值曲线 + 十分位曲线 + 成本敏感度表 + 可切换基准）"
                 >
-                  持仓曲线
+                  因子研究
                 </th>
               </tr>
             </thead>
@@ -1444,38 +1443,37 @@ export default function SingleFactorTestPanel({
                             )
                           })()}
                         </td>
+                        {/* 因子研究：事件研究（0/1）与持仓曲线（连续）合成一列 —— 两者互斥，
+                            按因子类型各出现一个；两个都没有时给一个说明性的短横 */}
                         <td className="text-center px-1">
-                          {r.is_binary ? (
-                            <button
-                              onClick={() => openEventStudy(r)}
-                              className="px-1.5 py-0.5 rounded border border-sky-400 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-900/30 text-[11px] whitespace-nowrap"
-                              title="把每次触发对齐到 T=0，统计 T+1 买入后 1~N 个交易日的收益分布（概率/赔率）。仅适用于 0/1 二值信号；稀疏信号建议用它替代按日配对检验"
-                            >
-                              事件研究
-                            </button>
-                          ) : (
-                            <span className="text-slate-300" title="事件研究仅适用于 0/1 二值信号">
-                              -
-                            </span>
-                          )}
-                        </td>
-                        <td className="text-center px-1">
-                          {r.topk_curves || r.quantile_curves ? (
-                            <button
-                              onClick={() => openCurve(r)}
-                              className="px-1.5 py-0.5 rounded border border-emerald-400 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 text-[11px] whitespace-nowrap"
-                              title="连续因子持仓期收益曲线：默认展示**超额收益最强的分位组**（含三档成本），可纯前端切换固定 K 档；另有十分位累计收益曲线与成本敏感度表。数据随本次测试返回，点开即看（零重算）。⚠ 简化估算，未考虑涨跌停/停牌/流动性冲击，曲线非净值"
-                            >
-                              持仓曲线
-                            </button>
-                          ) : (
-                            <span
-                              className="text-slate-300"
-                              title="持仓期曲线仅适用于连续因子（0/1 信号请用左侧「事件研究」）"
-                            >
-                              -
-                            </span>
-                          )}
+                          <div className="flex items-center justify-center gap-1">
+                            {r.is_binary && (
+                              <button
+                                onClick={() => openEventStudy(r)}
+                                className="px-1.5 py-0.5 rounded border border-sky-400 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-900/30 text-[11px] whitespace-nowrap"
+                                title="事件研究（0/1 信号）：把每次触发对齐到 T=0，统计 T+1 买入后 1~N 个交易日的收益分布（概率/赔率）；稀疏信号建议用它替代按日配对检验"
+                              >
+                                事件研究
+                              </button>
+                            )}
+                            {(r.topk_curves || r.quantile_curves) && (
+                              <button
+                                onClick={() => openCurve(r)}
+                                className="px-1.5 py-0.5 rounded border border-emerald-400 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 text-[11px] whitespace-nowrap"
+                                title="持仓期曲线（连续因子）：**起点=1** 的净值曲线（默认 = 超额收益最强的分位组，含三档往返成本）+ 可切换基准 + 十分位净值曲线 + 成本敏感度表。固定 K 档由表单「明细 K」决定（改 K 需重跑）；组合/基准/图例显隐均为纯前端、零重算。⚠ 简化估算，未考虑涨跌停/停牌/流动性冲击，近似净值非逐日盯市"
+                              >
+                                持仓曲线
+                              </button>
+                            )}
+                            {!r.is_binary && !(r.topk_curves || r.quantile_curves) && (
+                              <span
+                                className="text-slate-300"
+                                title="该行没有可用的因子研究数据（连续因子看「结论」列的错误信息；0/1 信号走事件研究）"
+                              >
+                                -
+                              </span>
+                            )}
+                          </div>
                         </td>
                       </>
                     )}
