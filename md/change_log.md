@@ -3,6 +3,16 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.46] - 2026-09-12
+
+### Added
+- **前端展示单因子测试阶段计时（`timing`）—— 结果表新增「耗时」列**（`frontend/src/api.ts` / `frontend/src/components/SingleFactorTestPanel.tsx`）：
+  - **背景**：v1.18.43 后端已把 `timing{init_s/feature_s/item_s/total_s}` 挂在每个因子结果上，但**前端从未接线**（用户反馈"单因子测试计时前端看不到"）⇒ 本次补齐展示。
+  - **列位置**：放在「周期」之后（靠左，横向滚动时不会被遮住），显示该行的 **`item_s`（本因子统计 + 事件研究）**；悬停给出三段明细：`本因子统计+事件研究 / 特征加载（全池共享，同次测试各因子相同）/ qlib 初始化（仅首个任务有值）` + 合计，并注明**合计不含 HTTP 往返、任务排队、股票池成分股解析与 label 表达式构建**（故小于前端墙钟）。
+  - **兼容**：无 `timing`（后端 < v1.18.43、或结果来自旧版缓存任务）时显示 `-` 并在悬停中说明；`api.ts` 新增 `FactorTiming` 接口与 `timing?: FactorTiming | null` 字段；错误行 `colSpan` 16 → 17。
+  - **实测**（csi300 / 2025-01-01~2025-06-01 / 龙腾四海8 / h=20）：`{init 0.0, feature 1.675, item 0.266, total 1.941}`。
+- 版本 1.18.45 → 1.18.46。
+
 ## [1.18.45] - 2026-09-12
 
 ### Added

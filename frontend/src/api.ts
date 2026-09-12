@@ -334,6 +334,18 @@ export interface SingleFactorTestResult {
   // 各 K 的换手 / 年化成本 / 成本吞噬比例（v1.18.45；与 topk_curves 同一批调仓日）
   topk_sensitivity?: TopKSensitivity | null
   topk_sensitivity_error?: string | null
+  // 阶段计时（后端 v1.18.43 起回传；前端 v1.18.46 起展示为表格「耗时」列）：
+  // init_s = 一次性 qlib 初始化（仅首个任务有值）／feature_s = 面板特征加载（全池共享，各因子相同）
+  // ／item_s = 本因子统计 + 事件研究／total_s = 三者之和。
+  // ⚠ total_s ≠ 前端 wall：不含 HTTP 往返、任务排队、股票池成分股解析与 label 表达式构建。
+  timing?: FactorTiming | null
+}
+/** 单因子测试的阶段计时（秒） */
+export interface FactorTiming {
+  init_s: number
+  feature_s: number
+  item_s: number
+  total_s: number
 }
 export interface SingleFactorTestProgress {
   task_id: string

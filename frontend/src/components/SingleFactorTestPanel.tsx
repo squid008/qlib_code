@@ -1194,6 +1194,12 @@ export default function SingleFactorTestPanel({
               <tr className="text-slate-500 border-b">
                 <th className="text-left py-1 pr-2">因子</th>
                 <th className="text-right px-1">周期</th>
+                <th
+                  className="text-right px-1"
+                  title="阶段计时（秒）：显示「本因子统计+事件研究」耗时，悬停看三段明细。特征加载为全池共享（同一次测试各因子相同）；不含 HTTP 往返与任务排队"
+                >
+                  耗时
+                </th>
                 <th className="text-right px-1">覆盖率</th>
                 <th className="text-right px-1">信号</th>
                 <th className="text-right px-1">触发数</th>
@@ -1278,7 +1284,7 @@ export default function SingleFactorTestPanel({
                 return (
                   <tr key={`${r.id}:${r.horizon ?? '-'}`} className="border-b border-slate-100 dark:border-slate-700">
                     {r.error ? (
-                      <td className="py-1 pr-2 text-red-500" colSpan={16}>
+                      <td className="py-1 pr-2 text-red-500" colSpan={17}>
                         {r.name}{r.horizon ? `（周期 ${r.horizon} 天）` : ''}：{r.error}
                       </td>
                     ) : (
@@ -1289,6 +1295,22 @@ export default function SingleFactorTestPanel({
                         </td>
                         <td className="text-right px-1 whitespace-nowrap text-slate-500">
                           {r.horizon ? `${r.horizon} 天` : '-'}
+                        </td>
+                        <td
+                          className="text-right px-1 whitespace-nowrap text-slate-400"
+                          title={
+                            r.timing
+                              ? [
+                                  `本因子统计+事件研究：${r.timing.item_s.toFixed(2)}s`,
+                                  `特征加载（全池共享）：${r.timing.feature_s.toFixed(2)}s`,
+                                  `qlib 初始化：${r.timing.init_s.toFixed(2)}s（仅首个任务有值，之后为 0）`,
+                                  `合计：${r.timing.total_s.toFixed(2)}s`,
+                                  '（不含 HTTP 往返、任务排队、股票池成分股解析与 label 表达式构建 —— 故小于前端看到的墙钟）',
+                                ].join('\n')
+                              : '无计时数据（后端 < v1.18.43，或该结果来自旧版缓存）'
+                          }
+                        >
+                          {r.timing ? `${r.timing.item_s.toFixed(2)}s` : '-'}
                         </td>
                         <td className="text-right px-1">{fmt(r.coverage, 2)}</td>
                         <td className="text-right px-1">
