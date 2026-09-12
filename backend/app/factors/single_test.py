@@ -356,6 +356,8 @@ def _test_one(
     topk_list: Optional[list] = None,  # 明细曲线要算的 K：≤1 视为「日均只数的百分比」（0.1=10%），
     #                                   >1 视为只数；None ⇒ 只算默认档（10%）。默认档恒算且排在最前
     horizon: Optional[int] = None,     # 该次统计的预测周期 h（用于「调仓期默认 = h」；可空）
+    bench_close: Optional[pd.DataFrame] = None,  # 指数收盘宽表（可切换基准；可空=不画基准）
+    bench_default: Optional[str] = None,         # 默认基准代码（按股票池映射，见 benchmark_curves）
 ) -> dict:
     """测试单个因子列（df 含 col 与 LABEL 两列）。
 
@@ -841,6 +843,23 @@ def _test_one(
                         "default_quantile": (int(_qbest) if _qbest is not None else None),
                         "items": _items,   # items[0] = 默认档（最强分位组，kind="decile"）
                     }
+                    # ---- 基准（可切换）：与组合曲线**同轴同口径** ----------------------
+                    # 每期 = 指数在同一调仓日的 T+1 → T+h+1 收益（与 `LABEL` 同口径）、各期算术累加；
+                    # 多候选一次算出 ⇒ 前端**纯切换、零重算**（定稿口径）。失败不阻塞主流程。
+                    # ⚠ 持有期必须用 h（不是调仓期）：调仓期一旦被改成 ≠h，各期收益本身就重叠，
+                    #   基准仍按 h 算才与组合同口径。
+                    if bench_close is not None and horizon:
+                        try:
+                            from app.factors.benchmark_curves import period_return_cums
+
+                            result["topk_curves"]["benchmarks"] = {
+                                "default": (bench_default or None),
+                                "items": [{"code": c, **v} for c, v in period_return_cums(
+                                    bench_close, _reb_dates, int(horizon)).items()],
+                            }
+                        except Exception as _e3:      # 与 `event_study_error` 同一处理风格
+                            result["topk_curves"]["benchmark_error"] = "%r @ %s" % (
+                                _e3, __import__("traceback").format_exc().strip().splitlines()[-1])
                     # ---- K 敏感度汇总表（换手 / 三档年化 / 成本吞噬比例）--------------
                     # 与固定 K 档**同一方向、同一份名次、同一批调仓日** ⇒ 同一组合的两个视图
                     # （默认档是最强分位组，逐日等分、只数逐日变化，与固定 K 略有差异）；
@@ -1085,6 +1104,18 @@ def run_single_factor_tests(
         except Exception:
             load_start = start_date
 
+    # 基准（可切换）指数行情：**一次取全候选** ⇒ 前端纯切换、零重算（定稿口径）。
+    # 区间与特征面板一致（load_start..load_end，已含尾部 h+1 个交易日的延展）⇒ 末期基准也有值；
+    # 5 个指数一次取数只需几毫秒。失败/无数据 ⇒ 不画基准线，**不阻塞**主流程。
+    bench_close, bench_default = None, None
+    try:
+        from app.factors.benchmark_curves import BENCH_CODES, default_benchmark, load_bench_close
+
+        bench_default = default_benchmark(universe)
+        bench_close = load_bench_close(BENCH_CODES, load_start, load_end, cancelled=cancelled)
+    except Exception:
+        bench_close, bench_default = None, None
+
     # 因子去重编号
     ordered_exprs: List[str] = []
     factor_cols: List[str] = []
@@ -1260,6 +1291,8 @@ def run_single_factor_tests(
                 rebalance_period=rebalance_period,
                 topk_list=topk_list,
                 horizon=h,          # 调仓期默认跟随预测周期（「用预测周期调仓换股」）
+                bench_close=bench_close,        # 可切换基准（同口径，见 benchmark_curves）
+                bench_default=bench_default,
             )
             # 事件研究（0/1 信号顺带计算，v1.18.7）：稀疏信号按日配对会退化成单票
             # 收益序列（触发日只有 1 只票），须以「每次触发」为样本单位才有意义。

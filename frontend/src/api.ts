@@ -253,6 +253,13 @@ export interface TopKCurveItem {
   turnover: number[] // 逐日换手（仅调仓日非零；首期建仓为 0）
   curves: Record<string, number[]> // 三档成本累计曲线，键 "0.0000"/"0.0040"/"0.0080"
 }
+// 可切换基准（指数）：与组合曲线**同轴同口径** —— 每期 = 指数在同一调仓日的
+// T+1 → T+h+1 收益（与 LABEL 同口径），各期算术累加；价格指数（不含分红）。
+export interface TopKBenchmark {
+  code: string // 如 SH000300
+  name: string // 展示名：沪深300 / 中证1000 …
+  cum: (number | null)[] // 逐调仓期累加；**数据不足的期及其后为 null**（前端断线，不猜）
+}
 export interface TopKCurves {
   rebalance_period: number // 调仓期（交易日）；默认 = 预测周期 h
   horizon: number | null // 该行的预测周期 h（调仓期默认值来源）
@@ -262,6 +269,9 @@ export interface TopKCurves {
   side: 'high' | 'low' // 曲线取的那一端（由 best_quantile 决定，高/低分位侧）
   default_quantile: number | null // 最强分位组（items[0] 的 quantile）
   items: TopKCurveItem[] // items[0] = 默认档 = 最强分位组；其后为固定 K 档
+  // 可切换基准（多候选一次下发 ⇒ 前端纯切换、零重算）；取数失败时为 undefined
+  benchmarks?: { default: string | null; items: TopKBenchmark[] } | null
+  benchmark_error?: string | null
 }
 // K 敏感度汇总表：各 K 的换手 / 三档年化成本 / 成本吞噬比例
 export interface TopKSensitivityRow {
