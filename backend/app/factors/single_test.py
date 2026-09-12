@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from ..engine.perf_metrics import compute_perf
 from ..engine.limits import mark_limit_up, field_bin_available
 from ..engine.adjust import adjust_expr, normalize_mode
 from ..engine.feature_cache import _sr_wrap_expr
@@ -427,7 +428,7 @@ def _test_one(
     # （位置操作，无 hash 查找/对齐），并把所需行情与标签列预取为 numpy 视图。
     _NR = {
         c: df[c].to_numpy(copy=False)
-        for c in (col, "LABEL", "CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE",
+        for c in (col, "LABEL", "CLOSE", "CLOSE_FF", "CHANGE", "T1_CLOSE", "T1_CHANGE",
                   "T1_IS_ST", "LIMIT_UP", "T1_LIMIT_UP", "IS_ST")
         if c in df.columns
     }
@@ -683,7 +684,17 @@ def _test_one(
                     excl = excl | codes.str.startswith("SH688")
             quint = sub.iloc[np.nonzero(~excl.to_numpy())[0]]
             dt_pos = quint.index.names.index("datetime")
+            # v1.18.48：逐日盯市要「买入持有」的价格比 ⇒ 从面板按同一批行位置补一列 ffill 后的
+            # 复权收盘价（⚠ `quint` 只含 [因子列, LABEL] 两列，价格取不到；`_NR` 是固定列清单，
+            # 故需先把 CLOSE_FF 加进 `_NR`）。
             tmp = quint[[col, "LABEL"]].copy()
+            for _pxc in ("CLOSE_FF", "CLOSE"):
+                if _pxc in df.columns:
+                    try:
+                        tmp[_pxc] = _frame(_sub_pos, (_pxc,))[_pxc].reindex(tmp.index)
+                    except Exception:
+                        pass
+                    break
             # 组内名次**只算一次**（v1.18.45）：原实现把 `rank(method="first")` 放在 `_q` 的
             # lambda 里，下方 TopK 曲线又独立算一遍 ⇒ 同一次 226 万行组内排名算两遍（实测
             # item_s +1.6s）。现在显式算一次 `_rk`，`_q` 与 TopK 共用（数值完全不变：
@@ -755,6 +766,136 @@ def _test_one(
                     _reb_str = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in _reb_dates]
                     _items, _cc_fixed_default = [], None
 
+                    # ---- 逐日盯市（v1.18.48）所需的「调仓日快照」----------------------
+                    # 两个口径要求（否则与既有「按调仓期」曲线对不上）：
+                    #   · 持仓集合由**调仓日**的名次/分位决定（逐日重算名次 = 每天换股，不符）；
+                    #   · 期内收益用**价格比** close_t / close_{T+1}（等权**买入持有**）——
+                    #     若改用「逐日收益的等权均值」连乘，等价于"每日再平衡"，与 LABEL
+                    #     （各股 h 日收益的均值 = 买入持有）不是同一个组合。
+                    # 实现：纯 numpy 打表（n_rebal × n_inst）+ 行级 fancy index（O(n)×2）——
+                    # 不用 `groupby(period).transform("first")`（两级 groupby 在 200 万行上更贵）。
+                    _nd = len(_dts)
+                    _dp_col = _idx_dts.get_indexer(tmp.index.get_level_values(dt_pos))
+                    _valid = _dp_col >= 0
+                    _per_of_day = np.where(_valid, _dp_col // _REBAL, -1)
+                    _is_mi = isinstance(tmp.index, pd.MultiIndex)
+                    _inst_code = (np.asarray(tmp.index.codes[inst_pos])
+                                  if _is_mi else np.zeros(len(tmp), dtype=np.int64))
+                    _n_inst_all = (len(tmp.index.levels[inst_pos]) if _is_mi else 0)
+                    if "CLOSE_FF" in tmp.columns:
+                        _close_row = tmp["CLOSE_FF"].to_numpy(dtype=np.float64)
+                    elif "CLOSE" in tmp.columns:
+                        _close_row = tmp["CLOSE"].to_numpy(dtype=np.float64)
+                    else:
+                        # 缺价列 ⇒ 逐日盯市不可用（`_perf_of` 会据此返回 None），不抛异常
+                        _close_row = np.full(len(tmp), np.nan)
+                    _rkr_row = np.full(len(tmp), np.nan)     # 期内首日（调仓日）名次
+                    _qr_row = np.full(len(tmp), np.nan)      # 期内首日分位
+                    _px0_row = np.full(len(tmp), np.nan)     # T+1 的价格（买入持有的期初价）
+                    if _n_inst_all > 0 and len(_reb_pos) > 0:
+                        _is_reb = _valid & (_dp_col % _REBAL == 0)
+                        _is_t1 = _valid & (_dp_col % _REBAL == 1)
+                        _tab_rk = np.full((len(_reb_pos), _n_inst_all), np.nan)
+                        _tab_q = np.full((len(_reb_pos), _n_inst_all), np.nan)
+                        _tab_px0 = np.full((len(_reb_pos), _n_inst_all), np.nan)
+                        _rk_all = tmp[_rkcol].to_numpy(dtype=np.float64)
+                        _q_all = tmp["_q"].to_numpy(dtype=np.float64)
+                        if _is_reb.any():
+                            _tab_rk[_per_of_day[_is_reb], _inst_code[_is_reb]] = _rk_all[_is_reb]
+                            _tab_q[_per_of_day[_is_reb], _inst_code[_is_reb]] = _q_all[_is_reb]
+                        if _is_t1.any():
+                            _tab_px0[_per_of_day[_is_t1], _inst_code[_is_t1]] = _close_row[_is_t1]
+                        _rkr_row[_valid] = _tab_rk[_per_of_day[_valid], _inst_code[_valid]]
+                        _qr_row[_valid] = _tab_q[_per_of_day[_valid], _inst_code[_valid]]
+                        _px0_row[_valid] = _tab_px0[_per_of_day[_valid], _inst_code[_valid]]
+
+                    def _perf_of(_k_kind, _k_val, _k_q, _k_cc, _k_ret):
+                        """逐日盯市（等权买入持有）净值 → 三档成本的绩效指标；不适用返回 None。
+
+                        · 期内逐日净值 = 组合内各股 `close_t / close_{T+1}` 的等权均值（skipna，
+                          缺值日按上一有效值前向填充 ⇒ 净值不动）；
+                        · 期际用期末净值复利衔接；成本按「往返费率 × 该期换手」在**期首**
+                          （T+1）以**乘法**扣减（乘法可交换 ⇒ 与按整期扣的复利曲线同值）；
+                        · 自检④：每期期末的逐日净值必须等于 `curves_compound` 对应点（atol 1e-6）。
+                        ⚠ 仅当 **调仓期 ≥ 预测周期** 时各期持有区间不重叠；否则返回 None（前端标注）。
+                        """
+                        _h_i = int(horizon or 0)
+                        if (_h_i <= 0 or _REBAL < _h_i or _n_inst_all <= 0
+                                or ("CLOSE_FF" not in tmp.columns and "CLOSE" not in tmp.columns)):
+                            return None
+                        if _k_kind == "decile" and _k_q is not None:
+                            _held = _qr_row == float(_k_q)
+                        else:
+                            _held = _rkr_row <= float(_k_val)
+                        _ok = _held & _valid & np.isfinite(_px0_row) & (_px0_row > 0)
+                        if not _ok.any():
+                            return None
+                        _f = np.full(len(tmp), np.nan)
+                        _f[_ok] = _close_row[_ok] / _px0_row[_ok]     # 相对 T+1 的价格比
+                        _fin = _ok & np.isfinite(_f)
+                        _sm = np.bincount(_dp_col[_fin], weights=_f[_fin], minlength=_nd)
+                        _cn = np.bincount(_dp_col[_fin], minlength=_nd)
+                        _seg_nav = np.where(_cn > 0, _sm / np.maximum(_cn, 1), np.nan)
+                        _tv = np.asarray(_k_cc["turnover"], dtype=np.float64)
+                        _kret = np.asarray(_k_ret, dtype=np.float64)
+                        _out = {}
+                        for _rate in (0.0, 0.004, 0.008):
+                            _nav = np.full(_nd, 1.0)
+                            _g = 1.0
+                            _cur = 0
+                            for _i in range(len(_reb_pos)):
+                                _d0 = _reb_pos[_i] + 1
+                                if _d0 > _cur:
+                                    _nav[_cur:_d0] = _g          # 调仓日/空仓期：净值不动
+                                    _cur = _d0
+                                # 期内路径 = [T+1, T+h]（h 个点；分母 = **本期期初价** T+1）。
+                                # ⚠ `T+h+1` 在「按调仓期划分」下**天然属于下一期**（它同时是下期
+                                #   的 T'+1）⇒ 不能放进本段；本期期末值改由该期收益 R 推进（= 曲线
+                                #   口径）。路径末点 close_{T+h}/close_{T+1} 与期末之间隔着一处
+                                #   「最后一天收益」的自然跳变 —— 属真实收益，不是误差。
+                                _d1 = _d0 + _h_i
+                                if _d1 >= _nd:
+                                    _nav[_cur:] = _g
+                                    _cur = _nd
+                                    break
+                                _seg = _seg_nav[_d0:_d1].copy()
+                                _lastv = np.nan               # 段内前向填充（缺值日净值不动）
+                                for _j in range(_seg.size):
+                                    if np.isfinite(_seg[_j]):
+                                        _lastv = _seg[_j]
+                                    elif np.isfinite(_lastv):
+                                        _seg[_j] = _lastv
+                                if not np.isfinite(_seg[0]):
+                                    _seg[0] = float(_lastv) if np.isfinite(_lastv) else 1.0
+                                for _j in range(1, _seg.size):
+                                    if not np.isfinite(_seg[_j]):
+                                        _seg[_j] = _seg[_j - 1]
+                                # 自检④：路径首点（= T+1 当天）必须恰为 1 —— 抓「期划分错位 /
+                                # 价格分母取错 / 行对齐错」这类结构性错误（本轮靠它定位了
+                                # T+h+1 的期归属问题）。
+                                if _rate == 0.0 and abs(float(_seg[0]) - 1.0) > 1e-9:
+                                    raise AssertionError(
+                                        "逐日路径首点应为 1（%s / K=%s）：%.6f"
+                                        % (_k_kind, _k_val, float(_seg[0])))
+                                _c = _rate * (float(_tv[_i]) if _i < _tv.size else 0.0)
+                                _start = _g * (1.0 - _c)
+                                _nav[_d0:_d1] = _start * _seg
+                                _R = float(_kret[_i]) if _i < _kret.size else 0.0
+                                _g = _start * (1.0 + _R)
+                                _nav[_d1] = _g                # T+h+1 = 下一期起点（将被下期覆盖）
+                                _cur = _d1
+                            if _cur < _nd:
+                                _nav[_cur:] = _g
+                            # ⚠ 只统计到「最后一个完整持有期末」（尾部不完整期的平坦段不计入
+                            #   样本数，否则会摊薄年化/波动）
+                            _endi = _cur if 0 < _cur < _nd else _nd
+                            _net = np.empty(_endi, dtype=np.float64)
+                            _net[0] = _nav[0] - 1.0
+                            if _endi > 1:
+                                _net[1:] = _nav[1:_endi] / _nav[:_endi - 1] - 1.0
+                            _out["%.4f" % _rate] = compute_perf(_net)
+                        return _out
+
                     def _append_item(_kind, _k, _ret, _sub, _n_hold=None, _quantile=None):
                         """调纯函数 + 追加一条明细（三个自检都在这里）。
 
@@ -803,6 +944,9 @@ def _test_one(
                         }
                         if _quantile is not None:
                             item["quantile"] = int(_quantile)
+                        # v1.18.48：逐日盯市口径的绩效指标（年化/最大回撤/夏普/索提诺/卡玛），
+                        # 三档成本各一份；不适用（调仓期 < 预测周期等）时为 None。
+                        item["perf"] = _perf_of(_kind, _k, _quantile, cc, _ret)
                         _items.append(item)
                         return cc
 
@@ -1260,6 +1404,17 @@ def run_single_factor_tests(
             err = [{**_test_one(pd.DataFrame(), f, ""), "error": f"冻结价 label 计算失败: {e}"} for f in factors]
             return {h: err for h in horizons}
 
+    # ---- 逐日盯市用：ffill 后的复权收盘价（v1.18.48）------------------------------
+    # 停牌价冻结语义必须与 LABEL 一致（LABEL 在 freeze_suspended_price 下用 ffill 后的
+    # CLOSE 重算）⇒ 逐日「买入持有」净值也必须走同一条价格链，否则期末净值对不上
+    # （自检④会当场抓到）。⚠ 这是**派生列**：不能塞进 `base_names`（那是面板字段名），
+    # 只在下游 `need` 列表里显式追加。
+    try:
+        _inst_lv_ff = df.index.names.index("instrument")
+        df["CLOSE_FF"] = df.groupby(level=_inst_lv_ff)["CLOSE"].ffill()
+    except Exception:
+        df["CLOSE_FF"] = df["CLOSE"] if "CLOSE" in df.columns else np.nan
+
     out: Dict[int, list] = {}
     es_inst = df_full.index.names.index("instrument")
     es_dt = df_full.index.names.index("datetime")
@@ -1275,6 +1430,8 @@ def run_single_factor_tests(
             progress_cb(h, 0.0, f"统计 {h} 日周期...")
         # 只保留该周期需要的列，避免每周期持有全量面板
         need = [c for c in (factor_cols + base_names + tag_names + [lc]) if c in df.columns]
+        if "CLOSE_FF" in df.columns:      # 逐日盯市用（v1.18.48）
+            need.append("CLOSE_FF")
         sub = df[need].copy()
         sub.rename(columns={lc: "LABEL"}, inplace=True)
         results = []

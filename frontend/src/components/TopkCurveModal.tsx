@@ -10,7 +10,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import type { SingleFactorTestResult, TopKCurveItem } from '../api'
+import type { PerfMetrics, SingleFactorTestResult, TopKCurveItem } from '../api'
 
 /**
  * 连续因子「持仓期收益曲线」弹窗（v1.18.45）。
@@ -53,6 +53,50 @@ function itemLabel(it: TopKCurveItem, defaultK: number | null) {
   if (it.kind === 'decile') return `最强分位组 Q${it.quantile}`
   const isDefault = defaultK != null && it.k === defaultK
   return `固定 K=${it.k}${isDefault ? '（默认 10% 档）' : ''}`
+}
+
+/** 无量纲比率显示（夏普/索提诺/卡玛）：2 位小数，缺失给 `-`。 */
+const fmtRatio = (v: number | null | undefined) =>
+  v == null || !Number.isFinite(v) ? '-' : v.toFixed(2)
+
+/**
+ * 绩效指标卡（v1.18.48）：**逐日盯市**口径（期内按 h 调仓、持有期内逐日盯市）。
+ * 组合与基准各一张 —— 只有同口径对比，才能判断「这份超额值不值得承担这些风险」。
+ * ⚠ 指标基于**净值** ⇒ 只有复利口径才有意义（算术累加不是净值，回撤/波动无从定义）。
+ */
+function PerfCard({
+  title,
+  perf,
+  extra,
+}: {
+  title: string
+  perf?: PerfMetrics | null
+  extra?: string
+}) {
+  if (!perf) return null
+  const cell = (label: string, val: string, cls = '') => (
+    <div className="text-center">
+      <div className="text-slate-400">{label}</div>
+      <div className={`font-semibold text-slate-700 dark:text-slate-200 ${cls}`}>{val}</div>
+    </div>
+  )
+  return (
+    <div className="border border-slate-200 dark:border-slate-700 rounded px-2 py-1">
+      <div className="text-slate-500 mb-1">{title}</div>
+      <div className="grid grid-cols-5 gap-1">
+        {cell('年化', signedPct(perf.annual_return, 1))}
+        {cell('最大回撤', signedPct(perf.max_drawdown, 1), 'text-red-500')}
+        {cell('夏普', fmtRatio(perf.sharpe))}
+        {cell('索提诺', fmtRatio(perf.sortino))}
+        {cell('卡玛', fmtRatio(perf.calmar))}
+      </div>
+      <div className="text-slate-400 mt-0.5 leading-relaxed">
+        年化波动 {pct(perf.vol_annual, 1)}｜日胜率 {pct(perf.win_rate, 1)}｜样本{' '}
+        {perf.n_days} 个交易日｜逐日盯市、rf=0
+        {extra ? `｜${extra}` : ''}
+      </div>
+    </div>
+  )
 }
 
 /** 等间隔抽样 + 保留末点。 */
@@ -145,6 +189,15 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
           ? null
           : (1 + _pv) / (1 + _bv) - 1
         : _pv - _bv
+  // 绩效指标（v1.18.48）：组合取**无成本档**（与曲线 c0 同口径）；基准用同口径指标。
+  // ⚠ 基于净值 ⇒ 仅复利口径展示（算术累加不是净值，回撤/波动无从定义）。
+  const itemPerf = item?.perf?.['0.0000'] ?? null
+  const benchPerf = benchItem?.perf ?? null
+  const costAnnual = item?.perf
+    ? `三档年化：无成本 ${signedPct(item.perf['0.0000']?.annual_return, 1)}`
+      + ` / 0.004 ${signedPct(item.perf['0.0040']?.annual_return, 1)}`
+      + ` / 0.008 ${signedPct(item.perf['0.0080']?.annual_return, 1)}`
+    : ''
 
   // 图 2：十分位累计收益曲线（10 条 + 多空）
   const decileData = useMemo(() => {
@@ -375,6 +428,30 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   {signedPct(excess)}
                 </b>
                 {_bv == null ? '（基准尾部数据不足，已断线）' : ''}
+              </div>
+            )}
+
+            {/* 绩效指标（v1.18.48）：逐日盯市口径（期内按 h 调仓、持有期内逐日盯市）。
+                组合 vs 基准并排 —— 只有同口径对比才能判断超额是否值得这些风险。
+                ⚠ 仅复利口径展示（指标基于净值；算术累加非净值口径）。 */}
+            {basis === 'compound' && (itemPerf || benchPerf) && (
+              <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                <PerfCard
+                  title={`组合${
+                    item?.kind === 'decile'
+                      ? `·最强分位组 Q${item?.quantile}`
+                      : `·固定 K=${item?.k}`
+                  }（无成本）`}
+                  perf={itemPerf}
+                  extra={costAnnual}
+                />
+                <PerfCard title={`基准 ${benchItem?.name ?? ''}`} perf={benchPerf} />
+              </div>
+            )}
+            {basis === 'compound' && !itemPerf && !benchPerf && tc && (
+              <div className="mt-1 text-[11px] text-slate-400">
+                绩效指标不可用（调仓期小于预测周期时各期持有区间重叠、无法拼逐日净值；
+                或后端版本 &lt; v1.18.48）
               </div>
             )}
 

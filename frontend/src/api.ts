@@ -256,6 +256,23 @@ export interface TopKCurveItem {
   // v1.18.47 复利口径（前端**默认展示**）：每期净收益滚入本金 ⇒ Π[(1+r)(1−费率×换手)]−1；
   // 与 curves 同换手、同"首期建仓不计费"规则。⚠ 两口径不可混比（强策略复利显著更高）
   curves_compound?: Record<string, number[]>
+  // 逐日盯市绩效指标（v1.18.48）：三档成本各一份（键同 curves）；口径不适用（如调仓期 <
+  // 预测周期）时为 null
+  perf?: Record<string, PerfMetrics> | null
+}
+/** 逐日盯市绩效指标（annual/max_drawdown/sharpe/sortino/calmar 等；原始小数，比率为无量纲数） */
+export interface PerfMetrics {
+  n_days: number // 样本交易日数
+  nav_end: number | null // 期末净值（起点 1）
+  total_return: number | null
+  annual_return: number | null // 几何年化（252 交易日/年）
+  max_drawdown: number | null // 负数
+  sharpe: number | null // rf = 0
+  sortino: number | null // 下行标准差用半方差口径
+  calmar: number | null // 年化 / |最大回撤|
+  vol_annual: number | null // 年化波动
+  win_rate: number | null // 日胜率
+  max_dd_days: number | null // 峰值→最深回撤点的交易日数
 }
 // 可切换基准（指数）：与组合曲线**同轴同口径** —— 每期 = 指数在同一调仓日的
 // T+1 → T+h+1 收益（与 LABEL 同口径），各期算术累加；价格指数（不含分红）。
@@ -264,6 +281,7 @@ export interface TopKBenchmark {
   name: string // 展示名：沪深300 / 中证1000 …
   cum: (number | null)[] // 逐调仓期**算术累加**；**数据不足的期及其后为 null**（前端断线，不猜）
   cum_compound?: (number | null)[] // v1.18.47 复利累乘（与组合曲线同口径切换；缺失语义同 cum）
+  perf?: PerfMetrics | null // 逐日盯市绩效指标（与组合同口径，v1.18.48）
 }
 export interface TopKCurves {
   rebalance_period: number // 调仓期（交易日）；默认 = 预测周期 h

@@ -16,6 +16,8 @@ from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 
+from app.engine.perf_metrics import compute_perf
+
 # (代码, 展示名)。⚠ 只放确有行情的；新增前先确认 `data/cn_data/features/<code 小写>` 存在
 BENCHMARKS = (
     ("SH000300", "沪深300"),
@@ -109,10 +111,16 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
     out = {}
     for code in close.columns:
         s = close[code]
+        sarr = s.to_numpy(dtype=np.float64)
         # v1.18.47：同时给**算术累加**与**复利累乘**两条（前端默认显示复利，与组合曲线同口径）；
         # 缺失语义两者完全一致（尾部越界 ⇒ 其后全 None；中间空洞 ⇒ 只断当期）。
         cums, cums_cmp = [], []
         cum, navc, truncated = 0.0, 1.0, False
+        # v1.18.48：逐日盯市净值（与组合同构：期内 [T+1, T+h] 走指数逐日、期末由期收益推进）
+        # → 供「年化/最大回撤/夏普/索提诺/卡玛」使用（基准与组合同口径才有比较意义）。
+        nav_arr = np.ones(n, dtype=np.float64)
+        gd, cur = 1.0, 0
+        _begb = 0                        # 第一个有效期的 T+1 位置（裁掉预热段的平坦点）
         for d in reb_dates:
             t = pd.Timestamp(d)
             if truncated:                        # 尾部越界后：后面必然也越界
@@ -138,6 +146,30 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
             navc *= rr
             cums.append(round(cum, 6))
             cums_cmp.append(round(navc - 1.0, 6))
+            # 逐日路径（相对本期期初 p1）；i2 = T+h+1（同组合口径，`close` 已 ffill）
+            if _begb == 0:
+                _begb = i1               # 首个调仓期的 T+1（此前是预热/建仓前的平坦段）
+            if i1 > cur:
+                nav_arr[cur:i1] = gd
+                cur = i1
+            seg = sarr[i1:i2] / p1               # [T+1, T+h]
+            if seg.size and np.all(np.isfinite(seg)):
+                nav_arr[i1:i2] = gd * seg
+            gd = gd * rr
+            nav_arr[i2] = gd
+            cur = i2
+        if cur < n:
+            nav_arr[cur:] = gd
+        # ⚠ 两边都要截：`close` 宽表带 warmup 前段（起点比组合面板早约 250 交易日）与尾部
+        #   h+1+3 天延展；不截会把这两段平坦期计入样本数、摊薄年化/波动（实测 1471 → 1212）。
+        _endb = cur if 0 < cur < n else n
+        _b = _begb if 0 <= _begb < _endb else 0
+        net = np.empty(max(_endb - _b, 0), dtype=np.float64)
+        if net.size:
+            net[0] = 0.0                     # 起点当天无收益（相对起点）
+            if net.size > 1:
+                net[1:] = nav_arr[_b + 1:_endb] / nav_arr[_b:_endb - 1] - 1.0
         out[str(code)] = {"name": BENCH_NAMES.get(str(code), str(code)),
-                          "cum": cums, "cum_compound": cums_cmp}
+                          "cum": cums, "cum_compound": cums_cmp,
+                          "perf": compute_perf(net)}
     return out
