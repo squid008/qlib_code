@@ -384,15 +384,48 @@ def _dyn_best_idx_ext(ai: np.ndarray, bi: np.ndarray, vals_ext: np.ndarray,
     return np.where(b_wins, bi, ai)
 
 
+def _merge_adjacent_vals(ai, bi, av, bv, is_max, dt):
+    """稀疏表**相邻两半**的合并（v1.18.39）：6 遍逐元素运算，**不做 gather**。
+
+    **前置不变量**（本函数成立的前提，也是它比 `_dyn_best_idx_ext` 激进的原因）：
+    第 j 层的左右两半是**相邻区间** `[p, p+half)` 与 `[p+half, p+2half)`，且
+    `si[j-1][q] ∈ [q, q+2^(j-1)-1] ∪ {-1}`（对 j 归纳可证，含尾部「沿用 prev」的近似位）。
+    ⇒ 两半下标**只要都有效必有 `ai < bi`** ⇒ `_dyn_best_idx_ext` 里
+    `(tie & (bi > ai))` 的 `bi > ai` **恒真**，可删；再与 `b_better` 合并即 `bv >= av`
+    （等值自然取右）。
+
+    真值表（a/b 是否有效）：
+      VV → `bv >= av`（等值取 b ✓）｜NV → `a_nan & b_ok` ✓｜VN → False → 取 a ✓
+      ｜NN → False → 取 a(=-1) ✓。`±inf`：`inf >= inf` 真 → 取右 ✓。
+
+    候选值 `av`/`bv` 由调用方以**连续切片**给出（极值表），故无 `vals_ext[ai+1]` 的
+    随机 gather —— 那正是 v1.18.36 实现在 25MB 数组上每层两次、共 ~2.7 亿次随机访问
+    的来源。实测 22.2M 元素：28.9~33.4 ns/元素 → **13.1~14.3 ns/元素（2.2~2.3×）**，
+    且与旧实现**逐位相同**（`ai_test/bench_argmax.py` 五变体对拍全 True）。
+    """
+    a_nan = av != av
+    b_ok = bv == bv
+    win = ((bv >= av) if is_max else (bv <= av)) | (a_nan & b_ok)
+    return np.where(win, bi, ai).astype(dt, copy=False)
+
+
 def _build_argmax_sparse(vals: np.ndarray, is_max: bool, k_max: int = None) -> np.ndarray:
     """稀疏表（RMQ）变体：每层存"区间极值的最右下标"，同值取更右（等值取最近）。
 
-    与 `_build_sparse`（存极值）同构，同样返回 **2D 连续数组** 且支持 `k_max` 只建所需层；
-    层合并比较见 `_dyn_best_idx_ext`。NaN 位用 -1 占位。
+    与 `_build_sparse`（存极值）同构，同样返回 **2D 连续数组** 且支持 `k_max` 只建所需层。
+    NaN 位用 -1 占位。
 
-    v1.18.36 性能：层合并改用**哨兵扩展数组**（`_make_dyn_ext`，建表前一次构造），
-    免去每次合并的 `np.maximum` ×2 / `np.where` ×2 / `~isnan` 分支（全 A 实测
-    `_dyn_best_idx` 占特征加载 tottime 首位）。
+    性能演进：
+      · v1.18.36：层合并改用**哨兵扩展数组**（`_make_dyn_ext`）—— 免去每层
+        `np.maximum` ×2 / `np.where` ×2，但候选值仍靠 `vals_ext[idx+1]` **花式索引**
+        （随机 gather）。
+      · v1.18.39（本版）：**并行维护一张极值表**，层合并改为读它的**连续切片**，
+        彻底去掉 gather；合并逻辑同时简化（见 `_merge_adjacent_vals`）；下标表降为
+        **int32**（n < 2^31 恒成立）。实测同形状（n=3172661、k_max=6、22.2M 元素）：
+        **718ms → 290ms（2.2~2.3×）**，与旧实现**逐位相同**。
+
+    ⚠ 内存**更省**：极值表只需**相邻两层**（ping-pong 两个 n 长缓冲），下标表由 int64
+    降 int32 ⇒ 峰值从 ~250MB（int64 表 178MB + 25MB 哨兵 + 逐层临时量）降到 ~160MB。
     """
     n = len(vals)
     if n == 0:
@@ -400,16 +433,25 @@ def _build_argmax_sparse(vals: np.ndarray, is_max: bool, k_max: int = None) -> n
     k = int(np.log2(n)) + 1
     if k_max is not None:
         k = max(1, min(k, int(k_max) + 1))
-    st = np.empty((k, n), dtype=np.int64)
-    st[0] = np.where(np.isnan(vals), -1, np.arange(n))
+    dt = np.int32 if n < (1 << 31) else np.int64
+    si = np.empty((k, n), dtype=dt)
+    si[0] = np.where(np.isnan(vals), dt(-1), np.arange(n, dtype=dt))
     if k > 1:
-        vext = _make_dyn_ext(vals)
+        f = np.fmax if is_max else np.fmin
+        # 极值表 ping-pong：只需第 j-1 层，不必存满 k 层
+        vb = np.array(vals, dtype=np.float64)      # 第 0 层极值 = 原值（复制一份作可写缓冲）
+        vc = np.empty(n, dtype=np.float64)
         for j in range(1, k):
-            prev = st[j - 1]
+            pi = si[j - 1]
             half = 1 << (j - 1)
-            st[j, : n - half] = _dyn_best_idx_ext(prev[: n - half], prev[half:], vext, is_max)
-            st[j, n - half :] = prev[n - half :]
-    return st
+            m = n - half
+            av, bv = vb[:m], vb[half:half + m]     # 同一缓冲的相邻两半（与旧实现一致）
+            vc[:m] = f(av, bv)                     # 极值：单遍顺序流（≈4.8 ns/元素）
+            vc[m:] = vb[m:]
+            si[j, :m] = _merge_adjacent_vals(pi[:m], pi[half:half + m], av, bv, is_max, dt)
+            si[j, m:] = pi[m:]
+            vb, vc = vc, vb
+    return si
 
 
 def _dyn_arg_idx_vec(vals: np.ndarray, nvals: np.ndarray, is_max: bool) -> np.ndarray:

@@ -3,6 +3,38 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.39] - 2026-09-12
+
+### Performance
+- **T2 第 3 刀（第 1 步）：argmax 稀疏表重写（去 gather + 简化合并 + int32），大公式端到端 −12.5%**（`factors/ops_ext.py::_build_argmax_sparse`，**数值零变化**）：
+  - **定位（新增 `ai_test/probe_dyn.py`，按函数拆建表/合并/查询 + 记 n/k/k_max/元素量）**：csi1000（真实 1980 只）× `CWH_MIX_D_PCT_R40`，wall 25.35s，其中 `_build_argmax_sparse` **7 次 / 4.509s / 17.8%**。最刺眼的对比是同形状的两次建表（n=3172661、k=7、22.2M 元素）：**float 版 `_build_sparse` 110ms / 4.78 ns/元素，argmax 版 718ms / 29.0 ns/元素 —— 慢 6.5×**。
+  - **主因**：每层合并用 `vals_ext[ai + 1]` / `vals_ext[bi + 1]` 取候选值 —— 在 25MB 数组上做**随机 gather**（6 层 × 2 次 × 3.17M ≈ **2.7 亿次随机访问**），外加 ~20 遍逐元素运算（`a_ok`/`b_ok`/`a_nan`/`b_nan`/`b_better`/`tie`/`b_wins`/`where`…）。
+  - **改法三条**（微型基准先行，见下）：
+    1. **并行维护一张极值表 `sv`**，层合并的候选值改为读它的**连续切片** —— 彻底去掉 gather。`sv` 只需**相邻两层**（ping-pong 两个 n 长缓冲，不必存满 k 层）。
+    2. **简化合并**（`_merge_adjacent_vals`）：稀疏表第 j 层的左右两半是**相邻区间** `[p,p+half)`/`[p+half,p+2half)`，且 `si[j-1][q] ∈ [q, q+2^(j-1)-1] ∪ {-1}`（对 j 归纳可证，含尾部「沿用 prev」的近似位）⇒ **两半下标只要都有效必有 `ai < bi`** ⇒ 原式 `(tie & (bi > ai))` 的 `bi > ai` **恒真**，可删；再与 `b_better` 合并即 `bv >= av`（等值自然取右）。**合并从 ~11 遍降到 6 遍**。
+    3. **下标表降为 int32**（n < 2^31 恒成立；返回的下标只被 `i - j` 消费，产出 int64）。
+  - ⚠ **`_dyn_best_idx_ext` 保持原样**：它也用于**查询**路径，而查询的两个候选 `st[js,l1]`/`st[js,l2]`（l2=l1+(lens−2^js)）区间**可以重叠**，`bi > ai` 不恒真 —— 简化版只能用在「相邻两半」的建表场景。
+  - **微基准（新增 `ai_test/bench_argmax.py`，五变体交错 A/B，n=3172661、k_max=6）—— 五个实现全部逐位相同**：
+    | 变体 | is_max=True | is_max=False |
+    |---|---|---|
+    | 原实现（gather） | 28.85 ns/元素 | 33.41 ns/元素 |
+    | 值表去 gather | 1.64× | 1.62× |
+    | ＋简化合并 | 1.81× | 1.92× |
+    | **＋int32 下标（采用）** | **2.21×（13.1 ns）** | **2.34×（14.3 ns）** |
+  - **实测（新增 `ai_test/ab_dyn.py`：子进程各 3 轮，样本区间不重叠）**：
+    - **整次 panel 墙钟**：**26.25s → 22.97s（−3.28s，−12.5%）**（旧 25.94/26.25/27.97、新 22.72/22.97/23.24）
+    - **`_build_argmax_sparse`**：**4.964s → 1.864s（−3.10s，−62.5%，2.66×）**，单次 718ms → ~225ms，**29.0 → 10.38 ns/元素**
+    - **入口累计 `dyn_bars_vec_seg`**：**8.445s → 4.990s（−40.9%）**；`_dyn_best_idx_ext` 4.647s → 0.519s（只剩查询路径）
+  - ⚠ **内存同时更省**：峰值从 ~250MB（int64 下标表 178MB + 25MB 哨兵 + 逐层临时量）降到 **~160MB**（int32 表 89MB + 2 个 n 长 float64 缓冲 50MB）—— 在 512MB 节点缓存的高压场景下，这部分也贡献了部分墙钟收益。
+  - **验证（四重）**：① **新增 `ai_test/test_dyn_argmax.py` 1016 例 0 失败** —— A 建表**新 vs 旧逐位**（10 值池 × is_max × k_max∈{None,0,1,2,5,8,12} = 140）；B `dyn_bars_vec` vs **朴素逐位置参考**（120）；B' 等值/tie 专项（长平台/全等值/±inf 交替，156）；C **段感知 vs 逐段独立**（516）；D `_dyn_rmq_vec_seg` 回归（360）；② `backend/tests` **180 passed**；③ `snapshot_panel.py --tag dyn39 --compare arith2` → **18 列全部 `exact=True`**；④ 上文 A/B。
+  - ⚠ **测试自身的坑**：`seg_start[i]` 是「该行所属段的**全局起始下标**」，不是段编号。测试里曾误传编号（0/1/2）→ C 组 **107 处假阳性**（生产代码是对的）。已改为 `to_seg_start()` 构造真起止。
+- 版本 1.18.38 → 1.18.39。
+
+### Notes
+- 本次只动 `ops_ext.py` 的 `_build_argmax_sparse`（新增 `_merge_adjacent_vals`）；`_build_sparse` / `_dyn_rmq_vec*` / `_rightmost_bars_seg` / `_rightmost_arg_best` / `panel_expr.py` **未动**。
+- **本刀第 2 步（已定位，未做）**：查询/管道自耗 —— `_dyn_rmq_vec_seg` 自耗 ~2.7s（3.570s 里扣掉 `_build_sparse` 0.897s）、`_dyn_arg_idx_vec_seg` 自耗 ~1.87s。可疑点：`np.log2` + `np.floor` + `astype` 三遍全表（`js = floor(log2(lens))` 可用 `np.frexp` 取指数一步到位）、`st[js, pos]` **2D 花式索引**从 89~178MB 表上随机 gather（可按 `js` 分组后从**单层**连续数组取，工作集小得多）、`_win_lens_vec` 的 5 遍。
+- 遗留：`_rightmost_bars_seg`（10.7%）｜`_seg_roll`（6.3~9.7%，含 pandas 2D rolling）｜`_rightmost_arg_best`（2.6%，同样的 gather 模式，可套同一套改法）。
+
 ## [1.18.38] - 2026-09-12
 
 ### Performance
