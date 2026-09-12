@@ -92,6 +92,14 @@ def _topgroup_cost_curves(period_ret, holdings, n_hold, rates=(0.0, 0.004, 0.008
     返回 `{"turnover": 逐期换手, "curves": {"0.0040": 累计曲线, ...}}`（cumsum 口径）。
 
     例：50 只每周换 10 只 ⇒ 换手 20% ⇒ 每期 0.08%（0.004 档）⇒ 年化 ≈ 4%/年。
+
+    返回 `{"turnover": …, "curves": {算术累加}, "curves_compound": {复利累乘}}`：
+      · `curves`          —— 逐期净收益**算术累加**（`cumsum(ret − 费率×换手)`），"平均每期赚多少"的视角；
+      · `curves_compound` —— **复利累乘**（默认展示口径，v1.18.47）：每期净收益
+        `(1+r_t)(1−费率×换手_t) − 1`，即「收益先滚入本金、再按往返费率扣费」= **实盘满仓复投口径**。
+    ⚠ 两口径**不可混比**、绝对值差异可很大：`log(1+复利) ≈ Σr − ½Σr²` ⇒ 强策略（期收益均值
+      远大于波动罚项）复利**高于**算术（实测 csi1000 负市值对数 5 年：净值 4.38 vs 2.67），
+      弱/无效策略则复利**低于**算术（波动损耗）。年化维度两者接近，累计总收益差一倍很正常。
     """
     ret = np.asarray(period_ret, dtype=np.float64)
     n = ret.shape[0]
@@ -109,6 +117,11 @@ def _topgroup_cost_curves(period_ret, holdings, n_hold, rates=(0.0, 0.004, 0.008
             tv[i] = len(prev - cur) / den                # 单边换手（卖出比例）
         prev = cur
     curves = {}
+    curves_cmp = {}
     for r in rates:
-        curves["%.4f" % float(r)] = np.cumsum(ret - float(r) * tv)
-    return {"turnover": tv, "curves": curves}
+        rf = float(r)
+        curves["%.4f" % rf] = np.cumsum(ret - rf * tv)
+        # 复利口径（v1.18.47，前端默认展示）：首期 tv=0 ⇒ 建仓不计费（与算术口径同规则）
+        per = (1.0 + ret) * (1.0 - rf * tv) - 1.0
+        curves_cmp["%.4f" % rf] = np.cumprod(1.0 + per) - 1.0
+    return {"turnover": tv, "curves": curves, "curves_compound": curves_cmp}

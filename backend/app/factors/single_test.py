@@ -240,8 +240,14 @@ def _quantile_curves(mat: pd.DataFrame) -> dict:
         "groups": [{"quantile": q,
                     "mean_ret": round(float(means[q]), 6),
                     "excess": round(float(means[q]) - base, 6),
-                    "cum": [round(float(x), 6) for x in mat[q].cumsum()]}
+                    "cum": [round(float(x), 6) for x in mat[q].cumsum()],
+                    # v1.18.47 复利口径（前端默认展示）：各期收益滚入本金 ⇒ Π(1+r)−1
+                    "cum_compound": [
+                        round(float(x), 6)
+                        for x in (np.cumprod(1.0 + mat[q].to_numpy(dtype=np.float64)) - 1.0)]}
                    for q in qs],
+        # ⚠ 多空 = **最强 − 最弱 的差值**（只有算术口径下可直接相减；复利口径下"净值之差"没有
+        #   可解释的实盘含义）⇒ 只给算术版，前端在复利模式**不画多空线**并给出说明。
         "long_short": {"quantile": [best, worst],
                        "cum": [round(float(x), 6) for x in ls]},
     }
@@ -791,6 +797,9 @@ def _test_one(
                             "turnover": [round(float(x), 6) for x in cc["turnover"]],
                             "curves": {kk: [round(float(x), 6) for x in vv]
                                        for kk, vv in cc["curves"].items()},
+                            # v1.18.47 复利口径（前端默认展示；与算术版同换手、同首期不计费规则）
+                            "curves_compound": {kk: [round(float(x), 6) for x in vv]
+                                                for kk, vv in cc["curves_compound"].items()},
                         }
                         if _quantile is not None:
                             item["quantile"] = int(_quantile)

@@ -109,11 +109,15 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
     out = {}
     for code in close.columns:
         s = close[code]
-        cums, cum, truncated = [], 0.0, False
+        # v1.18.47：同时给**算术累加**与**复利累乘**两条（前端默认显示复利，与组合曲线同口径）；
+        # 缺失语义两者完全一致（尾部越界 ⇒ 其后全 None；中间空洞 ⇒ 只断当期）。
+        cums, cums_cmp = [], []
+        cum, navc, truncated = 0.0, 1.0, False
         for d in reb_dates:
             t = pd.Timestamp(d)
             if truncated:                        # 尾部越界后：后面必然也越界
                 cums.append(None)
+                cums_cmp.append(None)
                 continue
             pos = int(idx.searchsorted(t))
             i1, i2 = pos + 1, pos + 1 + h
@@ -123,11 +127,17 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
             if pos >= n or idx[pos] != t or i1 >= n or i2 >= n:
                 truncated = True                 # 尾部不够 ⇒ 其后全 None
                 cums.append(None)
+                cums_cmp.append(None)
                 continue
             if not np.isfinite(p1) or not np.isfinite(p2) or p1 <= 0:
                 cums.append(None)                # 仅当期缺（后续照算）
+                cums_cmp.append(None)
                 continue
-            cum += (p2 / p1 - 1.0)
+            rr = p2 / p1
+            cum += (rr - 1.0)
+            navc *= rr
             cums.append(round(cum, 6))
-        out[str(code)] = {"name": BENCH_NAMES.get(str(code), str(code)), "cum": cums}
+            cums_cmp.append(round(navc - 1.0, 6))
+        out[str(code)] = {"name": BENCH_NAMES.get(str(code), str(code)),
+                          "cum": cums, "cum_compound": cums_cmp}
     return out

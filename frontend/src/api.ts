@@ -240,7 +240,8 @@ export interface QuantileCurves {
     quantile: number
     mean_ret: number // 各调仓期收益均值（原始小数）
     excess: number // 相对 baseline_mean 的超额（与 mean_ret 排序等价）
-    cum: number[] // 累计收益（逐期 cumsum，原始小数）
+    cum: number[] // 累计收益（逐期 cumsum **算术累加**，原始小数）
+    cum_compound?: number[] // v1.18.47 复利累乘 Π(1+r)−1（前端默认展示口径）
   }[]
   // ⚠ 多空 = **最强组 − 最弱组**：A 股空头收益拿不到，**不可实现，仅作有效性参考**
   long_short: { quantile: [number, number]; cum: number[] }
@@ -251,14 +252,18 @@ export interface TopKCurveItem {
   k: number // 目标持仓只数（分位档为其中位只数，仅作展示）
   quantile?: number // 仅 kind='decile'：该档是第几分位组
   turnover: number[] // 逐日换手（仅调仓日非零；首期建仓为 0）
-  curves: Record<string, number[]> // 三档成本累计曲线，键 "0.0000"/"0.0040"/"0.0080"
+  curves: Record<string, number[]> // 三档成本**算术累加**曲线，键 "0.0000"/"0.0040"/"0.0080"
+  // v1.18.47 复利口径（前端**默认展示**）：每期净收益滚入本金 ⇒ Π[(1+r)(1−费率×换手)]−1；
+  // 与 curves 同换手、同"首期建仓不计费"规则。⚠ 两口径不可混比（强策略复利显著更高）
+  curves_compound?: Record<string, number[]>
 }
 // 可切换基准（指数）：与组合曲线**同轴同口径** —— 每期 = 指数在同一调仓日的
 // T+1 → T+h+1 收益（与 LABEL 同口径），各期算术累加；价格指数（不含分红）。
 export interface TopKBenchmark {
   code: string // 如 SH000300
   name: string // 展示名：沪深300 / 中证1000 …
-  cum: (number | null)[] // 逐调仓期累加；**数据不足的期及其后为 null**（前端断线，不猜）
+  cum: (number | null)[] // 逐调仓期**算术累加**；**数据不足的期及其后为 null**（前端断线，不猜）
+  cum_compound?: (number | null)[] // v1.18.47 复利累乘（与组合曲线同口径切换；缺失语义同 cum）
 }
 export interface TopKCurves {
   rebalance_period: number // 调仓期（交易日）；默认 = 预测周期 h
