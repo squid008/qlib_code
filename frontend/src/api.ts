@@ -210,7 +210,7 @@ export interface SingleFactorTestRequest {
   // ---- 连续因子「分位 / 持仓期曲线」参数（v1.18.45）----
   quantiles?: number // 分位组数（缺省 10 = 十分位；5 = 旧五分位）
   rebalance_period?: number | null // 调仓期（交易日）；**不传/null ⇒ 跟随预测周期 h**
-  topk_list?: number[] // 明细曲线要算的 K：≤1 视为「日均只数的百分比」（0.2 = 20%），>1 视为只数
+  topk_list?: number[] // 明细曲线要算的 K：**<1 视为「日均只数的百分比」**（0.1=10%、0.2=20%），**≥1 视为只数**（1 = 1 只）
 }
 export interface FactorTestGroupStats {
   count: number

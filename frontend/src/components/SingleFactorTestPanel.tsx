@@ -290,24 +290,12 @@ const exportHeaders = (qCols: number) => [
 // 导出工作表2"因子与公式"表头
 const EXPORT_FORMULA_HEADERS = ['因子', '来源', '公式（用户保存原文 / 目录表达式）']
 
-/** 解析「明细 K」输入（持仓期曲线要额外算出明细的 K 档，v1.18.45）：
- *  逗号/顿号/空格分隔；`50` = 50 只（绝对只数）；`0.2` 或 `20%` = 日均有效只数的 20%。
- *  留空 = 只算默认档（最强分位组 + 10% 固定档，**零额外开销**）。 */
-function parseDetailKs(text: string): { ks: number[]; error?: string } {
-  const s = text.trim()
-  if (!s) return { ks: [] }
-  const ks: number[] = []
-  for (const raw of s.split(/[,，、\s]+/).filter(Boolean)) {
-    const isPct = raw.endsWith('%')
-    const v = Number(isPct ? raw.slice(0, -1) : raw)
-    if (!Number.isFinite(v) || v <= 0) {
-      return { ks: [], error: `明细 K 非法：${raw}（示例：50 只填 50；百分比填 0.2 或 20%）` }
-    }
-    ks.push(isPct ? v / 100 : v)
-  }
-  if (ks.length > 7) return { ks: [], error: '明细 K 最多 7 个（默认档另算，后端上限 8 个）' }
-  return { ks }
-}
+/** 持仓期曲线的「固定 K 档」**预设**（用户 2026-09-12 定稿，取代原先的自由文本输入）：
+ *  整数 = 绝对只数；`0.1` / `0.2` = 日均有效只数的 10% / 20%。
+ *  勾选的档随本次测试一起算出来 ⇒ 弹窗里纯前端切换、**不用重跑**；每个额外 K 约 +0.1~0.2s
+ *  （每个预测周期各算一次）。⚠ 与后端 `topk_sensitivity.BASE_KS` 保持超集关系。 */
+const K_PRESETS = [1, 2, 3, 5, 10, 20, 50, 100, 0.1, 0.2]
+const kLabel = (k: number) => (k < 1 ? `${Math.round(k * 100)}%` : `${k}`)
 
 // 解析批量预测周期输入：单值 / 逗号枚举(1,2,3,5) / range 区间(1:5:20 = 起点:步长:终点，含终点)。
 // 值范围 1~250（后端同样校验兜底）。返回去重后的周期列表，非法时带中文错误。
@@ -387,10 +375,11 @@ export default function SingleFactorTestPanel({
   // 预热缓冲（交易日，v1.18.6）：特征加载多前移 N 个交易日，长回看/动态窗口公式
   // （DYN_*/BARSCOUNT/HHVBARS+Ref 嵌套）在区间首日即有收敛值；0=关闭（旧口径）
   const [warmupDaysText, setWarmupDaysText] = useState('250')
-  // 持仓期曲线的「明细 K」（v1.18.45）：留空 = 只算默认档（最强分位组 + 10% 固定档），零额外开销；
-  // 每个额外 K 约 +0.1~0.2s（后端要为该 K 再取一次当期名单 + 算三档成本）。
-  // 填了之后弹窗里可在这些 K 之间**纯前端切换**，不用重跑。
-  const [detailKText, setDetailKText] = useState('')
+  // 持仓期曲线的「固定 K 档」（v1.18.45）：默认**一个都不勾** = 只算默认档（最强分位组 +
+  // 10% 固定档），零额外开销；勾选的档随本次测试一起算出 ⇒ 弹窗里**纯前端切换**、不用重跑。
+  const [detailKs, setDetailKs] = useState<number[]>([])
+  const toggleDetailK = (k: number) =>
+    setDetailKs((cur) => (cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k]))
 
   // 事件研究弹窗：0/1 稀疏信号的"触发事件收益分布"。
   // 动机：稀疏信号按日配对检验在触发日只有 1 只票时会退化成单票收益序列，均值/显著性
@@ -673,12 +662,6 @@ export default function SingleFactorTestPanel({
     const warmupNum = Math.floor(Number(warmupDaysText))
     const warmup_days =
       warmupDaysText.trim() === '' || !Number.isFinite(warmupNum) ? undefined : Math.max(0, warmupNum)
-    // 持仓期曲线的明细 K（留空 = 只算默认档）
-    const parsedKs = parseDetailKs(detailKText)
-    if (parsedKs.error) {
-      setError(parsedKs.error)
-      return
-    }
     setRunning(true)
     setCancelling(false)
     setError('')
@@ -703,7 +686,7 @@ export default function SingleFactorTestPanel({
         price_round: priceRound,
         price_adjust: priceAdjust,
         warmup_days,
-        topk_list: parsedKs.ks.length ? parsedKs.ks : undefined,
+        topk_list: detailKs.length ? detailKs : undefined,
       })
       const task_id = resp?.task_id
       if (!task_id) {
@@ -1057,23 +1040,43 @@ export default function SingleFactorTestPanel({
         </label>
       </div>
 
-      {/* 持仓期曲线「明细 K」（v1.18.45）：留空=只算默认档（最强分位组 + 10% 固定档），零额外开销；
-          填了之后弹窗里可纯前端切换这些 K 档（不用重跑）。每个额外 K 约 +0.1~0.2s。 */}
+      {/* 持仓期曲线「固定 K 档」（v1.18.45，2026-09-12 用户定稿改为预设列表）：
+          不勾 = 只算默认档（最强分位组 + 10% 固定档），零额外开销；勾选的档随本次测试一起算出
+          ⇒ 弹窗里纯前端切换这些档（不用重跑）。每个勾选的 K 约 +0.1~0.2s（每个预测周期各算一次）。 */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-3">
-        <label
-          className="flex items-center gap-1"
-          title="仅对连续因子有效：持仓期曲线弹窗里可切换的「固定 K 档」。留空 = 只算默认档（超额收益最强的分位组 + 10% 固定档），不增加耗时。支持逗号分隔：50 = 50 只；0.2 或 20% = 日均有效只数的 20%。每个额外 K 约 +0.1~0.2s（后端要重新取该 K 的当期名单并算三档成本）；K 敏感度汇总表（各 K 的换手/年化成本）不受此设置影响、始终全量计算"
+        <span
+          className="text-slate-500"
+          title="仅对连续因子有效：持仓期曲线里可切换的「固定 K 档」。不勾 = 只算默认档（超额收益最强的分位组 + 10% 固定档），不增加耗时。整数 = 绝对只数（1 = 只买名次最好的 1 只）；10%/20% = 日均有效只数的百分比。每个勾选的 K 约 +0.1~0.2s（每个预测周期各算一次）；K 敏感度汇总表（各 K 的换手/年化成本）不受此设置影响、始终全量计算"
         >
-          <span className="text-slate-500">明细 K：</span>
-          <input
-            type="text"
-            className="border rounded px-2 py-0.5 w-40 text-center"
-            placeholder="留空=默认档"
-            value={detailKText}
-            onChange={(e) => setDetailKText(e.target.value)}
-          />
-          <span className="text-slate-500">（如 0.2,50；每个 +0.1~0.2s）</span>
-        </label>
+          固定 K 档（持仓期曲线）：
+        </span>
+        {K_PRESETS.map((k) => {
+          const on = detailKs.includes(k)
+          return (
+            <button
+              key={k}
+              type="button"
+              onClick={() => toggleDetailK(k)}
+              title={
+                k < 1
+                  ? `${kLabel(k)} = 日均有效只数的 ${kLabel(k)}（随股票池变化）`
+                  : `${k} 只（按因子名次取前 ${k} 名）`
+              }
+              className={`px-1.5 py-0.5 rounded border text-[11px] ${
+                on
+                  ? 'border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30'
+                  : 'border-slate-300 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700/40'
+              }`}
+            >
+              {kLabel(k)}
+            </button>
+          )
+        })}
+        <span className="text-slate-400">
+          {detailKs.length
+            ? `已选 ${detailKs.length} 档 ⇒ 约 +${(detailKs.length * 0.15).toFixed(1)}s / 每个预测周期`
+            : '（不勾 = 只算默认档，零额外开销）'}
+        </span>
       </div>
 
       {/* 进度条 */}

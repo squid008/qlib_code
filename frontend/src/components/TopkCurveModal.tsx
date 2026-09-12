@@ -243,8 +243,8 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                 : `固定持仓 ${item?.k} 只（按名次取，与分位组口径略有差异）`}
               {'；'}
               {fixedKs.length > 0
-                ? `固定 K 档（${fixedKs.join(' / ')} 只）来自表单「明细 K」—— 改 K 需回表单重跑（每个额外 K 约 +0.1~0.2s）`
-                : '想要更多固定 K 档？在表单「明细 K」里填只数或百分比（如 0.2,50）后重跑'}
+                ? `固定 K 档（${fixedKs.join(' / ')} 只）来自表单「固定 K 档」预设 —— 改 K 需回表单重跑（每个额外 K 约 +0.1~0.2s）`
+                : '想要更多固定 K 档？在表单「固定 K 档」里勾选（1/2/3/5/10/20/50/100/10%/20%）后重跑'}
               {'；点图例可显隐曲线'}
             </div>
             <ResponsiveContainer width="100%" height={250}>
