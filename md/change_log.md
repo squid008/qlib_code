@@ -3,6 +3,24 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.38] - 2026-09-12
+
+### Performance
+- **特征加载段第一刀：`eval` 的 field 节点去掉「恒等 reindex」+ 改位置 gather**（`factors/panel_expr.py`，**数值零变化**）：特征加载段 **4.38s → 4.01s（−9.4%）**，整轮 **−4.5%**（csi300 / 3 因子 / 各 3 轮真实墙钟，样本区间不重叠）。
+  - **定因（新增 `ai_test/profile_get_indexer.py`）**：patch `Index._get_indexer` / `Index.get_indexer` / `MultiIndex.get_indexer`，每次调用用 `sys._getframe` **遍历调用栈找第一个不在 site-packages 里的帧**（比 `inspect.stack()` 快几个数量级），按 `文件:行(函数)` 聚合。结果：**特征加载段 19% 的 `_get_indexer` 几乎全部来自 `panel_expr.py:809` 的 `self.field(...).reindex(active)`**（target 81.4 万行、33ms/次；cProfile 口径 151 次 / 73.5s ≈ 19%）。
+  - **两处都是"白算/贵算"**：
+    - **`sr=False`（label/base/tag）：`active` 就是 `self._full` 同一个对象** —— `field()` 自 v1.18.31 起已按 `_full` 对齐 ⇒ 这次 `reindex` 是**恒等操作**，却仍跑一次全表 `MultiIndex.get_indexer`。→ 用 **`is` 同对象短路**（做法与 `_align` 一致）。
+    - **`sr=True`：`active` 是 close 有效行压缩序列**，确需取子集；但它是 `_full` 的**布尔子集（同序）** ⇒ 「按位置 gather」与「按标签 reindex」**取值等价**（float64 逐位相同、index 同一对象），而 gather 只要 ~2ms（省 ~30ms/次）。
+  - **改动**：
+    - `_active_index` 新增缓存 `self._active_pos[sr]`（= `np.flatnonzero(掩码)`），并且 **close 全有效时直接返回 `self._full` 同一对象**（原为 `close_full[notna].index` 的新对象 —— 两者取值相同，复用同一对象还能让 `_seg_arrays` 段数组缓存命中同一份、并让上面的 `is` 短路生效）。
+    - `eval` 的 `op == "field"` 分支三级：`active is self._full` → 恒等短路；有 `_active_pos` → `pd.Series(f.to_numpy()[pos], index=active)`；否则兜底原 `reindex`。
+  - **实测**（`ai_test/profile_feature_load.py --no-profile`，用 `progress_cb` 的「计算特征数据」消息作阶段边界取**真实墙钟**，避免 cProfile 放大）：
+    - **csi300 / 3 因子（可比口径，各 3 轮）**：特征加载段 **6.19/4.38/4.42s → 5.75/3.95/4.01s（热态 −9.4%）**；整轮 8.11/8.41s → 7.70/7.87s（−4.5%）
+    - 1000 只 × CWH（重内存口径）：212/217s vs 265/335s（−18%~−35%）—— ⚠ **绝对墙钟不可比**（1000 只 × 1 因子 217s 而 300 只 × 3 因子仅 4.4s，量级严重不符，疑内存压力触发节点缓存 LRU 反复重算），**仅作方向参考**
+  - **验证（三重）**：① **新增 `ai_test/test_field_take.py` 38 用例 0 失败** —— 新分支 vs 旧 `f.reindex(旧 active)` **逐位**（数值/index/dtype）+ `_active_pos` 与 active 自洽（`_full.take(pos).equals(active)`）+ **全有效掩码不变量**（`s[s.notna()].index.equals(s.index)`，这是"复用 `_full`"成立的依据）；② `backend/tests` **180 passed**；③ `snapshot_panel.py --tag dyn38 --compare powbase` → **18 列全部 `exact=True`**。
+- 版本 1.18.37 → 1.18.38。
+- 架构手册 §7.7-E 的「特征加载三刀」**第 1 刀已完成**，下一刀见该表 #2（`pandas rolling.calc` 19.5 万次）与 #3（DYN 内核族 41%）。
+
 ## [1.18.37] - 2026-09-12
 
 ### Performance

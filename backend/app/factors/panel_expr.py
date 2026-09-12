@@ -753,6 +753,9 @@ class PanelEvaluator:
          self._req_lo, self._req_hi) = _union_layout(
             instruments, self.read_start, end_time, self._union_fields)
         self._active_cache: Dict[bool, pd.MultiIndex] = {}
+        # v1.18.38：active 相对 _full 的**位置数组**（仅 sr=True 且确有剔除时有值）——
+        # 供 `eval` 的 field 节点用「位置 gather」替代「标签 reindex」（见 eval 处注释）
+        self._active_pos: Dict[bool, Optional[np.ndarray]] = {}
         self._field_cache: Dict[str, pd.Series] = {}
         self._node_cache: "OrderedDict[Tuple[object, bool], pd.Series]" = OrderedDict()
         self._node_bytes = 0  # 节点缓存已记账字节（配合 LRU 上限）
@@ -764,10 +767,20 @@ class PanelEvaluator:
             return self._active_cache[key]
         if not sr:
             self._active_cache[key] = self._full
+            self._active_pos[key] = None
             return self._full
         close_full = self.field("$close")  # 全历（自身非 NaN=有效）
-        active = close_full[close_full.notna()].index
+        nmask = close_full.notna()
+        ma = nmask.to_numpy()
+        if ma.all():
+            # 全部有效：active 与 _full **取值相同** → 直接复用同一对象（下游只按值使用），
+            # 好处是 `eval` 里可用 `is` 短路、且 `_seg_arrays` 缓存也能命中同一份
+            self._active_cache[key] = self._full
+            self._active_pos[key] = None
+            return self._full
+        active = close_full[nmask].index
         self._active_cache[key] = active
+        self._active_pos[key] = np.flatnonzero(ma)
         return active
 
     # ---- 字段 ----
@@ -806,7 +819,23 @@ class PanelEvaluator:
         active = self._active_index(sr)
         op = node.op
         if op == "field":
-            out = self.field(node.args[0]).reindex(active)
+            f = self.field(node.args[0])
+            # v1.18.38 性能（本轮特征加载段最大单项，全 A 3 因子口径实测 151 次 / 73.5s ≈ 19%）：
+            # `field()` 自 v1.18.31 起**已按 _full 对齐**，所以这里的 reindex 有两种情形：
+            #   · sr=False（label/base/tag）：active **就是** _full 同一个对象 ⇒ reindex 是
+            #     **恒等操作**，却仍要跑一次全表 `MultiIndex.get_indexer`（81 万行 ≈33ms/次）
+            #     ⇒ 用 `is` 同对象短路（做法与 `_align` 一致）。
+            #   · sr=True：active 是 close 有效行压缩序列，确需取子集；但它是 `_full` 的
+            #     **布尔子集**（同序），故「按位置 gather」与「按标签 reindex」取值等价
+            #     （float64 逐位相同、index 同一对象），而 gather 只要 ~2ms（省 ~30ms/次）。
+            if active is self._full:
+                out = f
+            else:
+                pos = self._active_pos.get(sr)
+                if pos is None:
+                    out = f.reindex(active)
+                else:
+                    out = pd.Series(f.to_numpy(dtype=np.float64)[pos], index=active)
         elif op == "const":
             return float(node.args[0])
         elif op == "SR":
