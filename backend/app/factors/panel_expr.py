@@ -1575,6 +1575,68 @@ def _seg_grid(idx, n: int):
 _SEG_RC_CACHE: "dict" = {}
 
 
+def _seg_roll_vanherk(arr: np.ndarray, N: int, func: str, idx) -> np.ndarray:
+    """`_seg_roll` 的 **max/min 快路**（v1.18.44）：固定窗口 van Herk / Gil-Werman。
+
+    等价于逐段 `pd.Series.rolling(N, min_periods=1).max()/min()`，**逐位相同**
+    （`ai_test/test_seg_roll.py` A 旧矩阵 vs 新快路 864 例｜A2 逐段 pandas vs 新 450 例｜
+    B 朴素参考｜D 跨段污染｜E ±inf 专项；另 `bench_segroll_max.py` 在 n=3.17M 真实形状上
+    验「old / rmq / vanherk / 逐段 pandas」**四者逐位一致**）。
+
+    **算法**：窗口长度恒为 N ⇒ 以 **N 为块长、按 index 0 全局对齐**分块；块内做前向
+    `prefix` 与后向 `suffix`，则长度恰为 N 的窗口 `[l, i]`（`l = i − N + 1`）满足
+    `f(suf[l], pre[i])`。
+
+    **为什么全局网格也不会取到邻段的值**（本算法最关键的一点）：
+      · l 与 i **同块** ⇒ 由 `i − l = N − 1` 与块长 N 推得窗口**恰等于该块**
+        ⇒ `suf[l]`/`pre[i]` 恰好就是窗口本身；
+      · i 在 l 的**下一块** ⇒ `suf[l]` 止于块尾（= 下一块首 − 1 ≤ i）、`pre[i]` 始于
+        该块首（≥ l）⇒ 两者都是窗口的**子集**。
+      ⇒ 两个子集都落在窗口内，而窗口在段内 ⇒ 不会跨段（D 组实测确认）。
+
+    **截断窗口**（左端被段起点截断，即每段前 `N−1` 行）不能用块公式（同块公式会把块内
+    更右的值算进来），单独用段内 `f.accumulate` 覆盖 ⇒ 代价 ≤ `段数 × (N−1)` 个元素。
+
+    **性能**（v1.18.44，n=3.17M / 1980 段等长 / N∈{14,34,120}，`bench_segroll_max.py`
+    逐轮交错取比值中位）：**2.91~3.72×**（135 → 45 ns/元素）—— 而 v1.18.44 试过的
+    「分段 RMQ」只有 1.0×（N 大 ⇒ 稀疏表 7 层 + 178MB 表随机 gather，见架构手册 #6）。
+    **内存**：`M`+`suf` 各 n 长（≈50MB），比稀疏表的 ~178MB 省得多。
+
+    ⚠ `M` 里 `nb×N − n` 个尾部 NaN 位与「段起点紧邻的错位窗口」都会被后续覆盖，
+    故**必须先算 `suf` 再原地累加 `M`**（顺序不能反）。
+    """
+    n = arr.shape[0]
+    if n == 0:
+        return np.full(0, np.nan, dtype=np.float64)
+    # pandas `Rolling._prep_values` 把 ±inf 当 NaN（use_inf_as_na 遗留行为）——必须复刻
+    vals = np.where(np.isinf(arr), np.nan, arr)
+    if N <= 1:
+        return vals
+    f = np.fmax if func == "max" else np.fmin
+    nb = (n + N - 1) // N
+    M = np.full((nb, N), np.nan, dtype=np.float64)
+    M.reshape(-1)[:n] = vals
+    # ① 后向（先算：它要读未被覆盖的 M）
+    suf = np.ascontiguousarray(f.accumulate(M[:, ::-1], axis=1)[:, ::-1]).reshape(-1)
+    # ② 前向（原地覆盖 M）→ 直接用它的前 n 个当输出缓冲
+    f.accumulate(M, axis=1, out=M)
+    out = M.reshape(-1)[:n]
+    if n > N - 1:
+        f(out[N - 1:], suf[:n - N + 1], out=out[N - 1:])          # 长度恰为 N 的窗口
+    # ③ 逐段覆盖「截断窗口」（每段前 min(N−1, 段长) 行）
+    bnd = _seg_arrays(idx, n)[0]                                  # 走缓存，零成本
+    for k in range(len(bnd) - 1):
+        s, e = int(bnd[k]), int(bnd[k + 1])
+        m = min(N - 1, e - s)
+        # ⚠ 必须是 `m >= 1`（不是 `> 1`）：`m == 1`（N == 2，或段长 == 1）时那唯一的
+        #   截断位（段首行本身）也要覆盖 —— 它上方刚被「长度恰为 N 的窗口」公式写过，
+        #   会取到段外的值。此 bug 在全尺度检查里看不见（N≥14 且段长 1602 ⇒ m≥13），
+        #   是对拍网的短段/小 N 用例抓出来的。
+        if m >= 1:
+            out[s:s + m] = f.accumulate(vals[s:s + m])
+    return out
+
+
 def _seg_roll(arr: np.ndarray, N: int, func: str, idx) -> np.ndarray:
     """按段独立的 pandas rolling（等价 `groupby(level=0).rolling(N, min_periods=1).<f>()`）。
 
@@ -1589,9 +1651,11 @@ def _seg_roll(arr: np.ndarray, N: int, func: str, idx) -> np.ndarray:
     但收益更小：56.3ms vs 本方案 25ms）。
     """
     n = arr.shape[0]
-    out = np.full(n, np.nan, dtype=np.float64)
     if n == 0:
-        return out
+        return np.full(0, np.nan, dtype=np.float64)
+    if N >= 1 and func in ("max", "min"):
+        return _seg_roll_vanherk(arr, N, func, idx)      # v1.18.44 快路（van Herk，3~3.7×）
+    out = np.full(n, np.nan, dtype=np.float64)
     row, col, counts, seg_pos = _seg_grid(idx, n)
     nseg = counts.shape[0]
     # 分块：控制「块内最长段 × 块内段数」规模，避免"一只超长 + 一堆超短"时矩阵爆内存

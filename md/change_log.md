@@ -3,6 +3,23 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.44] - 2026-09-12
+
+### Performance
+- **#6 第 3 步：`_seg_roll` 的 max/min 改走「固定窗口 van Herk / Gil-Werman」，端到端 −6.3%（数值零变化）**（`factors/panel_expr.py::_seg_roll_vanherk`）：
+  - **背景**：`_seg_roll`（段内 pandas 2D rolling）占「趋势顶底离开底部」的 **37.5%**（Max 17.1% + Min 14.2%）、csi1000 整轮 **10.8%**；库内 16 个公式有 **12 个**用到「两参数（滚动）」的 MAX/MIN/MEAN/STD/SUM/VAR。
+  - **先排除两条路（都是实测，不是推测）**：① **mean/std/sum/var 不可复刻** —— 新增 `ai_test/diag_roll_mean.py`，5 个候选（`math.fsum` 精确 / `np.sum` / 朴素增量 / **Kahan 复刻** / `cumsum` 差分）与 pandas 逐位对拍，**没有一个相同**（`large+small(1e8+1)` 池相对差达 **1e-4**，属算法结构差异）⇒ 保留 pandas 路径（沿 v1.18.4 对 sum/count 的先例）。② **分段 RMQ 无收益** —— 逐位全绿但同会话 A/B **慢 7.5%**（N 大 ⇒ 稀疏表 7 层 + 178MB 表随机 gather ≈ 310ms；旧矩阵在「段长相近」时矩阵 ≈ n、一次 Cython 滑窗 ≈ 291ms）⇒ 已回退。
+  - **采用算法**：窗口长恒为 N ⇒ 以 **N 为块长、全局按 index 0 对齐**分块，块内 `f.accumulate` 得 `prefix`/`suffix`，长度恰为 N 的窗口 `[l, i]` 取 `f(suf[l], pre[i])`。**全局网格为何不跨段**：同块 ⇒ 由 `i−l = N−1` 推得窗口**恰等于该块**；跨块 ⇒ `suf[l]` 止于块尾、`pre[i]` 始于块首，**两者都是窗口的子集**（D 组实测确认）。**截断窗口**（每段前 `N−1` 行）单独用段内 `f.accumulate` 覆盖。并复刻 pandas 的 **`±inf` → NaN** 语义（`Rolling._prep_values` 的 `use_inf_as_na` 遗留行为）。
+  - **微基准**（新增 `ai_test/bench_segroll_max.py`，n=3.17M / 1980 段等长 / NaN 5% + inf 1.5% / 逐轮交错取比值中位）：`old` 382~446ms ｜ `rmq` 0.93~1.10× ｜ **`vanherk` 2.91~3.72×**（135 → 45 ns/元素）；且 **old / rmq / vanherk / 逐段 pandas 四者逐位一致**。
+  - **端到端 A/B**（`ai_test/ab_segroll.py 3 new` vs 同会话 `3 old --stash`，csi1000 / 3 公式 / n=3172661）：`_seg_roll` **4.078s → 2.169s（−46.8%）**、wall **37.76s → 35.38s（−6.3%）**、`Rolling` 构造 14 → 4（mean 仍走 pandas）。
+  - **验证**：新增 `ai_test/test_seg_roll.py` 六组对拍 **总失败 0**（A 旧矩阵 vs 新快路 864｜A2 逐段 pandas vs 新快路 450｜B 朴素逐段逐位置参考 450｜C mean/sum 算法判定｜D 跨段污染专项｜E ±inf 专项 13）+ `backend/tests` **180 passed**。
+  - ⚠ **本刀最值钱的两条教训**：① **对拍网抓到了全尺度检查看不见的真 bug** —— 覆盖截断窗口的循环写成 `if m > 1` ⇒ **`m == 1`（N == 2 / 段长 == 1）时段首行漏覆盖**、取到段外值（差异全在段起点），而全尺度检查里 N≥14、段长 1602 ⇒ m≥13 恒 > 1 **永远看不见**；② **对拍网「像卡死」的真凶** —— 参考实现遍历 `_seg_arrays` 的 `ss`（**每行**段起点，长度 n）而非 `_segment_bnd`（段边界，长度 = 段数）⇒ 结果正确但慢 O(n×段长)（317k 行 ≈ 63s）。
+- 版本 1.18.43 → 1.18.44。
+
+### Notes
+- 本次只动 `panel_expr.py`（新增 `_seg_roll_vanherk` + `_seg_roll` 头部路由）；`ops_ext.py` / 其他算子未动。
+- 遗留：`_seg_roll` 余下 6.2% 是 **mean/std/sum/var**（pandas，不可逐位复刻）；`_rightmost_bars_seg`（10.7%）｜`_rightmost_arg_best`（2.6%）。
+
 ## [1.18.43] - 2026-09-12
 
 ### Added
