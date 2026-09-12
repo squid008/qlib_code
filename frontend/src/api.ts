@@ -219,10 +219,48 @@ export interface FactorTestGroupStats {
   extra_excluded?: number // 该组 ST(T+1)/创业板/科创板剔除数（勾选对应开关时）
 }
 export interface QuintileGroup {
-  quantile: number // 1=最低值组 … 5=最高值组（每日横截面分位）
+  quantile: number // 1=最低值组 … N=最高值组（每日横截面分位；N=请求参数 quantiles，默认 10=十分位）
   count: number // 该组剔除后样本总数（观测数）
   n_days: number // 参与交易日数（日截面口径）
   mean_ret: number // 该组日截面平均未来收益（每天组均值再跨日平均，原始小数）
+}
+// 分位「累计收益曲线」（十分位图数据；与 quintile_ret 的 mean_ret 同源，故数字自洽）
+export interface QuantileCurves {
+  n_groups: number
+  dates: string[] // YYYY-MM-DD；各分组都有值的交易日
+  groups: { quantile: number; cum: number[] }[] // 累计收益（cumsum 口径，原始小数）
+  // ⚠ 多空 = 第 1 组 − 最后一组：A 股空头收益拿不到，**不可实现，仅作有效性参考**
+  long_short: { quantile: [number, number]; cum: number[] }
+}
+// TopK 持仓期收益曲线（含三档成本）：items[0] 恒为默认档（K=10%）
+export interface TopKCurveItem {
+  k: number // 目标持仓只数
+  turnover: number[] // 逐日换手（仅调仓日非零；首期建仓为 0）
+  curves: Record<string, number[]> // 三档成本累计曲线，键 "0.0000"/"0.0040"/"0.0080"
+}
+export interface TopKCurves {
+  rebalance_period: number // 调仓期（交易日）
+  n: number // 共享日期轴长度
+  dates: string[] // YYYY-MM-DD
+  items: TopKCurveItem[]
+}
+// K 敏感度汇总表：各 K 的换手 / 三档年化成本 / 成本吞噬比例
+export interface TopKSensitivityRow {
+  k: number
+  avg_turnover: number // 每个调仓期的平均换手（小数，0.0766=7.66%）
+  gross_per_period: number | null // 每期毛收益（label h 期前视口径，**不做年化**，仅作量级参考）
+  ann_cost: Record<string, number> // 年化成本（小数；键 "0.0040" 等，252 交易日/年）
+  cost_eaten: Record<string, number | null> // 成本吞噬比例 = 每期成本/每期毛收益（毛收益 ≤0 ⇒ null）
+}
+export interface TopKSensitivity {
+  rebalance_period: number
+  n_days: number
+  n_periods: number
+  trading_days: number
+  default_k: number | null
+  ks: number[]
+  rows: TopKSensitivityRow[]
+  note: string // 口径/免责说明（未考虑涨跌停、停牌、流动性冲击等）
 }
 export interface SingleFactorTestResult {
   id: string
@@ -235,7 +273,7 @@ export interface SingleFactorTestResult {
   nonzero_ratio: number | null // 非零比例
   is_binary: boolean // 是否 0/1 二值信号
   grouping: 'binary' | 'quantile' | null // 触发分组方式
-  quintile_ret: QuintileGroup[] | null // 5组分位平均收益（连续因子），识别U型/倒U型
+  quintile_ret: QuintileGroup[] | null // 分位平均收益（连续因子），识别U型/倒U型；组数=quantiles（默认 10）
   trigger: FactorTestGroupStats | null // 触发组（>0.5）未来N日收益
   not_trigger: FactorTestGroupStats | null // 未触发组（<=0.5）
   diff: number | null // 触发均值 - 未触发均值
@@ -259,6 +297,14 @@ export interface SingleFactorTestResult {
   // 事件研究（v1.18.7）：仅 0/1 二值信号且触发样本非空时有值
   // （后端在单因子测试里顺带计算，点「事件研究」按钮直接展示，无需二次提交）
   event_study?: EventStudyResult | null
+  // 连续因子「分位累计收益曲线」（v1.18.45）：与 quintile_ret 同源
+  quantile_curves?: QuantileCurves | null
+  // 连续因子「TopK 持仓期收益曲线 + 三档成本」（v1.18.45）：items[0]=默认档 K=10%
+  topk_curves?: TopKCurves | null
+  topk_curves_error?: string | null // 该段出错时的原因（不影响其余统计字段）
+  // 各 K 的换手 / 年化成本 / 成本吞噬比例（v1.18.45；与 topk_curves 同一批调仓日）
+  topk_sensitivity?: TopKSensitivity | null
+  topk_sensitivity_error?: string | null
 }
 export interface SingleFactorTestProgress {
   task_id: string

@@ -189,6 +189,36 @@ def _compute_ic_stats(pl: pd.DataFrame) -> Optional[dict]:
     }
 
 
+def _quantile_curves(dms: dict) -> Optional[dict]:
+    """分位**累计收益曲线**（十分位图数据）：把各分位的逐日截面均值序列 cumsum。
+
+    `dms` —— `{组号: 逐日截面均值 Series}`，与 `quintile_ret` 的 `mean_ret` **同源**
+    （同一次 `groupby(level="datetime")["LABEL"].mean()`），因此曲线与"分位收益"列自洽。
+
+    口径：取**各分组都有值的交易日**（`dropna`）后逐组 `cumsum`（与 `topk_curves` 的
+    无成本档同口径）；**多空 = 第 1 组 − 最后一组**（⚠ A 股空头收益拿不到，
+    **不可实现，仅作有效性参考**，前端须标注）。
+
+    返回 `{n_groups, dates, groups:[{quantile, cum}], long_short:{quantile:[1,N], cum}}`；
+    可用分组 < 2 或有效交易日 < 2 时返回 `None`（调用方按"无曲线"处理）。
+    """
+    if not dms or len(dms) < 2:
+        return None
+    mat = pd.DataFrame({int(q): dm for q, dm in dms.items()}).sort_index().dropna()
+    if len(mat) < 2:
+        return None
+    qs = [int(q) for q in mat.columns]
+    ls = (mat[qs[0]] - mat[qs[-1]]).cumsum()
+    return {
+        "n_groups": len(qs),
+        "dates": [pd.Timestamp(d).strftime("%Y-%m-%d") for d in mat.index],
+        "groups": [{"quantile": q, "cum": [round(float(x), 6) for x in mat[q].cumsum()]}
+                   for q in qs],
+        "long_short": {"quantile": [qs[0], qs[-1]],
+                       "cum": [round(float(x), 6) for x in ls]},
+    }
+
+
 # 事件研究（v1.18.7）：0/1 稀疏信号顺带计算的最长持有交易日
 EVENT_MAX_K = 40
 
@@ -292,6 +322,10 @@ def _test_one(
     exclude_stock_kcb: bool = False,   # 剔除科创板
     cancelled=None,  # 取消检查回调：返回 True 表示用户已取消，在重计算步骤间调用（可空）
     trig_index_out: Optional[list] = None,  # 出参：回传触发样本索引（供事件研究复用，可空）
+    quantiles: int = 10,               # 连续因子分位组数（默认 10=十分位；5=旧五分位，保留兼容）
+    rebalance_period: int = 5,         # TopK 持仓期曲线的调仓期（交易日）
+    topk_list: Optional[list] = None,  # 明细曲线要算的 K：≤1 视为「日均只数的百分比」（0.1=10%），
+    #                                   >1 视为只数；None ⇒ 只算默认档（10%）。默认档恒算且排在最前
 ) -> dict:
     """测试单个因子列（df 含 col 与 LABEL 两列）。
 
@@ -616,15 +650,18 @@ def _test_one(
             # lambda 里，下方 TopK 曲线又独立算一遍 ⇒ 同一次 226 万行组内排名算两遍（实测
             # item_s +1.6s）。现在显式算一次 `_rk`，`_q` 与 TopK 共用（数值完全不变：
             # `qcut` 的输入仍是同一列的名次）。
+            _qn = max(2, min(int(10 if quantiles is None else quantiles), 20))
+            # ↑ 分位组数（API 参数，默认 10=十分位；**不要写 `quantiles or 10`**，0 会被静默吞掉）
             tmp["_rk"] = tmp.groupby(level=dt_pos)[col].rank(method="first")
             tmp["_q"] = tmp.groupby(level=dt_pos)["_rk"].transform(
-                lambda x: pd.qcut(x, 5, labels=False, duplicates="drop") + 1
+                lambda x: pd.qcut(x, _qn, labels=False, duplicates="drop") + 1
             )
             tmp = tmp.dropna(subset=["_q"])
-            groups = []
+            groups, _q_dms = [], {}
             for q, g in tmp.groupby("_q"):
                 # 日截面：每天组内样本先取均值 → 对所有参与交易日再平均
                 dm = g.groupby(level=dt_pos)["LABEL"].mean()
+                _q_dms[int(q)] = dm          # 曲线与 `mean_ret` **同源**（同一次 groupby）
                 groups.append({
                     "quantile": int(q),
                     "count": int(len(g)),                        # 该组剔除后样本总数（观测数）
@@ -633,6 +670,8 @@ def _test_one(
                 })
             if len(groups) >= 2:
                 result["quintile_ret"] = groups
+                # 分位累计收益曲线（十分位图数据）：直接复用上面的逐日序列 cumsum，几乎零增量
+                result["quantile_curves"] = _quantile_curves(_q_dms)
             # ---- 连续因子：持仓期收益曲线（含三档成本）----------------------------
             # 纯算法在 `engine/cost_curves.py`（跨路径共用，**勿在此重写**）；本段只做
             # 「取现成序列 + 调纯函数 + 组装」：
@@ -643,7 +682,8 @@ def _test_one(
             try:
                 from app.engine.cost_curves import _topgroup_cost_curves
 
-                _REBAL_PERIOD = 5          # 调仓期（交易日）；待接线为 API 参数
+                # 调仓期（API 参数，默认 5 交易日；同样不用 `or` 兜底，0 由 API 校验拦下）
+                _REBAL = max(1, int(5 if rebalance_period is None else rebalance_period))
                 inst_pos = tmp.index.names.index("instrument")
                 # 日均有效只数（10% 默认档 + K 敏感度表的两档百分比共用，只算一次）
                 _med = float(tmp.groupby(level=dt_pos).size().median())
@@ -651,28 +691,62 @@ def _test_one(
                 top = tmp[tmp["_rk"] <= k10]
                 dm10 = top.groupby(level=dt_pos)["LABEL"].mean().dropna()
                 if len(dm10) >= 2:
-                    dts = list(dm10.index)
-                    # 「每日 → 当日 TopK 名单」**一次 groupby** 取出（原先在调仓日循环里
-                    # 逐日做 `index.get_level_values(...) == _dt` 全表扫描：242 次 × 22.5 万行
-                    # ≈ 5400 万次比较，实测 item_s +1.6s）。
-                    _sets = {_d: set(_g.index.get_level_values(inst_pos))
-                             for _d, _g in top.groupby(level=dt_pos, sort=True)}
-                    cur, hold_seq = None, []
-                    for _i, _dt in enumerate(dts):
-                        if _i % _REBAL_PERIOD == 0:       # 调仓日：重取 TopK，其余日沿用
-                            cur = _sets.get(_dt)
-                        hold_seq.append(cur)
-                    _ret = dm10.to_numpy(dtype=np.float64)
-                    cc = _topgroup_cost_curves(_ret, hold_seq, k10)
-                    # 自检①：无成本档必须与原曲线**逐位相同**（＝本段没改坏任何数值）
-                    if not np.array_equal(cc["curves"]["0.0000"], np.cumsum(_ret)):
-                        raise AssertionError("无成本档应等于 cumsum(逐日收益)")
+                    _dts = list(dm10.index)
+                    # K 清单：**默认档恒在最前**（= 十分位第 1 组，与分位曲线互验；
+                    # 也是 K 敏感度表自检的基准），其后是 `topk_list` 里用户点选的 K。
+                    # ≤1 视为「日均只数的百分比」（0.1 ⇒ 10%），>1 视为只数；
+                    # ⚠ 取整口径必须与 `k10` 一致（**截断 `int()`**，不用 `round`）——否则
+                    #   `0.1` 会算出 36 与默认档 35 并存（实测 API 层抓到），多出一个近似重复的 K。
+                    _ks = [k10]
+                    for _x in (topk_list or []):
+                        try:
+                            _v = float(_x)
+                        except (TypeError, ValueError):
+                            continue
+                        if not (_v > 0):
+                            continue
+                        _k = max(1, int(_med * _v)) if _v <= 1 else max(1, int(_v))
+                        if _k not in _ks:
+                            _ks.append(_k)
+                    _cc_default = None
+                    _items = []
+                    for _k in _ks[:8]:
+                        _sub = top if _k == k10 else tmp[tmp["_rk"] <= _k]
+                        if _k == k10:
+                            _dm = dm10                       # 默认档：日期轴即共享 `_dts`
+                        else:
+                            _dm = _sub.groupby(level=dt_pos)["LABEL"].mean().dropna()
+                            if len(_dm) < 2:
+                                continue
+                            # 非默认档对齐到共享日期轴；缺失日按 0 计（与该日空仓不计费一致）
+                            _dm = _dm.reindex(_dts).fillna(0.0)
+                        # 「每日 → 当日 TopK 名单」**一次 groupby** 取出（原先在调仓日循环里
+                        # 逐日做 `index.get_level_values(...) == _dt` 全表扫描：242 次 × 22.5 万行
+                        # ≈ 5400 万次比较，实测 item_s +1.6s）。
+                        _sets = {_d: set(_g.index.get_level_values(inst_pos))
+                                 for _d, _g in _sub.groupby(level=dt_pos, sort=True)}
+                        cur, hold_seq = None, []
+                        for _i, _dt in enumerate(_dts):
+                            if _i % _REBAL == 0:             # 调仓日：重取 TopK，其余日沿用
+                                cur = _sets.get(_dt)
+                            hold_seq.append(cur)
+                        _ret = _dm.to_numpy(dtype=np.float64)
+                        cc = _topgroup_cost_curves(_ret, hold_seq, _k)
+                        # 自检①：无成本档必须与原曲线**逐位相同**（＝本段没改坏任何数值）
+                        if not np.array_equal(cc["curves"]["0.0000"], np.cumsum(_ret)):
+                            raise AssertionError("无成本档应等于 cumsum(逐日收益)（K=%d）" % _k)
+                        if _k == k10:
+                            _cc_default = cc
+                        _items.append({
+                            "k": _k,
+                            "turnover": [round(float(x), 6) for x in cc["turnover"]],
+                            "curves": {kk: [round(float(x), 6) for x in vv]
+                                       for kk, vv in cc["curves"].items()},
+                        })
                     result["topk_curves"] = {
-                        "k": k10, "rebalance_period": _REBAL_PERIOD, "n": int(len(dts)),
-                        "dates": [pd.Timestamp(d).strftime("%Y-%m-%d") for d in dts],
-                        "turnover": [round(float(x), 6) for x in cc["turnover"]],
-                        "curves": {kk: [round(float(x), 6) for x in vv]
-                                   for kk, vv in cc["curves"].items()},
+                        "rebalance_period": _REBAL, "n": int(len(_dts)),
+                        "dates": [pd.Timestamp(d).strftime("%Y-%m-%d") for d in _dts],
+                        "items": _items,       # items[0] 恒为默认档（K=10%）
                     }
                     # ---- K 敏感度汇总表（换手 / 三档年化 / 成本吞噬比例）--------------
                     # 复用**同一份** `_rk`、**同一批**调仓日 ⇒ 与 `topk_curves` 是同一组合的
@@ -683,9 +757,9 @@ def _test_one(
                         from app.factors.topk_sensitivity import build_k_sensitivity
 
                         result["topk_sensitivity"] = build_k_sensitivity(
-                            tmp, dt_pos, inst_pos, dts, _REBAL_PERIOD,
+                            tmp, dt_pos, inst_pos, _dts, _REBAL,
                             median_daily=_med, default_k=k10,
-                            verify_turnover=cc["turnover"])
+                            verify_turnover=_cc_default["turnover"])
                     except Exception as _e2:      # 与 `event_study_error` 同一处理风格
                         result["topk_sensitivity_error"] = "%r @ %s" % (
                             _e2, __import__("traceback").format_exc().strip().splitlines()[-1])
@@ -815,6 +889,9 @@ def run_single_factor_tests(
     exclude_stock_kcb: bool = False,
     price_round: bool = True,
     warmup_days: Optional[int] = None,
+    quantiles: int = 10,
+    rebalance_period: int = 5,
+    topk_list: Optional[list] = None,
 ) -> Dict[int, list]:
     """多预测周期单因子测试：所有周期【共享一次特征加载】，再逐周期分别统计。
 
@@ -1085,6 +1162,9 @@ def run_single_factor_tests(
                 exclude_stock_kcb=exclude_stock_kcb,
                 cancelled=cancelled,
                 trig_index_out=trig_out,
+                quantiles=quantiles,
+                rebalance_period=rebalance_period,
+                topk_list=topk_list,
             )
             # 事件研究（0/1 信号顺带计算，v1.18.7）：稀疏信号按日配对会退化成单票
             # 收益序列（触发日只有 1 只票），须以「每次触发」为样本单位才有意义。

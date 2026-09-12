@@ -270,12 +270,14 @@ function verdictOf(r: TestResult): VerdictStats {
 }
 
 // 导出工作表1"因子指标"表头（列口径与界面表格一致：覆盖率/收益/差值/胜率/Q组 = ×100 百分数，IC/RankIC/ICIR/t = 原始小数）
-// Q1~Q5 收益：仅连续因子有（日截面 5 组分位收益）；"触发组日均/未触发组日均"：仅 0/1 信号有（对应界面"分位收益"列的双柱，
-// 即触发组 vs 未触发组的逐日截面收益均值）。两类分组口径不同故不混填 Q 列，避免"触发组与最低值组同列"的误读。
-const EXPORT_HEADERS = [
+// Q 组收益：仅连续因子有（日截面分位收益）；**列数由实际分位组数决定**（v1.18.45 起后端默认
+// 十分位 10 组，见请求参数 quantiles），至少保留旧的 Q1~Q5 列宽。"触发组日均/未触发组日均"：仅 0/1 信号有
+// （对应界面"分位收益"列的双柱，即触发组 vs 未触发组的逐日截面收益均值）。两类分组口径不同故不混填 Q 列，
+// 避免"触发组与最低值组同列"的误读。
+const exportHeaders = (qCols: number) => [
   '因子', '来源', '周期(天)', '公式', '覆盖率(%)', '信号', '触发数', '触发收益(%)', '未触发数', '未触发收益(%)',
   '差值(%)', '日差值(%)', 't(HAC)', '相对收益胜率(%)', '配对日数', 'p值',
-  'Q1收益(%)', 'Q2收益(%)', 'Q3收益(%)', 'Q4收益(%)', 'Q5收益(%)',
+  ...Array.from({ length: qCols }, (_, i) => `Q${i + 1}收益(%)`),
   '触发组日均(%)', '未触发组日均(%)',
   'IC', 'RankIC', 'ICIR', '结论', '事件中位数(%)',
 ]
@@ -747,7 +749,10 @@ export default function SingleFactorTestPanel({
       // CJS 模块的 namespace 兼容 default / 具名两种形态（不同打包/预构建环境下取 utils 都可靠）
       const mod: any = await import('xlsx')
       const XLSX = mod.default ?? mod
-      const aoa: (string | number)[][] = [EXPORT_HEADERS]
+      // Q 列数 = 实际分位组数（默认十分位 10；至少 5 列，避免 0/1 信号行的列数与历史不一致）
+      const qCols = Math.max(5, ...results.map((r) => r.quintile_ret?.length ?? 0))
+      const headers = exportHeaders(qCols)
+      const aoa: (string | number)[][] = [headers]
       for (const r of results) {
         const formula = r.source_formula || srcByKey.get(`${r.source}:${r.id}`) || r.expression || ''
         const horizon = r.horizon != null ? String(r.horizon) : '-'
@@ -755,15 +760,14 @@ export default function SingleFactorTestPanel({
         if (r.error) {
           aoa.push([
             r.name, r.source, horizon, formula,
-            dash, dash, dash, dash, dash, dash, dash, dash, dash, dash, dash, dash,
-            dash, dash, dash, dash, dash, dash, dash, dash, dash, dash,
+            ...Array(headers.length - 6).fill(dash),   // 前 4 列 + 末列"结论"放错误信息、再末列空
             `错误：${r.error}`,
           ])
           continue
         }
         const q = r.quintile_ret ?? []
-        const qCells = [dash, dash, dash, dash, dash]
-        for (const g of q) if (g.quantile >= 1 && g.quantile <= 5) qCells[g.quantile - 1] = fmt(g.mean_ret, 3)
+        const qCells = Array.from({ length: qCols }, () => dash as string)
+        for (const g of q) if (g.quantile >= 1 && g.quantile <= qCols) qCells[g.quantile - 1] = fmt(g.mean_ret, 3)
         // 0/1 信号的触发组/未触发组逐日截面收益均值（对应界面"分位收益"列双柱），连续因子无此分组故留空
         const dayPair = r.is_binary
           ? [fmt(r.daily_trig_mean, 3), fmt(r.daily_not_mean, 3)]
@@ -1155,9 +1159,11 @@ export default function SingleFactorTestPanel({
                 const { dT, kind: verdictKind, watchReason } = verdictOf(r)
                 const qr = r.quintile_ret ?? []
                 const maxAbs = qr.length > 0 ? Math.max(...qr.map((g) => Math.abs(g.mean_ret))) : 0
-                // 分位收益悬停：直接展示 5 组日截面收益（一行一组），最后一行汇总配对日数
-                const qrTip = qr.length
-                  ? '每日横截面分5组(1=最低值…5=最高值)，日截面平均收益：\n' +
+                // 分位收益悬停：逐组展示日截面收益（一行一组），最后一行汇总配对日数。
+                // 组数由后端 `quantiles` 参数决定（默认十分位 10 组），这里全部按实际组数渲染。
+                const qn = qr.length
+                const qrTip = qn
+                  ? `每日横截面分${qn}组(1=最低值…${qn}=最高值)，日截面平均收益：\n` +
                     qr.map((g) => `第${g.quantile}组: ${(g.mean_ret * 100).toFixed(2)}%`).join('\n') +
                     `\n配对日数：${qr[0]?.n_days ?? '-'}`
                   : ''
@@ -1394,7 +1400,7 @@ export default function SingleFactorTestPanel({
             IC = 逐日横截面 Pearson 相关均值，ICIR = 平均IC/IC标准差。表中 IC/RankIC/ICIR 均为原始小数（不加%），稳定性阈值 |ICIR|≥0.05（即×100后≥5，日频口径，市值为例0.1以上即为稳定负向）按同一口径判定；覆盖率/收益/差值为 ×100 百分比。
             0/1 信号的「有效✓」需<b>同时</b>满足四条：① 事件研究中位数 ≥0.50%；② 绝对收益胜率 ≥55%；③ <b>日配对超额 ≥ 门槛</b>（门槛 = max(0.5%, 0.025%×持有期)：20 日即 0.50%、40 日 1.00%）—— 0.5% 约合覆盖一次往返交易成本，0.025%/日 约合年化 6% 机会成本，避免 0.08% 这类噪声级超额被判有效；④ <b>日配对稳定</b>（|HAC t| ≥2 或 日胜率 ≥55%）。第③④条用于排除「典型触发赚钱、但整体跑不赢什么都不选 / 逐日无稳定超额」的信号。无基准（旧结果或基准计算失败）时不启用第③条，但第④条仍要求。
             0/1 信号的分位收益列显示"信号组 vs 非信号组"的逐日截面收益均值双柱（每天先算各组平均未来收益，再对所有交易日取均值，防信号聚集虚高），悬停可查看两组数值与配对日差。
-            分位收益：连续因子按每日横截面分 5 组（1=最低值组…5=最高值组），每组为日截面平均收益（每天先算组内均值、再对所有参与交易日取平均，与 0/1 双柱同口径，避免少数日子集中主导），柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益；勾选剔除开关时，分位样本先按剔除开关过滤再分组，悬停显示 5 组日截面收益与配对日数。
+            分位收益：连续因子按每日横截面分位（<b>默认十分位 10 组</b>，可选 5 组=旧口径），每组为日截面平均收益（每天先算组内均值、再对所有参与交易日取平均，与 0/1 双柱同口径，避免少数日子集中主导），柱状图可识别非线性关系（单调、U型、倒U型），绿=正收益、红=负收益；勾选剔除开关时，分位样本先按剔除开关过滤再分组，悬停显示各组日截面收益与配对日数。
             若出现"方向矛盾"：diff 为正但 IC/ICIR 稳定为负，说明信号由少数触发日主导，逐日横截面方向相反，慎用。
             若出现"时间集中"：diff 方向显著但按日配对检验（日均差值 t 值 / 相对收益胜率）不显著，说明总差值被少数交易日拉高，逐日看并无稳定超额（典型如暴跌抄底类信号），慎用。结论判定与提示中的 t 均为 Newey-West HAC 稳健 t。
             有效(反向)：连续因子高分位组收益显著更低（diff&lt;0）、IC/ICIR 稳定为负且方向一致，说明因子与未来收益负相关，反向使用（因子值低时买入）有效，常见于市值、流动性等负向因子。

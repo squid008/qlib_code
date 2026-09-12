@@ -170,6 +170,13 @@ class SingleFactorTestRequest(BaseModel):
     #   QLIB_SFT_WARMUP_DAYS（默认 250 ≈1 年）；0=关闭。长回看/动态窗口公式（DYN_*/
     #   BARSCOUNT/HHVBARS+Ref 嵌套）扩展天数无法静态推断，预热后区间首日即有收敛值；
     #   出口仍裁剪回 [start_date, ...]，固定窗口公式结果不变。
+    # ---- 连续因子「分位 / 持仓期收益曲线」参数（v1.18.45 起由 API 传入，不再硬编码）----
+    quantiles: int = 10                   # 分位组数（默认 10=十分位；5=旧五分位，保留兼容）
+    rebalance_period: int = 5             # TopK 持仓期曲线的调仓期（交易日）
+    topk_list: Optional[List[float]] = None
+    #   明细曲线要算的 K 列表：**≤1 视为「日均有效只数的百分比」**（0.1 = 10%），>1 视为只数；
+    #   与默认档**同一取整口径**（`int(日均中位只数 × 百分比)`，截断）⇒ 0.1 就是默认档。
+    #   None/空 ⇒ 只算默认档（10%）。默认档（= 十分位第 1 组）**恒算且排在 items[0]**。
 
 
 # ---------- 单因子测试异步任务：POST 提交返回 task_id，GET 轮询进度/结果 ----------
@@ -335,6 +342,34 @@ def single_factor_test(req: SingleFactorTestRequest):
     parallel = bool(req.parallel) and len(horizons) > 1
     n_h = len(horizons)
 
+    # 分位/曲线参数校验（v1.18.45：由 API 传入，不再硬编码；默认值与历史行为一致）
+    # ⚠ 判空必须用 `is None`，**不能写 `x or 默认`** —— 那样 `0` 会被静默当成默认值，
+    #   非法参数便绕过校验（实测 API 层抓到：rebalance_period=0 被当成 5 放行）。
+    try:
+        quantiles = int(10 if req.quantiles is None else req.quantiles)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"分位组数必须为整数：{req.quantiles!r}")
+    if not (2 <= quantiles <= 20):
+        raise HTTPException(status_code=400, detail=f"分位组数需在 2~20 之间：{quantiles}")
+    try:
+        rebalance_period = int(5 if req.rebalance_period is None else req.rebalance_period)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"调仓期必须为整数：{req.rebalance_period!r}")
+    if not (1 <= rebalance_period <= 250):
+        raise HTTPException(status_code=400, detail=f"调仓期需在 1~250 个交易日之间：{rebalance_period}")
+    topk_list: List[float] = []
+    if req.topk_list:
+        if len(req.topk_list) > 8:
+            raise HTTPException(status_code=400, detail=f"明细曲线最多点选 8 个 K：{len(req.topk_list)}")
+        for v in req.topk_list:
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail=f"K 必须为数值：{v!r}")
+            if not (fv > 0):
+                raise HTTPException(status_code=400, detail=f"K 必须为正数：{fv}")
+            topk_list.append(fv)
+
     # ST 剔除依赖 is_st 标签（tools/dump_states.py 从 E:/rq bundle 同步）：本机无 dump 时明确报错，
     # 避免"勾了但没剔除"的静默错误（涨停/跌停判定无标签时自动回退倒推，不受影响）
     if req.exclude_st_t1:
@@ -460,6 +495,9 @@ def single_factor_test(req: SingleFactorTestRequest):
                     suspend_remove=req.suspend_remove,
                     price_round=req.price_round,
                     warmup_days=req.warmup_days,
+                    quantiles=quantiles,
+                    rebalance_period=rebalance_period,
+                    topk_list=topk_list,
                 )
                 with lock:
                     for h, rows in (res or {}).items():
