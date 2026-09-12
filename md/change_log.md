@@ -3,6 +3,42 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.41] - 2026-09-12
+
+### Performance
+- **T2 待办 #5：IC/RankIC 逐日 `groupby-apply` 改向量化分组求和，连续因子批量端到端 −17.6%（数值零变化）**（`engine/analysis.py::_compute_ic`，新增 `_group_corr`）：
+  - **定位（新增 `ai_test/probe_stat_stage.py`：整轮 cProfile + 给 `panel_features`/`_compute_ic` 各挂累计计时）**：4 个市值类连续因子 / csi300（真 459 只）/ 2021-06~2026-06 —— 整轮 **16.69s** 里 **特征加载段只 0.84s（5.0%）**、**统计阶段 15.85s（95.0%）**，而统计阶段里 **IC/RankIC 段 `_compute_ic` 独占 9.02s（54.1% of wall，8 次调用）**。⇒ **连续因子的主战场不在特征计算，在统计阶段**（0/1 信号已跳过 IC，这正是 0/1 因子明显更快的原因）。
+  - **原实现**：`df.groupby(level="datetime", group_keys=False).apply(lambda x: x["score"].corr(x["label"][, method="spearman"]))` —— 1211 天 × 4 因子 = **4844 次 `scipy.stats.spearmanr`**（内部两次 rank + `corrcoef`）+ 9688 次 `corrcoef`，每天一次 Python 级 apply 且每次构造两个 Series；整轮 cProfile 显示 pandas 包装开销惊人（`__setattr__` 15.6 万次、`Series.__init__` 2.9 万、`sanitize_array` 5.4 万、`Index.__new__` cum 2.0s）。
+  - **改法**：① 先做**成对** dropna（`score`/`label` 任一为 NaN 的行剔除，**与原实现同序**）；② `pd.factorize(..., sort=True)` 编码交易日（保持与原 `groupby` 相同的**升序**分组顺序 ⇒ `points` 顺序不变）；③ `np.bincount` 分组求和算 Pearson（**先求组均值、再中心化**，与 pandas `nanops.nancorr` 同构）；④ RankIC = **组内 `groupby.rank()` 后走同一套**（pandas 自己的 spearman 实现就是「先 rank 再 pearson」）。
+  - **⚠ 三个坑（都靠对拍抓到，详见下）**：
+    1. **必须「成对」dropna 后再算秩** —— 若只按某一列剔 NaN，该列秩位会变、`rank_ic` 出错。**脏面板用例实测 20/20 天不同**（如 0.148331 vs 0.148344）；而**真实面板上这个 bug 不暴露**（因真实数据里 score/label 的 NaN 恰好同现）——**这类"只在脏数据上暴露"的 bug 必须靠专门的脏夹具抓**。
+    2. **不要改用 `SeriesGroupBy.corr` / `DataFrameGroupBy.corr`** —— 它们内部走 `_python_apply_general` + 逐组 `_align_for_op`，实测**比原 apply 慢 20~44 倍**（0.05×/0.02×）。这一条与「用 pandas 内建一定更快」的直觉相反，是本轮最大的认知修正。
+    3. `groupby.rank()` 的 `na_option` 默认 `keep`，与非 NaN 成对语义不同，故不能省 dropna。
+  - **微基准（新增 `ai_test/bench_ic.py` + `ai_test/dump_ic_fixture.py` 抓真实夹具 541987×2 / 1211 天，三套夹具 × 4 实现对拍 + 交错取比值中位）**：
+    | 实现 | 真实面板正确性 | 脏面板/边界 | 比值中位 |
+    |---|---|---|---|
+    | old（逐日 apply） | 基准 | 基准 | 1.00× |
+    | `SeriesGroupBy.corr` | ✅ | ❌ rank_ic 20/20 天错 | **0.02×（慢 44×）** |
+    | `DataFrameGroupBy.corr` | ✅ | ❌ 同上 | **0.05×（慢 20×）** |
+    | numpy bincount（N3） | ✅ | ✅ | **3.09×** |
+    | **★ 生产 `_compute_ic`** | **✅** | **✅** | **2.42~3.09×** |
+  - **⚠ 测量方法（本轮又一课）**：cProfile 口径会**给旧实现注水** —— 旧路径整轮 2000 万次 pandas 调用被逐调用计费，故 cProfile 显示「IC 段 −63%」但「wall 只 −11%」，两者自相矛盾。**必须用不挂 cProfile 的真实墙钟**（`profile_feature_load.py --no-profile --repeat N`）。
+  - **实测（真实墙钟，3 轮，同窗口，无 cProfile）**：
+    | | run1（冷） | run2（热） | run3（热） |
+    |---|---|---|---|
+    | 旧 | 13.46s | **11.90s** | 12.10s |
+    | 新 | 10.64s | **9.48s** | 10.30s |
+    ⇒ 热轮 **12.00s → 9.89s（−2.11s，−17.6%）**、冷轮 **13.46s → 10.64s（−21%）**，**区间完全不重叠**。
+    （cProfile 口径下 IC 段本身 9.24s → 3.37s。）
+  - **验证（四重）**：① `ai_test/bench_ic.py` **三套夹具（真实 1211 天 / 脏面板含 NaN·并列·常量日·±inf / 边界单样本·全并列）全部与旧实现一致**（`points`/`mean_ic`/`icir`/`mean_rank_ic`/`rank_icir`）；② `backend/tests` **180 passed**；③ **API 回归 `regress` → `IC=−0.004751 RankIC=0.002204`，与 v1.18.24 起的记录逐位一致**（且其 wall 6.07s → 4.03s）；④ 上文真实墙钟 A/B。
+  - **附带收益**：`_compute_ic` 同时被**回测 IC 分析**（`engine/qlib_engine.py`）与**单因子测试**（`factors/single_test.py`）共用 ⇒ 两处一起提速。
+- 版本 1.18.40 → 1.18.41。
+
+### Notes
+- 本次只动 `engine/analysis.py` 的 `_compute_ic`（+新增 `_group_corr`）；特征计算/表达式内核/`panel_expr.py`/`ops_ext.py` **未动**。
+- **方法论沉淀**：① 测 ≲5% 的改动用「同进程成对 + 交替顺序」；**测这类大改动仍要看真实墙钟，别信 cProfile 的绝对秒**（它按调用次数抽税，Python 调用多的一方被系统性惩罚）。② **脏数据夹具不可省**：本轮 N1/N2 在真实面板上"正确"，只有脏面板才暴露成对 dropna 缺失。
+- 遗留：`_seg_roll`（#6，趋势顶底 37.5%）｜读盘字段级合并（#7，全 A 冷读 ~10.8s）｜`_rightmost_bars_seg`（10.7%）｜`_rightmost_arg_best`（2.6%）。
+
 ## [1.18.40] - 2026-09-12
 
 ### Performance

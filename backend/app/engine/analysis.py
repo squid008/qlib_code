@@ -8,6 +8,7 @@ import threading
 from collections import OrderedDict
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 
@@ -223,21 +224,66 @@ def _compute_layers(pred_label, N: int = 5, benchmark_ret: Optional[dict] = None
     return points
 
 
+def _group_corr(x: np.ndarray, y: np.ndarray, codes: np.ndarray, ng: int) -> np.ndarray:
+    """按 `codes` 分组求 Pearson 相关（组内样本 <2 或任一侧零方差 → NaN）。
+
+    与 pandas `nanops.nancorr(method="pearson")` **同构**：先求组均值、再做中心化
+    （`Σdxdy / sqrt(Σdx²·Σdy²)`），故数值行为一致；分组求和用 `np.bincount`，**没有
+    逐组 Python 循环**。调用方须保证 x/y 内无 NaN（`_compute_ic` 已先做成对 dropna）。
+    """
+    cnt = np.bincount(codes, minlength=ng).astype(np.float64)
+    with np.errstate(all="ignore"):
+        mx = np.bincount(codes, weights=x, minlength=ng) / cnt
+        my = np.bincount(codes, weights=y, minlength=ng) / cnt
+    dx = x - mx[codes]
+    dy = y - my[codes]
+    with np.errstate(all="ignore"):
+        sxy = np.bincount(codes, weights=dx * dy, minlength=ng)
+        sxx = np.bincount(codes, weights=dx * dx, minlength=ng)
+        syy = np.bincount(codes, weights=dy * dy, minlength=ng)
+        return sxy / np.sqrt(sxx * syy)      # 0/0 与 x/0 → NaN/±inf，交由上层 dropna
+
+
 def _compute_ic(pred_label):
-    """计算 IC / RankIC 时序 + 平均IC + ICIR。返回 dict 或 None。"""
+    """计算 IC / RankIC 时序 + 平均IC + ICIR。返回 dict 或 None。
+
+    v1.18.41 性能：原实现是**逐日** `groupby(level="datetime").apply(lambda x: x["score"]
+    .corr(x["label"][, method="spearman"]))` —— 每天一次 Python 级 apply + 每次构造两个
+    Series；csi300 实测 8 次调用共 **9.02s（占整轮 54.1%）**。改为：
+      ① 先做成对 dropna（`score`/`label` 任一为 NaN 的行剔除，**与原实现同序**）；
+      ② `pd.factorize(..., sort=True)` 把交易日编码成组号（保持与原 `groupby` 相同的
+         **升序**分组顺序 ⇒ `points` 顺序不变）；
+      ③ 用 `np.bincount` 分组求和算 Pearson；RankIC = **组内 rank 后同一套**（pandas 自己
+         的 spearman 实现就是「先 rank 再 pearson」，故逐位一致）。
+    实测（`ai_test/bench_ic.py`，真实面板 541987×1211 天，交错 3 轮）：**2.99×**，
+    且 `points` / `mean_ic` / `icir` / `mean_rank_ic` / `rank_icir` 与旧实现一致。
+
+    ⚠ **三个坑（都靠对拍抓到）**：
+      · 必须**成对** dropna 后再算秩 —— 若只剔除某一列的 NaN，该列秩位会变，rank_ic 出错
+        （脏面板用例实测 20/20 天不同）。
+      · `groupby.rank()` 的 `na_option` 默认 `keep`，与非 NaN 成对语义不同，故不能省 dropna。
+      · 不要改用 `SeriesGroupBy.corr` / `DataFrameGroupBy.corr` —— 它们内部走
+        `_python_apply_general` + 逐组 `_align_for_op`，实测比原 apply **慢 20~44 倍**。
+    """
     if pred_label is None or len(pred_label) == 0:
         return None
-    df = pred_label.copy()
-    df = df.dropna(subset=["score", "label"])
-    if df.empty:
-        return None
+    df = pred_label
     try:
-        ic = df.groupby(level="datetime", group_keys=False).apply(
-            lambda x: x["score"].corr(x["label"])
-        ).dropna()
-        ric = df.groupby(level="datetime", group_keys=False).apply(
-            lambda x: x["score"].corr(x["label"], method="spearman")
-        ).dropna()
+        m = df["score"].notna().to_numpy() & df["label"].notna().to_numpy()
+        if not m.all():
+            df = df[m]
+        if len(df) == 0:
+            return None
+        codes, uniq = pd.factorize(df.index.get_level_values("datetime"), sort=True)
+        ng = len(uniq)
+        ki = pd.Index(uniq, name="datetime")
+        ic = pd.Series(_group_corr(df["score"].to_numpy(dtype=np.float64),
+                                   df["label"].to_numpy(dtype=np.float64),
+                                   codes, ng), index=ki).dropna()
+        rk = df[["score", "label"]].groupby(level="datetime").rank()
+        ric = pd.Series(_group_corr(rk["score"].to_numpy(dtype=np.float64),
+                                    rk["label"].to_numpy(dtype=np.float64),
+                                    codes, ng), index=ki).dropna()
     except Exception:
         return None
     if len(ic) == 0:
