@@ -3,6 +3,28 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.40] - 2026-09-12
+
+### Performance
+- **T2 第 3 刀（第 2 步）：DYN 窗口几何改「全程原地写」，几何 1.78×，端到端 ≈ −5.7%**（`factors/ops_ext.py` 新增 `_dyn_geom` / `_arange_cached`，四处查询入口改调用；**数值零变化**）：
+  - **定位（新增 `ai_test/bench_query.py`，逐步计时）**：单次 DYN 查询 291ms 里 **~200ms 是「窗口几何」**（`_win_lens_vec` 50 + `minimum` 37 + `log2+floor+astype` 51 + `idx-lens+1` 27 + `idx-seg_start+1` 22 + `1<<js` 9），而几何**只依赖 `(nvals, seg_start, n)`**；且每个 pass 实测 3.2 ns/元素 —— **远低于流式带宽**，指向**分配**而非计算。
+  - **真因**：原实现是四行链式表达式，逐条各分配一个 n 长临时数组（`where/floor/astype/maximum/(idx-seg_start+1)/minimum/log2/floor/astype/arange/(1<<js)/(idx-lens+1)` 共 **11 个**，n=3.17M 时 ≈275MB；整条查询约 17 个 ≈425MB）。
+  - **改法**：抽出 `_dyn_geom(nvals, seg_start, n) -> (js, l1, l2)`，**全程 `out=` 原地写**，只用 5 个缓冲（mask/A/B/C/D）；`np.arange` 走 `_arange_cached`（面板求值里 n 固定，8ms/次 → 0）；`fmin/fmax` 合并写回第一个 gather 的结果（`out=`）再省一次分配。四处入口（`_dyn_rmq_vec` / `_dyn_rmq_vec_seg` / `_dyn_arg_idx_vec` / `_dyn_arg_idx_vec_seg`）各缩成 3 行。
+  - ⚠ **`maximum(N, 1)` 必须在转 int 之后**（与 `_win_lens_vec` 同序）：`floor(±inf)` 转 int64 会得到 `INT64_MIN`，若先在浮点上取 max 再转，会留下 `INT64_MIN` 而从 `minimum(N, i-seg_start+1)` 里漏出来 → 语义错。`np.copyto(C, A, casting="unsafe")` 与 `astype(np.int64)` 是同一 C 转换路径，故逐位一致。
+  - **两个被证否的假设**（都做了基准才否掉）：① `js` 用 `np.frexp` 取指数 —— **更慢**（106.9 vs 31.5ms，`log2` 是 SIMD 向量化的）；② `st[js, pos]` 改「按 js 分组后取单层」—— **更慢 3×**（155.6 vs 49.6ms，逐层布尔掩码的开销更大）；③ `np.searchsorted` 求 js 也**更慢**（57 vs 51ms）。`st.ravel()[js*n+pos]` 与 2D 花式索引持平（49.2 vs 49.6ms）。
+  - **实测（⚠ 关键方法：端到端 A/B 测不出来）**：本次改动在 `CWH_MIX_D_PCT_R40`/csi1000 上只值 ~1s，而大池单进程墙钟跑间抖动 **±18%（≈±4s）** —— 3 轮 A/B 区间必然重叠（新 22.56/23.91/27.05 vs 旧 21.99/24.66/25.61，**无法分辨**）。故改用**同进程成对测量**（新增 `ai_test/probe_dyn_geom_ab.py`）：patch `_dyn_geom`，每次调用**既跑新实现也跑旧内联链的复刻**并**逐次交替先后顺序** ⇒ 抖动抵消：
+    - 16 次调用：新 **1.669s** / 旧 **2.976s** ⇒ **几何 1.78×**（每次比值 1.46~2.21，全部 >1）
+    - 折算到本次 wall 23.11s：**省 1.31s ≈ 5.66%**
+    - 且顺带在**真实数据**上逐位校验 `js/l1/l2` 三条输出：**0 次不一致**
+  - **验证（四重）**：① `ai_test/test_dyn_argmax.py` **1016 例 0 失败**（含建表新 vs 旧逐位、算子 vs 朴素逐位置参考、段感知 vs 逐段独立）；② `backend/tests` **180 passed**；③ 快照 `--tag dyn40 --compare arith2` → **18 列全部 `exact=True`**；④ 上述成对测量 + 真实数据逐位校验。
+  - ⚠ **`_arange_cached` 是共享只读数组**（各调用点只把 idx 当输入、从不写入），故进程内共享安全。
+- 版本 1.18.39 → 1.18.40。
+
+### Notes
+- 本次只动 `ops_ext.py` 的 DYN 查询入口与新增两个辅助函数；`_build_sparse` / `_build_argmax_sparse` / `_rightmost_bars_seg` / `_rightmost_arg_best` / `_win_lens_vec` / `panel_expr.py` **未动**。
+- **方法论沉淀**：大池单进程端到端墙钟抖动 ±18%，**凡是 ≲5% 的改动都必须用「同进程成对 + 交替顺序」测**（把新旧两版都写在探针里、同一份真实数据上各跑一遍），否则会被噪声吞掉。
+- 遗留：`_rightmost_bars_seg`（10.7%）｜`_rightmost_arg_best`（2.6%，**同样的 gather 模式，可套 v1.18.39 的值表改法**）｜`_seg_roll`（6.3~9.7%）｜DYN 查询里剩下的 2 次 gather + fmin（~96ms/次）。
+
 ## [1.18.39] - 2026-09-12
 
 ### Performance

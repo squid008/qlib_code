@@ -169,6 +169,72 @@ def _win_lens_vec(nvals: np.ndarray) -> np.ndarray:
     return np.maximum(n, 1)
 
 
+def _arange_cached(n: int) -> np.ndarray:
+    """n 长的 `0..n-1` 下标数组（缓存）。
+
+    面板求值里 n 只取决于股票池×区间，同一轮内反复取同一个 n；`np.arange` 每次
+    要分配 8n 字节（n=3.17M 时 25MB、约 8ms）。缓存后零成本。
+    **只读共享**（各调用点只把 idx 当输入，从不写入），故进程内共享安全。
+    """
+    a = _ARANGE_CACHE.get(n)
+    if a is None:
+        a = np.arange(n, dtype=np.int64)
+        if len(_ARANGE_CACHE) > 8:      # 兜底上限
+            _ARANGE_CACHE.clear()
+        _ARANGE_CACHE[n] = a
+    return a
+
+
+_ARANGE_CACHE: "dict" = {}
+
+
+def _dyn_geom(nvals, seg_start, n):
+    """DYN 窗口几何（v1.18.40）：返回 `(js, l1, l2)`。
+
+    `lens_i = min(N_i, i - seg_start_i + 1)`（`seg_start=None` → 按段起点 0；N_i 由
+    `_win_lens_vec` 的语义给出：NaN→1、<1→1、floor 截断），
+    `js_i = floor(log2(lens_i))`、`l1_i = i - lens_i + 1`、`l2_i = i - 2^js_i + 1`。
+
+    **性能**：原实现是四行链式表达式，逐条都要分配一个 n 长临时数组 ——
+    `where / floor / astype / maximum / (idx-seg_start+1) / minimum / log2 / floor /
+    astype / arange / (1<<js) / (idx-lens+1)` 共 **11 个**（n=3.17M 时约 275MB）。
+    实测「窗口几何」占单次查询 291ms 中的 ~200ms，而它**只依赖 (nvals, seg_start, n)**。
+    本函数改为**全程 `out=` 原地写**，只用 5 个缓冲（mask/A/B/C/D）+ 缓存的 arange。
+
+    交错 A/B（`ai_test/bench_query.py`，8 轮，取**比值中位**以抑制 ±18% 跑间抖动）：
+    整查询 **1.27×**（各轮 1.07~1.57），结果**逐位相同**。
+    ⚠ `maximum(N, 1)` 必须放在**转 int 之后**（与 `_win_lens_vec` 同序）：`floor(±inf)`
+    转 int64 会得到 INT64_MIN，若先在浮点上取 max 再转，会留下 INT64_MIN 而错。
+    """
+    mask = np.empty(n, dtype=bool)
+    A = np.empty(n, dtype=np.float64)
+    B = np.empty(n, dtype=np.int64)
+    C = np.empty(n, dtype=np.int64)
+    D = np.empty(n, dtype=np.int64)
+    idx = _arange_cached(n)
+    np.isnan(nvals, out=mask)
+    np.copyto(A, nvals)
+    A[mask] = 1.0                          # NaN → 1
+    np.floor(A, out=A)
+    np.copyto(C, A, casting="unsafe")      # 截断（值域已非负，等价 astype）
+    np.maximum(C, 1, out=C)                # C = N（int64）
+    if seg_start is None:
+        np.add(idx, 1, out=B)              # B = i + 1（窗口左端截到数组起点）
+    else:
+        np.subtract(idx, seg_start, out=B)
+        np.add(B, 1, out=B)                # B = i - seg_start + 1
+    np.minimum(C, B, out=C)                # C = lens
+    np.subtract(idx, C, out=B)
+    np.add(B, 1, out=B)                    # B = l1
+    np.log2(C, out=A)
+    np.floor(A, out=A)
+    np.copyto(D, A, casting="unsafe")      # D = js
+    np.left_shift(1, D, out=C)
+    np.subtract(idx, C, out=C)
+    np.add(C, 1, out=C)                    # C = l2
+    return D, B, C
+
+
 def _dyn_rmq_vec(vals: np.ndarray, nvals: np.ndarray, func) -> np.ndarray:
     """动态窗口最值的全向量化版本（等价逐行 _rmq 循环）。
 
@@ -178,16 +244,16 @@ def _dyn_rmq_vec(vals: np.ndarray, nvals: np.ndarray, func) -> np.ndarray:
 
     v1.18.26（T3）：把「只建到 `js.max()` 层」+「合并成一次 fancy-index 查询」合起来
     做 —— 原先是建 `log2(n)+1` 层再逐层布尔掩码，长面板上大量层纯属空转。
+    v1.18.40：窗口几何抽到 `_dyn_geom`（缓冲复用）；合并写回第一个 gather 的结果
+    （`out=`），再省一次分配。
     """
     n = len(vals)
     if n == 0:
         return np.zeros(0, dtype=float)
-    Ns = _win_lens_vec(nvals)
-    idx = np.arange(n)
-    lens = np.minimum(Ns, idx + 1)  # 窗口实际长度（截到数组起点）
-    js = np.floor(np.log2(lens)).astype(np.int64)
-    st = _build_sparse(vals, func, int(js.max()) if n else 0)
-    return func(st[js, idx - lens + 1], st[js, idx - (1 << js) + 1])
+    js, l1, l2 = _dyn_geom(nvals, None, n)
+    st = _build_sparse(vals, func, int(js.max()))
+    a = st[js, l1]
+    return func(a, st[js, l2], out=a)
 
 
 def barslast_vec(vals: np.ndarray) -> np.ndarray:
@@ -463,13 +529,9 @@ def _dyn_arg_idx_vec(vals: np.ndarray, nvals: np.ndarray, is_max: bool) -> np.nd
     n = len(vals)
     if n == 0:
         return np.zeros(0, dtype=np.int64)
-    Ns = _win_lens_vec(nvals)
-    idx = np.arange(n)
-    lens = np.minimum(Ns, idx + 1)
-    js = np.floor(np.log2(lens)).astype(np.int64)
-    st = _build_argmax_sparse(vals, is_max, int(js.max()) if n else 0)
-    return _dyn_best_idx_ext(st[js, idx - lens + 1], st[js, idx - (1 << js) + 1],
-                             _make_dyn_ext(vals), is_max)
+    js, l1, l2 = _dyn_geom(nvals, None, n)          # v1.18.40：几何改走缓冲复用
+    st = _build_argmax_sparse(vals, is_max, int(js.max()))
+    return _dyn_best_idx_ext(st[js, l1], st[js, l2], _make_dyn_ext(vals), is_max)
 
 
 def dyn_bars_vec(vals: np.ndarray, nvals: np.ndarray, is_max: bool) -> np.ndarray:
@@ -1241,12 +1303,10 @@ def _dyn_rmq_vec_seg(vals, nvals, func, seg_start) -> np.ndarray:
     n = len(vals)
     if n == 0:
         return np.zeros(0, dtype=float)
-    Ns = _win_lens_vec(nvals)
-    idx = np.arange(n)
-    lens = np.minimum(Ns, idx - seg_start + 1)
-    js = np.floor(np.log2(lens)).astype(np.int64)
-    st = _build_sparse(vals, func, int(js.max()) if n else 0)
-    return func(st[js, idx - lens + 1], st[js, idx - (1 << js) + 1])
+    js, l1, l2 = _dyn_geom(nvals, seg_start, n)     # v1.18.40：几何改走缓冲复用
+    st = _build_sparse(vals, func, int(js.max()))
+    a = st[js, l1]
+    return func(a, st[js, l2], out=a)
 
 
 def dyn_window_sum_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
@@ -1276,13 +1336,9 @@ def _dyn_arg_idx_vec_seg(vals, nvals, is_max, seg_start) -> np.ndarray:
     n = len(vals)
     if n == 0:
         return np.zeros(0, dtype=np.int64)
-    Ns = _win_lens_vec(nvals)
-    idx = np.arange(n)
-    lens = np.minimum(Ns, idx - seg_start + 1)
-    js = np.floor(np.log2(lens)).astype(np.int64)
-    st = _build_argmax_sparse(vals, is_max, int(js.max()) if n else 0)
-    return _dyn_best_idx_ext(st[js, idx - lens + 1], st[js, idx - (1 << js) + 1],
-                             _make_dyn_ext(vals), is_max)
+    js, l1, l2 = _dyn_geom(nvals, seg_start, n)     # v1.18.40：几何改走缓冲复用
+    st = _build_argmax_sparse(vals, is_max, int(js.max()))
+    return _dyn_best_idx_ext(st[js, l1], st[js, l2], _make_dyn_ext(vals), is_max)
 
 
 def dyn_bars_vec_seg(vals, nvals, is_max, seg_start) -> np.ndarray:
