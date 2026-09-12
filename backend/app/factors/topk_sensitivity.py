@@ -33,6 +33,8 @@ from app.engine.cost_curves import (TRADING_DAYS_PER_YEAR, _annualize_cost,
 BASE_KS = (1, 3, 5, 10, 20, 50, 100, 200)     # 固定候选（只数）；另加 10%/20% 两档
 NOTE = ("简化估算：未考虑涨跌停、停牌、流动性冲击；成本按调仓期扣、只扣实际调仓的股票；"
         "首期建仓不计费；K=1/3 仅供边界参考。"
+        "⚠ 本表按**固定持仓只数 K**（同一方向：超额收益最强分位组所在的那一端）计算；"
+        "默认档（最强分位组）是**逐日等分**、只数逐日变化，与固定 K 略有差异（实测成员中位差 4 只）。"
         "⚠ `gross_per_period` 是 **label（h 期前视）口径**的每期累加毛收益，"
         "**不是**可年化的真实收益 ⇒ `cost_eaten` 只作量级参考，须与曲线同口径解读。")
 
@@ -45,20 +47,23 @@ def k_candidates(median_daily):
 
 def build_k_sensitivity(tmp, dt_pos, inst_pos, dts, rebalance_period,
                         median_daily=None, default_k=None, verify_turnover=None,
-                        rates=(0.0, 0.004, 0.008),
+                        rk_col="_rk", rates=(0.0, 0.004, 0.008),
                         trading_days=TRADING_DAYS_PER_YEAR):
     """生成「K 敏感度汇总表」。
 
     入参
     ----
-    `tmp`     —— 面板 DataFrame，**含 `_rk` 列**（组内名次，1=最好）与 `LABEL` 列；
+    `tmp`     —— 面板 DataFrame，含名次列（**1 = 该端最好**）与 `LABEL` 列；
                  索引必须是 `MultiIndex`（datetime, instrument），且已按剔除开关过滤。
     `dt_pos` / `inst_pos` —— `datetime` / `instrument` 在索引名里的位置。
     `dts`     —— **调仓日序列**（即 `topk_curves` 的日期轴；逐调仓期在 `dts[0::rebalance_period]`）。
     `rebalance_period` —— 调仓期（交易日）。
     `median_daily` —— 日均有效只数（用于定 10%/20% 两档；`None` 则现算）。
     `default_k` —— 默认档（会被 `verify_turnover` 钉住，也回传给前端做高亮）。
-    `verify_turnover` —— **已上线的 `topk_curves["turnover"]`**（逐日序列）；给了就做**逐位**自检。
+    `verify_turnover` —— **固定 K 档明细的 `turnover`**（逐日序列）；给了就做**逐位**自检。
+    `rk_col`  —— 名次列名，默认 `"_rk"`。**方向由此列决定**：调用方按「超额收益最强的
+                 分位组在哪一端」传 `"_rk"`（低分端）或镜像列 `"_rkd"`（高分端），
+                 这样本表与默认档明细**同一方向**（否则会去分析最弱的那一端）。
 
     返回（JSON-ready；收益/成本均为**小数**，`0.0119` = 1.19%）
     ----
@@ -97,7 +102,7 @@ def build_k_sensitivity(tmp, dt_pos, inst_pos, dts, rebalance_period,
         ok = dp >= 0
         rb = ok & ((dp % rebal) == 0)
         rank_mat[dp[rb] // rebal, np.asarray(idx.codes[inst_pos])[rb]] = \
-            tmp["_rk"].to_numpy(dtype=np.float64)[rb]
+            tmp[rk_col].to_numpy(dtype=np.float64)[rb]
     else:
         dp = np.zeros(len(tmp), dtype=np.int64)
         ok = np.zeros(len(tmp), dtype=bool)
@@ -114,7 +119,7 @@ def build_k_sensitivity(tmp, dt_pos, inst_pos, dts, rebalance_period,
 
     # ---- 3. 各 K 的「每期毛收益」（label 口径；只用于算「成本吞噬比例」）------------
     lab = tmp["LABEL"].to_numpy(dtype=np.float64)
-    rk = tmp["_rk"].to_numpy(dtype=np.float64)
+    rk = tmp[rk_col].to_numpy(dtype=np.float64)
     valid = np.isfinite(lab) & ok
     n_days = len(dts)
     gross_pp = []

@@ -82,7 +82,11 @@ def _topgroup_cost_curves(period_ret, holdings, n_hold, rates=(0.0, 0.004, 0.008
 
     `period_ret` —— 逐期毛收益（**按调仓期**的序列，或逐日序列但只在调仓期换手）；
     `holdings`  —— 与之对齐的**在手持仓**（list/set，逐期或逐日；某期为空集 ⇒ 不计费）；
-    `n_hold`    —— 目标持仓只数（换手分母；停牌/剔除导致的**实际**只数不改变分母口径）。
+    `n_hold`    —— 换手分母（目标持仓只数）：
+                   · **标量**：固定只数组合（TopK=K，停牌/剔除导致的**实际**只数不改变分母口径）；
+                   · **逐期数组**：只数逐期变化的组合（如**分位组**，组内只数逐日不同）
+                     ⇒ 用「**当期在手只数**」做分母（`换手_t = 当期卖出只数 / 当期在手只数`）。
+                   `n_hold ≤ 0` 或当期空仓 ⇒ 该期不计费。
 
     `成本_t = rate × |A_t \\ A_{t-1}| / n_hold`；**首期不计费**；
     返回 `{"turnover": 逐期换手, "curves": {"0.0040": 累计曲线, ...}}`（cumsum 口径）。
@@ -91,6 +95,8 @@ def _topgroup_cost_curves(period_ret, holdings, n_hold, rates=(0.0, 0.004, 0.008
     """
     ret = np.asarray(period_ret, dtype=np.float64)
     n = ret.shape[0]
+    nh = (None if np.isscalar(n_hold)
+          else np.asarray(n_hold, dtype=np.float64))
     tv = np.zeros(n, dtype=np.float64)
     prev = None
     for i in range(n):
@@ -98,8 +104,9 @@ def _topgroup_cost_curves(period_ret, holdings, n_hold, rates=(0.0, 0.004, 0.008
         # ⚠ 持仓标识可为 int **或字符串**（真实 instrument 名如 'SH600559'）
         #   —— 曾写 `set(map(int, h))`，被 check_curves.py 的真实验证当场抓到
         cur = set(h) if h is not None else set()
-        if prev is not None and cur and n_hold > 0:
-            tv[i] = len(prev - cur) / float(n_hold)     # 单边换手（卖出比例）
+        den = float(n_hold) if nh is None else (float(nh[i]) if i < nh.shape[0] else 0.0)
+        if prev is not None and cur and den > 0:
+            tv[i] = len(prev - cur) / den                # 单边换手（卖出比例）
         prev = cur
     curves = {}
     for r in rates:
