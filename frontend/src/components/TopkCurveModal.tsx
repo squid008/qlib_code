@@ -614,12 +614,9 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               （价格指数、<b>不含分红</b>）⇒ 同口径可直接比超额。
               ⑦ <b>「池内等权」基准（可选，默认不选中）</b>= 各分位组逐期收益的<b>平均</b>
               （等频分组 ⇒ 等价于池内全部成分股等权），与本图现算、不走后端行情；它<b>不是指数</b>，
-              但<b>与组合完全同口径（同样含分红再投）</b>，用于解释「相对指数 vs 相对等权」的差额
-              （聚宽等外部脚本多用等权口径）。
-              ⑧ <b>⚠ 分红口径差异（看超额前务必知道）</b>：上面 5 个<b>指数基准是价格指数、不含分红</b>，
-              而<b>组合与「池内等权」都含分红再投</b> ⇒ <b>相对指数的超额里含约 2~3pp/年 的分红差</b>
-              （沪深300 股息率量级）。要评估<b>真实超额</b>请用<b>池内等权</b>基准；指数基准适合回答
-              "我这份组合有没有跑赢指数本身"。
+              但<b>与组合完全同口径（同样含分红再投）</b>。
+              ⑧ <b>⚠ 分红口径差异</b>：上面 5 个<b>指数基准是价格指数、不含分红</b>，而<b>组合与
+              「池内等权」都含分红再投</b> ⇒ <b>相对指数的超额里含约 2~3pp/年 的分红差</b>。
             </div>
 
             {/* ---- 图 2：十分位累计收益曲线 ---- */}
@@ -714,16 +711,16 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
             {sens && (
               <>
                 <div className="mt-4 mb-1 text-xs font-semibold text-slate-600 dark:text-slate-300">
-                  成本敏感度：不同持仓只数 K（换手 / 年化成本 / 吞噬比例）
+                  成本敏感度：不同持仓只数（换手 / 年化成本 / 吞噬比例）
                 </div>
                 <table className="text-[11px] w-full border-t border-slate-200 dark:border-slate-700">
                   <thead>
                     <tr className="text-slate-400">
-                      <th className="text-left px-1 py-1 font-normal">K（只数）</th>
+                      <th className="text-left px-1 py-1 font-normal">持仓只数</th>
                       <th className="text-right px-1 font-normal">每期换手</th>
-                      <th className="text-right px-1 font-normal">年化成本@0.004</th>
-                      <th className="text-right px-1 font-normal">年化成本@0.008</th>
-                      <th className="text-right px-1 font-normal">成本吞噬@0.004</th>
+                      <th className="text-right px-1 font-normal">年化成本（往返 0.004）</th>
+                      <th className="text-right px-1 font-normal">年化成本（往返 0.008）</th>
+                      <th className="text-right px-1 font-normal">成本吞噬（往返 0.004）</th>
                       <th className="text-right px-1 font-normal">每期毛收益</th>
                     </tr>
                   </thead>
@@ -751,7 +748,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   </tbody>
                 </table>
                 <div className="mt-1 text-[11px] text-slate-400 leading-relaxed">
-                  {sens.note}　年化按 {sens.trading_days} 交易日；K 与明细曲线的固定档一一对应。
+                  {sens.note}　年化按 {sens.trading_days} 交易日；持仓只数与明细曲线的固定档一一对应。
                 </div>
               </>
             )}
