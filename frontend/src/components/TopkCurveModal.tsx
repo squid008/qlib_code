@@ -292,21 +292,31 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
           </span>
         </div>
 
-        {/* 口径 / 免责（必须显著标注） */}
-        <div className="mx-4 mt-2 px-3 py-2 rounded bg-amber-50 dark:bg-amber-900/20 text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">
-          <b>简化估算，读图前请先看口径</b>：① 费率是<b>往返（买+卖）合计</b>，按<b>调仓期</b>扣、
-          只扣<b>实际调仓</b>的股票（首期建仓不计费）；② <b>未考虑涨跌停、停牌、流动性冲击</b>；
-          ③ 曲线 = 每期持有组合的收益（调仓日取信号、T+1 买入、持有到下一个调仓日；调仓期默认 =
-          预测周期 h）—— 当前口径：<b>{basis === 'compound'
-            ? '复利（每期收益滚入本金 = 实盘满仓复投）'
-            : '算术累加（各期收益直接相加，非实盘净值）'}</b>，
-          <b>以 1 为起点</b>、<b>近似净值但不是逐日盯市净值</b>；
-          ④ 默认档 = <b>超额收益最强的分位组</b>（逐期等分，只数与固定 K 档略有差异）；
-          ⑤ <b>多空 = 最强组 − 最弱组</b>，A 股空头收益拿不到 ⇒ <b>不可实现</b>，仅作有效性参考
-          （复利口径下两条净值相减无可解释含义 ⇒ <b>仅在算术口径显示</b>）；
-          ⑥ <b>基准与组合同口径</b>：指数在<b>同一调仓日</b>的 T+1 → T+h+1 收益、按当前口径累计
-          （价格指数、<b>不含分红</b>）⇒ 同口径可直接比超额。
-        </div>
+        {/* 绩效指标（v1.18.52 上移至此）：**年化 / 最大回撤**等，组合 vs 基准并排 ——
+            只有同口径对比，才能判断「这份超额值不值得承担这些风险」。
+            逐日盯市口径（期内按 h 调仓、持有期内逐日盯市）；⚠ 指标基于**净值** ⇒ 仅复利口径展示。
+            （空数据时 itemPerf/benchPerf 均为 null ⇒ 不渲染；原位于图 1 之后，与下方「口径说明」
+              面板对调了位置。） */}
+        {basis === 'compound' && (itemPerf || benchPerf) && (
+          <div className="mx-4 mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+            <PerfCard
+              title={`组合${
+                item?.kind === 'decile'
+                  ? `·最强分位组 Q${item?.quantile}`
+                  : `·固定 K=${item?.k}`
+              }（无成本）`}
+              perf={itemPerf}
+              extra={costAnnual}
+            />
+            <PerfCard title={`基准 ${benchItem?.name ?? ''}`} perf={benchPerf} />
+          </div>
+        )}
+        {basis === 'compound' && !itemPerf && !benchPerf && tc && (
+          <div className="mx-4 mt-1 text-[11px] text-slate-400">
+            绩效指标不可用（调仓期小于预测周期时各期持有区间重叠、无法拼逐日净值；
+            或后端版本 &lt; v1.18.48）
+          </div>
+        )}
 
         {empty ? (
           <div className="px-4 py-6 text-xs text-slate-500">
@@ -446,29 +456,22 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               </div>
             )}
 
-            {/* 绩效指标（v1.18.48）：逐日盯市口径（期内按 h 调仓、持有期内逐日盯市）。
-                组合 vs 基准并排 —— 只有同口径对比才能判断超额是否值得这些风险。
-                ⚠ 仅复利口径展示（指标基于净值；算术累加非净值口径）。 */}
-            {basis === 'compound' && (itemPerf || benchPerf) && (
-              <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
-                <PerfCard
-                  title={`组合${
-                    item?.kind === 'decile'
-                      ? `·最强分位组 Q${item?.quantile}`
-                      : `·固定 K=${item?.k}`
-                  }（无成本）`}
-                  perf={itemPerf}
-                  extra={costAnnual}
-                />
-                <PerfCard title={`基准 ${benchItem?.name ?? ''}`} perf={benchPerf} />
-              </div>
-            )}
-            {basis === 'compound' && !itemPerf && !benchPerf && tc && (
-              <div className="mt-1 text-[11px] text-slate-400">
-                绩效指标不可用（调仓期小于预测周期时各期持有区间重叠、无法拼逐日净值；
-                或后端版本 &lt; v1.18.48）
-              </div>
-            )}
+            {/* 口径 / 免责（v1.18.52 下移至此：先看图与指标，再核对口径细则）——
+                与上方「绩效指标（年化 / 最大回撤）」面板对调了位置。 */}
+            <div className="mt-3 px-3 py-2 rounded bg-amber-50 dark:bg-amber-900/20 text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">
+              <b>简化估算，读图前请先看口径</b>：① 费率是<b>往返（买+卖）合计</b>，按<b>调仓期</b>扣、
+              只扣<b>实际调仓</b>的股票（首期建仓不计费）；② <b>未考虑涨跌停、停牌、流动性冲击</b>；
+              ③ 曲线 = 每期持有组合的收益（调仓日取信号、T+1 买入、持有到下一个调仓日；调仓期默认 =
+              预测周期 h）—— 当前口径：<b>{basis === 'compound'
+                ? '复利（每期收益滚入本金 = 实盘满仓复投）'
+                : '算术累加（各期收益直接相加，非实盘净值）'}</b>，
+              <b>以 1 为起点</b>、<b>近似净值但不是逐日盯市净值</b>；
+              ④ 默认档 = <b>超额收益最强的分位组</b>（逐期等分，只数与固定 K 档略有差异）；
+              ⑤ <b>多空 = 最强组 − 最弱组</b>，A 股空头收益拿不到 ⇒ <b>不可实现</b>，仅作有效性参考
+              （复利口径下两条净值相减无可解释含义 ⇒ <b>仅在算术口径显示</b>）；
+              ⑥ <b>基准与组合同口径</b>：指数在<b>同一调仓日</b>的 T+1 → T+h+1 收益、按当前口径累计
+              （价格指数、<b>不含分红</b>）⇒ 同口径可直接比超额。
+            </div>
 
             {/* ---- 图 2：十分位累计收益曲线 ---- */}
             {qc && (
