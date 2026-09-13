@@ -3,6 +3,16 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.17] - 2026-09-13
+
+### Changed
+- **修正「未考虑涨跌停」口径文案 —— 与实现不符，且正是"单因子到底有没有考虑跌停"这一误会的来源**（用户确认「只改这几处文案」，本次**无逻辑变更**）：
+  - **事实核对**：单因子/事件研究的剔除开关**只做"买入端"**（`single_test._exclude`）—— 信号日 T 涨停、**成交日 T+1 涨停**、T+1 停牌、ST(T+1)、创业/科创板（后两者可选）；**跌停（"卖不出"）在单因子/事件研究里从未使用**（`LIMIT_DOWN`/`T1_LIMIT_DOWN` 在 `single_test.py:1387-1389`、`event_study.py:526-528` **只加载不引用**，`_NR` 列清单也不含它）；只有**回测引擎** `engine/board_exchange.py:136` 用 `mark_limit_down` 生成 `limit_sell`。
+  - 旧文案统一写"**未考虑涨跌停、停牌**、流动性冲击"，把**已经做了**的涨停/停牌剔除也说成没做 ⇒ 改为：**「买入端已按剔除开关剔除 T/T+1 涨停、T+1 停牌样本；未模拟『跌停卖不出』与流动性冲击」**。
+  - 改动位置（**3 处用户可见**）：`SingleFactorTestPanel.tsx`（持仓期曲线按钮 tooltip）、`TopkCurveModal.tsx`（口径说明 ②）、后端 `topk_sensitivity.NOTE`（渲染在 `TopkCurveModal` 成本敏感度表下方）。
+  - 同步修正 **5 处开发/类型注释**（`TopkCurveModal.tsx` 模块头、`cost_curves.py`、`single_test.py`、`topk_sensitivity.py`、`api.ts` 的 `note` 字段），避免同款错误表述继续扩散。
+- 版本 1.19.16 → 1.19.17。
+
 ## [1.19.16] - 2026-09-13
 
 ### Docs

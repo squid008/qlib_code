@@ -1517,7 +1517,7 @@ export default function SingleFactorTestPanel({
                               <button
                                 onClick={() => openCurve(r)}
                                 className="px-1.5 py-0.5 rounded border border-emerald-400 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 text-[11px] whitespace-nowrap"
-                                title="持仓期曲线（连续因子）：**起点=1** 的净值曲线（默认 = 超额收益最强的分位组，含三档往返成本）+ 可切换基准 + 十分位净值曲线 + 成本敏感度表。固定 K 档由表单「明细 K」决定（改 K 需重跑）；组合/基准/图例显隐均为纯前端、零重算。⚠ 简化估算，未考虑涨跌停/停牌/流动性冲击，近似净值非逐日盯市"
+                                title="持仓期曲线（连续因子）：**起点=1** 的净值曲线（默认 = 超额收益最强的分位组，含三档往返成本）+ 可切换基准 + 十分位净值曲线 + 成本敏感度表。固定 K 档由表单「明细 K」决定（改 K 需重跑）；组合/基准/图例显隐均为纯前端、零重算。⚠ 简化估算：买入端已按剔除开关剔除 T/T+1 涨停、T+1 停牌样本；未模拟「跌停卖不出」与流动性冲击，近似净值非逐日盯市"
                               >
                                 持仓曲线
                               </button>

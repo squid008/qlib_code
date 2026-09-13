@@ -346,7 +346,7 @@ export interface TopKSensitivity {
   default_k: number | null
   ks: number[]
   rows: TopKSensitivityRow[]
-  note: string // 口径/免责说明（未考虑涨跌停、停牌、流动性冲击等）
+  note: string // 口径/免责说明（买入端已按开关剔除 T/T+1 涨停与 T+1 停牌样本；未模拟跌停卖不出、未计流动性冲击）
 }
 export interface SingleFactorTestResult {
   id: string
