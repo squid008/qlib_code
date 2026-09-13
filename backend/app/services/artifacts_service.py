@@ -158,7 +158,7 @@ def scan_history() -> dict:
 
     root = artifacts_root()
     if not os.path.isdir(root):
-        return {"items": []}
+        return {"items": [], "retention": None}
 
     _manager = get_task_manager(_config.WORK_DIR)
 
@@ -266,7 +266,16 @@ def scan_history() -> dict:
             # 额外检查是否正被某个运行中任务续测占用（续测复用源目录，源 task_id 不在内存但目录被占用）
             "is_task_running": _is_task_running(_manager, task_id) or (task_id in resume_sources),
         })
-    return {"items": items}
+    # v1.19.13：附带**产物回收预测**（只读，带 30s 缓存）——前端在「历史回测」标题右侧提示
+    # "哪些产物将被回收 / 预计几天后"，避免再出现"产物无声消失"（用户要求）。
+    retention = None
+    try:
+        from ..engine.storage_cleanup import preview_artifacts_recycle
+
+        retention = preview_artifacts_recycle(root)
+    except Exception as e:  # 预测失败不影响列表
+        logger.warning("产物回收预测失败: %s", e)
+    return {"items": items, "retention": retention}
 
 
 def _is_task_running(manager, task_id: str) -> bool:

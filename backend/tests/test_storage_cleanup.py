@@ -144,3 +144,49 @@ class TestArtifactsSizeQuota:
         st = sc._clean_artifacts(str(root), detail=True)
         assert st["removed"] == 0 and st["slimmed"] == 0
         assert os.path.exists(d / "segment_1" / "pred.pkl")
+
+
+class TestArtifactsRecyclePreview:
+    """v1.19.13：`preview_artifacts_recycle` **只读**预测（供「历史回测」标题右侧提示）。"""
+
+    def test_under_quota_reports_no_action(self, tmp_path, monkeypatch):
+        """未超配额 ⇒ 不列"将精简/删除"，但给出最旧目录（供"预计多久后回收"提示）。"""
+        from app.engine import storage_cleanup as sc
+
+        root = tmp_path / "art7"
+        now = time.time()
+        for i in range(3):
+            _touch(root / f"t{i}" / "result.json", 100, now - (i + 1) * 86400)
+        monkeypatch.setattr(sc, "_ARTIFACTS_GB", 30.0)
+        monkeypatch.setattr(sc, "_ARTIFACTS_KEEP", 300)
+        monkeypatch.setattr(sc, "_ACTIVE_WINDOW_SEC", 86400)
+        r = sc.preview_artifacts_recycle(str(root), ttl=0)
+        assert r["count"] == 3 and r["over_quota"] is False
+        assert r["to_slim"] == [] and r["to_remove"] == []
+        assert r["oldest"] == ["t2", "t1", "t0"]   # 最旧优先
+        assert not os.path.exists(root / "t2" / ".slimmed")  # 预测不改动任何文件
+
+    def test_over_quota_reports_slim_then_remove(self, tmp_path, monkeypatch):
+        """超配额：先只精简 → 精简也不够才列"整目录删除"（最旧优先）。"""
+        from app.engine import storage_cleanup as sc
+
+        root = tmp_path / "art8"
+        now = time.time()
+        for i in range(4):
+            _touch(root / f"o{i}" / "result.json", 100, now - (i + 1) * 86400)
+            _touch(root / f"o{i}" / "segment_1" / "pred.pkl", 5000, now - (i + 1) * 86400)
+        monkeypatch.setattr(sc, "_ARTIFACTS_SLIM_MB", 1024 / (1024 ** 2))
+        monkeypatch.setattr(sc, "_ARTIFACTS_KEEP", 300)
+        monkeypatch.setattr(sc, "_ACTIVE_WINDOW_SEC", 86400)
+        # ① 配额 3000B：精简后（~400B）已达标 ⇒ 只精简、不删
+        monkeypatch.setattr(sc, "_ARTIFACTS_GB", 3000 / (1024 ** 3))
+        r = sc.preview_artifacts_recycle(str(root), ttl=0)
+        assert r["over_quota"] is True and r["trigger"] == "size"
+        assert len(r["to_slim"]) == 4 and r["to_remove"] == []
+        # 已超配额 ⇒ 预计立即触发（est_days=0）；slim_freed_gb 按 GB 保留 2 位，测试数据太小会舍成 0
+        assert r["est_days"] == 0 and r["slim_freed_gb"] >= 0.0
+        # ② 配额 ~1B：精简也救不回来 ⇒ 整目录删除，且从最旧开始
+        monkeypatch.setattr(sc, "_ARTIFACTS_GB", 1e-9)
+        r2 = sc.preview_artifacts_recycle(str(root), ttl=0)
+        assert len(r2["to_remove"]) > 0
+        assert r2["to_remove"][0] == "o3"

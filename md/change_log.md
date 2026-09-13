@@ -3,6 +3,22 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.13] - 2026-09-13
+
+### Added
+- **「历史回测」标题右侧新增「产物回收提示」**（用户要求：「要删的在历史回测几个字右边加个提示，提示 #15 到 #20 回测产物 2 天后将删除之类的」）：
+  - **后端只读预测**：`engine/storage_cleanup.preview_artifacts_recycle()` —— **不改动任何文件**（60s 缓存、`_dir_scan` 单次遍历合并"总容量/最近写入/可精简体积"，实测 40 目录 5GB ≈ **1.5s**，且每次加载历史最多算一次）。按当前配额（`QLIB_ARTIFACTS_GB` / `_ARTIFACTS_KEEP`）模拟 v1.19.12 的「先精简 → 仍超才整删」，返回 `over_quota / trigger / to_slim / to_remove / oldest / est_days / growth_gb_per_day / note`。`artifacts_service.scan_history()` 把它随 `GET /backtests/history` 一起下发（新增 `retention` 字段，失败不影响列表）。
+  - **前端**（`HistoryPanel.tsx`）三种状态：
+    - **已超配额（红）**：`⚠ 下次清理将精简 #a~#b、删除 #c~#d · 产物 5.01GB / 30GB（40 个）`；
+    - **预计 1 年内触发（琥珀）**：`提示：约 N 天后开始回收 #a~#b 等最旧产物 · …`（N 按**最近 7 天平均增量**估算，超 1 年按"暂无风险"处理）；
+    - **无风险（灰）**：`产物 …GB / …GB（N 个），暂无回收风险`。
+  - 序号直接取表格里的**稳定序号 `seq`**（`seq.json`，即"#"列）⇒ 提示能直接对上表格行（对应你说的 "#15 到 #20"）。
+  - 措辞按实际口径写为"**开始回收**（优先**精简**中间产物、参数/结果/曲线保留；仍超配额才整目录删除）"——比单纯"将删除"更准确（v1.19.12 起就是"先精简后删"）。
+
+### Added (tests)
+- `tests/test_storage_cleanup.py` 新增 2 例：未超配额 ⇒ 不列动作但给出 `oldest`（最旧优先）、且**不动任何文件**；超配额 ⇒ 先只列 `to_slim`、精简不够才列 `to_remove` ⇒ **10 passed**。
+- 版本 1.19.12 → 1.19.13。
+
 ## [1.19.12] - 2026-09-13
 
 ### Fixed

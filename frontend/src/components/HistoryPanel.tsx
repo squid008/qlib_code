@@ -4,6 +4,7 @@ import {
   getBacktestSnapshot,
   getBacktestImageUrl,
   deleteBacktest,
+  type ArtifactsRetention,
   type BacktestSnapshot,
   type HistoryItem,
 } from '../api'
@@ -29,6 +30,9 @@ interface Row {
 
 export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResult, refreshKey, capacity, onResume }: Props) {
   const [rows, setRows] = useState<Row[]>([])
+  // v1.19.13：产物回收预测（后端只读计算）。用于在「历史回测」标题右侧提示
+  // "哪些产物会被回收 / 预计几天后触发"（用户要求），避免再出现"产物无声消失"。
+  const [retention, setRetention] = useState<ArtifactsRetention | null>(null)
   const [page, setPage] = useState(1)  // 当前页码（1-based）
   const [jumpPageInput, setJumpPageInput] = useState('')  // 输入框页码
   const [loading, setLoading] = useState(false)
@@ -70,7 +74,8 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
   const load = async () => {
     setLoading(true)
     try {
-      const { items } = await listBacktestsHistory()
+      const { items, retention: ret } = await listBacktestsHistory()
+      setRetention(ret ?? null)
       // 倒序已在后端按目录名字典序倒序（最新在前）
       const list: Row[] = items.map((it) => ({ item: it, loading: true }))
       setRows(list)
@@ -168,10 +173,66 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
     }
   }
 
+  // ---- v1.19.13：产物回收提示（用户要求：「在『历史回测』右边加提示，如 #15 到 #20 的
+  // 回测产物 2 天后将删除之类的」）----
+  // 序号直接取表格里的**稳定序号 `seq`**（`seq.json`，即"#"列）⇒ 提示能直接对上表格行；
+  // 后端只做只读预测（`preview_artifacts_recycle`），这里只负责措辞。
+  const seqLabel = (names: string[]): string | null => {
+    const seqs = names
+      .map((n) => rows.find((r) => r.item.dir_name === n)?.item.seq)
+      .filter((v): v is number => typeof v === 'number' && v > 0)
+    if (seqs.length === 0) return null
+    const lo = Math.min(...seqs)
+    const hi = Math.max(...seqs)
+    return lo === hi ? `#${lo}` : `#${lo}~#${hi}`
+  }
+  const retentionHint = (() => {
+    if (!retention || retention.count === 0) return null
+    const sizeTxt = `产物 ${retention.total_gb}GB / ${retention.quota_gb}GB（${retention.count} 个）`
+    if (retention.over_quota) {
+      const slim = seqLabel(retention.to_slim)
+      const del = seqLabel(retention.to_remove)
+      const acts = [slim ? `精简 ${slim}` : '', del ? `删除 ${del}` : '']
+        .filter(Boolean)
+        .join('、')
+      return (
+        <span
+          className="text-xs px-2 py-0.5 rounded bg-red-50 text-red-600 border border-red-200"
+          title={
+            `已超配额（${retention.trigger === 'size' ? '容量' : '条数'}上限）：`
+            + '下次回测任务开始时清理会先精简中间产物（只删 segment_*/大 pkl，参数/结果/曲线保留），'
+            + `仍超配额才整目录删除最旧的。${sizeTxt}`
+          }
+        >
+          ⚠ 下次清理将{acts || '回收'} · {sizeTxt}
+        </span>
+      )
+    }
+    if (retention.est_days != null && retention.est_days <= 365) {
+      const oldest = seqLabel(retention.oldest)
+      return (
+        <span
+          className="text-xs px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200"
+          title={
+            `按最近 7 天平均增量（${retention.growth_gb_per_day ?? 0}GB/天）估算，约 `
+            + `${retention.est_days} 天后达到配额上限；届时优先精简最旧产物`
+            + `（只删中间产物、保留参数/结果/曲线），仍超配额才整目录删除。${sizeTxt}`
+          }
+        >
+          提示：约 {retention.est_days} 天后开始回收{oldest ? ` ${oldest}` : ''} 等最旧产物 · {sizeTxt}
+        </span>
+      )
+    }
+    return <span className="text-xs text-slate-400">{sizeTxt}，暂无回收风险</span>
+  })()
+
   return (
     <section className="bg-white dark:bg-slate-800 rounded-xl shadow p-6">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold">历史回测</h2>
+        <div className="flex items-center gap-3 flex-wrap min-w-0">
+          <h2 className="text-lg font-semibold shrink-0">历史回测</h2>
+          {retentionHint}
+        </div>
         <div className="flex items-center gap-2">
           {/* 批量删除开关：开启后每行出现勾选框，再点一次关闭 */}
           <button

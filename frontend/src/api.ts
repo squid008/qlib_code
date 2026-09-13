@@ -53,10 +53,42 @@ export interface HistoryItem {
   }
   annual_return?: number | null // 年化收益（result.json 的 annualized_return），无结果时为 null
 }
-export async function listBacktestsHistory(): Promise<{ items: HistoryItem[] }> {
-  const { data } = await http.get<{ items: HistoryItem[] }>('/backtests/history')
-  return data
+/** 产物回收预测（v1.19.13，后端 `storage_cleanup.preview_artifacts_recycle` **只读**计算）。
+ *
+ *  用途：在「历史回测」标题右侧提示"哪些产物会被回收 / 预计几天后触发"，避免再出现
+ *  "产物无声消失"。前端把目录名映射成表格里的稳定序号 `seq`（即 "#" 列）后再展示。
+ */
+export interface ArtifactsRetention {
+  quota_gb: number
+  keep: number
+  count: number
+  total_gb: number
+  over_quota: boolean
+  trigger: 'size' | 'count' | null
+  /** 将被**精简**（只删 `segment_*`/大中间产物，保留参数/结果/曲线）的目录名 */
+  to_slim: string[]
+  /** 将被**整目录删除**（最旧优先）的目录名 */
+  to_remove: string[]
+  slim_freed_gb: number
+  /** 最近 7 天平均日增（GB/天）；无新增为 0 */
+  growth_gb_per_day: number | null
+  /** 预计多少天后触发回收；已超配额为 0，无法估算为 null */
+  est_days: number | null
+  note: string
+  /** 最旧的非活跃目录（未超配额时用于"预计多久后开始回收 #…"提示） */
+  oldest: string[]
 }
+
+export async function listBacktestsHistory(): Promise<{
+    items: HistoryItem[]
+    retention?: ArtifactsRetention | null
+  }> {
+    const { data } = await http.get<{
+      items: HistoryItem[]
+      retention?: ArtifactsRetention | null
+    }>('/backtests/history')
+    return data
+  }
 
 // 版本号
 export interface AppVersion {

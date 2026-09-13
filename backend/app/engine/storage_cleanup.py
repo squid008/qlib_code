@@ -264,6 +264,124 @@ def _rmtree(path: str) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
+_preview_cache = {"ts": 0.0, "root": None, "data": None}
+_PREVIEW_TTL = 60.0
+
+
+def _dir_scan(d: str):
+    """一次遍历同时得到 (总字节, 最近写入 mtime, **可精简**字节)。
+
+    可精简 = `segment_*/` 子树全部 + 目录直属的大于阈值中间产物（`.pkl/.npy/…`）。
+    合并成单次 `os.walk`：历史面板每次加载都要用（原先分两次遍历，40 个目录 5GB ≈ 3s）。
+    """
+    total, latest, heavy = 0, 0.0, 0
+    slim_bytes = _ARTIFACTS_SLIM_MB * 1024 ** 2
+    try:
+        walker = os.walk(d)
+    except OSError:
+        return 0, 0.0, 0
+    for dirpath, _dirs, names in walker:
+        rel = os.path.relpath(dirpath, d)
+        top = "" if rel == "." else rel.split(os.sep)[0]
+        in_seg = top.startswith("segment_")
+        for n in names:
+            try:
+                st = os.stat(os.path.join(dirpath, n))
+            except OSError:
+                continue
+            total += st.st_size
+            if st.st_mtime > latest:
+                latest = st.st_mtime
+            if in_seg or n.lower().endswith(_SLIM_EXTS) and st.st_size > slim_bytes:
+                heavy += st.st_size
+    return total, latest, heavy
+
+
+def preview_artifacts_recycle(root: str | None = None, ttl: float = _PREVIEW_TTL) -> dict:
+    """**只读**预测产物回收：哪些目录会被"精简/删除"、以及预计多久后触发。
+
+    用途：用户要求「在『历史回测』右边加提示，如 #15 到 #20 的回测产物 2 天后将删除」——
+    `scan_history()` 调用本函数把结果随列表一起下发，前端把目录名映射成表格里的 `#seq`。
+
+    **不修改任何文件**。返回：
+      {quota_gb, keep, count, total_gb, over_quota, trigger,
+       to_slim: [dir_name...],      # 会被精简（只删中间产物，保留参数/结果/曲线）
+       to_remove: [dir_name...],    # 会被整目录删除（最旧优先）
+       slim_freed_gb, growth_gb_per_day, est_days, note}
+    """
+    now = time.time()
+    if (root is None and _preview_cache["data"] is not None
+            and now - _preview_cache["ts"] < ttl and _preview_cache["root"] == root):
+        return _preview_cache["data"]
+    base = root or os.path.join(_work_dir(), "artifacts")
+    quota_bytes = _ARTIFACTS_GB * 1024 ** 3
+    keep = max(5, _ARTIFACTS_KEEP)
+    out = {"quota_gb": _ARTIFACTS_GB, "keep": keep, "count": 0, "total_gb": 0.0,
+           "over_quota": False, "trigger": None, "to_slim": [], "to_remove": [],
+           "slim_freed_gb": 0.0, "growth_gb_per_day": None, "est_days": None, "note": "",
+           "oldest": []}
+    if not os.path.isdir(base):
+        return out
+    infos = []  # (name, size, latest, active, heavy)
+    for n in sorted(os.listdir(base)):
+        d = os.path.join(base, n)
+        if not os.path.isdir(d):
+            continue
+        size, latest, heavy = _dir_scan(d)
+        infos.append((n, size, latest, latest >= now - _ACTIVE_WINDOW_SEC, heavy))
+    if not infos:
+        return out
+    total = sum(x[1] for x in infos)
+    out["count"] = len(infos)
+    out["total_gb"] = round(total / 1024 ** 3, 2)
+    over_size = total > quota_bytes
+    over_count = len(infos) > keep
+    out["over_quota"] = bool(over_size or over_count)
+    out["trigger"] = "size" if over_size else ("count" if over_count else None)
+
+    # 候选：**非活跃**目录（只有这些可被回收），最旧优先
+    cand = [x for x in infos if not x[3]]
+    cand.sort(key=lambda x: x[2])
+    # 最旧的几个（供"预计多久后开始回收 #…"这类提示用；未超配额时也能给出）
+    out["oldest"] = [x[0] for x in cand[:6]]
+    if out["over_quota"]:
+        # 只有**超配额**时才会真有动作：先全部精简（回收中间产物、目录保留），仍超才从最旧开始整删
+        slim_gain = sum(x[4] for x in cand)
+        out["slim_freed_gb"] = round(slim_gain / 1024 ** 3, 2)
+        cur, remain = total - slim_gain, len(infos)
+        removed = set()
+        for x in cand:
+            if cur <= quota_bytes and remain <= keep:
+                break
+            cur -= max(0, x[1] - x[4])      # 该目录精简后的"轻量"体积
+            remain -= 1
+            removed.add(x[0])
+        out["to_remove"] = [x[0] for x in cand if x[0] in removed]
+        out["to_slim"] = [x[0] for x in cand if x[0] not in removed]
+
+    # 增长速率（最近 7 天新增体积 / 7）→ 估算"还有几天触发回收"
+    recent = sum(x[1] for x in infos if x[2] >= now - 7 * 86400)
+    growth = recent / 7.0
+    if growth > 0:
+        out["growth_gb_per_day"] = round(growth / 1024 ** 3, 2)
+        if out["over_quota"]:
+            out["est_days"] = 0
+        else:
+            headroom = quota_bytes - total
+            out["est_days"] = int(headroom // growth) + 1
+    elif out["over_quota"]:
+        out["est_days"] = 0
+    if out["over_quota"]:
+        out["note"] = "已超配额：下次任务开始时清理即会回收"
+    elif out["est_days"] is not None:
+        out["note"] = "按最近 7 天平均增量估算"
+    else:
+        out["note"] = "近 7 天无新增，暂无回收风险"
+    if root is None:
+        _preview_cache.update({"ts": now, "root": root, "data": out})
+    return out
+
+
 def cleanup_storage(work_dir: str | None = None, force: bool = False) -> dict:
     """节流执行存储清理。返回本次清理统计（失败静默）。
 
