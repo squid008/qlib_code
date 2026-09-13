@@ -390,6 +390,10 @@ export default function SingleFactorTestPanel({
   const [estName, setEstName] = useState('')
   // 该行的日配对稳定性字段（t/胜率）：供弹窗与表格共用同一套判定门槛（v1.18.32）
   const [estPair, setEstPair] = useState<{ t?: number | null; win?: number | null } | null>(null)
+  // v1.18.63：弹窗默认「最长持有」= **被点开那一行的周期**（此前直接用后端 max_k =
+  // 任务填的**最大**预测周期 ⇒ 在 1:2:7 这类多周期下，点"周期 3"那行却默认显示 7 日口径，
+  // 与表格结论的 k 不符）。null 时回退旧行为（max_k / 40）。
+  const [estK, setEstK] = useState<number | null>(null)
 
   // 持仓期收益曲线弹窗（v1.18.45，连续因子）：曲线/敏感度数据**随本次测试结果一并返回**
   // ⇒ 打开即看（零重算、纯前端切换 K）；0/1 稀疏信号走「事件研究」那套。
@@ -410,6 +414,7 @@ export default function SingleFactorTestPanel({
     setEstData(r.event_study ?? null)
     setEstName(r.name)
     setEstPair({ t: r.daily_t_hac ?? r.daily_t, win: r.daily_win })
+    setEstK(typeof r.horizon === 'number' && r.horizon > 0 ? r.horizon : null)
     setEstReq({
       universe,
       start_date: startDate,
@@ -1540,6 +1545,7 @@ export default function SingleFactorTestPanel({
           req={estReq}
           data={estData}
           pair={estPair}
+          defaultK={estK}
         />
       </EsErrorBoundary>
 

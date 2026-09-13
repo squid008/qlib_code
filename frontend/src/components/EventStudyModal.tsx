@@ -27,6 +27,12 @@ interface Props {
    * （超额门槛 max(0.5%, 0.025%×k) + 稳定性 |t|≥2 或 日胜率≥55%），避免两处口径漂移。
    */
   pair?: { t?: number | null; win?: number | null } | null
+  /**
+   * 被点开那一行的「周期」（持有期 k，v1.18.63）：弹窗默认「最长持有」取它 ⇒ 默认展示的
+   * k 与该行结论一致。此前固定用后端 **max_k**（= 任务填的**最大**预测周期），在 `1:2:7`
+   * 这类多周期下会出现「点"周期 3"那行、弹窗却默认显示 7 日口径」的问题（用户报）。
+   */
+  defaultK?: number | null
 }
 
 type EstStatus = 'idle' | 'running' | 'success' | 'failed' | 'cancelled'
@@ -38,7 +44,15 @@ const pct = (v: number | null | undefined, nd = 3) =>
 const num = (v: number | null | undefined, nd = 1) =>
   v == null || !Number.isFinite(v) ? '-' : `${(v * 100).toFixed(nd)}%`
 
-export default function EventStudyModal({ open, onClose, factorName, req, data, pair }: Props) {
+export default function EventStudyModal({
+  open,
+  onClose,
+  factorName,
+  req,
+  data,
+  pair,
+  defaultK,
+}: Props) {
   const [status, setStatus] = useState<EstStatus>('idle')
   const [progress, setProgress] = useState(0)
   const [message, setMessage] = useState('')
@@ -130,11 +144,11 @@ export default function EventStudyModal({ open, onClose, factorName, req, data, 
         setResult(d)
         setStatus('success')
         setError(null)
-        setMaxK(d.params?.max_k ?? 40)
+        setMaxK(defaultK ?? d.params?.max_k ?? 40)
         stopPoll()
         taskRef.current = null
       } else if (reqRef.current) {
-        setMaxK(40)
+        setMaxK(defaultK ?? 40)
         void start(40)
       }
     }
@@ -289,7 +303,11 @@ export default function EventStudyModal({ open, onClose, factorName, req, data, 
     const thrTxt = `${(thr * 100).toFixed(3)}%`
     const st = pairStabilityOf({ t: pair?.t, win: pair?.win })
     const scope = `（本提示按当前「最长持有 ${lastPoint.k ?? '?'} 日」口径；表格结论按该行「周期」列口径）`
-    if (win >= 0.45 && win <= 0.55 && Math.abs(med) < 0.005) {
+    // v1.18.63：与表格「结论」列口径对齐 —— 彩票型 = |中位数| <1% 且 胜率 45~55%
+    // 且 均值 > max(0.50%, |中位数|×3)。原弹窗只判 |中位数| <0.5% 且缺均值条件 ⇒ 与表格漂移。
+    const mean = lastPoint.mean ?? 0
+    if (win >= 0.45 && win <= 0.55 && Math.abs(med) < 0.01
+        && mean > Math.max(0.005, Math.abs(med) * 3)) {
       return {
         tone: 'warn' as const,
         text:
@@ -298,7 +316,7 @@ export default function EventStudyModal({ open, onClose, factorName, req, data, 
       }
     }
     // 中位数与胜率都好看，但未达超额门槛 / 日配对不稳定 → 不能算"正向事件效应"
-    if (med > 0 && win > 0.55 && ((ex != null && ex < thr) || !st.ok)) {
+    if (med > 0 && win >= 0.55 && ((ex != null && ex < thr) || !st.ok)) {
       const bad: string[] = []
       if (ex != null && ex < thr) {
         bad.push(
@@ -319,10 +337,13 @@ export default function EventStudyModal({ open, onClose, factorName, req, data, 
         text: `中位数为正、绝对收益胜率高于 50%，但${bad.join('；')} —— 收益不可交易 / 不可复现，判定为「待观察」。${scope}`,
       }
     }
-    if (med > 0.01 && win > 0.55) {
+    // v1.18.63：阈值与表格「有效✓」**完全对齐**（表格：med ≥ 0.50% + win ≥ 55% +
+    // 日配对超额 ≥ 门槛 + 日配对稳定）。原为 `med > 0.01`（**1%**）⇒ 中位数落在 0.5%~1%
+    // 之间时，表格判「有效✓」而弹窗落到「临界区间」，出现自相矛盾的提示（用户报）。
+    if (med >= 0.005 && win >= 0.55) {
       return {
         tone: 'good' as const,
-        text: `中位数为正、绝对收益胜率明显高于 50%，且日配对超额 ≥${thrTxt}、日配对稳定：存在可复制的正向事件效应。${scope}`,
+        text: `中位数为正、绝对收益胜率高于 50%，且日配对超额 ≥${thrTxt}、日配对稳定：存在可复制的正向事件效应。${scope}`,
       }
     }
     if (med < -0.005) {
