@@ -3,6 +3,12 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.14] - 2026-09-13
+
+### Fixed
+- **「产物回收预测」未命中缓存**（`services/artifacts_service.py`）：`scan_history()` 调 `preview_artifacts_recycle(root)` 时传了显式 `root`，而缓存只在 `root is None`（默认根目录）时生效 ⇒ 每次加载历史都要**重新全盘扫描 ≈2.1s**。改为不传 `root`（`artifacts_root()` 与 `_work_dir()` 同为 `config.WORK_DIR/artifacts`，路径一致）⇒ 命中 **60s 缓存**，重复刷新基本零开销（实测 2.15s → 0.00s）。
+- 版本 1.19.13 → 1.19.14。
+
 ## [1.19.13] - 2026-09-13
 
 ### Added

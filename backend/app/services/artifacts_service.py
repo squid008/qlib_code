@@ -272,7 +272,10 @@ def scan_history() -> dict:
     try:
         from ..engine.storage_cleanup import preview_artifacts_recycle
 
-        retention = preview_artifacts_recycle(root)
+        # ⚠ 不传 root：走默认根目录才会命中 60s 缓存（`preview_artifacts_recycle` 的缓存只在
+        #   root is None 时生效）。`artifacts_root()` 与 `storage_cleanup._work_dir()` 同为
+        #   `config.WORK_DIR/artifacts` ⇒ 路径一致。实测：不传 0.0s（命中缓存）/ 传了每次 2.1s。
+        retention = preview_artifacts_recycle()
     except Exception as e:  # 预测失败不影响列表
         logger.warning("产物回收预测失败: %s", e)
     return {"items": items, "retention": retention}
