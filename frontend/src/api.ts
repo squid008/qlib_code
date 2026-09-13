@@ -244,7 +244,9 @@ export interface QuantileCurves {
     cum_compound?: number[] // v1.18.47 复利累乘 Π(1+r)−1（前端默认展示口径）
   }[]
   // ⚠ 多空 = **最强组 − 最弱组**：A 股空头收益拿不到，**不可实现，仅作有效性参考**
-  long_short: { quantile: [number, number]; cum: number[] }
+  //   cum          = Σ(逐期价差)（算术累加，"平均每期赚多少"）
+  //   cum_compound = Π(1+逐期价差)−1（v1.19.5；每期全额再平衡的美元中性组合，与回测页分层图多空同口径）
+  long_short: { quantile: [number, number]; cum: number[]; cum_compound?: number[] }
 }
 // TopK 持仓期收益曲线（含三档成本）
 export interface TopKCurveItem {

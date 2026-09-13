@@ -122,8 +122,11 @@ export default function LayerChart({ data, rebalance = 1 }: { data?: LayerReturn
         <h2 className="text-lg font-semibold">分层回测（5组）</h2>
         <span className="text-xs text-slate-400">
           {rebalance > 1
-            ? `按预测分每 ${rebalance} 个交易日调仓分组，累计收益；Top1 应大于 Top5，多空稳定说明信号有效；点击图例可隐藏/显示曲线`
-            : '按预测分每日均分5组，累计收益；Top1 应大于 Top5，多空稳定说明信号有效；点击图例可隐藏/显示曲线'}
+            ? `按预测分每 ${rebalance} 个交易日调仓分组；`
+            : '按预测分每日均分5组；'}
+          <b>复利累计收益</b>（每期收益滚入本金 = 实盘满仓复投，与主净值曲线同口径）；Top1 应大于
+          Top5；<b>多空 = 最强组 − 最弱组</b>的逐期价差复利（每期全额再平衡的美元中性组合，
+          ⚠ A 股空头收益拿不到 ⇒ <b>不可实现</b>，仅作有效性参考）；点击图例可隐藏/显示曲线
         </span>
       </div>
       <SegmentTabs

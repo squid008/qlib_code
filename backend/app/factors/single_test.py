@@ -239,7 +239,7 @@ def _quantile_curves(mat: pd.DataFrame) -> dict:
     means = mat.mean()
     base = float(means.mean())          # 等频分组 ⇒ 各组均值之平均 = 全样本均值（同口径基准）
     best, worst = int(means.idxmax()), int(means.idxmin())
-    ls = (mat[best] - mat[worst]).cumsum()
+    spread = mat[best] - mat[worst]        # 逐期价差（最强 − 最弱）
     return {
         "n_groups": len(qs),
         "n_periods": int(len(mat)),
@@ -256,10 +256,16 @@ def _quantile_curves(mat: pd.DataFrame) -> dict:
                         round(float(x), 6)
                         for x in (np.cumprod(1.0 + mat[q].to_numpy(dtype=np.float64)) - 1.0)]}
                    for q in qs],
-        # ⚠ 多空 = **最强 − 最弱 的差值**（只有算术口径下可直接相减；复利口径下"净值之差"没有
-        #   可解释的实盘含义）⇒ 只给算术版，前端在复利模式**不画多空线**并给出说明。
+        # ⚠ 多空 = **最强 − 最弱 的逐期价差**，两种口径都给（v1.19.5 起复利版也下发）：
+        #   · `cum`          = `Σ(价差_t)`     —— 可加，"平均每期赚多少"的视角（读数=累计价差）
+        #   · `cum_compound` = `Π(1+价差_t)−1` —— **每期把 notional 全额再平衡的美元中性组合**
+        #     （= 与回测页分层图的多空同口径）。⚠ 复利价差在极端期会放大得很快（源于"每期全额
+        #     再平衡"这一假设），且 A 股空头收益拿不到 ⇒ 仍标注**不可实现**，只作上界/参考。
         "long_short": {"quantile": [best, worst],
-                       "cum": [round(float(x), 6) for x in ls]},
+                       "cum": [round(float(x), 6) for x in spread.cumsum()],
+                       "cum_compound": [
+                           round(float(x), 6)
+                           for x in (np.cumprod(1.0 + spread.to_numpy(dtype=np.float64)) - 1.0)]},
     }
 
 

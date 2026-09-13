@@ -92,7 +92,9 @@ def _get_pred_label(model, dataset, instruments, segment: str, label_horizon: in
 def _compute_benchmark_returns(benchmark: str, start, end):
     """计算 benchmark 指数在 [start, end] 的累计收益曲线。
 
-    口径与分层回测一致：单日收益 cumsum。返回 {date_str: cum_ret}；失败返回 {}。
+    口径与分层回测一致：**逐日复利** `Π(1+r)−1`（v1.19.5 起；此前为 `Σr` 算术累加）。
+    复利即"真实净值的日频复投"，与回测主净值曲线（qlib PortAnaRecord）同口径。
+    返回 {date_str: cum_ret}；失败返回 {}。
     """
     from qlib.data import D
 
@@ -111,7 +113,10 @@ def _compute_benchmark_returns(benchmark: str, start, end):
         close = df["$close"]
         s = close.droplevel("instrument").sort_index()
         ret = s.pct_change().fillna(0.0)
-        cum = ret.cumsum()
+        # ⚠ 复利（v1.19.5）：`Π(1+r)−1`。手写 `ret.cumsum()` 会同时**低估强策略、高估弱策略**
+        #   （`log(1+复利) ≈ Σr − ½Σr²`），且与主净值曲线口径不一致。
+        #   `skipna` 语义与 cumsum 相同（NaN 视作因子 1，不污染后续）。
+        cum = (1.0 + ret).cumprod() - 1.0
         result = {}
         for dt, v in cum.items():
             result[pd.Timestamp(dt).strftime("%Y-%m-%d")] = round(float(v), 6)
@@ -134,14 +139,23 @@ def _compute_benchmark_returns(benchmark: str, start, end):
 
 def _compute_layers(pred_label, N: int = 5, benchmark_ret: Optional[dict] = None,
                     rebalance_period: int = 1):
-    """按预测分横截面均分 N 组，返回每组累计收益曲线数据。
+    """按预测分横截面均分 N 组，返回每组**复利累计收益**曲线数据。
 
     rebalance_period（分层持仓周期，算法A）：
       - 1（默认）：每日重排分组（原行为，因子诊断用）
       - >1：只在调仓日（每 rebalance_period 个交易日）按 score 分组，中间持仓不动
         （组内股票按当日收益累加），下一调仓日重新分组。用于评估"与实盘调仓周期
         一致"的可落地收益。
-    benchmark_ret: {date_str: cum_ret}，可选的基准累计收益。
+    ⚠ **口径（v1.19.5 起）：复利** —— 各组 / 多空 / 基准都是「每期收益滚入本金」
+    `Π(1+r_t)−1`（= 实盘满仓复投），不再是 `Σr_t` 算术累加。四条理由：① 实盘按**当前净值**
+    配置资金 ⇒ 复利才是可投资口径；② 算术同时**低估强策略、高估弱策略**（`log(1+r) ≈ Σr − ½Σr²`）；
+    ③ **复利是"与累加粒度无关"的口径**（`Π` 可结合 ⇒ 按日复利 ≡ 按持有期复利），顺手消掉本函数
+    与单因子页之间的「逐日 vs 逐调仓期」粒度差异；④ 基准与回测主净值曲线（qlib PortAnaRecord
+    的真实逐日净值）同口径，不再"同页面两套口径"。
+    `long_short` = **逐期价差（最强组 − 最弱组）的复利** `Π(1+价差_t)−1`（每期把 notional 全额
+    再平衡的美元中性组合；⚠ 仍标注"不可实现"——A 股空头收益拿不到）；`long_average` =
+    组1 − 全样本均值的逐日价差复利（= 相对池内等权的超额）。
+    benchmark_ret: {date_str: cum_ret}（同口径复利），可选的基准累计收益。
     返回 list[{date, Group1..GroupN, long_short, long_average, benchmark?}]；失败返回 None。
     """
     if pred_label is None or len(pred_label) == 0:
@@ -167,7 +181,7 @@ def _compute_layers(pred_label, N: int = 5, benchmark_ret: Optional[dict] = None
             t_df["long_short"] = t_df["Group1"] - t_df["Group%d" % N]
             t_df["long_average"] = t_df["Group1"] - d.groupby(level="datetime", group_keys=False)["label"].mean()
             t_df = t_df.dropna(how="all")
-            cum = t_df.cumsum()
+            cum = (1.0 + t_df).cumprod() - 1.0      # 复利（v1.19.5，原 cumsum）
             rows = cum.iterrows()
         else:
             # ---- 算法A：调仓日分组，持有到下一调仓日 ----
@@ -206,7 +220,7 @@ def _compute_layers(pred_label, N: int = 5, benchmark_ret: Optional[dict] = None
             t_df = t_df.dropna(how="all")
             t_df["long_short"] = t_df["Group1"] - t_df["Group%d" % N]
             t_df["long_average"] = t_df["Group1"] - df.groupby(level="datetime", group_keys=False)["label"].mean()
-            cum = t_df.cumsum()
+            cum = (1.0 + t_df).cumprod() - 1.0      # 复利（v1.19.5，原 cumsum）
             rows = cum.iterrows()
     except Exception:
         return None

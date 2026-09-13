@@ -312,9 +312,13 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
     for (let i = 0; i < qc.dates.length; i += st) {
       const p: Record<string, number | string | null> = { d: qc.dates[i] }
       for (const g of qc.groups) p[`q${g.quantile}`] = nav(cumOf(g)[i])
-      // ⚠ 多空 = 最强−最弱 的**差值曲线**（不是净值）⇒ 不 +1，走右轴单独看（起点 0）；
-      //   只有**算术口径**下相减才有可解释含义 ⇒ 复利模式不画（置 null）
-      p.ls = basis === 'arith' ? (qc.long_short.cum[i] ?? null) : null
+      // ⚠ 多空 = 最强−最弱 的**价差曲线**（不是净值）⇒ 不 +1，走右轴单独看、起点 0。
+      //   两种口径都给（v1.19.5）：
+      //     · 算术 = `Σ(逐期价差)`       —— 可加，读数 = 累计价差
+      //     · 复利 = `Π(1+逐期价差)−1`   —— 每期全额再平衡的美元中性组合（与回测页分层图同口径）
+      //   后端旧版无 `cum_compound` 时自动回退算术（不空白）。
+      const lsv = basis === 'compound' ? (qc.long_short.cum_compound ?? qc.long_short.cum) : qc.long_short.cum
+      p.ls = lsv[i] ?? null
       p.b = benchAt(qc.dates[i])          // 基准虚线（同口径净值、起点 1，与图 1 同一条）
       out.push(p)
     }
@@ -608,8 +612,9 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                 : '算术累加（各期收益直接相加，非实盘净值）'}</b>，
               <b>以 1 为起点</b>、<b>近似净值但不是逐日盯市净值</b>；
               ④ 默认档 = <b>超额收益最强的分位组</b>（逐期等分，只数与固定 K 档略有差异）；
-              ⑤ <b>多空 = 最强组 − 最弱组</b>，A 股空头收益拿不到 ⇒ <b>不可实现</b>，仅作有效性参考
-              （复利口径下两条净值相减无可解释含义 ⇒ <b>仅在算术口径显示</b>）；
+              ⑤ <b>多空 = 最强组 − 最弱组</b>，A 股空头收益拿不到 ⇒ <b>不可实现</b>，仅作有效性参考。
+              两种口径都画：算术 = <b>逐期价差累加</b>（读数=累计价差）；复利 = <b>逐期价差复利</b>
+              （每期把 notional 全额再平衡的美元中性组合，与回测页分层图同口径；⚠ 极端期会放大得很快）；
               ⑥ <b>基准与组合同口径</b>：指数在<b>同一调仓日</b>的 T+1 → T+h+1 收益、按当前口径累计
               （价格指数、<b>不含分红</b>）⇒ 同口径可直接比超额。
               ⑦ <b>「池内等权」基准（可选，默认不选中）</b>= 各分位组逐期收益的<b>平均</b>
@@ -630,10 +635,13 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                     最强 Q{qc.best_quantile} / 最弱 Q{qc.worst_quantile}；
                     {basis === 'arith' ? (
                       <>
-                        <b>右轴 = 多空</b>（最强−最弱，起点 0；不可实现，仅作参考）
+                        <b>右轴 = 多空</b>（最强−最弱，<b>逐期价差累加</b>，起点 0；不可实现，仅作参考）
                       </>
                     ) : (
-                      <b>复利口径下多空（差值）无可解释含义 ⇒ 已隐藏</b>
+                      <>
+                        <b>右轴 = 多空</b>（最强−最弱，<b>逐期价差复利</b> = 每期全额再平衡的美元中性组合，
+                        起点 0；不可实现，仅作参考）
+                      </>
                     )}
                     ；<b>虚线 = 基准</b>（与图 1 同口径、同一条数据）；点图例可显隐曲线
                   </span>
@@ -643,15 +651,14 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                     <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
                     <XAxis dataKey="d" tick={{ fontSize: 10 }} minTickGap={48} />
                     <YAxis tick={{ fontSize: 10 }} width={52} domain={['auto', 'auto']} />
-                    {/* 多空是**差值**曲线（不是净值）⇒ 单独一根右轴，避免把净值曲线压扁；
-                        复利口径下多空不显示 ⇒ 右轴一并隐藏（否则留一条空轴） */}
+                    {/* 多空是**价差**曲线（不是净值）⇒ 单独一根右轴，避免把净值曲线压扁。
+                        v1.19.5 起两种口径都画（复利 = 逐期价差复利）⇒ 右轴常显 */}
                     <YAxis
                       yAxisId="r"
                       orientation="right"
                       tick={{ fontSize: 10 }}
                       width={52}
                       domain={['auto', 'auto']}
-                      hide={basis !== 'arith'}
                     />
                     <Tooltip formatter={(v: number | string) => (typeof v === 'number' ? v.toFixed(4) : v)} />
                     <Legend
@@ -700,7 +707,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                       dot={false}
                       strokeWidth={2}
                       strokeDasharray="6 3"
-                      hide={basis !== 'arith' || !!hidden.ls}
+                      hide={!!hidden.ls}
                     />
                   </LineChart>
                 </ResponsiveContainer>
