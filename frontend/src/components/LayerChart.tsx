@@ -4,6 +4,7 @@ import {
   Line,
   XAxis,
   YAxis,
+  ReferenceLine,
   CartesianGrid,
   Tooltip,
   Legend,
@@ -147,7 +148,10 @@ export default function LayerChart({ data, rebalance = 1 }: { data?: LayerReturn
             <LineChart data={groups} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
+              <YAxis tick={{ fontSize: 12 }} domain={['auto', 'auto']} />
+              {/* v1.19.8：数据是**累计收益（0 起）**（后端 v1.19.5 起为 `Π(1+r)−1`）——
+                  补一条 0 基准线，否则"从 0 开始"在图上不明显（用户反馈分组图看不出 0 基准）。 */}
+              <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="3 3" />
               <Tooltip />
               <Legend onClick={handleLegendClick} payload={legendPayload} />
               {[1, 2, 3, 4, 5].map((i) => {

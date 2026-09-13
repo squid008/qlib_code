@@ -301,13 +301,15 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
     // 基准（同口径净值）：图 1 的日期轴是 `tc.dates`、图 2 是 `qc.dates`，两者理论上同为调仓日，
     // 但为防长度/起点差异造成错位，这里按**日期字符串**建 Map 对齐（v1.18.55）。
     const bv = basis === 'compound' ? (benchItem?.cum_compound ?? benchItem?.cum) : benchItem?.cum
+    // v1.19.8：图 2 全部改成**累计收益**（0 起），不再转成净值（1 起）—— 见下面 decileData 注释。
     const bMap = new Map<string, number | null>()
-    if (tc && bv) for (let i = 0; i < tc.dates.length; i++) bMap.set(tc.dates[i], nav(bv[i]))
+    if (tc && bv) for (let i = 0; i < tc.dates.length; i++) bMap.set(tc.dates[i], bv[i] ?? null)
     const benchAt = (d: string) => bMap.get(d) ?? null
     // v1.18.56 起点对齐：与图 1 同因 —— 后端 `groups[].cum` / 基准 `cum` 首值都是
-    // 「第一期结束时」，故在最前面补一个「起点」点：10 个分位组与基准 = 1、多空 = 0。
-    const startRow: Record<string, number | string | null> = { d: '起点', ls: 0, b: 1 }
-    for (const g of qc.groups) startRow[`q${g.quantile}`] = 1
+    // 「第一期结束时」，故在最前面补一个「起点」点。
+    // v1.19.8：分位组与基准的起点由 **1（净值）改为 0（累计收益）** —— 理由见下条注释。
+    const startRow: Record<string, number | string | null> = { d: '起点', ls: 0, b: 0 }
+    for (const g of qc.groups) startRow[`q${g.quantile}`] = 0
     const out: Record<string, number | string | null>[] = [startRow]
     // ⚠ 多空 = 最强−最弱 的**价差曲线**（不是净值）⇒ 不 +1，走右轴单独看、起点 0。
     //   两种口径都给（v1.19.5）：
@@ -320,15 +322,15 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
       : qc.long_short.cum
     for (let i = 0; i < qc.dates.length; i += st) {
       const p: Record<string, number | string | null> = { d: qc.dates[i] }
-      for (const g of qc.groups) p[`q${g.quantile}`] = nav(cumOf(g)[i])
+      for (const g of qc.groups) p[`q${g.quantile}`] = cumOf(g)[i] ?? null
       p.ls = lsv[i] ?? null
-      p.b = benchAt(qc.dates[i])          // 基准虚线（同口径净值、起点 1，与图 1 同一条）
+      p.b = benchAt(qc.dates[i])          // 基准虚线（同口径**累计收益**、起点 0）
       out.push(p)
     }
     const last = qc.dates.length - 1
     if (last >= 0 && out.length && out[out.length - 1].d !== qc.dates[last]) {
       const p: Record<string, number | string | null> = { d: qc.dates[last] }
-      for (const g of qc.groups) p[`q${g.quantile}`] = nav(cumOf(g)[last])
+      for (const g of qc.groups) p[`q${g.quantile}`] = cumOf(g)[last] ?? null
       // v1.19.7 修：此处原写 `basis === 'arith' ? cum : null` —— 复利模式把**末点**置 null，
       // 导致多空曲线**最后一截断掉**（v1.19.5 改成"复利也画多空"时漏改这一处）。
       p.ls = lsv[last] ?? null
@@ -338,28 +340,25 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
     return out
   }, [qc, basis, benchItem, tc])
 
-  // v1.19.7：左右轴**基准点对齐**。
-  // 图 2 左轴画的是**净值**（起点/基准 = 1），右轴画的是**多空价差**（起点/基准 = 0）——
-  // 这两点在语义上等价（"不动" == "无多空"），但两轴各自 `domain=['auto','auto']` 时
-  // 它们的高度互不相干 ⇒ 曲线与基准线的相对位置看起来**错位**（用户报"左右轴 0 点没对齐"）。
-  // 这里手动算两侧 domain：取「到各自基准的最大偏离」的**共同值 m** ⇒
-  //   左轴 [1−m, 1+m]、右轴 [−m, m]
-  // ⇒ 基准点重叠于正中，且**两轴尺度完全一致**（净值偏离 0.1 == 价差 0.1 的高度）。
+  // v1.19.8：左右轴**共用同一 domain**。
+  // 图 2 现全部是**累计收益**（0 起，左轴 = 十分位组/基准、右轴 = 多空价差）⇒ 两轴天然同基准。
+  // 但仍各自 `auto` 时高度不同（左轴收益可达 ±50%，右轴价差可能只 ±10%）⇒ 0 点仍会错位。
+  // 故取**两轴数据的公共 [lo, hi]**（含 0、上下 6% 留白）同时喂给两轴 ⇒ 0 点完全对齐、无多余留白。
+  // ⚠ 历史：v1.19.7 曾用"到各自基准的最大偏离的对称展开"，会在净值（1 起）与新收益（0 起）混用时
+  //   留出大片空白、且刻度出现长小数 ⇒ v1.19.8 改为统一 0 起 + 共用 domain + 百分数刻度。
   const yDomains = useMemo(() => {
-    let mLeft = 0
-    let mRight = 0
+    let lo = 0
+    let hi = 0
     for (const d of decileData) {
       for (const [k, v] of Object.entries(d)) {
         if (k === 'd' || typeof v !== 'number' || !Number.isFinite(v)) continue
-        if (k === 'ls') mRight = Math.max(mRight, Math.abs(v))
-        else mLeft = Math.max(mLeft, Math.abs(v - 1))
+        lo = Math.min(lo, v)
+        hi = Math.max(hi, v)
       }
     }
-    const m = Math.max(mLeft, mRight) * 1.08 || 0.02   // 8% 上下留白；全 0 时兜底
-    return {
-      left: [1 - m, 1 + m] as [number, number],
-      right: [-m, m] as [number, number],
-    }
+    const pad = (hi - lo) * 0.06 || 0.02              // 上下 6% 留白；全 0 时兜底
+    const d0: [number, number] = [Math.min(0, lo) - pad, Math.max(0, hi) + pad]
+    return { left: d0, right: d0 }                    // 两轴**共用同一 domain** ⇒ 0 点完全对齐
   }, [decileData])
 
   const DECILE_COLORS = [
@@ -658,7 +657,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               <>
                 <div className="flex items-center gap-2 mt-4 mb-1">
                   <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                    十分位净值曲线（<b>无成本</b>）
+                    十分位累计收益曲线（<b>无成本</b> · 起点 0）
                   </span>
                   <span className="text-[11px] text-slate-400">
                     最强 Q{qc.best_quantile} / 最弱 Q{qc.worst_quantile}；
@@ -679,25 +678,31 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   <LineChart data={decileData} margin={{ top: 5, right: 12, left: 0, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
                     <XAxis dataKey="d" tick={{ fontSize: 10 }} minTickGap={48} />
-                    <YAxis tick={{ fontSize: 10 }} width={52} domain={yDomains.left} />
-                    {/* 多空是**价差**曲线（不是净值）⇒ 单独一根右轴，避免把净值曲线压扁。
+                    <YAxis
+                      tick={{ fontSize: 10 }}
+                      width={52}
+                      domain={yDomains.left}
+                      tickFormatter={(v: number) => `${(v * 100).toFixed(1)}%`}
+                    />
+                    {/* 多空是**价差**曲线（不是收益曲线）⇒ 单独一根右轴，避免把收益曲线压扁。
                         v1.19.5 起两种口径都画（复利 = 逐期价差复利）⇒ 右轴常显。
-                        v1.19.7：两轴 domain 由 `yDomains` 统一给出 ⇒ 基准点（净值 1 / 价差 0）
-                        同高、且两轴**尺度一致**（原先各自 auto 时基准点错位）。 */}
+                        v1.19.8：图 2 全部改为**累计收益（0 起）**，两轴**共用同一 domain**
+                        ⇒ 0 点完全对齐、无多余留白；刻度统一按百分数显示（原先净值域带一串小数）。 */}
                     <YAxis
                       yAxisId="r"
                       orientation="right"
                       tick={{ fontSize: 10 }}
                       width={52}
                       domain={yDomains.right}
+                      tickFormatter={(v: number) => `${(v * 100).toFixed(1)}%`}
                     />
                     <Tooltip formatter={(v: number | string) => (typeof v === 'number' ? v.toFixed(4) : v)} />
                     <Legend
                       wrapperStyle={{ fontSize: 10, cursor: 'pointer' }}
                       onClick={(d) => toggleSeries((d as { dataKey?: string }).dataKey)}
                     />
-                    <ReferenceLine y={1} stroke="#94a3b8" strokeDasharray="3 3" />
-                    {/* 基准虚线（v1.18.55）：同口径净值（起点 1），与图 1 是同一条数据；
+                    <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="3 3" />
+                    {/* 基准虚线（v1.18.55）：同口径**累计收益**（起点 0），与图 1 是同一条数据；
                         与图 1 共用 `hidden.b` ⇒ 点任一图的图例可同时显隐两图的基准线 */}
                     {benchItem && (
                       <Line
