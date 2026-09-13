@@ -1,6 +1,6 @@
 # Qlib 量化回测平台
 
-> **当前版本：v1.19.2**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
+> **当前版本：v1.19.3**（语义化版本，后端 `backend/app/__init__.py` 定义，前端标题栏显示）
 >
 > 各版本更新记录见 **[`md/change_log.md`](./md/change_log.md)**（按 Keep a Changelog 规范）。
 >
@@ -630,7 +630,7 @@ conda env export --no-builds > qlib_env.yml  # 生成 conda 环境
 | `md/change_log.md` | 版本更新记录（Keep a Changelog 规范，v1.3.2 起，README 顶部有链接） |
 | `md/两地 git 工作流.md` | 家/公司两地协作的 Git 工作流约定 |
 | `md/研报集合.md` | 量化研报要点摘录（核心方法论 + 对本项目的可落地点/差距清单，可续加） |
-| `md/开发记录.md` | 每次开发更新/修复要点记录（本地专用，已 .gitignore 排除，不上传 GitHub） |
+| `md/开发记录.md` | 每次开发更新/修复要点记录（**随仓库上传**：v1.19.1 起已从 .gitignore 移出，两地同步直接 `git pull`） |
 | `md/upload.md` | 本地专用文档（已在 .gitignore 排除，不上传 GitHub） |
 
 > 提示：`md/upload.md` 被 `.gitignore` 排除，仅本地可见，不随仓库上传。
