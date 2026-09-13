@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
+import { useModalScrollLock } from '../useModalScrollLock'
 import {
   CartesianGrid,
   Legend,
@@ -150,6 +151,9 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
   const [hidden, setHidden] = useState<Record<string, boolean>>({})
   // 口径（v1.18.47）：**默认复利**（= 实盘）；后端旧版无 curves_compound 时自动回退算术
   const [basis, setBasis] = useState<Basis>('compound')
+  // v1.19.18：弹窗打开期间锁定页面滚动 —— 修「滚到弹窗底部后继续滚会带动背后主页面滚动」
+  // （scroll chaining，用户反馈）。
+  useModalScrollLock(open)
   const toggleSeries = (key?: string | number) => {
     if (typeof key !== 'string' || !key) return
     setHidden((h) => ({ ...h, [key]: !h[key] }))
@@ -395,7 +399,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
       onClick={onClose}
     >
       <div
-        className="bg-white dark:bg-slate-800 rounded-lg shadow-xl w-[1040px] max-w-full max-h-[92vh] overflow-auto"
+        className="bg-white dark:bg-slate-800 rounded-lg shadow-xl w-[1040px] max-w-full max-h-[92vh] overflow-auto overscroll-contain"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-700">

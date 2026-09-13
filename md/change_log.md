@@ -3,6 +3,17 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.18] - 2026-09-13
+
+### Fixed
+- **弹窗「滚动穿透」**（用户报：打开「事件研究」/「持仓曲线」后，滚到弹窗底部**继续滚会带动背后的主页面滚动**，很影响体验）：
+  - **根因**：两个弹窗都是「全屏遮罩 + `max-h-[92vh] overflow-auto` 面板」，内部滚到底后滚轮事件继续冒泡给页面（scroll chaining / 滚动穿透）。
+  - **修复**：① 新增共用 hook `frontend/src/useModalScrollLock.ts` —— 弹窗打开期间**锁定 `body` 滚动**（`overflow: hidden` + 补偿滚动条宽度避免整页横向抖动；关闭时按**打开前的原值**还原，不写死 `''`）；② 两个弹窗的滚动容器同时加 **`overscroll-contain`**（`overscroll-behavior: contain`）作防御。
+  - **为什么不能只加 `overscroll-contain`**：它只在**指针位于可滚动容器内部**时生效 —— 指针落在遮罩上、或弹窗内容不足以产生内部滚动条时，滚轮仍会被页面接走 ⇒ 必须锁 `body`。本应用根节点是 `<div className="min-h-screen">`、无内层滚动容器 ⇒ 滚动主体确实就是 `body`，锁它有效。
+  - ⚠ hooks 规则：`useModalScrollLock(open)` 必须放在 `if (!open) return null` **之前**（两个弹窗已按此放置）；父级都是常挂载 + `open` 传参（`open={estOpen}` / `open={curveOpen}`）⇒ 关闭时靠 `[open]` 依赖自动解锁。
+  - 未改动 `FormulaHandbookModal`（结构不同：内层多个 `overflow-y-auto` 面板），如需同样处理再说。
+- 版本 1.19.17 → 1.19.18。
+
 ## [1.19.17] - 2026-09-13
 
 ### Changed

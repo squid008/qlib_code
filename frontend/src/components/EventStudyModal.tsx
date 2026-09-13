@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useModalScrollLock } from '../useModalScrollLock'
 import {
   CartesianGrid,
   Legend,
@@ -355,6 +356,10 @@ export default function EventStudyModal({
     }
   }, [result, lastPoint, pair])
 
+  // v1.19.18：弹窗打开期间锁定页面滚动 —— 修「滚到弹窗底部后继续滚会带动背后主页面滚动」
+  // （scroll chaining，用户反馈）。⚠ 必须放在 `if (!open) return null` **之前**（hooks 不能条件调用）。
+  useModalScrollLock(open)
+
   if (!open) return null
 
   return (
@@ -363,7 +368,7 @@ export default function EventStudyModal({
       onClick={onClose}
     >
       <div
-        className="bg-white dark:bg-slate-800 rounded-lg shadow-xl w-[980px] max-w-full max-h-[92vh] overflow-auto"
+        className="bg-white dark:bg-slate-800 rounded-lg shadow-xl w-[980px] max-w-full max-h-[92vh] overflow-auto overscroll-contain"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 头部 */}
