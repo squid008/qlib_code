@@ -205,6 +205,11 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
     # 全局只 init 一次（多线程并发回测时避免重复初始化互相踩踏全局 C/D 状态）
     _ensure_qlib_init(provider_uri)
 
+    # v1.19.10：把原先 3% → 8% 之间的「黑盒区间」拆成独立进度点。
+    # 背景：用户反馈「卡在『初始化 Qlib』3% 特别慢」却无从判断卡在哪一步 —— 这一段以后
+    # 依次是 init Qlib / 分配并行核数 / 磁盘治理，三者耗时差异很大（实测 init ≈4s、
+    # apply_active_jobs ≈1.1s、cleanup 扫描 ≈0.3s），拆开后卡住时一眼能看出是哪个子步骤。
+    _report(5, "分配并行核数...")
     # qlib.init 会 reset 全局配置 → 按当前并发任务数重新分配每任务并行核数
     try:
         from .resource import apply_active_jobs
@@ -213,6 +218,7 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
     except Exception:
         pass
 
+    _report(6, "磁盘治理（清理旧缓存/旧产物）...")
     # 磁盘治理：feature_cache/artifacts 按配额 + LRU 节流清理（静默，不阻塞回测）
     try:
         from .storage_cleanup import cleanup_storage
@@ -221,6 +227,7 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
     except Exception:
         pass
 
+    _report(7, "准备实验追踪（mlflow）...")
     # 2) 使用 sqlite 作为实验追踪后端，避免 filesystem 维护模式限制
     _exp_uri = _default_exp_uri(work_dir)
     R.set_uri(_exp_uri)

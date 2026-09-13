@@ -3,6 +3,20 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.10] - 2026-09-13
+
+### Fixed
+- **「任务状态获取失败」+ 任务卡在「初始化 Qlib 3%」假死**（用户报：多因子训练回测跑着跑着状态取不到、且 3% 阶段"特别慢"）：
+  - **真因 ①（404）**：任务表是**进程内内存表**（`TaskManager._tasks`；`routers/backtest.py:88` 查不到即 404）。该任务 `a0d0b6181eaa` 于 **18:23:27** 提交，而后端在 **18:26:08** 被我发 v1.19.9 时重启（内存任务表随进程清空）⇒ `GET /api/backtest/a0d0b6181eaa` 持续 **404**，前端报"任务状态获取失败"。证据：任务目录 `artifacts\20260913-182327_Linear_all_2026_2026_a0d0b6181eaa` 内 4 个文件**全部停在 18:23:27**；当前后端 PID 13168 的启动时间 **18:26:08 > 任务创建时间**；`server.out.log` 中**没有任何 `POST /api/backtest`**（该任务不属当前进程）；`/api/backtests` 为空。
+  - **真因 ②（"3% 特别慢"是假象）**：前端轮询 `catch { return t }` **静默吞掉 404**（`App.tsx`）⇒ 卡片**永远冻结在最后一帧**（= `_report(3, "初始化 Qlib...")`）⇒ 用户误以为"这一阶段特别慢"，实际任务早已被重启杀掉。
+  - **修复**（`frontend/src/App.tsx`）：轮询识别 **404** ⇒ 不再冻结，标记 `cancelled` + message「任务已中止：后端服务重启后任务丢失（产物文件仍在磁盘，可在「历史」查看）」；点任务卡遇 404 时给出同义明确文案（原先统一"任务状态获取失败"，易被理解成网络问题）。
+  - **排除"改坏了"**（实测，`ai_test/probe_v1910_qlib_init.py`）：`get_data_source` **4.11s**（含 `qlib.init`）、`D.calendar` **0.03s**（43 个交易日）、`D.list_instruments(all)` **0.05s**（5575 只）、总计 **4.2s**；`provider_uri = data\cn_data`（本地）⇒ **qlib 初始化本身并不慢**，与近期改动无关。
+  - 其余 3%~8% 区间实测：`apply_active_jobs` 1.148s、`feature_cache` 扫描 0.002s（1.8GB/15 文件）、`artifacts` 扫描 40 目录 0.275s、`resource_summary` 0.001s（12 核 / 31.8GB / `max_concurrent=4`）⇒ 该区间总计约 5~6s。
+
+### Changed
+- **回测进度细分**（`engine/qlib_engine.py`）：3% → 8% 之间新增 `_report(5, "分配并行核数...")` / `_report(6, "磁盘治理（清理旧缓存/旧产物）...")` / `_report(7, "准备实验追踪（mlflow）...")` ⇒ 把原先的"黑盒区间"拆开，之后若真卡住可一眼看出是 init / 资源分配 / 磁盘治理中的哪一步。
+- 版本 1.19.9 → 1.19.10。
+
 ## [1.19.9] - 2026-09-13
 
 ### Changed

@@ -648,8 +648,17 @@ export default function App() {
       } else {
         setArtifacts(null)
       }
-    } catch {
-      setError('任务状态获取失败')
+    } catch (e) {
+      // v1.19.10：区分 404（任务已不在后端内存表 —— 常见于后端重启）与其它网络/服务错误，
+      // 否则用户只看到"任务状态获取失败"，不知道任务已随重启丢失、产物其实还在磁盘上。
+      const code = (e as { response?: { status?: number } })?.response?.status
+      if (code === 404) {
+        setTask(null)
+        setArtifacts(null)
+        setError('该任务已不存在（后端服务重启会清空内存中的任务；产物在磁盘上，可在「历史」中查看）')
+      } else {
+        setError('任务状态获取失败')
+      }
     }
   }
 
@@ -782,7 +791,19 @@ export default function App() {
             }
             try {
               return await getBacktestTask(t.task_id)
-            } catch {
+            } catch (e) {
+              // v1.19.10：**404 = 后端内存任务表里已无此任务**（后端重启会清空内存任务表）。
+              // 原写法直接 `return t` ⇒ 卡片**永远冻结在最后一帧进度**：用户看到"初始化 Qlib
+              // 3% 特别慢"，其实是任务早被后端重启杀掉、轮询把 404 静默吞掉了（真因）。现在
+              // 标记为已中止并把原因写进 message，避免误导。
+              const code = (e as { response?: { status?: number } })?.response?.status
+              if (code === 404) {
+                return {
+                  ...t,
+                  status: 'cancelled' as const,
+                  message: '任务已中止：后端服务重启后任务丢失（产物文件仍在磁盘，可在「历史」查看）',
+                }
+              }
               return t
             }
           }),
