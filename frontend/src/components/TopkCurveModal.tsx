@@ -69,12 +69,15 @@ function PerfCard({
   titleExtra,
   perf,
   extra,
+  note,
 }: {
   title: string
   /** 标题行右侧的自定义控件（如「成本档」切换选项卡）。 */
   titleExtra?: ReactNode
   perf?: PerfMetrics | null
   extra?: string
+  /** 覆盖补充行末尾的口径说明（默认「逐日盯市、rf=0」）；同时把「日胜率」改为「期胜率」。 */
+  note?: string
 }) {
   if (!perf) return null
   const cell = (label: string, val: string, cls = '') => (
@@ -97,8 +100,8 @@ function PerfCard({
         {cell('卡玛', fmtRatio(perf.calmar))}
       </div>
       <div className="text-slate-400 mt-0.5 leading-relaxed">
-        年化波动 {pct(perf.vol_annual, 1)}｜日胜率 {pct(perf.win_rate, 1)}｜样本{' '}
-        {perf.n_days} 个交易日｜逐日盯市、rf=0
+        年化波动 {pct(perf.vol_annual, 1)}｜{note ? '期胜率' : '日胜率'}{' '}
+        {pct(perf.win_rate, 1)}｜样本 {perf.n_days} 个交易日｜{note ?? '逐日盯市、rf=0'}
         {extra ? `｜${extra}` : ''}
       </div>
     </div>
@@ -143,7 +146,9 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
   // ⚠ **默认不选中**（默认仍按股票池映射到指数），仅在用户手动切换时启用 ——
   // 它与聚宽 / 外部检验脚本的「池内等权」口径一致，用来解释"相对指数 vs 相对等权"的差额。
   const EQW_CODE = '__eqw__'
-  const eqwBench = useMemo(() => {
+  // 池内等权的**逐期收益序列**（各分位组 cum 差分后取平均；等频分组 ⇒ 等价池内成分等权）。
+  // ⚠ 它与组合曲线**完全同口径**（同一批调仓日、同一持有 h、**同样含分红再投**）。
+  const eqwPer = useMemo(() => {
     const gs = qc?.groups ?? []
     const n = qc?.dates?.length ?? 0
     if (!gs.length || !n) return null
@@ -153,19 +158,56 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
       for (let i = 0; i < n; i++) r.push((cum[i] ?? 0) - (i > 0 ? (cum[i - 1] ?? 0) : 0))
       return r
     })
+    const out: number[] = []
+    for (let i = 0; i < n; i++) out.push(per.reduce((s, x) => s + (x[i] ?? 0), 0) / per.length)
+    return out
+  }, [qc])
+  const eqwBench = useMemo(() => {
+    if (!eqwPer) return null
     const cum: number[] = []
     const cmp: number[] = []
     let a = 0
     let c = 1
-    for (let i = 0; i < n; i++) {
-      const r = per.reduce((s, x) => s + (x[i] ?? 0), 0) / per.length
+    for (const r of eqwPer) {
       a += r
       c *= 1 + r
       cum.push(a)
       cmp.push(c - 1)
     }
     return { code: EQW_CODE, name: '池内等权', cum, cum_compound: cmp, dates: [], perf: null }
-  }, [qc])
+  }, [eqwPer])
+  // 池内等权的绩效指标（v1.18.58）：后端只给**指数**算了逐日盯市 perf；等权基准由前端按
+  // **调仓期**近似 —— 年化/最大回撤用期收益序列、夏普/索提诺用期均值/标准差 × sqrt(243/h)。
+  // ⚠ 粒度比组合卡的「逐日盯市」粗（卡内 note 会注明）；含分红（与组合同口径）。
+  const eqwPerf = useMemo(() => {
+    if (!eqwPer || !eqwPer.length) return null
+    const n = eqwPer.length
+    const h = Math.max(1, Math.round(Number(tc?.rebalance_period) || 1))
+    const annF = Math.sqrt(243 / h)
+    const mean = eqwPer.reduce((s, x) => s + x, 0) / n
+    const sd = Math.sqrt(eqwPer.reduce((s, x) => s + (x - mean) ** 2, 0) / Math.max(n - 1, 1))
+    const dsd = Math.sqrt(eqwPer.reduce((s, x) => s + Math.min(x, 0) ** 2, 0) / n)
+    let nv = 1
+    let peak = 1
+    let mdd = 0
+    for (const x of eqwPer) {
+      nv *= 1 + x
+      peak = Math.max(peak, nv)
+      mdd = Math.min(mdd, nv / peak - 1)
+    }
+    const yrs = Math.max((n * h) / 243, 1e-9)
+    const annual = nv ** (1 / yrs) - 1
+    return {
+      annual_return: annual,
+      max_drawdown: mdd,
+      sharpe: sd > 0 ? (mean / sd) * annF : null,
+      sortino: dsd > 0 ? (mean / dsd) * annF : null,
+      calmar: mdd < 0 ? annual / Math.abs(mdd) : null,
+      vol_annual: sd * annF,
+      win_rate: eqwPer.filter((x) => x > 0).length / n,
+      n_days: Math.round(n * h),
+    } as unknown as PerfMetrics
+  }, [eqwPer, tc])
   const benchOptions: { code: string; name: string }[] = [
     ...benchList.map((b) => ({ code: b.code, name: b.name })),
     ...(eqwBench ? [{ code: EQW_CODE, name: eqwBench.name }] : []),
@@ -240,7 +282,10 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
   // 切换纯前端零重算；无成本档对应曲线 c0，0.004 / 0.008 对应 c004 / c008。
   // ⚠ 基于净值 ⇒ 仅复利口径展示（算术累加不是净值，回撤/波动无从定义）。
   const itemPerf = item?.perf?.[perfCost] ?? null
-  const benchPerf = benchItem?.perf ?? null
+  // 基准绩效：指数用后端逐日盯市 perf；「池内等权」无后端 perf ⇒ 用前端按调仓期的近似值
+  const benchPerf = benchItem?.perf ?? (benchCode === EQW_CODE ? eqwPerf : null)
+  const benchPerfNote =
+    benchCode === EQW_CODE ? '按调仓期口径（非逐日盯市）、含分红；与组合同口径' : undefined
   const costAnnual = item?.perf
     ? `三档年化：无成本 ${signedPct(item.perf['0.0000']?.annual_return, 1)}`
       + ` / 0.004 ${signedPct(item.perf['0.0040']?.annual_return, 1)}`
@@ -396,7 +441,11 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               perf={itemPerf}
               extra={costAnnual}
             />
-            <PerfCard title={`基准 ${benchItem?.name ?? ''}`} perf={benchPerf} />
+            <PerfCard
+              title={`基准 ${benchItem?.name ?? ''}`}
+              perf={benchPerf}
+              note={benchPerfNote}
+            />
           </div>
         )}
         {basis === 'compound' && !itemPerf && !benchPerf && tc && (
@@ -427,7 +476,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   onClick={() => setBench(b.code)}
                   title={
                     b.code === EQW_CODE
-                      ? '池内等权（本图现算）：每个调仓期内「池内全部成分股等权」持有 h 日的收益 = 各分位组逐期收益的平均，按当前口径累计；与聚宽 / 外部检验脚本的"池内等权"口径一致（⚠ 非指数，无分红/加权概念）'
+                      ? '池内等权（本图现算、含分红）：每个调仓期内「池内全部成分股等权」持有 h 日的收益 = 各分位组逐期收益的平均，按当前口径累计；与组合完全同口径（同样含分红再投），与聚宽 / 外部检验脚本的"池内等权"口径一致（⚠ 非指数 ⇒ 无加权概念；上面的指数基准是**不含分红**的价格指数）'
                       : `${b.code}（同口径：指数在同一调仓期的持有 h 日收益、按当前口径累计；价格指数不含分红）`
                   }
                   className={`px-1.5 py-0.5 rounded border text-[11px] ${
@@ -564,8 +613,13 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               ⑥ <b>基准与组合同口径</b>：指数在<b>同一调仓日</b>的 T+1 → T+h+1 收益、按当前口径累计
               （价格指数、<b>不含分红</b>）⇒ 同口径可直接比超额。
               ⑦ <b>「池内等权」基准（可选，默认不选中）</b>= 各分位组逐期收益的<b>平均</b>
-              （等频分组 ⇒ 等价于池内全部成分股等权），与本图现算、不走后端行情；它<b>不是指数</b>
-              （无分红/加权概念），用于解释「相对指数 vs 相对等权」的差额（聚宽等外部脚本多用等权口径）。
+              （等频分组 ⇒ 等价于池内全部成分股等权），与本图现算、不走后端行情；它<b>不是指数</b>，
+              但<b>与组合完全同口径（同样含分红再投）</b>，用于解释「相对指数 vs 相对等权」的差额
+              （聚宽等外部脚本多用等权口径）。
+              ⑧ <b>⚠ 分红口径差异（看超额前务必知道）</b>：上面 5 个<b>指数基准是价格指数、不含分红</b>，
+              而<b>组合与「池内等权」都含分红再投</b> ⇒ <b>相对指数的超额里含约 2~3pp/年 的分红差</b>
+              （沪深300 股息率量级）。要评估<b>真实超额</b>请用<b>池内等权</b>基准；指数基准适合回答
+              "我这份组合有没有跑赢指数本身"。
             </div>
 
             {/* ---- 图 2：十分位累计收益曲线 ---- */}
