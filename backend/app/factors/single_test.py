@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -157,6 +157,98 @@ def _resolve_instruments(universe: str, start_date: str) -> List[str]:
             continue
         filtered.append(i)
     return filtered
+
+
+def _inst_spans_path(universe: str) -> Optional[str]:
+    """qlib instruments 区间文件路径（`<provider_uri>/instruments/<universe>.txt`）。
+
+    ⚠ 本模块的 `os` / `_default_qlib_uri` 都是在**函数内部**延迟 import 的（模块级没有这
+    两个名字），因此这里必须局部 import —— 否则 `NameError` 会被下方 `except Exception`
+    静默吞掉、退化成"没有成分文件"（v1.18.50 首次实现即踩此坑，表现为过滤无效）。
+    """
+    import os
+
+    from ..engine.utils import _default_qlib_uri
+
+    try:
+        uri = _default_qlib_uri()
+    except Exception:
+        return None
+    if not uri:
+        return None
+    p = os.path.join(str(uri), "instruments", "%s.txt" % universe)
+    return p if os.path.isfile(p) else None
+
+
+def _daily_member_mask(universe: str, index: pd.MultiIndex) -> Optional[np.ndarray]:
+    """**逐日成分掩码**（v1.18.50 修未来函数）：与 `index` 逐行对齐的 bool 数组。
+
+    背景：`_resolve_instruments` 调 `D.list_instruments(scope, start_time=...)`（无 end_time）
+    ⇒ qlib 返回「start 之后**曾属于**该池」的全期并集 —— 实测 csi300 为 459 只，而真实成分
+    每天 300 只，2021 年样本里混入 **106 只彼时尚未纳入**的股票 ⇒ 幸存者偏差、系统性高估。
+
+    本函数直接解析 instruments **区间文件**（比逐日调 qlib API 快 ~8.5×：0.2s vs 1.76s），
+    用「日 × 股」布尔矩阵按区间 slice 填充，再按 index 取每行掩码。
+
+    返回 `None` 表示**无从判断**（池名无对应文件，如自定义池）→ 调用方应保持旧行为（不筛）。
+    `all`（全 A）没有"成分"概念，调用方应跳过（上市前天然无数据，本就不构成偏差）。
+    """
+    path = _inst_spans_path(universe)
+    if path is None:
+        return None
+    try:
+        inst_lv = index.names.index("instrument")
+        dt_lv = index.names.index("datetime")
+    except ValueError:
+        return None
+
+    inst_raw = np.asarray(index.get_level_values(inst_lv))
+    dt_raw = np.asarray(index.get_level_values(dt_lv))
+    if inst_raw.size == 0:
+        return None
+    insts = np.asarray(sorted({str(x).upper() for x in inst_raw}))
+    days = np.asarray(sorted({np.datetime64(pd.Timestamp(x).to_datetime64()) for x in dt_raw}))
+    inst_pos = {c: i for i, c in enumerate(insts)}
+
+    # 解析区间：code -> [(start, end), ...]（同一代码可有多段：进出池多次）
+    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+        spans: Dict[str, List[Tuple[np.datetime64, np.datetime64]]] = {}
+        for line in fh:
+            p = line.split()
+            if len(p) < 3:
+                continue
+            c = p[0].upper()
+            if c not in inst_pos:
+                continue
+            try:
+                s = np.datetime64(pd.Timestamp(p[1][:10]).to_datetime64())
+                e = np.datetime64(pd.Timestamp(p[2][:10]).to_datetime64())
+            except Exception:
+                continue
+            spans.setdefault(c, []).append((s, e))
+
+    mat = np.zeros((days.size, insts.size), dtype=bool)
+    for c, segs in spans.items():
+        j = inst_pos[c]
+        for s, e in segs:
+            a = int(np.searchsorted(days, s, side="left"))
+            b = int(np.searchsorted(days, e, side="right"))
+            if b > a:
+                mat[a:b, j] = True
+
+    # 向量化映射（v1.18.50）：`Index.get_indexer` 是 C 实现 —— 原先用 Python 生成器
+    # 逐行构造「行/列位置」（面板通常 60 万行 × 2 次）实测要 3~5s，是"过滤后反而更慢"
+    # 的真正原因（而不是 `df[_mk]` 的复制）。
+    d_idx = pd.DatetimeIndex(days)
+    c_idx = pd.Index(insts)
+    dt_vals = pd.DatetimeIndex(index.get_level_values(dt_lv)).values.astype("datetime64[ns]")
+    r = d_idx.get_indexer(dt_vals)
+    cc = c_idx.get_indexer(pd.Index(index.get_level_values(inst_lv)).astype(str).str.upper())
+    ok = (r >= 0) & (cc >= 0)
+    out = np.zeros(r.size, dtype=bool)
+    if ok.any():
+        out[ok] = mat[r[ok], cc[ok]]
+    return out
 
 
 def _stat_group(g: pd.DataFrame, lu_t: int = 0, lu_t1: int = 0, susp: int = 0, extra: int = 0) -> Optional[dict]:
@@ -1393,6 +1485,31 @@ def run_single_factor_tests(
         if len(df) == 0:
             err = [{**_test_one(pd.DataFrame(), f, ""), "error": "预热裁剪后无样本"} for f in factors]
             return {h: err for h in horizons}
+
+    # ---- v1.18.50 逐日成分过滤：修「股票池未来函数」--------------------------------
+    # 原 `_resolve_instruments` 只传 start_time ⇒ qlib 返回「start 之后**曾属于**该池」的
+    # **全期并集**（csi300 实测 459 只 vs 真实成分 300 只/天；2021 年样本里混入 **106 只
+    # 彼时尚未纳入**的股票）⇒ 幸存者偏差、系统性高估（用户以聚宽口径核对：真实无超额）。
+    # 现按**当日真实成分**剔除样本 —— 分层 / IC / 收益统计 / 事件研究 / 基准曲线全部自动生效。
+    # 成本：解析区间文件 + 建掩码 ≈ 0.2s；样本 459→300（−35%）⇒ 统计阶段反而更快。
+    # `all`（全 A）无成分概念（上市前天然无数据）⇒ 跳过，保持旧口径。
+    if universe != "all":
+        try:
+            _mk = _daily_member_mask(universe, df.index)
+            if _mk is None:
+                if progress_cb:
+                    progress_cb(None, 8.0, "⚠ 未找到 %s 成分文件，按全期并集口径统计" % universe)
+            elif not _mk.all():
+                _before = int(len(df))
+                df = df[_mk]
+                if progress_cb:
+                    progress_cb(None, 8.0, "按当日成分过滤样本 %d → %d 行" % (_before, int(len(df))))
+                if len(df) == 0:
+                    err = [{**_test_one(pd.DataFrame(), f, ""), "error": "成分过滤后无样本"}
+                           for f in factors]
+                    return {h: err for h in horizons}
+        except Exception as e:      # 过滤失败不致命：退化旧口径（宁可带偏差也不要任务失败）
+            _dump_sft_error(e)
 
     # 未裁剪面板（含尾部 n_need+3 个交易日）：事件研究需要 T+1+k 的未来价格。
     # 默认口径下 df 会在下方裁回 [.., end_date] 用于统计；df_full 仅供事件研究取价。

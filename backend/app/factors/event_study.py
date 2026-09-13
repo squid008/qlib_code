@@ -465,6 +465,7 @@ def run_event_study(
 
     from .single_test import (
         FactorTestCancelled,
+        _daily_member_mask,
         _ensure_qlib_init,
         _inst_codes,
         _load_feature_panel,
@@ -541,7 +542,20 @@ def run_event_study(
     )
     if df is None:
         return {"error": "特征计算失败（面板不支持该算子或数据异常，无法事件研究）"}
-    df = df.copy()
+    # v1.18.50 逐日成分过滤（与 single_test 同口径，修"股票池未来函数"）：
+    # 原 `_resolve_instruments` 返回的是「区间内曾属于该池」的全期并集 ⇒ 事件研究的触发
+    # 样本里混入彼时尚未纳入的股票（幸存者偏差）。此处按当日真实成分剔除，`df[_mk]` 已
+    # 是新对象，故无需再 `.copy()`；`all`（全 A）无成分概念 → 跳过。
+    _mk = None
+    if universe != "all":
+        try:
+            _mk = _daily_member_mask(universe, df.index)
+        except Exception:      # 过滤失败不致命：退化旧口径
+            _mk = None
+    if _mk is not None and not _mk.all():
+        df = df[_mk]
+    else:
+        df = df.copy()
     df.columns = all_cols
     _check()
 
