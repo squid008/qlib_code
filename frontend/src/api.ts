@@ -516,6 +516,11 @@ export interface EventStudyBaseline {
   baseline_median?: (number | null)[] // 基准：未触发组事件级中位数
   excess_median?: (number | null)[] // 中位数超额 = 触发组中位数 − 基准中位数
   n_pair_days: number // 配对日数
+  // ── 逐 k 的日配对稳定性（v1.19.24；弹窗第④条「日配对稳定」随「最长持有 k」取用）──
+  // ⚠ 旧结果（v1.19.24 之前算的）没有这三项 ⇒ 前端回退用"该行"的 daily_t_hac/daily_win。
+  t_hac?: (number | null)[] // 每个 k：日配对差值序列的 Newey-West HAC t
+  win?: (number | null)[] // 每个 k：日配对差值 > 0 的配对日占比
+  n_pair_days_k?: number[] // 每个 k：有效配对日数（< 2 ⇒ 上一行两项为 null）
 }
 export interface EventStudyResult {
   factor: { id: string; name: string; expression: string; source_formula?: string }

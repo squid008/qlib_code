@@ -27,6 +27,10 @@ from ..engine.limits import mark_limit_up, field_bin_available
 from ..engine.adjust import adjust_expr, normalize_mode
 from ..engine.feature_cache import _sr_wrap_expr
 from ..engine.inst_mask import _daily_member_mask, _inst_spans_path  # noqa: F401
+# v1.19.24：`_acf` / `_hac_t` 搬到**零副作用轻量模块** `engine/stats.py`（事件研究也要用同一实现，
+# 算 per-k 日配对稳定性；而本模块 import 时会 `_engine_init`，事件研究绝不能反向 import 本模块）。
+# 这里保留原名（`_acf` / `_hac_t`）直接转发 ⇒ 行为与调用点逐位不变。
+from ..engine.stats import acf as _acf, hac_t as _hac_t  # noqa: F401
 from .event_study import build_event_stats, compute_baseline_curves
 
 
@@ -45,39 +49,6 @@ def _inst_codes(s: pd.DataFrame) -> pd.Series:
         vals = ups[codes] if codes.size else np.empty(0, dtype=object)
         return pd.Series(vals, index=s.index)
     return pd.Series([""] * len(s), index=s.index)
-
-
-def _acf(x: np.ndarray, k: int) -> float:
-    """lag-k 自相关系数（样本）。"""
-    n = len(x)
-    if n <= k:
-        return 0.0
-    xc = x - x.mean()
-    denom = float(np.sum(xc ** 2))
-    if denom <= 0:
-        return 0.0
-    return float(np.sum(xc[: n - k] * xc[k:]) / denom)
-
-
-def _hac_t(x: np.ndarray, maxlags: int = None) -> Optional[float]:
-    """Newey-West HAC 稳健 t 统计量（修正自相关 + 异方差）。
-
-    maxlags 默认按 Newey-West 建议：int(4 * (n/100)^(2/9))。
-    方差 = γ0 + 2·Σ(1 - j/(L+1))·γj；t = mean / sqrt(修正方差/n)。
-    序列方差被极端自相关压成非正时钳到极小值。
-    """
-    n = len(x)
-    if n < 3:
-        return None
-    if maxlags is None:
-        maxlags = int(4 * (n / 100.0) ** (2 / 9.0))
-        maxlags = max(1, min(maxlags, n - 2))
-    m = float(x.mean())
-    xc = x - m
-    gam = np.array([np.sum(xc[: n - k] * xc[k:]) / n for k in range(maxlags + 1)])
-    var = gam[0] + 2.0 * np.sum((1 - np.arange(1, maxlags + 1) / (maxlags + 1)) * gam[1:])
-    se = np.sqrt(max(var, 1e-18) / n)
-    return float(m / se)
 
 
 def _bad_date_arg(start_date, end_date) -> str:

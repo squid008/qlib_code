@@ -3,6 +3,21 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.24] - 2026-09-13
+
+### Fixed
+- **事件研究弹窗第④条「日配对稳定」不随「最长持有 k」—— 同一弹窗内四条判据口径不一致**（用户报：CWH 公式/全A/5 年，预测 40 天「有效」、60 天「无效」；**在 60 天行里把最长持有改成 40 仍然无效**，应与 40 天行一致）：
+  - **根因**：弹窗四条判据**数据来源不一致** ——
+    ① 中位数 `lastPoint.median`、② 绝对收益胜率 `lastPoint.win`、③ 日配对超额 `baseline.excess[当前 k]` 都**随所选 k**；
+    而 **④ 日配对稳定用的是 `pair` prop** = "被点开那一行"的 `daily_t_hac / daily_win`（固定在该行 horizon）。
+    ⇒ 在 60 天行切到 40 时只有 ①②③ 变成 40 口径、④ 仍是 60 口径；若 60 口径的日配对不达标，判定永远出不来。
+  - **修复（后端）**：`factors/event_study.compute_baseline_curves` 新增**逐 k** 的 `t_hac` / `win` / `n_pair_days_k` —— 在原来「先按日取截面均值、再对配对日平均」的**同一条逐日序列**上，对每个 k 直接算 Newey-West HAC t 与日胜率（原实现只留了均值，逐日序列当 k 就丢了）。为此补出与 `rows` 同序的 `days_ok`（原来日期被丢掉、无法按位对齐触发组与基准组）。
+  - **修复（共用模块）**：新增 **`app/engine/stats.py`**（纯函数、零副作用）承载 `acf` / `hac_t` / `pair_stability`；`single_test._acf/_hac_t` 改为转发（行为逐位不变）。⚠ 不能从 `single_test` 反向 import —— 它 **import 时就会 `_engine_init(...)`**，事件研究/回测 worker 引用会违反「`qlib.init()` 只 init 一次」铁律。
+  - **修复（前端）**：第④条改为取 `baseline.t_hac[当前 k] / win[当前 k]`；**旧结果**（无该字段）整体回退到行级口径，并在提示里标注「第④条仍是该行周期口径（重跑后即按当前 k）」。回退是**整体**的，不逐字段混用。
+  - **实测**（`ai_test/verify_v1924_pair_k.py`，`CWH_MIX_D_PCT_R40` / csi300 / 2023-01-01~2025-12-31 / `label_horizons=[40,60]`）：40 天行行级 `t=0.5722 win=0.5833`（通过）；**60 天行切到 k=40 的 per-k = `t=0.6624 win=0.6667`（通过）✅**（修复前此处用 60 行级 = `t=−0.539 win=0.4167` ⇒ 不通过 ❌）；40 天行 per-k@40 与 60 天行 per-k@40 **完全相等**（`|Δ|=0.0000`，事件研究按因子缓存跨周期复用），与行级差 0.09（n=12 配对日，差异来自配对日集合/尾部不足 k 期）。
+  - 测试：新增 `tests/test_stats.py`（用独立朴素实现对拍 `hac_t`/`acf`、`pair_stability` 边界）⇒ 6 passed。
+- 版本 1.19.23 → 1.19.24。
+
 ## [1.19.23] - 2026-09-13
 
 ### UI

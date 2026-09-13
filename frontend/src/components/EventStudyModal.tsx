@@ -302,8 +302,24 @@ export default function EventStudyModal({
     // v1.18.32：与表格「结论」列共用门槛 —— 超额按持有期缩放（max(0.5%, 0.025%×k)）+ 日配对稳定性
     const thr = excessThresholdOf(lastPoint.k)
     const thrTxt = `${(thr * 100).toFixed(3)}%`
-    const st = pairStabilityOf({ t: pair?.t, win: pair?.win })
-    const scope = `（本提示按当前「最长持有 ${lastPoint.k ?? '?'} 日」口径；表格结论按该行「周期」列口径）`
+    // v1.19.24：**第④条（日配对稳定）也随「最长持有 k」** —— 取后端逐 k 的 HAC t / 日胜率
+    // （`baseline.t_hac` / `baseline.win`，与 ①②③ 同一条逐日序列算出）。
+    // 修复的 bug：此前 ④ 固定用"被点开那一行"的统计量（`pair` prop），于是在 60 天行里把
+    // 「最长持有」改成 40 时，只有 ①②③ 换成 40 口径、④ 仍按 60 口径 ⇒ 判定永远出不来（用户报）。
+    // ⚠ 旧结果（v1.19.24 之前算的）没有该字段 ⇒ 回退到行级口径，并在提示里明确标注。
+    // ⚠ 回退是**整体**的（不逐字段混用）：新结果 ⇒ ④ 全按 k；旧结果 ⇒ ④ 全按行级。
+    const hasPerK = bi >= 0 && Array.isArray(bl?.t_hac) && Array.isArray(bl?.win)
+    const st = pairStabilityOf(
+      hasPerK
+        ? { t: bl!.t_hac![bi] ?? null, win: bl!.win![bi] ?? null }
+        : { t: pair?.t, win: pair?.win },
+    )
+    const stFromRow = !hasPerK
+    const scope =
+      `（本提示按当前「最长持有 ${lastPoint.k ?? '?'} 日」口径；表格结论按该行「周期」列口径）` +
+      (stFromRow
+        ? '；⚠ 其中第④条（日配对稳定）仍是该行「周期」口径 —— 旧结果缺逐 k 统计，重跑后即按当前 k'
+        : '')
     // v1.18.63：与表格「结论」列口径对齐 —— 彩票型 = |中位数| <1% 且 胜率 45~55%
     // 且 均值 > max(0.50%, |中位数|×3)。原弹窗只判 |中位数| <0.5% 且缺均值条件 ⇒ 与表格漂移。
     const mean = lastPoint.mean ?? 0
@@ -330,7 +346,7 @@ export default function EventStudyModal({
             ? '日配对稳定性无法验证（配对日不足 2）'
             : `日配对不稳定（|HAC t| ${st.tVal == null ? '-' : Math.abs(st.tVal).toFixed(2)} <2 且 日胜率 ${
                 st.winVal == null ? '-' : `${(st.winVal * 100).toFixed(2)}%`
-              } <55%）`,
+              } <55%；口径 = ${stFromRow ? '该行「周期」' : `当前 ${lastPoint.k} 日`}）`,
         )
       }
       return {

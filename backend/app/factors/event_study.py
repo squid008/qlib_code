@@ -31,6 +31,8 @@ import pandas as pd
 from ..engine.adjust import adjust_expr, normalize_mode
 from ..engine.feature_cache import _sr_wrap_expr
 from ..engine.limits import field_bin_available, mark_limit_up
+# v1.19.24：日配对稳定性（HAC t / 日胜率）走**零副作用**共用模块，与单因子测试同一实现
+from ..engine.stats import pair_stability
 
 
 def _q(x: np.ndarray, p: float) -> float:
@@ -304,6 +306,15 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
          excess_median。
     之所以两套：均值会被少数极端事件（连板/妖股）主导，中位数刻画「典型一次触发」；
     两者差距本身就是判断信号是否「彩票型」的关键证据。数值均为原始小数；前端按 % 展示。
+
+    **v1.19.24 新增：逐 k 的「日配对稳定性」** —— `t_hac` / `win` / `n_pair_days_k`。
+    在原来「先按日取截面均值、再对配对日平均」的**同一条逐日序列**上，对**每个 k** 直接算
+    Newey-West HAC t 与日胜率 ⇒ 前端「事件研究」弹窗的**第④条（日配对稳定）可以随「最长持有 k」取用**，
+    不再固定用"被点开那一行"的周期统计量 —— 修复用户报的「同一弹窗内四条判据口径不一致」：
+    60 天行里把最长持有改成 40，①②③ 换成 40 口径而 ④ 仍是 60 口径 ⇒ 判定永远出不来。
+    与行级口径的关系：行级 `daily_t_hac/daily_win` = 该行 horizon 的日配对序列统计；这里 = **同一构造**
+    （同一 LABEL 表达式 `Ref($close,-h-1)/Ref($close,-1)-1`、同一剔除）在 k 期窗口上的统计
+    ⇒ k = 该行 horizon 时两者应高度一致（差异仅来自配对日集合与"尾部不足 k 期"的事件处理）。
     """
     max_k = max(1, int(max_k or 40))
     ks = list(range(1, max_k + 1))
@@ -327,13 +338,23 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
     full = px_wide_full
     base_arr = np.full(len(ks), np.nan, dtype=float)
     base_med_arr = np.full(len(ks), np.nan, dtype=float)
+    # v1.19.24：逐 k 的日配对稳定性（HAC t / 日胜率 / 有效配对日数）
+    t_hac_arr = np.full(len(ks), np.nan, dtype=float)
+    win_arr = np.full(len(ks), np.nan, dtype=float)
+    n_days_arr = np.zeros(len(ks), dtype=int)
     if full is not None and len(full) and len(days):
         F = full.to_numpy(dtype=np.float64, copy=False)
         n_row = F.shape[0]
         n_col = F.shape[1]
         # 配对日 → 宽表行位置；不在宽表内的日期跳过（等价于原 reindex(days).dropna()）
-        rows = full.index.get_indexer(pd.DatetimeIndex(days))
-        rows = rows[rows >= 0]
+        _idx = full.index.get_indexer(pd.DatetimeIndex(days))
+        _keep = _idx >= 0
+        rows = _idx[_keep]
+        # 与 `rows` **同序**的配对日（v1.19.24）：原来只留了行位置、日期被丢掉，导致触发组逐日
+        # 序列无法按位对齐（per-k 日配对必须要它）。`rows` 的语义与顺序保持逐位不变。
+        days_ok = pd.DatetimeIndex(days)[_keep]
+        # 触发组「每日截面均值」按 k 预取成 numpy（与 `by_day` 同源，对齐到 days_ok）
+        trig_daily = {k: by_day[k].reindex(days_ok).to_numpy(dtype=np.float64) for k in ks}
         if rows.size:
             # 当日触发股标记：改**稀疏 (行, 列) 对**（v1.18.37）——
             # 原实现建 (配对日 × 标的) 布尔大矩阵（全 A 1172×5418 = 635 万），且循环内
@@ -405,6 +426,20 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
                         daily[nz] = num.sum(axis=1)[nz] / cnt[nz]
                     if np.isfinite(daily).any():
                         base_arr[j] = float(np.nanmean(daily))
+                # v1.19.24：在**同一条逐日序列**上算该 k 的日配对稳定性 ——
+                # 触发组逐日截面均值（对齐 days_ok → 取本 k 的有效配对日 r_idx）
+                # 减 基准组逐日截面均值（`daily`）⇒ 配对日差值序列，与行级 `daily_trig − daily_not`
+                # 同一构造（同一 LABEL 表达式、同一剔除），只是窗口取 k 期。
+                _trig = trig_daily.get(k)
+                if _trig is not None and _trig.size == rows.size:
+                    _diff = _trig[r_idx] - daily
+                else:  # pragma: no cover - 结构化兜底（长度不一致则不产出该 k 的稳定性）
+                    _diff = np.full(daily.size, np.nan)
+                _t, _w, _n = pair_stability(_diff)
+                if _n >= 2:  # 与行级一致：配对日 < 2 无统计意义，t/胜率留空
+                    t_hac_arr[j] = _t if _t is not None else np.nan
+                    win_arr[j] = _w if _w is not None else np.nan
+                n_days_arr[j] = int(_n)
     trig_arr = np.asarray([float(trig_pair.get(k, np.nan)) for k in ks], dtype=float)
 
     # 触发组「事件级中位数」：全部触发事件在 k 期收益的中位数（与 curve[].median 同口径）
@@ -431,6 +466,12 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
         "baseline_median": [_r(v, 6) for v in base_med_arr],
         "excess_median": [_r(v, 6) for v in (trig_med_arr - base_med_arr)],
         "n_pair_days": int(len(days)),
+        # ── 逐 k 的日配对稳定性（v1.19.24；弹窗第④条随「最长持有 k」取用）──
+        # `t_hac`：Newey-West HAC t（配对日差值序列，窗口 = k 期）；`win`：差值 > 0 的配对日占比；
+        # `n_pair_days_k`：该 k 的有效配对日数（< 2 ⇒ t/win 为 null，与行级门限一致）。
+        "t_hac": [_r(v, 4) for v in t_hac_arr],
+        "win": [_r(v, 4) for v in win_arr],
+        "n_pair_days_k": [int(v) for v in n_days_arr],
     }
 
 
