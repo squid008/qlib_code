@@ -3,6 +3,18 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.51] - 2026-09-13
+
+### Fixed
+- **回测引擎「股票池未来函数」修复（与 v1.18.50 单因子/事件研究同口径）**（`engine/feature_cache.py` / `engine/qlib_engine.py` / `factors/handler.py`）：
+  - **问题**：`qlib_engine.py` 把 `D.list_instruments(market=..., start_time=...)`（**未传 end_time**）展开成**全期并集**再交给 handler ⇒ 训练样本、预测与持仓都可能落在"彼时尚未纳入该池"的股票上（幸存者偏差，原理见 v1.18.50）。
+  - **修复**：把**池名**（`req.universe`）经 `_build_dataset → handler_kwargs → handler → CachedQlibDataLoader` 一路传下去；`CachedQlibDataLoader.load()` 在**缓存之后**按「当日真实成分」过滤 `_data` ⇒ 训练 / 推理 / 持仓**全部自动限定在当日成分内**（一处覆盖全链路）。`universe` 为 None/"all"（全 A 无成分概念）、成分文件缺失或解析异常时**退化旧口径**（不使回测失败）；过滤位于缓存之后，故不同池复用同一份原始数据缓存。
+  - **验证**：回测 e2e（`tests/test_e2e_backtest.py`，`universe=csi300` 真实回测）**2 passed / 3:44 / 零 RuntimeError**；纯函数级验证 `ai_test/verify_v1851_bt.py`（掩码逐日正确：同一股票 2021 年 False、2025 年 True；过滤 12 → 8 行）。
+- **`_daily_member_mask` 抽出为独立零副作用模块**（新增 `engine/inst_mask.py`）：
+  - **隐患**：v1.18.50 把掩码函数放在 `factors/single_test.py`，而**该模块 import 时就会执行 `_engine_init(...)`（模块级副作用）**。回测的 `CachedQlibDataLoader` 一旦引用它，qlib 数据加载的**多进程 worker** 就可能重复初始化，违反 `qlib_engine._ensure_qlib_init` 的既有铁律「`qlib.init()` 全局只 init 一次」（其 docstring 亦写明：并发 init 会导致 `KeyError('dataset_cache')`、`Please run qlib.init() first`）。现将掩码移入 `app/engine/inst_mask.py`（只依赖 numpy/pandas，路径工具延迟 import），`single_test` / `event_study` / `feature_cache` 统一从该模块引用。
+  - ⚠ **排查提示（重要，避免误判）**：`qlib.workflow.utils.py:41` 的 `An exception has been raised[RuntimeError: ...]` 是 qlib 的**全局 excepthook** 打印；出现在**子进程**时往往只是"某个并行 worker 缺配置"，且多行异常消息在控制台/日志过滤下常被截断成 `raise RuntimeError('''` —— **要拿全文必须把 stderr 重定向到文件**。**验证脚本不要绕过统一初始化入口直接 `new` DataLoader / 直接拉真实数据**：`D.features` 走多进程，worker 拿不到 client 配置就会满屏无害 RuntimeError（本次即因此误判，改纯函数验证后归零）。
+- 版本 1.18.50 → 1.18.51。
+
 ## [1.18.50] - 2026-09-13
 
 ### Fixed

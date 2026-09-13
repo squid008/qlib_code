@@ -159,10 +159,13 @@ class CachedQlibDataLoader(QlibDataLoader):
         swap_level=True,
         freq="day",
         inst_processors=None,
+        universe=None,
         *,
         strip_suspended: bool = True,
     ):
         self._strip_suspended = bool(strip_suspended)
+        # v1.18.51：股票池名（用于「按当日真实成分」过滤样本，修股票池未来函数）
+        self._pool_universe = universe
         super().__init__(
             config,
             filter_pipe=filter_pipe,
@@ -170,6 +173,30 @@ class CachedQlibDataLoader(QlibDataLoader):
             freq=freq,
             inst_processors=inst_processors,
         )
+
+    def _apply_pool_filter(self, df):
+        """按「当日是否属于股票池」过滤样本（v1.18.51，修「股票池未来函数」）。
+
+        背景：`qlib_engine` 原先把 `D.list_instruments(market=..., start_time=...)`（**未传
+        end_time**）展开成**全期并集**交给 handler ⇒ 训练样本、预测与持仓都可能落在"彼时尚未
+        纳入该池"的股票上（指数纳入标准偏好规模/流动性/涨幅好的标的 ⇒ 系统性高估收益）。
+
+        这里按**当日真实成分**过滤。过滤放在**缓存之后**：同一份原始数据缓存可服务不同池，
+        不影响缓存 key 语义。`universe` 为 None 或 "all"（全 A 无成分概念，上市前天然无数据）
+        时不处理；成分文件缺失/解析异常时也退化旧口径（不使回测失败）。
+        """
+        u = self._pool_universe
+        if not u or u == "all" or df is None or len(df) == 0:
+            return df
+        try:
+            from .inst_mask import _daily_member_mask
+
+            mk = _daily_member_mask(u, df.index)
+        except Exception:      # 过滤失败不致命：退化旧口径
+            return df
+        if mk is None or bool(mk.all()):
+            return df
+        return df[mk]
 
     def load(self, instruments=None, start_time=None, end_time=None):
         if not self.is_group:
@@ -189,4 +216,4 @@ class CachedQlibDataLoader(QlibDataLoader):
                 df = self.load_group_df(instruments, exprs, names, start_time, end_time, grp)
                 _save_cache(path, df)
             out[grp] = df
-        return pd.concat(out, axis=1)
+        return self._apply_pool_filter(pd.concat(out, axis=1))

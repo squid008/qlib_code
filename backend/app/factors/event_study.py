@@ -463,9 +463,9 @@ def run_event_study(
 
     from qlib.data import D
 
+    from ..engine.inst_mask import _daily_member_mask
     from .single_test import (
         FactorTestCancelled,
-        _daily_member_mask,
         _ensure_qlib_init,
         _inst_codes,
         _load_feature_panel,

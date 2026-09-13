@@ -85,6 +85,10 @@ class SelectedAlpha158(DataHandlerLP):
         self._label_horizon = max(1, int(label_horizon or 2))
         self._price_adjust = normalize_mode(price_adjust)
 
+        # v1.18.51：股票池名 —— 交给 CachedQlibDataLoader 按「当日真实成分」过滤样本
+        # （修股票池未来函数；None / "all" 不过滤）。必须在此 pop 掉，否则会作为未知参数
+        # 传给 qlib 的 DataHandlerLP。
+        _pool_universe = kwargs.pop("universe", None)
         data_loader = {
             "class": "CachedQlibDataLoader",
             "module_path": "app.engine.feature_cache",
@@ -96,6 +100,7 @@ class SelectedAlpha158(DataHandlerLP):
                 "filter_pipe": filter_pipe,
                 "freq": freq,
                 "inst_processors": inst_processors,
+                "universe": _pool_universe,   # v1.18.51：按当日真实成分过滤（修未来函数）
             },
         }
         super().__init__(
@@ -171,6 +176,10 @@ class SelectedAlpha360(DataHandlerLP):
         self._label_horizon = max(1, int(label_horizon or 2))
         self._price_adjust = normalize_mode(price_adjust)
 
+        # v1.18.51：股票池名 —— 交给 CachedQlibDataLoader 按「当日真实成分」过滤样本
+        # （修股票池未来函数；None / "all" 不过滤）。必须在此 pop 掉，否则会作为未知参数
+        # 传给 qlib 的 DataHandlerLP。
+        _pool_universe = kwargs.pop("universe", None)
         data_loader = {
             "class": "CachedQlibDataLoader",
             "module_path": "app.engine.feature_cache",
@@ -182,6 +191,7 @@ class SelectedAlpha360(DataHandlerLP):
                 "filter_pipe": filter_pipe,
                 "freq": freq,
                 "inst_processors": inst_processors,
+                "universe": _pool_universe,   # v1.18.51：按当日真实成分过滤（修未来函数）
             },
         }
         super().__init__(
@@ -263,6 +273,10 @@ class FormulaHandler(DataHandlerLP):
                 *_DEFAULT_LEARN_PROCESSORS,
             ]
 
+        # v1.18.51：股票池名 —— 交给 CachedQlibDataLoader 按「当日真实成分」过滤样本
+        # （修股票池未来函数；None / "all" 不过滤）。必须在此 pop 掉，否则会作为未知参数
+        # 传给 qlib 的 DataHandlerLP。
+        _pool_universe = kwargs.pop("universe", None)
         data_loader = {
             "class": "CachedQlibDataLoader",
             "module_path": "app.engine.feature_cache",
@@ -274,6 +288,7 @@ class FormulaHandler(DataHandlerLP):
                 "filter_pipe": filter_pipe,
                 "freq": freq,
                 "inst_processors": inst_processors,
+                "universe": _pool_universe,   # v1.18.51：按当日真实成分过滤（修未来函数）
             },
         }
         super().__init__(
@@ -376,6 +391,10 @@ class MixedHandler(DataHandlerLP):
         self._label_horizon = max(1, int(label_horizon or 2))
         self._price_adjust = normalize_mode(price_adjust)
 
+        # v1.18.51：股票池名 —— 交给 CachedQlibDataLoader 按「当日真实成分」过滤样本
+        # （修股票池未来函数；None / "all" 不过滤）。必须在此 pop 掉，否则会作为未知参数
+        # 传给 qlib 的 DataHandlerLP。
+        _pool_universe = kwargs.pop("universe", None)
         data_loader = {
             "class": "CachedQlibDataLoader",
             "module_path": "app.engine.feature_cache",
@@ -387,6 +406,7 @@ class MixedHandler(DataHandlerLP):
                 "filter_pipe": filter_pipe,
                 "freq": freq,
                 "inst_processors": inst_processors,
+                "universe": _pool_universe,   # v1.18.51：按当日真实成分过滤（修未来函数）
             },
         }
         super().__init__(

@@ -26,6 +26,7 @@ from ..engine.perf_metrics import compute_perf
 from ..engine.limits import mark_limit_up, field_bin_available
 from ..engine.adjust import adjust_expr, normalize_mode
 from ..engine.feature_cache import _sr_wrap_expr
+from ..engine.inst_mask import _daily_member_mask, _inst_spans_path  # noqa: F401
 from .event_study import build_event_stats, compute_baseline_curves
 
 
@@ -159,96 +160,12 @@ def _resolve_instruments(universe: str, start_date: str) -> List[str]:
     return filtered
 
 
-def _inst_spans_path(universe: str) -> Optional[str]:
-    """qlib instruments 区间文件路径（`<provider_uri>/instruments/<universe>.txt`）。
-
-    ⚠ 本模块的 `os` / `_default_qlib_uri` 都是在**函数内部**延迟 import 的（模块级没有这
-    两个名字），因此这里必须局部 import —— 否则 `NameError` 会被下方 `except Exception`
-    静默吞掉、退化成"没有成分文件"（v1.18.50 首次实现即踩此坑，表现为过滤无效）。
-    """
-    import os
-
-    from ..engine.utils import _default_qlib_uri
-
-    try:
-        uri = _default_qlib_uri()
-    except Exception:
-        return None
-    if not uri:
-        return None
-    p = os.path.join(str(uri), "instruments", "%s.txt" % universe)
-    return p if os.path.isfile(p) else None
-
-
-def _daily_member_mask(universe: str, index: pd.MultiIndex) -> Optional[np.ndarray]:
-    """**逐日成分掩码**（v1.18.50 修未来函数）：与 `index` 逐行对齐的 bool 数组。
-
-    背景：`_resolve_instruments` 调 `D.list_instruments(scope, start_time=...)`（无 end_time）
-    ⇒ qlib 返回「start 之后**曾属于**该池」的全期并集 —— 实测 csi300 为 459 只，而真实成分
-    每天 300 只，2021 年样本里混入 **106 只彼时尚未纳入**的股票 ⇒ 幸存者偏差、系统性高估。
-
-    本函数直接解析 instruments **区间文件**（比逐日调 qlib API 快 ~8.5×：0.2s vs 1.76s），
-    用「日 × 股」布尔矩阵按区间 slice 填充，再按 index 取每行掩码。
-
-    返回 `None` 表示**无从判断**（池名无对应文件，如自定义池）→ 调用方应保持旧行为（不筛）。
-    `all`（全 A）没有"成分"概念，调用方应跳过（上市前天然无数据，本就不构成偏差）。
-    """
-    path = _inst_spans_path(universe)
-    if path is None:
-        return None
-    try:
-        inst_lv = index.names.index("instrument")
-        dt_lv = index.names.index("datetime")
-    except ValueError:
-        return None
-
-    inst_raw = np.asarray(index.get_level_values(inst_lv))
-    dt_raw = np.asarray(index.get_level_values(dt_lv))
-    if inst_raw.size == 0:
-        return None
-    insts = np.asarray(sorted({str(x).upper() for x in inst_raw}))
-    days = np.asarray(sorted({np.datetime64(pd.Timestamp(x).to_datetime64()) for x in dt_raw}))
-    inst_pos = {c: i for i, c in enumerate(insts)}
-
-    # 解析区间：code -> [(start, end), ...]（同一代码可有多段：进出池多次）
-    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-        spans: Dict[str, List[Tuple[np.datetime64, np.datetime64]]] = {}
-        for line in fh:
-            p = line.split()
-            if len(p) < 3:
-                continue
-            c = p[0].upper()
-            if c not in inst_pos:
-                continue
-            try:
-                s = np.datetime64(pd.Timestamp(p[1][:10]).to_datetime64())
-                e = np.datetime64(pd.Timestamp(p[2][:10]).to_datetime64())
-            except Exception:
-                continue
-            spans.setdefault(c, []).append((s, e))
-
-    mat = np.zeros((days.size, insts.size), dtype=bool)
-    for c, segs in spans.items():
-        j = inst_pos[c]
-        for s, e in segs:
-            a = int(np.searchsorted(days, s, side="left"))
-            b = int(np.searchsorted(days, e, side="right"))
-            if b > a:
-                mat[a:b, j] = True
-
-    # 向量化映射（v1.18.50）：`Index.get_indexer` 是 C 实现 —— 原先用 Python 生成器
-    # 逐行构造「行/列位置」（面板通常 60 万行 × 2 次）实测要 3~5s，是"过滤后反而更慢"
-    # 的真正原因（而不是 `df[_mk]` 的复制）。
-    d_idx = pd.DatetimeIndex(days)
-    c_idx = pd.Index(insts)
-    dt_vals = pd.DatetimeIndex(index.get_level_values(dt_lv)).values.astype("datetime64[ns]")
-    r = d_idx.get_indexer(dt_vals)
-    cc = c_idx.get_indexer(pd.Index(index.get_level_values(inst_lv)).astype(str).str.upper())
-    ok = (r >= 0) & (cc >= 0)
-    out = np.zeros(r.size, dtype=bool)
-    if ok.any():
-        out[ok] = mat[r[ok], cc[ok]]
-    return out
+# v1.18.51：`_inst_spans_path` / `_daily_member_mask` 已抽到 `app/engine/inst_mask.py`
+# （见文件顶部 import）。原因：它们原先定义在本模块，而**本模块在 import 时就执行
+# `_engine_init(...)`（模块级副作用）**；回测的 `CachedQlibDataLoader` 一旦 import 本模块，
+# qlib 数据加载的**并行子进程**就会重新 `qlib.init()`、覆盖全局 C/D 状态 ⇒ 多个 PID 同时
+# 抛 `RuntimeError`（违反 `qlib_engine._ensure_qlib_init` 的既有铁律「全局只 init 一次」）。
+# 掩码是单因子测试与回测**共用**的纯函数，必须住在零副作用的轻量模块里。
 
 
 def _stat_group(g: pd.DataFrame, lu_t: int = 0, lu_t1: int = 0, susp: int = 0, extra: int = 0) -> Optional[dict]:

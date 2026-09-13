@@ -347,6 +347,10 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg,
             handler_kwargs["fields"] = list(req.selected_features)
     # 预测周期：模型预测未来 N 日收益（label），与分层/IC 口径一致
     handler_kwargs["label_horizon"] = getattr(req, "label_horizon", None) or 2
+    # v1.18.51：把**股票池名**传进 handler（上面的 `instruments` 是展开后的静态 list，池名会
+    # 丢失）—— handler 转交给 CachedQlibDataLoader，按「当日真实成分」过滤训练/推理样本，
+    # 修「全期并集」带来的未来函数（见 feature_cache.CachedQlibDataLoader._apply_pool_filter）。
+    handler_kwargs["universe"] = getattr(req, "universe", None)
     return {
         "class": "DatasetH",
         "module_path": "qlib.data.dataset",
