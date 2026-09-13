@@ -7,10 +7,10 @@ export interface HandbookEntry {
   desc: string // 详细说明（用法/注意）
 }
 
-export const FORMULA_HANDBOOK: HandbookEntry[] = [
+// ⚠ 这里的**书写顺序只表示"主题分组"**（便于维护阅读），**不是**手册的显示顺序 ——
+//   显示顺序一律由下方 `buildHandbook()` 生成（v1.19.20 起），见其注释。
+const RAW_HANDBOOK: HandbookEntry[] = [
   // ---------------- 行情字段 ----------------
-  // 顺序约定（v1.19.19 用户要求）：**核心行情字段固定在前 6 个**（CLOSE/HIGH/LOW/OPEN/VOL/AMOUNT，
-  // 即 c/h/l/o/v/amount，按常用度），**其余字段一律按英文字母升序**排列（新增字段请插到对应位置）。
   { name: 'CLOSE', abbr: '收盘价', kind: 'field', desc: '收盘价。\n用法:\n CLOSE 或 C\n X:=CLOSE;' },
   { name: 'HIGH', abbr: '最高价', kind: 'field', desc: '当日最高价。\n用法:\n HIGH 或 H' },
   { name: 'LOW', abbr: '最低价', kind: 'field', desc: '当日最低价。\n用法:\n LOW 或 L' },
@@ -71,6 +71,29 @@ export const FORMULA_HANDBOOK: HandbookEntry[] = [
 
   // ---------------- 注：绘图/颜色类（STICKLINE/DRAWICON/COLORRED...）不生成因子，未列入手册 ----------------
 ]
+
+/** 核心行情字段：**固定排在最前 6 个**（用户 2026-09-13 定稿；即常说的 c / h / l / o / v / amount）。 */
+const CORE_FIELDS = ['CLOSE', 'HIGH', 'LOW', 'OPEN', 'VOL', 'AMOUNT'] as const
+
+/** 按名字升序（直接用字符串比较 = ASCII 序：大小写、下划线口径稳定，不受浏览器 locale 影响）。 */
+const byNameAsc = (a: HandbookEntry, b: HandbookEntry) =>
+  a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+
+/** 手册**展示顺序**（v1.19.20，用户要求「除了 c/h/l/o/v/amount，其他的都按英文字母排序」）：
+ *  ① 前 6 个 = 核心行情字段（`CORE_FIELDS`，按上表顺序固定）；
+ *  ② **其余全部条目**（字段 **+** 函数，如 L2_AMO / EMA / HHV / MA …）按**英文字母 A→Z 升序**。
+ *  ⇒ 好处：以后新增条目**不用**手动插到正确位置，显示顺序自动就对（也不会再被随手追加打乱）。
+ *  例：`ABS → BARSCOUNT → … → EMA → EMA_TDX → … → HHV → HHVBARS → … → L2_AMO → LLV → … → VWAP → WMA`
+ */
+function buildHandbook(raw: HandbookEntry[]): HandbookEntry[] {
+  const isCore = new Set<string>(CORE_FIELDS)
+  const head = CORE_FIELDS.map((n) => raw.find((e) => e.name === n)).filter(
+    (e): e is HandbookEntry => !!e,
+  )
+  return [...head, ...raw.filter((e) => !isCore.has(e.name)).sort(byNameAsc)]
+}
+
+export const FORMULA_HANDBOOK: HandbookEntry[] = buildHandbook(RAW_HANDBOOK)
 
 // 搜索过滤
 export function filterHandbook(kw: string): HandbookEntry[] {

@@ -3,6 +3,18 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.20] - 2026-09-13
+
+### Changed
+- **修正 v1.19.19：真正实现"整份公式手册按字母排"**（用户指出：「除了那几个，还有 L2_AMO、EMA、HHV 好多呢，**有四十多个**呢」——即要排的不只是那 3 个字段，还包括全部函数）：
+  - `frontend/src/formulaHandbook.ts` 重构：原导出数组改为**私有 `RAW_HANDBOOK`**（书写顺序只表示"主题分组"、便于维护，**不代表显示顺序**），新增 `buildHandbook()` 统一生成**显示顺序**：
+    1. **前 6 个 = 核心行情字段** `CLOSE / HIGH / LOW / OPEN / VOL / AMOUNT`（固定，即用户说的 c/h/l/o/v/amount）；
+    2. **其余全部条目（字段 + 函数）按英文字母 A→Z 升序**。
+  - **实测**（用 `esbuild` 打包后跑**真实代码**、非肉眼核对）：总条数 **47**；前 6 顺序正确；**其余 41 条严格升序** ——
+    `ABS BARSCOUNT BARSLAST BARSSINCE BARSSINCEN BETWEEN COUNT CROSS DELTA EMA EMA_TDX FILTER HHV HHVBARS IF IFS INT L2_AMO L2_PCT L2_VOL LLV LLVBARS LOG MA MARKET_CAP MAX MEAN MED MIN POW REF SGN SLOPE SMA SQRT STD SUM TURNOVERRATE VAR VWAP WMA`；9 个字段类条目落在 `CLOSE…AMOUNT` + `MARKET_CAP / TURNOVERRATE / VWAP`。
+  - 附带好处：**以后新增条目不用手动插到正确位置**（顺序由函数生成，不会再被随手追加打乱）；`RAW_HANDBOOK` 里保留"资金流/算术统计/逻辑条件/状态周期"的主题注释便于维护，但**手册列表不再按主题分区**（纯字母序）。
+- 版本 1.19.19 → 1.19.20。
+
 ## [1.19.19] - 2026-09-13
 
 ### Changed
