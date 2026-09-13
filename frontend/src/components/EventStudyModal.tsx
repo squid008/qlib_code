@@ -680,7 +680,20 @@ export default function EventStudyModal({
                   <YAxis tick={{ fontSize: 11 }} width={45} />
                   <Tooltip
                     formatter={(v: number | string) => (typeof v === 'number' ? `${v.toFixed(3)}%` : v)}
-                    labelFormatter={(l) => `持有 ${l} 个交易日 · ${validKs.has(Number(l)) ? '有效 ✓' : '待观察'}`}
+                    labelFormatter={(l) =>
+                      /* v1.19.26：卡片里「有效 ✓」标绿（沿用结论列的 emerald）、「待观察」保持默认色不变（用户要求）。
+                         ⚠ Recharts 会判断 `React.isValidElement` ⇒ 返回 JSX 原样渲染（不会被转成字符串）。 */
+                      validKs.has(Number(l)) ? (
+                        <span>
+                          持有 {l} 个交易日 ·{' '}
+                          <span className="text-emerald-700 dark:text-emerald-300 font-semibold">
+                            有效 ✓
+                          </span>
+                        </span>
+                      ) : (
+                        <span>持有 {l} 个交易日 · 待观察</span>
+                      )
+                    }
                   />
                   <Legend
                     wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
@@ -724,7 +737,20 @@ export default function EventStudyModal({
                     <YAxis tick={{ fontSize: 11 }} width={45} />
                     <Tooltip
                       formatter={(v: number | string) => (typeof v === 'number' ? `${v.toFixed(3)}%` : v)}
-                      labelFormatter={(l) => `持有 ${l} 个交易日 · ${validKs.has(Number(l)) ? '有效 ✓' : '待观察'}`}
+                      labelFormatter={(l) =>
+                      /* v1.19.26：卡片里「有效 ✓」标绿（沿用结论列的 emerald）、「待观察」保持默认色不变（用户要求）。
+                         ⚠ Recharts 会判断 `React.isValidElement` ⇒ 返回 JSX 原样渲染（不会被转成字符串）。 */
+                      validKs.has(Number(l)) ? (
+                        <span>
+                          持有 {l} 个交易日 ·{' '}
+                          <span className="text-emerald-700 dark:text-emerald-300 font-semibold">
+                            有效 ✓
+                          </span>
+                        </span>
+                      ) : (
+                        <span>持有 {l} 个交易日 · 待观察</span>
+                      )
+                    }
                     />
                     <Legend
                       wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}

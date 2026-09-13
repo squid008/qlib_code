@@ -3,6 +3,14 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.26] - 2026-09-13
+
+### Changed
+- **事件研究 tooltip：卡片里「有效 ✓」标绿、「待观察」保持原色**（用户要求：「图上鼠标移动的时候卡片里的有效√这几个字改成绿色，待观察就保持黑色」）：
+  - `EventStudyModal.tsx` 两处 Tooltip 的 `labelFormatter` 由**返回字符串**改为**返回 JSX**：`有效 ✓` 用 `text-emerald-700 dark:text-emerald-300 font-semibold`（**沿用结论列「有效✓」的同一套绿色**，保证视觉统一），`待观察` 不加任何类名 ⇒ 继承默认色（即"保持黑色"）。
+  - 依据：Recharts `DefaultTooltipContent` 渲染标签时判断 `React.isValidElement(finalLabel)` ⇒ 返回元素会**原样渲染**（不是拼字符串），且其 `labelStyle` 只有 `margin:0`、不含颜色 ⇒ 颜色完全由我们的 `<span>` 决定。（`labelFormatter` 的类型本就是 `(label, payload) => ReactNode`。）
+- 版本 1.19.25 → 1.19.26。
+
 ## [1.19.25] - 2026-09-13
 
 ### Added
