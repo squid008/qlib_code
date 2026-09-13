@@ -624,7 +624,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               <>
                 <div className="flex items-center gap-2 mt-4 mb-1">
                   <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                    十分位净值曲线（<b>起点 = 1</b>；1 = 最低值组 … {qc.n_groups} = 最高值组，<b>无成本</b>）
+                    十分位净值曲线（<b>无成本</b>）
                   </span>
                   <span className="text-[11px] text-slate-400">
                     最强 Q{qc.best_quantile} / 最弱 Q{qc.worst_quantile}；
