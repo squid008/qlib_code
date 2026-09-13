@@ -3,6 +3,23 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.12] - 2026-09-13
+
+### Fixed
+- **回测产物「3 页变 2 页」= 被磁盘治理按配额**静默**删除**（用户问「是早期的产物丢失了？」）：
+  - **证据**：`workdir/artifacts` 目录数**正好 40**（= 旧配额上限 `_ARTIFACTS_KEEP=40`），最老只到 **08-27 17:06**；历史面板 `PAGE_SIZE = 20` ⇒ 40 个正好 **2 页**（3 页需 41~60 个）⇒ 更早的目录**已被删除**。40 个目录共 **5.1GB**（单个最大 1.8GB，大头是 LightGBM 滚动段的 `segment_*/**.pkl`）。
+  - **根因**：`storage_cleanup._clean_artifacts` 写死"只保留最近 **40** 个非活跃目录"，超出的直接 `shutil.rmtree`，**且完全静默（无日志、无提示）**；体积/活跃度还只看**直属文件**，对"重活都写在 `segment_N/` 子目录"的目录会**误判为 0 体积、从未写入**。
+  - **修复**（`engine/storage_cleanup.py` 重写该段）：
+    1. 配额由"**个数**"改为"**容量**"：`QLIB_ARTIFACTS_GB`（默认 **30GB**）⇒ **空间够就一个都不删**；`QLIB_ARTIFACTS_KEEP`（默认 **300**）仅作**条数兜底**；
+    2. 超配额时**先精简**最老的非活跃目录：删 `segment_*/` 与大于 `QLIB_ARTIFACTS_SLIM_MB`（默认 5MB）的中间产物（`.pkl/.npy/.bin/…`），**保留 `result.json`/`params.json`/`meta.json`/`seq.json`/`train_signature.json`/`model_artifacts.json`/`*.png`** ⇒ **历史列表条目、参数、指标、净值、分层、IC 全都还在**（只有"续测/模型复用"需要重跑）；目录内写 `.slimmed` 标记（mtime 回填成原最新时间，不干扰"活跃目录保护"）；
+    3. 精简一遍后**仍超配额才整目录删除**（同样只删非活跃、按最近修改从旧到新）；
+    4. **每次精简/删除都写日志**（含释放 MB），`cleanup_storage` 另加汇总日志 ⇒ 以后不会再"悄悄消失"。
+  - **影响**：当前 artifacts（40 个 / 5.1GB）在 30GB 配额下**一个都不会被删**。已被删的历史目录**无法恢复**（`rmtree` 不进回收站；本机也没有 `mlruns/` 目录，mlflow 记录在 `workdir/exp_*.db` 里，只含运行参数/指标，不含净值/分层）。
+
+### Added
+- `tests/test_storage_cleanup.py` 新增 4 例覆盖新策略：未超配额不删 / 超配额先精简且保留轻量记录 / 精简不足才整删 / **活跃目录绝不动** ⇒ 8 passed。
+- 版本 1.19.11 → 1.19.12。
+
 ## [1.19.11] - 2026-09-13
 
 ### Fixed
