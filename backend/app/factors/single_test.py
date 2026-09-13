@@ -803,7 +803,20 @@ def _test_one(
                     _px0_row = np.full(len(tmp), np.nan)     # T+1 的价格（买入持有的期初价）
                     if _n_inst_all > 0 and len(_reb_pos) > 0:
                         _is_reb = _valid & (_dp_col % _REBAL == 0)
-                        _is_t1 = _valid & (_dp_col % _REBAL == 1)
+                        # ⚠ **`_REBAL == 1` 必须特判**（v1.18.67 修）：调仓期 = 1 个交易日时
+                        # `_dp_col % 1` **恒为 0** ⇒ 旧写法 `% _REBAL == 1` **永远为 False**
+                        # ⇒ `_is_t1` 全空 ⇒ `_px0_row`（T+1 买入价）全 NaN ⇒ `_perf_of` 里
+                        # `_ok.any()` 为假 ⇒ **所有档的 perf 全返回 None** ⇒ 前端持仓曲线的
+                        # 「年化 / 最大回撤 / 夏普」指标面板整块消失（用户报"点不同的 K 面板没了"）。
+                        # 触发条件很常见：`h=1` 且未手填调仓期时 `_REBAL` 自动跟随 h ⇒ 就是 1。
+                        # 语义：每期只有 1 个交易日 ⇒ **没有"期内第 1 天"**，T+1 落在**下一期**，
+                        # 故用 `_dp_col >= 1` 的行填到**上一期**的槽位（`_per_of_day - 1`）。
+                        if _REBAL == 1:
+                            _is_t1 = _valid & (_dp_col >= 1)
+                            _px0_slot = _per_of_day - 1
+                        else:
+                            _is_t1 = _valid & (_dp_col % _REBAL == 1)
+                            _px0_slot = _per_of_day
                         _tab_rk = np.full((len(_reb_pos), _n_inst_all), np.nan)
                         _tab_q = np.full((len(_reb_pos), _n_inst_all), np.nan)
                         _tab_px0 = np.full((len(_reb_pos), _n_inst_all), np.nan)
@@ -813,7 +826,7 @@ def _test_one(
                             _tab_rk[_per_of_day[_is_reb], _inst_code[_is_reb]] = _rk_all[_is_reb]
                             _tab_q[_per_of_day[_is_reb], _inst_code[_is_reb]] = _q_all[_is_reb]
                         if _is_t1.any():
-                            _tab_px0[_per_of_day[_is_t1], _inst_code[_is_t1]] = _close_row[_is_t1]
+                            _tab_px0[_px0_slot[_is_t1], _inst_code[_is_t1]] = _close_row[_is_t1]
                         _rkr_row[_valid] = _tab_rk[_per_of_day[_valid], _inst_code[_valid]]
                         _qr_row[_valid] = _tab_q[_per_of_day[_valid], _inst_code[_valid]]
                         _px0_row[_valid] = _tab_px0[_per_of_day[_valid], _inst_code[_valid]]
