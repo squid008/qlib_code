@@ -209,12 +209,18 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
       + ` / 0.008 ${signedPct(item.perf['0.0080']?.annual_return, 1)}`
     : ''
 
-  // 图 2：十分位累计收益曲线（10 条 + 多空）
+  // 图 2：十分位累计收益曲线（10 条 + 多空 + 基准虚线）
   const decileData = useMemo(() => {
     if (!qc || !qc.groups?.length) return []
     const st = stride(qc.dates.length)
     const cumOf = (g: { cum: number[]; cum_compound?: number[] }) =>
       basis === 'compound' ? (g.cum_compound ?? g.cum) : g.cum
+    // 基准（同口径净值）：图 1 的日期轴是 `tc.dates`、图 2 是 `qc.dates`，两者理论上同为调仓日，
+    // 但为防长度/起点差异造成错位，这里按**日期字符串**建 Map 对齐（v1.18.55）。
+    const bv = basis === 'compound' ? (benchItem?.cum_compound ?? benchItem?.cum) : benchItem?.cum
+    const bMap = new Map<string, number | null>()
+    if (tc && bv) for (let i = 0; i < tc.dates.length; i++) bMap.set(tc.dates[i], nav(bv[i]))
+    const benchAt = (d: string) => bMap.get(d) ?? null
     const out: Record<string, number | string | null>[] = []
     for (let i = 0; i < qc.dates.length; i += st) {
       const p: Record<string, number | string | null> = { d: qc.dates[i] }
@@ -222,6 +228,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
       // ⚠ 多空 = 最强−最弱 的**差值曲线**（不是净值）⇒ 不 +1，走右轴单独看（起点 0）；
       //   只有**算术口径**下相减才有可解释含义 ⇒ 复利模式不画（置 null）
       p.ls = basis === 'arith' ? (qc.long_short.cum[i] ?? null) : null
+      p.b = benchAt(qc.dates[i])          // 基准虚线（同口径净值、起点 1，与图 1 同一条）
       out.push(p)
     }
     const last = qc.dates.length - 1
@@ -229,10 +236,11 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
       const p: Record<string, number | string | null> = { d: qc.dates[last] }
       for (const g of qc.groups) p[`q${g.quantile}`] = nav(cumOf(g)[last])
       p.ls = basis === 'arith' ? (qc.long_short.cum[last] ?? null) : null
+      p.b = benchAt(qc.dates[last])
       out.push(p)
     }
     return out
-  }, [qc, basis])
+  }, [qc, basis, benchItem, tc])
 
   const DECILE_COLORS = [
     '#dc2626', '#ea580c', '#d97706', '#65a30d', '#059669',
@@ -527,7 +535,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                     ) : (
                       <b>复利口径下多空（差值）无可解释含义 ⇒ 已隐藏</b>
                     )}
-                    ；点图例可显隐曲线
+                    ；<b>虚线 = 基准</b>（与图 1 同口径、同一条数据）；点图例可显隐曲线
                   </span>
                 </div>
                 <ResponsiveContainer width="100%" height={250}>
@@ -551,6 +559,20 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                       onClick={(d) => toggleSeries((d as { dataKey?: string }).dataKey)}
                     />
                     <ReferenceLine y={1} stroke="#94a3b8" strokeDasharray="3 3" />
+                    {/* 基准虚线（v1.18.55）：同口径净值（起点 1），与图 1 是同一条数据；
+                        与图 1 共用 `hidden.b` ⇒ 点任一图的图例可同时显隐两图的基准线 */}
+                    {benchItem && (
+                      <Line
+                        type="monotone"
+                        dataKey="b"
+                        name={`基准 ${benchItem.name}`}
+                        stroke="#475569"
+                        strokeDasharray="6 3"
+                        dot={false}
+                        strokeWidth={1.6}
+                        hide={!!hidden.b}
+                      />
+                    )}
                     {qc.groups.map((g) => (
                       <Line
                         key={g.quantile}
