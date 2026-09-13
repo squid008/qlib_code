@@ -169,6 +169,34 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8001
 
 ---
 
+## 附：单因子特征面板缓存与环境变量（v1.19.0 起）
+
+单因子测试的**特征面板**（`panel_expr` 面板求值器）现在会**写磁盘缓存**，同一组参数重跑可直接命中
+（全A + 5 年实测 `feature_s` 从 ~19s 降到 ~0.1s）。缓存目录：`backend/workdir/feature_cache/`
+（已被 `.gitignore` 忽略，不会进仓库）。
+
+⚠ **单份「全A + 5 年」面板缓存约 318MB**，因此必须做容量治理（写入后自动执行）：
+
+| 环境变量 | 默认 | 含义 |
+|---|---|---|
+| `QLIB_CACHE_MAX_MB` | `4096`（4GB） | 缓存总大小上限，超出按 mtime **从旧到新**删（LRU）；`0` = 不限制 |
+| `QLIB_CACHE_MAX_FILES` | `200` | 缓存文件数上限；`0` = 不限制 |
+| `QLIB_CACHE_MAX_AGE_DAYS` | `30` | 超过该天数的缓存直接删；`0` = 不清理过期 |
+
+**建议**：如果常开多个股票池/区间来回调参，把 `QLIB_CACHE_MAX_MB` 调到 `8192`~`16384`
+（命中一次省 ~19s，很划算）；磁盘紧张则保持默认或调小。
+
+其他相关开关：
+
+| 环境变量 | 默认 | 含义 |
+|---|---|---|
+| `QLIB_SFT_PANEL` | `1` | 设为 `0` 强制单因子测试**跳过面板求值器、回退 qlib `D.features`**（同时不查/不写面板缓存）|
+| `QLIB_SFT_PANEL_EMA` | `0` | 设为 `1` 时含 `EMA/EMA_TDX/SMA` 的字段**回退 qlib**（逃生口）|
+
+手工清理缓存：直接删除 `backend/workdir/feature_cache/` 下的 `*.pkl`（可随时删，删了只会重算一次）。
+
+---
+
 ## 附：如何重新导出依赖（在家更新后）
 ```bash
 conda activate qlib

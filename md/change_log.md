@@ -3,6 +3,29 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.0] - 2026-09-13
+
+> **版本从 1.18.69 跳到 1.19.0（minor）**：本版引入**单因子测试的特征面板磁盘缓存**这一新能力（含容量治理），属功能级变更，故按语义化版本升 minor。
+
+### Added
+- **单因子测试：特征面板磁盘缓存 + 容量治理**
+  - **背景**：单因子测试走自研 `panel_expr` 面板求值器（`_load_feature_panel`），**每次重跑同参数都从零求值**（`feature_cache` 此前只在回测路径 `CachedQlibDataLoader` 生效）。全A + 5 年实测 `feature_s ≈ 18.6~22.8s`（其中约 12s 是并行求值结果 pickle 回传）。
+  - **接入**：`_load_feature_panel` 调用处包「查缓存 → 未命中求值并写缓存」。缓存 key 含**全部影响结果的参数** —— 池 / 表达式 / 列名 / 区间 / **`warmup_days`** / **`freeze_suspended_price`** / **信号截断日** / 数据版本（缺任一都会跨参数命中脏缓存）。尊重 `QLIB_SFT_PANEL=0`（关闭时不查不写）；面板求值失败（回退 qlib）不写；读写异常全部吞掉，不影响主流程。
+  - **容量治理（新增 `_prune_cache`）**：①**过期清理**（mtime 早于 `QLIB_CACHE_MAX_AGE_DAYS`，默认 30 天）；②**LRU**（超 `QLIB_CACHE_MAX_MB` 默认 4096 或 `QLIB_CACHE_MAX_FILES` 默认 200 时按 mtime 从旧到新删；`0` = 不限制），一并清理 `*.tmp` 残留。每次写缓存后就地执行，失败不影响主流程。临时目录实测：过期删 2 ✓ / LRU 删最旧 ✓。
+  - **实测收益**（全A + 2021-2025 + h=5 + 10 个 K 档）：`feature_s` **19.85s → 0.136s**；`total_s` **45.4s → 25.7s（−43%）**。
+  - ⚠ **容量参考**：单份「全A + 5 年」缓存约 **318MB**（实测），默认 4GB 上限约存 12 份；常开多池/多区间调参时建议调大 `QLIB_CACHE_MAX_MB`。
+
+### Performance
+- **分位组聚合改二维 `bincount`**（`factors/single_test.py`）：原 `for q, g in tmp.groupby("_q")` + `g.groupby(level=dt)["LABEL"].mean()` = **10 次两级 groupby**，改为按 (分位组, 日期) 展平桶号后一次 `bincount`；pandas 侧实测 **6.8×**（124 万行 0.029s → 0.004s）。**口径逐位一致**（同会话 `git stash` 切换新旧实现对拍：`baseline_mean` / 10 个 `mean_ret` / 区间累计 / `ic` / `rank_ic` / `icir` 全同）。
+- 其余剖析结论（`item_s` 构成、数据量对照表）见 [1.18.69]。
+
+### Changed
+- **「固定 K 档」空选提示去掉尾注**（`SingleFactorTestPanel.tsx`）：`（不勾 = 只算默认档：最强分位组 + 10%，零额外开销）` → **`（不勾 = 只算默认档：最强分位组 + 10%）`**；「清空」按钮 title 同步为 `清空已选档位（回到只算默认档：最强分位组 + 10%）`。
+
+### Not done（实测否证，无残留代码）
+- **「向量化分组秩」未采用**：`_compute_ic` 内 `groupby.rank()` 占 85%（1 年 1.02s / 全函数 1.2s），但它已是 pandas **Cython** 实现；numpy 改写实测仅 **1.1×**（对拍未过）⇒ 收益不抵风险，已完整回滚。
+- **「label 组内秩跨因子复用」未采用**：`_compute_ic_stats` 的输入行由 `_sub_pos = (~isna(因子列)) & (~isna(LABEL))`（`single_test.py:444`）决定 ⇒ **各因子有效行集合不同**，其上 label 秩随子集变化，无法复用（改用全样本秩属口径变更）。
+
 ## [1.18.69] - 2026-09-13
 
 ### Performance
