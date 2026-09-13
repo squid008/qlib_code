@@ -1090,7 +1090,7 @@ export default function SingleFactorTestPanel({
           onClick={() => setDetailKs(allPresetsOn ? [] : [...K_PRESETS])}
           title={
             allPresetsOn
-              ? '清空已选档位（回到只算默认档，零额外开销）'
+              ? '清空已选档位（回到只算默认档：最强分位组 + 10%，零额外开销）'
               : `全选 ${K_PRESETS.length} 个预设档。每档约 +0.1~0.2s（每个预测周期各算一次），勾满会明显变慢`
           }
           className={`px-1.5 py-0.5 rounded border border-dashed text-[11px] ${
@@ -1104,7 +1104,7 @@ export default function SingleFactorTestPanel({
         <span className="text-slate-400">
           {detailKs.length
             ? `已选 ${detailKs.length} 档`
-            : '（不勾 = 只算默认档，零额外开销）'}
+            : '（不勾 = 只算默认档：最强分位组 + 10%，零额外开销）'}
         </span>
       </div>
 
