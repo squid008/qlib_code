@@ -138,12 +138,46 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
   const item = items.length ? items[idx] : null
   // 可切换基准：多候选一次下发 ⇒ 这里纯切换、零重算；未选中时用后端给的默认（按股票池映射）
   const benchList = tc?.benchmarks?.items ?? []
+  // 「池内等权」基准（v1.18.57）：后端只下发**指数**（自由流通市值加权）；等权版由
+  // `quantile_curves` 各分位组的逐期收益**平均**推得（等频分组 ⇒ 等价于池内等权）。
+  // ⚠ **默认不选中**（默认仍按股票池映射到指数），仅在用户手动切换时启用 ——
+  // 它与聚宽 / 外部检验脚本的「池内等权」口径一致，用来解释"相对指数 vs 相对等权"的差额。
+  const EQW_CODE = '__eqw__'
+  const eqwBench = useMemo(() => {
+    const gs = qc?.groups ?? []
+    const n = qc?.dates?.length ?? 0
+    if (!gs.length || !n) return null
+    const per: number[][] = gs.map((g) => {
+      const cum = g.cum ?? []
+      const r: number[] = []
+      for (let i = 0; i < n; i++) r.push((cum[i] ?? 0) - (i > 0 ? (cum[i - 1] ?? 0) : 0))
+      return r
+    })
+    const cum: number[] = []
+    const cmp: number[] = []
+    let a = 0
+    let c = 1
+    for (let i = 0; i < n; i++) {
+      const r = per.reduce((s, x) => s + (x[i] ?? 0), 0) / per.length
+      a += r
+      c *= 1 + r
+      cum.push(a)
+      cmp.push(c - 1)
+    }
+    return { code: EQW_CODE, name: '池内等权', cum, cum_compound: cmp, dates: [], perf: null }
+  }, [qc])
+  const benchOptions: { code: string; name: string }[] = [
+    ...benchList.map((b) => ({ code: b.code, name: b.name })),
+    ...(eqwBench ? [{ code: EQW_CODE, name: eqwBench.name }] : []),
+  ]
   const benchCode =
     benchList.find((b) => b.code === bench)?.code ??
+    (bench === EQW_CODE && eqwBench ? EQW_CODE : undefined) ??
     benchList.find((b) => b.code === tc?.benchmarks?.default)?.code ??
     benchList[0]?.code ??
     ''
-  const benchItem = benchList.find((b) => b.code === benchCode) ?? null
+  const benchItem =
+    benchCode === EQW_CODE ? eqwBench : (benchList.find((b) => b.code === benchCode) ?? null)
   // 固定 K 档（由表单「明细 K」决定，弹窗内只能切换、不能改 ⇒ 提示回表单重跑）
   const fixedKs = items.filter((it) => it.kind === 'topk').map((it) => it.k)
 
@@ -387,11 +421,15 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               </span>
               <span className="text-[11px] text-slate-400">切换组合（纯前端，零重算）：</span>
               <span className="text-[11px] text-slate-400 ml-1">｜基准：</span>
-              {benchList.map((b) => (
+              {benchOptions.map((b) => (
                 <button
                   key={b.code}
                   onClick={() => setBench(b.code)}
-                  title={`${b.code}（同口径：指数在同一调仓期的持有 h 日收益、按当前口径累计；价格指数不含分红）`}
+                  title={
+                    b.code === EQW_CODE
+                      ? '池内等权（本图现算）：每个调仓期内「池内全部成分股等权」持有 h 日的收益 = 各分位组逐期收益的平均，按当前口径累计；与聚宽 / 外部检验脚本的"池内等权"口径一致（⚠ 非指数，无分红/加权概念）'
+                      : `${b.code}（同口径：指数在同一调仓期的持有 h 日收益、按当前口径累计；价格指数不含分红）`
+                  }
                   className={`px-1.5 py-0.5 rounded border text-[11px] ${
                     b.code === benchCode
                       ? 'border-slate-500 text-slate-700 bg-slate-100 dark:bg-slate-700'
@@ -401,7 +439,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   {b.name}
                 </button>
               ))}
-              {!benchList.length && (
+              {!benchOptions.length && (
                 <span className="text-[11px] text-slate-400">（本行未取到基准行情）</span>
               )}
               {items.map((it, i) => (
@@ -525,6 +563,9 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               （复利口径下两条净值相减无可解释含义 ⇒ <b>仅在算术口径显示</b>）；
               ⑥ <b>基准与组合同口径</b>：指数在<b>同一调仓日</b>的 T+1 → T+h+1 收益、按当前口径累计
               （价格指数、<b>不含分红</b>）⇒ 同口径可直接比超额。
+              ⑦ <b>「池内等权」基准（可选，默认不选中）</b>= 各分位组逐期收益的<b>平均</b>
+              （等频分组 ⇒ 等价于池内全部成分股等权），与本图现算、不走后端行情；它<b>不是指数</b>
+              （无分红/加权概念），用于解释「相对指数 vs 相对等权」的差额（聚宽等外部脚本多用等权口径）。
             </div>
 
             {/* ---- 图 2：十分位累计收益曲线 ---- */}
