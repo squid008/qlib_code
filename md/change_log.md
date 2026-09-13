@@ -3,6 +3,13 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.23] - 2026-09-13
+
+### UI
+- **隐藏单因子测试结果表的「耗时」列**（用户要求：「耗时列先隐藏去掉吧，后面我让你显示再显示出来」）：
+  新增开关 `SingleFactorTestPanel.tsx` 顶部 `const SHOW_TIMING_COL = false`，**表头 / 单元格 / 错误行 `colSpan`（18 ↔ 17）三处都跟它走** ⇒ 改一行 `true` 即恢复。后端 `timing` 字段与 `api.ts` 类型均不动（照常回传，只是不占列宽不显示）。
+  ⚠ 该表的错误行 `colSpan` 原写死 `17`（实际总列数是 18）⇒ 一直是靠浏览器"超出即截断"兜着，这次顺手按开关给准。
+
 ## [1.19.22] - 2026-09-13
 
 ### Docs

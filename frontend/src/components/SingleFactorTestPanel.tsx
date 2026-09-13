@@ -297,6 +297,12 @@ const EXPORT_FORMULA_HEADERS = ['因子', '来源', '公式（用户保存原文
 const K_PRESETS = [1, 2, 3, 5, 10, 20, 50, 100, 0.1, 0.2]
 const kLabel = (k: number) => (k < 1 ? `${Math.round(k * 100)}%` : `${k}`)
 
+/** 「耗时」列是否展示（用户 2026-09-13：「耗时列先隐藏去掉吧，后面我让你显示再显示出来」）。
+ *  改 `true` 即恢复 —— 表头/单元格/colSpan 三处都跟着这个开关走，只改这一行即可。
+ *  后端 `timing` 字段**照常回传**（`api.ts` 的类型也不动）⇒ 只是不占列宽、不显示。
+ *  ⚠ 表格列数：显示耗时 = 18 列，隐藏 = 17 列（错误行的 colSpan 必须同步，否则整行错位）。 */
+const SHOW_TIMING_COL = false
+
 // 解析批量预测周期输入：单值 / 逗号枚举(1,2,3,5) / range 区间(1:5:20 = 起点:步长:终点，含终点)。
 // 值范围 1~250（后端同样校验兜底）。返回去重后的周期列表，非法时带中文错误。
 function parseHorizons(text: string): { horizons: number[]; error?: string } {
@@ -1226,12 +1232,14 @@ export default function SingleFactorTestPanel({
               <tr className="text-slate-500 border-b">
                 <th className="text-left py-1 pr-2">因子</th>
                 <th className="text-right px-1">周期</th>
-                <th
-                  className="text-right px-1"
-                  title="阶段计时（秒）：显示「本因子统计+事件研究」耗时，悬停看三段明细。特征加载为全池共享（同一次测试各因子相同）；不含 HTTP 往返与任务排队"
-                >
-                  耗时
-                </th>
+                {SHOW_TIMING_COL && (
+                  <th
+                    className="text-right px-1"
+                    title="阶段计时（秒）：显示「本因子统计+事件研究」耗时，悬停看三段明细。特征加载为全池共享（同一次测试各因子相同）；不含 HTTP 往返与任务排队"
+                  >
+                    耗时
+                  </th>
+                )}
                 <th className="text-right px-1">覆盖率</th>
                 <th className="text-right px-1">信号</th>
                 <th className="text-right px-1">触发数</th>
@@ -1316,7 +1324,7 @@ export default function SingleFactorTestPanel({
                 return (
                   <tr key={`${r.id}:${r.horizon ?? '-'}`} className="border-b border-slate-100 dark:border-slate-700">
                     {r.error ? (
-                      <td className="py-1 pr-2 text-red-500" colSpan={17}>
+                      <td className="py-1 pr-2 text-red-500" colSpan={SHOW_TIMING_COL ? 18 : 17}>
                         {r.name}{r.horizon ? `（周期 ${r.horizon} 天）` : ''}：{r.error}
                       </td>
                     ) : (
@@ -1328,6 +1336,7 @@ export default function SingleFactorTestPanel({
                         <td className="text-right px-1 whitespace-nowrap text-slate-500">
                           {r.horizon ? `${r.horizon} 天` : '-'}
                         </td>
+                        {SHOW_TIMING_COL && (
                         <td
                           className="text-right px-1 whitespace-nowrap text-slate-400"
                           title={
@@ -1344,6 +1353,7 @@ export default function SingleFactorTestPanel({
                         >
                           {r.timing ? `${r.timing.item_s.toFixed(2)}s` : '-'}
                         </td>
+                        )}
                         <td className="text-right px-1">{fmt(r.coverage, 2)}</td>
                         <td className="text-right px-1">
                           {r.is_binary ? (
