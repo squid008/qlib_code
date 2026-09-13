@@ -1674,7 +1674,7 @@ export default function App() {
                 <>
                   <MetricCards result={r} />
                   <NavChart nav={r.nav} />
-                  <LayerChart data={r.layer_returns} rebalance={form.layer_rebalance} />
+                  <LayerChart data={r.layer_returns} />
                   <ICChart data={r.ic_analysis} />
                 </>
               ) : partial?.nav?.length ? (
@@ -1691,7 +1691,7 @@ export default function App() {
                     </span>
                   </div>
                   <NavChart nav={partial.nav} endDate={partial.end_date} />
-                  <LayerChart data={partial.layer_returns} rebalance={form.layer_rebalance} />
+                  <LayerChart data={partial.layer_returns} />
                   <ICChart data={partial.ic_analysis} />
                 </>
               ) : (

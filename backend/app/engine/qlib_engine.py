@@ -52,6 +52,7 @@ from .metrics import (
     _extract_result,
     _find_report_fallback,
     normalize_benchmark_curve,
+    anchor_benchmark_start,
     _get_segment_end_account,
     _extract_trades,
     _extract_end_position,
@@ -747,7 +748,11 @@ def _save_partial_result(art_dir, segments_done, segments_total, all_nav, layer_
         partial = {
             "segments_done": segments_done,
             "segments_total": segments_total,
-            "nav": all_nav,
+            # v1.19.11：基准按**首点归一**后再落盘（与最终结果同口径）。原先直接写原始 `all_nav`，
+            # 基准首点含"窗口首日相对前收"的段外收益 ⇒ "运行中"视图里净值从 1.0 起、基准从 1.019 起，
+            # 两条曲线错开（用户反馈）。这里只动副本，`all_nav` 本身不变（后续 `_aggregate_from_nav`
+            # 仍走自己的归一，幂等）。
+            "nav": anchor_benchmark_start(all_nav),
             "end_date": str(target_end_date) if target_end_date else None,
             "layer_returns": {"segments": layer_segments, "merged": merged_layers},
             "ic_analysis": {

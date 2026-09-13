@@ -53,17 +53,39 @@ export default function NavChart({
     )
   }
 
-  // 给每点加 excess = value / benchmark（超额净值倍数，从 1 起步），
-  // 用于画"超额曲线"——直观展示策略相对基准的累计优势
+  // v1.19.11：**起点对齐** —— 策略净值与基准各自按**首个有效点锚定为 1.0**（两条曲线必然同起点）。
+  // 背景：后端 v1.16.1 起已对基准归一（`normalize_benchmark_curve`），但
+  //   ① **运行中（partial）视图**此前落盘的是**未归一**的原始曲线 —— 基准首点含"窗口首日相对前收"
+  //      的段外收益（实测 +1.9% ⇒ 基准从 1.019 起，而净值从 0.9997 起）⇒ 图上两线错开（用户反馈）；
+  //   ② v1.16.1 **之前**生成的旧 `result.json` 基准同样未归一（历史结果里基准首点为 0.987/1.019…）。
+  // 展示层再兜一层（**幂等**：已归一时除以 1 无变化）⇒ 任何来源的数据都同起点 1.0。
+  const firstPositive = (key: 'value' | 'benchmark') => {
+    for (const n of nav) {
+      const v = n[key]
+      if (typeof v === 'number' && v > 0) return v
+    }
+    return null
+  }
   const hasBench = nav.some((n) => n.benchmark !== undefined && n.benchmark !== null)
-  const data = nav.map((n) => ({
-    ...n,
-    ts: toTs(n.date),
-    excess:
-      hasBench && typeof n.value === 'number' && typeof n.benchmark === 'number' && n.benchmark > 0
-        ? n.value / n.benchmark
-        : undefined,
-  }))
+  const v0 = firstPositive('value')
+  const b0 = firstPositive('benchmark')
+  // 给每点加 excess = value / benchmark（超额净值倍数，从 1 起步），
+  // 用于画"超额曲线"——直观展示策略相对基准的累计优势。
+  // ⚠ 分子分母同除各自首点 ⇒ 与锚定前**比值完全相同**，超额曲线不受影响。
+  const data = nav.map((n) => {
+    const value = typeof n.value === 'number' && v0 ? n.value / v0 : n.value
+    const benchmark = typeof n.benchmark === 'number' && b0 ? n.benchmark / b0 : n.benchmark
+    return {
+      ...n,
+      value,
+      benchmark,
+      ts: toTs(n.date),
+      excess:
+        hasBench && typeof value === 'number' && typeof benchmark === 'number' && benchmark > 0
+          ? value / benchmark
+          : undefined,
+    }
+  })
 
   // 未跑完（数据最后一天早于参数结束日）→ 切真实时间轴并延伸右界到 endDate
   const lastDate = data[data.length - 1]?.date

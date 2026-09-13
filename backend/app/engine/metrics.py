@@ -10,6 +10,34 @@ from typing import Optional
 from ..models.backtest import BacktestResult
 
 
+def anchor_benchmark_start(nav: list) -> list:
+    """返回**新列表**：把基准按首个有效点归一到 1.0（不改原列表、不动 `value`）。
+
+    v1.19.11：从 `normalize_benchmark_curve` 抽出，供 **partial（运行中）曲线** 复用 ——
+    `_save_partial_result` 原先直接写原始 `all_nav`，而基准首点是"窗口首日相对前收"的**段外收益**
+    （实测 +1.9%）⇒ 运行中视图"净值从 1.0 起、基准从 1.019 起"，两条曲线视觉错开（用户反馈）。
+    最终结果走 `_aggregate_from_nav` 已归一，partial 漏了 ⇒ 这里补齐，两条路径同口径。
+    """
+    if not nav:
+        return nav
+    first = None
+    for p in nav:
+        b = p.get("benchmark")
+        if b is not None:
+            first = float(b)
+            break
+    if first is None or first <= 0 or abs(first - 1.0) < 1e-9:
+        return nav
+    out = []
+    for p in nav:
+        q = dict(p)
+        b = q.get("benchmark")
+        if b is not None:
+            q["benchmark"] = round(float(b) / first, 6)
+        out.append(q)
+    return out
+
+
 def normalize_benchmark_curve(result) -> None:
     """把 result.nav 的整条基准曲线归一：首个有效点=1.0（与策略净值同起点）。
 

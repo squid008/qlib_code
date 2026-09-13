@@ -10,7 +10,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts'
-import type { LayerReturns } from '../types'
+import type { LayerPoint, LayerReturns } from '../types'
 
 const GROUP_COLORS = [
   '#dc2626', // Group1 红
@@ -63,7 +63,7 @@ function SegmentTabs({
   )
 }
 
-export default function LayerChart({ data, rebalance = 1 }: { data?: LayerReturns | null; rebalance?: number }) {
+export default function LayerChart({ data }: { data?: LayerReturns | null }) {
   const [active, setActive] = useState('')
   // 每条曲线的显隐状态（点击图例切换）
   const [hidden, setHidden] = useState<Record<string, boolean>>({})
@@ -117,18 +117,32 @@ export default function LayerChart({ data, rebalance = 1 }: { data?: LayerReturn
     if (o.id) toggleLine(o.id)
   }
 
+  // v1.19.11：最前面补一行「**起点 = 0**」，把 0 显式画出来（用户反馈：各分组都是 ~0.01 起步、
+  // 看不出从 0 开始）。原因：后端 `groups[].Group1..5` 的**首值 = 「第一期结束时」的累计收益**
+  // （如 +1.87%），并非 0；而基准列后端本就是 0 起步（`pct_change().fillna(0)`）⇒ 之前只有基准
+  // 视觉上"从 0 开始"。做法与「因子研究」页图 2 完全一致（那一页同样在最前面补一行全 0 的「起点」）；
+  // X 轴是**类别轴** ⇒ 用 `'起点'` 文本做标签，避免与首个真实日期重复。
+  const chartData: LayerPoint[] = groups.length
+    ? [
+        {
+          date: '起点',
+          Group1: 0,
+          Group2: 0,
+          Group3: 0,
+          Group4: 0,
+          Group5: 0,
+          long_short: 0,
+          long_average: 0,
+          ...(hasBench ? { benchmark: 0 } : {}),
+        },
+        ...groups,
+      ]
+    : groups
+
   return (
     <section className="bg-white dark:bg-slate-800 rounded-xl shadow p-6">
       <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
         <h2 className="text-lg font-semibold">分层回测（5组）</h2>
-        <span className="text-xs text-slate-400">
-          {rebalance > 1
-            ? `按预测分每 ${rebalance} 个交易日调仓分组；`
-            : '按预测分每日均分5组；'}
-          <b>复利累计收益</b>（每期收益滚入本金 = 实盘满仓复投，与主净值曲线同口径）；Top1 应大于
-          Top5；<b>多空 = 最强组 − 最弱组</b>的逐期价差复利（每期全额再平衡的美元中性组合，
-          ⚠ A 股空头收益拿不到 ⇒ <b>不可实现</b>，仅作有效性参考）；点击图例可隐藏/显示曲线
-        </span>
       </div>
       <SegmentTabs
         segments={options}
@@ -145,7 +159,7 @@ export default function LayerChart({ data, rebalance = 1 }: { data?: LayerReturn
       ) : (
         <div className="h-80">
           <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 600, height: 320 }}>
-            <LineChart data={groups} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+            <LineChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="date" tick={{ fontSize: 12 }} />
               <YAxis tick={{ fontSize: 12 }} domain={['auto', 'auto']} />
