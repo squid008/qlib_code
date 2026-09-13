@@ -1080,13 +1080,11 @@ export default function SingleFactorTestPanel({
             </button>
           )
         })}
-        <span className="text-slate-400">
-          {detailKs.length
-            ? `已选 ${detailKs.length} 档`
-            : '（不勾 = 只算默认档，零额外开销）'}
-        </span>
-        {/* v1.18.64：全选 / 清空（用户要求）。勾满 10 档 ≈ 每档 0.1~0.2s × 预测周期数 ⇒
-            4 个周期时约 +4~8s；因此全选前给出耗时提示，且按钮上仍是「清空」可一键还原。 */}
+        {/* v1.18.64：全选 / 清空（用户要求）；v1.18.65 起**紧跟最后一个档位按钮（20%）**，
+            与 10 个档位同属一个视觉组（其后才是"已选 N 档"计数）⇒ 符合"先选档、后看统计"
+            的阅读顺序。勾满 10 档 ≈ 每档 0.1~0.2s × 预测周期数（4 个周期约 +4~8s），故 title
+            给出耗时提示；已全选时按钮变「清空」可一键还原。用**虚线边框**与左侧实线档位按钮
+            区分，避免被误读成第 11 个档位。 */}
         <button
           type="button"
           onClick={() => setDetailKs(allPresetsOn ? [] : [...K_PRESETS])}
@@ -1095,10 +1093,19 @@ export default function SingleFactorTestPanel({
               ? '清空已选档位（回到只算默认档，零额外开销）'
               : `全选 ${K_PRESETS.length} 个预设档。每档约 +0.1~0.2s（每个预测周期各算一次），勾满会明显变慢`
           }
-          className="px-1.5 py-0.5 rounded border border-slate-300 text-[11px] text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700/40"
+          className={`px-1.5 py-0.5 rounded border border-dashed text-[11px] ${
+            allPresetsOn
+              ? 'border-slate-300 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700/40'
+              : 'border-emerald-400 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/30'
+          }`}
         >
           {allPresetsOn ? '清空' : '全选'}
         </button>
+        <span className="text-slate-400">
+          {detailKs.length
+            ? `已选 ${detailKs.length} 档`
+            : '（不勾 = 只算默认档，零额外开销）'}
+        </span>
       </div>
 
       {/* 进度条 */}
