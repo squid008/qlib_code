@@ -309,15 +309,18 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
     const startRow: Record<string, number | string | null> = { d: '起点', ls: 0, b: 1 }
     for (const g of qc.groups) startRow[`q${g.quantile}`] = 1
     const out: Record<string, number | string | null>[] = [startRow]
+    // ⚠ 多空 = 最强−最弱 的**价差曲线**（不是净值）⇒ 不 +1，走右轴单独看、起点 0。
+    //   两种口径都给（v1.19.5）：
+    //     · 算术 = `Σ(逐期价差)`       —— 可加，读数 = 累计价差
+    //     · 复利 = `Π(1+逐期价差)−1`   —— 每期全额再平衡的美元中性组合（与回测页分层图同口径）
+    //   后端旧版无 `cum_compound` 时自动回退算术（不空白）。
+    //   v1.19.7：提到**循环外**定义 —— 原在循环内，补末点时（循环后）引用不到。
+    const lsv = basis === 'compound'
+      ? (qc.long_short.cum_compound ?? qc.long_short.cum)
+      : qc.long_short.cum
     for (let i = 0; i < qc.dates.length; i += st) {
       const p: Record<string, number | string | null> = { d: qc.dates[i] }
       for (const g of qc.groups) p[`q${g.quantile}`] = nav(cumOf(g)[i])
-      // ⚠ 多空 = 最强−最弱 的**价差曲线**（不是净值）⇒ 不 +1，走右轴单独看、起点 0。
-      //   两种口径都给（v1.19.5）：
-      //     · 算术 = `Σ(逐期价差)`       —— 可加，读数 = 累计价差
-      //     · 复利 = `Π(1+逐期价差)−1`   —— 每期全额再平衡的美元中性组合（与回测页分层图同口径）
-      //   后端旧版无 `cum_compound` 时自动回退算术（不空白）。
-      const lsv = basis === 'compound' ? (qc.long_short.cum_compound ?? qc.long_short.cum) : qc.long_short.cum
       p.ls = lsv[i] ?? null
       p.b = benchAt(qc.dates[i])          // 基准虚线（同口径净值、起点 1，与图 1 同一条）
       out.push(p)
@@ -326,12 +329,38 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
     if (last >= 0 && out.length && out[out.length - 1].d !== qc.dates[last]) {
       const p: Record<string, number | string | null> = { d: qc.dates[last] }
       for (const g of qc.groups) p[`q${g.quantile}`] = nav(cumOf(g)[last])
-      p.ls = basis === 'arith' ? (qc.long_short.cum[last] ?? null) : null
+      // v1.19.7 修：此处原写 `basis === 'arith' ? cum : null` —— 复利模式把**末点**置 null，
+      // 导致多空曲线**最后一截断掉**（v1.19.5 改成"复利也画多空"时漏改这一处）。
+      p.ls = lsv[last] ?? null
       p.b = benchAt(qc.dates[last])
       out.push(p)
     }
     return out
   }, [qc, basis, benchItem, tc])
+
+  // v1.19.7：左右轴**基准点对齐**。
+  // 图 2 左轴画的是**净值**（起点/基准 = 1），右轴画的是**多空价差**（起点/基准 = 0）——
+  // 这两点在语义上等价（"不动" == "无多空"），但两轴各自 `domain=['auto','auto']` 时
+  // 它们的高度互不相干 ⇒ 曲线与基准线的相对位置看起来**错位**（用户报"左右轴 0 点没对齐"）。
+  // 这里手动算两侧 domain：取「到各自基准的最大偏离」的**共同值 m** ⇒
+  //   左轴 [1−m, 1+m]、右轴 [−m, m]
+  // ⇒ 基准点重叠于正中，且**两轴尺度完全一致**（净值偏离 0.1 == 价差 0.1 的高度）。
+  const yDomains = useMemo(() => {
+    let mLeft = 0
+    let mRight = 0
+    for (const d of decileData) {
+      for (const [k, v] of Object.entries(d)) {
+        if (k === 'd' || typeof v !== 'number' || !Number.isFinite(v)) continue
+        if (k === 'ls') mRight = Math.max(mRight, Math.abs(v))
+        else mLeft = Math.max(mLeft, Math.abs(v - 1))
+      }
+    }
+    const m = Math.max(mLeft, mRight) * 1.08 || 0.02   // 8% 上下留白；全 0 时兜底
+    return {
+      left: [1 - m, 1 + m] as [number, number],
+      right: [-m, m] as [number, number],
+    }
+  }, [decileData])
 
   const DECILE_COLORS = [
     '#dc2626', '#ea580c', '#d97706', '#65a30d', '#059669',
@@ -650,15 +679,17 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   <LineChart data={decileData} margin={{ top: 5, right: 12, left: 0, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
                     <XAxis dataKey="d" tick={{ fontSize: 10 }} minTickGap={48} />
-                    <YAxis tick={{ fontSize: 10 }} width={52} domain={['auto', 'auto']} />
+                    <YAxis tick={{ fontSize: 10 }} width={52} domain={yDomains.left} />
                     {/* 多空是**价差**曲线（不是净值）⇒ 单独一根右轴，避免把净值曲线压扁。
-                        v1.19.5 起两种口径都画（复利 = 逐期价差复利）⇒ 右轴常显 */}
+                        v1.19.5 起两种口径都画（复利 = 逐期价差复利）⇒ 右轴常显。
+                        v1.19.7：两轴 domain 由 `yDomains` 统一给出 ⇒ 基准点（净值 1 / 价差 0）
+                        同高、且两轴**尺度一致**（原先各自 auto 时基准点错位）。 */}
                     <YAxis
                       yAxisId="r"
                       orientation="right"
                       tick={{ fontSize: 10 }}
                       width={52}
-                      domain={['auto', 'auto']}
+                      domain={yDomains.right}
                     />
                     <Tooltip formatter={(v: number | string) => (typeof v === 'number' ? v.toFixed(4) : v)} />
                     <Legend
