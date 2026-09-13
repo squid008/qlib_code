@@ -3,6 +3,15 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.19] - 2026-09-13
+
+### Changed
+- **「公式函数手册」字段顺序按字母重排**（用户要求：「公式手册的字段除了 c/h/l/o/v/amount，其他的都按英文字母排序重排一下」）：
+  - `frontend/src/formulaHandbook.ts`（全项目**唯一**的字段清单，`kind: 'field'`）：前 6 个核心行情字段**固定不变** —— `CLOSE / HIGH / LOW / OPEN / VOL / AMOUNT`（即用户说的 c/h/l/o/v/amount）；**其余字段改按英文字母升序**：原 `VWAP / TURNOVERRATE / MARKET_CAP` → **`MARKET_CAP / TURNOVERRATE / VWAP`**（M < T < V）。
+  - 在文件内写明该顺序约定（新增字段请插到对应位置），避免以后随手追加又打乱。
+  - 函数（`kind: 'func'`）部分的分组与顺序**不变**；本次仅调整字段顺序，无逻辑变更。
+- 版本 1.19.18 → 1.19.19。
+
 ## [1.19.18] - 2026-09-13
 
 ### Fixed

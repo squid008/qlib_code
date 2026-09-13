@@ -9,15 +9,18 @@ export interface HandbookEntry {
 
 export const FORMULA_HANDBOOK: HandbookEntry[] = [
   // ---------------- 行情字段 ----------------
+  // 顺序约定（v1.19.19 用户要求）：**核心行情字段固定在前 6 个**（CLOSE/HIGH/LOW/OPEN/VOL/AMOUNT，
+  // 即 c/h/l/o/v/amount，按常用度），**其余字段一律按英文字母升序**排列（新增字段请插到对应位置）。
   { name: 'CLOSE', abbr: '收盘价', kind: 'field', desc: '收盘价。\n用法:\n CLOSE 或 C\n X:=CLOSE;' },
   { name: 'HIGH', abbr: '最高价', kind: 'field', desc: '当日最高价。\n用法:\n HIGH 或 H' },
   { name: 'LOW', abbr: '最低价', kind: 'field', desc: '当日最低价。\n用法:\n LOW 或 L' },
   { name: 'OPEN', abbr: '开盘价', kind: 'field', desc: '当日开盘价。\n用法:\n OPEN 或 O' },
   { name: 'VOL', abbr: '成交量', kind: 'field', desc: '成交量（手）。\n用法:\n VOL 或 V\n注:数据里停牌日无成交为 NaN。' },
   { name: 'AMOUNT', abbr: '成交额', kind: 'field', desc: '成交金额（元）。\n用法:\n AMOUNT' },
-  { name: 'VWAP', abbr: '均价', kind: 'field', desc: '成交均价（当日总成交额/总量）。\n用法:\n VWAP' },
-  { name: 'TURNOVERRATE', abbr: '换手率', kind: 'field', desc: '换手率（%）。\n用法:\n TURNOVERRATE' },
+  // 以下按字母升序：MARKET_CAP < TURNOVERRATE < VWAP
   { name: 'MARKET_CAP', abbr: '总市值', kind: 'field', desc: '总市值（元）。\n用法:\n MARKET_CAP\n注:含停牌日亦有值，需注意停牌对齐。' },
+  { name: 'TURNOVERRATE', abbr: '换手率', kind: 'field', desc: '换手率（%）。\n用法:\n TURNOVERRATE' },
+  { name: 'VWAP', abbr: '均价', kind: 'field', desc: '成交均价（当日总成交额/总量）。\n用法:\n VWAP' },
 
   // ---------------- 资金流字段（moneyflow，金额=万元/量=手/占比=%） ----------------
   { name: 'L2_AMO', abbr: '资金净额', kind: 'func', desc: '资金流档位金额函数。\n用法:\n L2_AMO(n[,b|s])\n n=0主力/1超大单/2大单/3中单/4小单；b=买入/s=卖出。\n L2_AMO(0)       主力净流入额(万元)\n L2_AMO(0,b)     主力买入额\n L2_AMO(0,s)     主力卖出额\n注意:L2_AMO(n,b)-L2_AMO(n,s)=L2_AMO(n)。' },
