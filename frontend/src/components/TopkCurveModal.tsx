@@ -48,6 +48,27 @@ const signedPct = (v: number | null | undefined, nd = 2) =>
 const nav = (v: number | null | undefined) =>
   v == null || !Number.isFinite(v) ? null : 1 + v
 
+/** 把数据范围 `[lo, hi]` 化为「**整数百分比 + 均匀分段**」的 Y 轴（v1.19.9）。
+ *
+ *  用户要求：十分位图刻度要**整数百分比**且**等距**（不要 `−71%` / `128.8%` / `499.1%` 这种）。
+ *  做法：先把上下界按 **1%** 向外取整，再选一个「好看的」步长（1/2/5/10/20/25/50/100…%）
+ *  使刻度数落在 3~7 个；`domain` 与 `ticks` 都落在**整数百分比**上，且必然含 **0**
+ *  （0 是任何 step 的整数倍）。返回的是**小数域**（`0.5` = 50%），recharts 直接可用。
+ */
+const NICE_STEPS = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000]
+function niceAxis(lo: number, hi: number) {
+  const pLo = Math.floor(Math.min(0, lo) * 100)
+  const pHi = Math.ceil(Math.max(0, hi) * 100)
+  const span = Math.max(1, pHi - pLo)
+  const step = NICE_STEPS.find((s) => span / s <= 6) ?? Math.ceil(span / 6)
+  const t0 = Math.floor(pLo / step) * step
+  let t1 = Math.ceil(pHi / step) * step
+  if (t1 === t0) t1 = t0 + step                      // 数据恒为 0：给一段最小可视范围
+  const ticks: number[] = []
+  for (let v = t0; v <= t1; v += step) ticks.push(v / 100)
+  return { domain: [t0 / 100, t1 / 100] as [number, number], ticks }
+}
+
 /** 明细档显示名：分位组标「最强分位组 Q几」；固定 K 档标「固定 K=…」（默认档加注）。 */
 function itemLabel(it: TopKCurveItem, defaultK: number | null) {
   if (it.kind === 'decile') return `最强分位组 Q${it.quantile}`
@@ -220,8 +241,6 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
     ''
   const benchItem =
     benchCode === EQW_CODE ? eqwBench : (benchList.find((b) => b.code === benchCode) ?? null)
-  // 固定 K 档（由表单「明细 K」决定，弹窗内只能切换、不能改 ⇒ 提示回表单重跑）
-  const fixedKs = items.filter((it) => it.kind === 'topk').map((it) => it.k)
 
   // 图 1：选中档的三档累计曲线（0 / 0.004 / 0.008，均按调仓期扣费）+ 选中基准
   // 口径（basis）：复利取 `curves_compound` / `cum_compound`；后端旧版缺该字段时自动回退算术
@@ -340,12 +359,12 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
     return out
   }, [qc, basis, benchItem, tc])
 
-  // v1.19.8：左右轴**共用同一 domain**。
-  // 图 2 现全部是**累计收益**（0 起，左轴 = 十分位组/基准、右轴 = 多空价差）⇒ 两轴天然同基准。
-  // 但仍各自 `auto` 时高度不同（左轴收益可达 ±50%，右轴价差可能只 ±10%）⇒ 0 点仍会错位。
-  // 故取**两轴数据的公共 [lo, hi]**（含 0、上下 6% 留白）同时喂给两轴 ⇒ 0 点完全对齐、无多余留白。
-  // ⚠ 历史：v1.19.7 曾用"到各自基准的最大偏离的对称展开"，会在净值（1 起）与新收益（0 起）混用时
-  //   留出大片空白、且刻度出现长小数 ⇒ v1.19.8 改为统一 0 起 + 共用 domain + 百分数刻度。
+  // v1.19.9：左右轴**共用同一 domain**，且刻度按「**整数百分比 + 均匀分段**」生成。
+  // 图 2 全部是**累计收益**（0 起，左轴 = 十分位组/基准、右轴 = 多空价差）⇒ 两轴天然同基准；
+  // 再喂同一个 domain ⇒ 0 点完全对齐、无多余留白（原先各自 `auto` 时 0 点高度不同）。
+  // ⚠ 历史：v1.19.7「到各自基准的最大偏离对称展开」会留大片空白且刻度带长小数（用户反馈）；
+  //   v1.19.8 改「统一 0 起 + 共用 domain + toFixed(1) 百分数」，仍会得到 −71% / 128.8% / 499.1%
+  //   这类**零散非整数**刻度 ⇒ v1.19.9 交给 `niceAxis` 取整数百分比等距刻度（用户定稿）。
   const yDomains = useMemo(() => {
     let lo = 0
     let hi = 0
@@ -356,9 +375,8 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
         hi = Math.max(hi, v)
       }
     }
-    const pad = (hi - lo) * 0.06 || 0.02              // 上下 6% 留白；全 0 时兜底
-    const d0: [number, number] = [Math.min(0, lo) - pad, Math.max(0, hi) + pad]
-    return { left: d0, right: d0 }                    // 两轴**共用同一 domain** ⇒ 0 点完全对齐
+    const ax = niceAxis(lo, hi)
+    return { left: ax, right: ax }                    // 两轴**共用同一 domain 与 ticks** ⇒ 0 点完全对齐
   }, [decileData])
 
   const DECILE_COLORS = [
@@ -540,12 +558,8 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
             <div className="text-[11px] text-slate-400 mb-1">
               {tc ? `每 ${tc.rebalance_period} 个交易日调仓一次（调仓日取信号、T+1 买入、持有到下一个调仓日）；` : ''}
               {item?.kind === 'decile'
-                ? `每日取因子最强端的 1/${qc?.n_groups ?? 10}（等分）⇒ 持仓约 ${item.k} 只，只数逐期变化；换手分母 = 当期在手只数`
+                ? `每日取因子最强端的 1/${qc?.n_groups ?? 10}（等分）⇒ 持仓约 ${item.k} 只，只数逐期变化`
                 : `固定持仓 ${item?.k} 只（按名次取，与分位组口径略有差异）`}
-              {'；'}
-              {fixedKs.length > 0
-                ? `固定 K 档（${fixedKs.join(' / ')} 只）来自表单「固定 K 档」预设 —— 改 K 需回表单重跑（每个额外 K 约 +0.1~0.2s）`
-                : '想要更多固定 K 档？在表单「固定 K 档」里勾选（1/2/3/5/10/20/50/100/10%/20%）后重跑'}
               {'；点图例可显隐曲线'}
             </div>
             <div className="relative">
@@ -641,8 +655,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               <b>以 1 为起点</b>、<b>近似净值但不是逐日盯市净值</b>；
               ④ 默认档 = <b>超额收益最强的分位组</b>（逐期等分，只数与固定 K 档略有差异）；
               ⑤ <b>多空 = 最强组 − 最弱组</b>，A 股空头收益拿不到 ⇒ <b>不可实现</b>，仅作有效性参考。
-              两种口径都画：算术 = <b>逐期价差累加</b>（读数=累计价差）；复利 = <b>逐期价差复利</b>
-              （每期把 notional 全额再平衡的美元中性组合，与回测页分层图同口径；⚠ 极端期会放大得很快）；
+              两种口径都画：算术 = <b>逐期价差累加</b>（读数=累计价差）；复利 = <b>逐期价差复利</b>；
               ⑥ <b>基准与组合同口径</b>：指数在<b>同一调仓日</b>的 T+1 → T+h+1 收益、按当前口径累计
               （价格指数、<b>不含分红</b>）⇒ 同口径可直接比超额。
               ⑦ <b>「池内等权」基准（可选，默认不选中）</b>= 各分位组逐期收益的<b>平均</b>
@@ -667,11 +680,10 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                       </>
                     ) : (
                       <>
-                        <b>右轴 = 多空</b>（最强−最弱，<b>逐期价差复利</b> = 每期全额再平衡的美元中性组合，
-                        起点 0；不可实现，仅作参考）
+                        <b>右轴 = 多空</b>（最强−最弱，<b>逐期价差复利</b>，起点 0；不可实现，仅作参考）
                       </>
                     )}
-                    ；<b>虚线 = 基准</b>（与图 1 同口径、同一条数据）；点图例可显隐曲线
+                    ；点图例可显隐曲线
                   </span>
                 </div>
                 <ResponsiveContainer width="100%" height={250}>
@@ -681,8 +693,9 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                     <YAxis
                       tick={{ fontSize: 10 }}
                       width={52}
-                      domain={yDomains.left}
-                      tickFormatter={(v: number) => `${(v * 100).toFixed(1)}%`}
+                      domain={yDomains.left.domain}
+                      ticks={yDomains.left.ticks}
+                      tickFormatter={(v: number) => `${Math.round(v * 100)}%`}
                     />
                     {/* 多空是**价差**曲线（不是收益曲线）⇒ 单独一根右轴，避免把收益曲线压扁。
                         v1.19.5 起两种口径都画（复利 = 逐期价差复利）⇒ 右轴常显。
@@ -693,8 +706,9 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                       orientation="right"
                       tick={{ fontSize: 10 }}
                       width={52}
-                      domain={yDomains.right}
-                      tickFormatter={(v: number) => `${(v * 100).toFixed(1)}%`}
+                      domain={yDomains.right.domain}
+                      ticks={yDomains.right.ticks}
+                      tickFormatter={(v: number) => `${Math.round(v * 100)}%`}
                     />
                     <Tooltip formatter={(v: number | string) => (typeof v === 'number' ? v.toFixed(4) : v)} />
                     <Legend
