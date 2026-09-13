@@ -380,6 +380,9 @@ export default function SingleFactorTestPanel({
   const [detailKs, setDetailKs] = useState<number[]>([])
   const toggleDetailK = (k: number) =>
     setDetailKs((cur) => (cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k]))
+  // v1.18.64：预设档是否已全选（「全选 / 清空」按钮用）。
+  // ⚠ 上限说明：预设共 K_PRESETS.length 档，后端 API 上限 12（= 默认档 + 10 预设），故可全选。
+  const allPresetsOn = K_PRESETS.every((k) => detailKs.includes(k))
 
   // 事件研究弹窗：0/1 稀疏信号的"触发事件收益分布"。
   // 动机：稀疏信号按日配对检验在触发日只有 1 只票时会退化成单票收益序列，均值/显著性
@@ -1082,6 +1085,20 @@ export default function SingleFactorTestPanel({
             ? `已选 ${detailKs.length} 档`
             : '（不勾 = 只算默认档，零额外开销）'}
         </span>
+        {/* v1.18.64：全选 / 清空（用户要求）。勾满 10 档 ≈ 每档 0.1~0.2s × 预测周期数 ⇒
+            4 个周期时约 +4~8s；因此全选前给出耗时提示，且按钮上仍是「清空」可一键还原。 */}
+        <button
+          type="button"
+          onClick={() => setDetailKs(allPresetsOn ? [] : [...K_PRESETS])}
+          title={
+            allPresetsOn
+              ? '清空已选档位（回到只算默认档，零额外开销）'
+              : `全选 ${K_PRESETS.length} 个预设档。每档约 +0.1~0.2s（每个预测周期各算一次），勾满会明显变慢`
+          }
+          className="px-1.5 py-0.5 rounded border border-slate-300 text-[11px] text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-700/40"
+        >
+          {allPresetsOn ? '清空' : '全选'}
+        </button>
       </div>
 
       {/* 进度条 */}

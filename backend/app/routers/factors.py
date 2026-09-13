@@ -363,8 +363,14 @@ def single_factor_test(req: SingleFactorTestRequest):
         raise HTTPException(status_code=400, detail=f"调仓期需在 1~250 个交易日之间：{rebalance_period}")
     topk_list: List[float] = []
     if req.topk_list:
-        if len(req.topk_list) > 8:
-            raise HTTPException(status_code=400, detail=f"明细曲线最多点选 8 个 K：{len(req.topk_list)}")
+        # 上限 12 = 默认档(10% 固定档) + 前端全部 10 个预设，与计算层 `_ks[:12]`
+        # （factors/single_test.py）保持一致。**原为 8**，而前端预设本就有 10 个
+        # ⇒ 用户勾到第 9 个必报 400（"最多点选 8 个"），且计算层其实早就为"全选"预留了 12 的
+        # 容量（其注释即写明"默认档 + 前端预设 10 个也要能全选"）—— 两处口径不一致，v1.18.64 统一。
+        if len(req.topk_list) > 12:
+            raise HTTPException(
+                status_code=400,
+                detail=f"明细曲线最多点选 12 个 K（默认档 + 10 个预设）：{len(req.topk_list)}")
         for v in req.topk_list:
             try:
                 fv = float(v)
