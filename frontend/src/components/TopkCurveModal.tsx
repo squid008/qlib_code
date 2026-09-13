@@ -365,7 +365,19 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                 : '想要更多固定 K 档？在表单「固定 K 档」里勾选（1/2/3/5/10/20/50/100/10%/20%）后重跑'}
               {'；点图例可显隐曲线'}
             </div>
-            <ResponsiveContainer width="100%" height={250}>
+            <div className="relative">
+              {/* 图 1 右上角：醒目提示当前组合 = 最强分位组（红色） */}
+              {item?.kind === 'decile' && (
+                <span className="absolute right-2 top-0 z-10 text-xs font-bold text-red-600">
+                  最强 Q{item.quantile}
+                </span>
+              )}
+              {item?.kind !== 'decile' && item ? (
+                <span className="absolute right-2 top-0 z-10 text-[11px] text-slate-500">
+                  固定 K={item.k}
+                </span>
+              ) : null}
+              <ResponsiveContainer width="100%" height={250}>
               <LineChart data={detailData} margin={{ top: 5, right: 12, left: 0, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
                 <XAxis dataKey="d" tick={{ fontSize: 10 }} minTickGap={48} />
@@ -417,13 +429,16 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   />
                 )}
               </LineChart>
-            </ResponsiveContainer>
+              </ResponsiveContainer>
+            </div>
             {benchItem && (
               <div className="text-[11px] text-slate-500 mt-1">
                 区间累计（{basis === 'compound' ? '复利' : '算术'}）：组合（无成本）
                 <b>{signedPct(_pv)}</b>
-                　基准 {benchItem.name} <b>{signedPct(_bv)}</b>
-                　⇒ 超额{basis === 'compound' ? '（净值比）' : ''}{' '}
+                <span className="mx-1.5 text-slate-300">｜</span>
+                基准 {benchItem.name} <b>{signedPct(_bv)}</b>
+                <span className="mx-1.5 text-slate-300">｜</span>
+                ⇒ 超额{basis === 'compound' ? '（净值比）' : ''}{' '}
                 <b className={excess != null && excess >= 0 ? 'text-emerald-600' : 'text-red-500'}>
                   {signedPct(excess)}
                 </b>
@@ -460,7 +475,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               <>
                 <div className="flex items-center gap-2 mt-4 mb-1">
                   <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-                    十分位净值曲线（<b>起点 = 1</b>；1 = 最低值组 … {qc.n_groups} = 最高值组）
+                    十分位净值曲线（<b>起点 = 1</b>；1 = 最低值组 … {qc.n_groups} = 最高值组，<b>无成本</b>）
                   </span>
                   <span className="text-[11px] text-slate-400">
                     最强 Q{qc.best_quantile} / 最弱 Q{qc.worst_quantile}；
@@ -500,7 +515,13 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                         key={g.quantile}
                         type="monotone"
                         dataKey={`q${g.quantile}`}
-                        name={`Q${g.quantile}${g.quantile === qc.best_quantile ? '(最强)' : ''}`}
+                        name={`Q${g.quantile}${
+                          g.quantile === qc.best_quantile
+                            ? '(最强)'
+                            : g.quantile === qc.worst_quantile
+                              ? '(最弱)'
+                              : ''
+                        }`}
                         stroke={DECILE_COLORS[(g.quantile - 1) % DECILE_COLORS.length]}
                         dot={false}
                         strokeWidth={g.quantile === qc.best_quantile ? 2 : 1}

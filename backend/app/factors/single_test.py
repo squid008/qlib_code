@@ -1415,12 +1415,15 @@ def run_single_factor_tests(
             _mk = _daily_member_mask(universe, df.index)
             if _mk is None:
                 if progress_cb:
-                    progress_cb(None, 8.0, "⚠ 未找到 %s 成分文件，按全期并集口径统计" % universe)
+                    # ⚠ 加载阶段整体进度是 0-30（`h=None` 的打点会**直接覆盖** `load_prog`），
+                    # 这里必须沿用 30.0 —— 曾误写 8.0，导致「特征加载完成(30%) → 进度条回跳 8%」
+                    progress_cb(None, 30.0, "⚠ 未找到 %s 成分文件，按全期并集口径统计" % universe)
             elif not _mk.all():
                 _before = int(len(df))
                 df = df[_mk]
                 if progress_cb:
-                    progress_cb(None, 8.0, "按当日成分过滤样本 %d → %d 行" % (_before, int(len(df))))
+                    progress_cb(None, 30.0, "按当日成分过滤样本 %d → %d 行（仅保留当日成分股）"
+                                % (_before, int(len(df))))
                 if len(df) == 0:
                     err = [{**_test_one(pd.DataFrame(), f, ""), "error": "成分过滤后无样本"}
                            for f in factors]
