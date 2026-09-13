@@ -162,7 +162,11 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
       c8: nav(cv['0.0080']?.[i]),
       b: nav(bv?.[i]),
     })
-    const out: Record<string, number | string | null>[] = []
+    // v1.18.56 起点对齐：后端 `curves` / 基准 `cum` 的**首值都是「第一期结束时」**
+    // （实测 csi300：组合 −5.49%、沪深300 +2.47% 都在第 0 位）⇒ 直接画会让两条线起点
+    // 各偏一边（0.945 / 1.025）。这里在序列**最前面补一个「起点」点（值 = 1）**，
+    // 使组合 / 三档成本 / 基准的起点统一为 1。
+    const out: Record<string, number | string | null>[] = [{ d: '起点', c0: 1, c4: 1, c8: 1, b: 1 }]
     for (let i = 0; i < tc.dates.length; i += st) out.push(pick(i))
     const last = tc.dates.length - 1
     if (last >= 0 && (out.length === 0 || out[out.length - 1].d !== tc.dates[last])) {
@@ -221,7 +225,11 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
     const bMap = new Map<string, number | null>()
     if (tc && bv) for (let i = 0; i < tc.dates.length; i++) bMap.set(tc.dates[i], nav(bv[i]))
     const benchAt = (d: string) => bMap.get(d) ?? null
-    const out: Record<string, number | string | null>[] = []
+    // v1.18.56 起点对齐：与图 1 同因 —— 后端 `groups[].cum` / 基准 `cum` 首值都是
+    // 「第一期结束时」，故在最前面补一个「起点」点：10 个分位组与基准 = 1、多空 = 0。
+    const startRow: Record<string, number | string | null> = { d: '起点', ls: 0, b: 1 }
+    for (const g of qc.groups) startRow[`q${g.quantile}`] = 1
+    const out: Record<string, number | string | null>[] = [startRow]
     for (let i = 0; i < qc.dates.length; i += st) {
       const p: Record<string, number | string | null> = { d: qc.dates[i] }
       for (const g of qc.groups) p[`q${g.quantile}`] = nav(cumOf(g)[i])
