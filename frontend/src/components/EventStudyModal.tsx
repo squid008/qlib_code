@@ -45,6 +45,61 @@ const pct = (v: number | null | undefined, nd = 3) =>
 const num = (v: number | null | undefined, nd = 1) =>
   v == null || !Number.isFinite(v) ? '-' : `${(v * 100).toFixed(nd)}%`
 
+/** 某个持有期 k 是否判定「有效」（正向）—— 与弹窗末点提示的 good 分支**同条件**（v1.19.25）。
+ *
+ *  抽成**模块级纯函数**供三处共用，避免口径漂移：
+ *    ① 末点提示 `verdictHint`（good 分支）；② 两张曲线 tooltip（悬停显示 有效/待观察）；
+ *    ③ 两条紫色曲线的**锚点**（只在判定有效的持有日画圆点）。
+ *  条件与表格「有效✓」一致：中位数 ≥0.50% + 绝对收益胜率 ≥55%
+ *    + 日配对超额 ≥ max(0.5%, 0.025%×k)（无基准时不启用）+ 日配对稳定（|HAC t|≥2 或 日胜率≥55%）。
+ */
+function isValidAt(
+  k: number,
+  med: number | null,
+  win: number | null,
+  ex: number | null,
+  stableOk: boolean,
+): boolean {
+  return (
+    med != null &&
+    win != null &&
+    med >= 0.005 &&
+    win >= 0.55 &&
+    (ex == null || ex >= excessThresholdOf(k)) &&
+    stableOk
+  )
+}
+
+/** 「判定有效」持有日的锚点圆点（v1.19.25，用户要求：在两条紫色曲线上标出有效的持有日）。
+ *
+ *  ⚠ Recharts 的 `dot` 回调**必须返回带 `key` 的元素**（不画时也要返回空 `<g/>`），否则告警。
+ *  只在 `payload.valid === true` 且该点有数值时画实心圆点。
+ */
+function validAnchorDot(field: string, color: string) {
+  return (p: {
+    key?: string | number
+    cx?: number
+    cy?: number
+    payload?: { k?: number; valid?: boolean } & Record<string, unknown>
+  }) => {
+    const v = p.payload?.[field]
+    if (p.payload?.valid === true && typeof v === 'number' && v != null) {
+      return (
+        <circle
+          key={p.key ?? `anchor-${p.payload?.k ?? ''}`}
+          cx={p.cx}
+          cy={p.cy}
+          r={3.5}
+          fill={color}
+          stroke="#fff"
+          strokeWidth={1}
+        />
+      )
+    }
+    return <g key={p.key ?? `anchor-${p.payload?.k ?? ''}`} />
+  }
+}
+
 export default function EventStudyModal({
   open,
   onClose,
@@ -182,6 +237,29 @@ export default function EventStudyModal({
     [result, maxK],
   )
 
+  // v1.19.25：**逐 k 的「有效」判定**（用户要求：鼠标移到图上就能看到哪些持有日有效）。
+  // 供 ① 两张曲线 tooltip 的「持有 k 个交易日 · 有效/待观察」② 两条紫色曲线的锚点 共用。
+  // 与末点提示 `verdictHint` 同源（同一个 `isValidAt`），不会出现"图上标有效、说明说待观察"。
+  // ⚠ 第④条口径：新结果按 k（`baseline.t_hac/win`）；**旧结果整体回退行级**（`pair` prop），
+  //   与 `verdictHint` 里的回退规则一致。
+  const validKs = useMemo(() => {
+    const out = new Set<number>()
+    const bl = result?.baseline
+    if (!result || viewCurve.length === 0) return out
+    const perK = Array.isArray(bl?.t_hac) && Array.isArray(bl?.win)
+    for (const c of viewCurve) {
+      const i = bl && bl.ks ? bl.ks.indexOf(c.k) : -1
+      const ex = i >= 0 ? (bl?.excess?.[i] ?? null) : null
+      const st = pairStabilityOf(
+        perK && i >= 0
+          ? { t: bl!.t_hac![i] ?? null, win: bl!.win![i] ?? null }
+          : { t: pair?.t, win: pair?.win },
+      )
+      if (isValidAt(c.k, c.median ?? null, c.win ?? null, ex, st.ok)) out.add(c.k)
+    }
+    return out
+  }, [result, viewCurve, pair])
+
   // 图表数据：curve → {k, mean, median, p25, p75} + 触发组/基准各两条线
   //
   // ⚠ 口径必须分开看（本项目曾因此误读）：同一持有期 k 有**两套互不可比的均值口径**。
@@ -219,9 +297,11 @@ export default function EventStudyModal({
         baseline: b == null ? null : b * 100,
         // 事件级口径（与 median 同口径）
         baseline_median: bm == null ? null : bm * 100,
+        // v1.19.25：该持有日是否判定「有效」—— tooltip 文案与紫色曲线锚点共用
+        valid: validKs.has(c.k),
       }
     })
-  }, [viewCurve, result])
+  }, [viewCurve, result, validKs])
 
   // 超额曲线（触发组 − 基准）：均值口径（日配对）+ 中位数口径（事件级）两条线
   const excessChart = useMemo(() => {
@@ -235,10 +315,12 @@ export default function EventStudyModal({
           k,
           excess: v == null ? null : v * 100,
           excess_median: vm == null ? null : vm * 100,
+          // v1.19.25：同 `chartData` —— 有效持有日（锚点 + tooltip 文案）
+          valid: validKs.has(k),
         }
       })
       .filter((d) => d.k <= maxK)
-  }, [result, maxK])
+  }, [result, maxK, validKs])
 
   // 后端是否给出了中位数口径（旧结果没有该字段时不画这条线）
   const hasExcessMedian = useMemo(
@@ -357,7 +439,9 @@ export default function EventStudyModal({
     // v1.18.63：阈值与表格「有效✓」**完全对齐**（表格：med ≥ 0.50% + win ≥ 55% +
     // 日配对超额 ≥ 门槛 + 日配对稳定）。原为 `med > 0.01`（**1%**）⇒ 中位数落在 0.5%~1%
     // 之间时，表格判「有效✓」而弹窗落到「临界区间」，出现自相矛盾的提示（用户报）。
-    if (med >= 0.005 && win >= 0.55) {
+    // v1.19.25：条件改用模块级 `isValidAt`（与曲线上锚点/ tooltip 的「有效」判定**同一个函数**）
+    //   —— 语义与原来完全等价：能走到这里说明 warn 分支未命中（即 `ex` 达标且 `st.ok`）。
+    if (isValidAt(lastPoint.k, med, win, ex, st.ok)) {
       return {
         tone: 'good' as const,
         text: `中位数为正、绝对收益胜率高于 50%，且日配对超额 ≥${thrTxt}、日配对稳定：存在可复制的正向事件效应。${scope}`,
@@ -554,6 +638,10 @@ export default function EventStudyModal({
             <div className="border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
               <div className="text-slate-500 mb-1">
                 持有期收益曲线（T+1 收盘买入，持有 k 个交易日；单位 %）
+                {/* v1.19.25：新增锚点图例（紫点 = 判定有效的持有日；悬停 tooltip 也会写 有效/待观察） */}
+                <span className="text-violet-600 dark:text-violet-400 ml-2">
+                  ● 紫色曲线上的圆点 = 判定「有效」的持有日
+                </span>
                 <span className="text-amber-600 dark:text-amber-400 ml-2">
                   ⚠ 两套口径不可混算。默认只显示两对<b>同口径</b>曲线：
                   ① 「触发组(日配对)」↔「基准·未触发组(日配对)」（每个配对日 1 票，可相减 → 差值见下方超额曲线）；
@@ -592,7 +680,7 @@ export default function EventStudyModal({
                   <YAxis tick={{ fontSize: 11 }} width={45} />
                   <Tooltip
                     formatter={(v: number | string) => (typeof v === 'number' ? `${v.toFixed(3)}%` : v)}
-                    labelFormatter={(l) => `持有 ${l} 个交易日`}
+                    labelFormatter={(l) => `持有 ${l} 个交易日 · ${validKs.has(Number(l)) ? '有效 ✓' : '待观察'}`}
                   />
                   <Legend
                     wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
@@ -602,7 +690,8 @@ export default function EventStudyModal({
                       ① 日配对：trigger_pair ↔ baseline —— 可相减，差值即下方「超额曲线」
                       ② 事件级中位数：median ↔ baseline_median
                       默认隐藏的 mean / p25 / p75 见 hidden 初始值处的说明。 */}
-                  <Line type="monotone" dataKey="trigger_pair" name="触发组(日配对)" stroke="#7c3aed" dot={false} strokeWidth={2} hide={!!hidden.trigger_pair} />
+                  {/* v1.19.25：紫色「触发组(日配对)」曲线**只在判定有效的持有日**画锚点圆点 */}
+                  <Line type="monotone" dataKey="trigger_pair" name="触发组(日配对)" stroke="#7c3aed" dot={validAnchorDot('trigger_pair', '#7c3aed')} strokeWidth={2} hide={!!hidden.trigger_pair} />
                   <Line type="monotone" dataKey="baseline" name="基准·未触发组(日配对)" stroke="#94a3b8" dot={false} strokeWidth={1.5} strokeDasharray="4 4" hide={!!hidden.baseline} />
                   <Line type="monotone" dataKey="median" name="中位数(事件级)" stroke="#0284c7" dot={false} strokeWidth={2} hide={!!hidden.median} />
                   <Line type="monotone" dataKey="baseline_median" name="基准中位数·未触发组(事件级)" stroke="#0e7490" dot={false} strokeWidth={1.5} strokeDasharray="2 2" hide={!!hidden.baseline_median} />
@@ -621,6 +710,9 @@ export default function EventStudyModal({
               <div className="border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
                 <div className="text-slate-500 mb-1">
                   超额曲线（触发组 − 基准·未触发组；单位 %）
+                  <span className="text-violet-600 dark:text-violet-400 ml-2">
+                    ● 紫色曲线上的圆点 = 判定「有效」的持有日
+                  </span>
                   <span className="text-slate-400 ml-2">
                     均值＝日配对口径（易被少数暴涨事件主导）；中位数＝事件级口径（典型一次触发的超额）
                   </span>
@@ -632,7 +724,7 @@ export default function EventStudyModal({
                     <YAxis tick={{ fontSize: 11 }} width={45} />
                     <Tooltip
                       formatter={(v: number | string) => (typeof v === 'number' ? `${v.toFixed(3)}%` : v)}
-                      labelFormatter={(l) => `持有 ${l} 个交易日`}
+                      labelFormatter={(l) => `持有 ${l} 个交易日 · ${validKs.has(Number(l)) ? '有效 ✓' : '待观察'}`}
                     />
                     <Legend
                       wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
@@ -644,7 +736,8 @@ export default function EventStudyModal({
                       dataKey="excess"
                       name="超额(均值·日配对)"
                       stroke="#7c3aed"
-                      dot={false}
+                      /* v1.19.25：紫色「日配对超额」曲线同样**只在判定有效的持有日**画锚点圆点 */
+                      dot={validAnchorDot('excess', '#7c3aed')}
                       strokeWidth={2}
                       hide={!!hidden.excess}
                     />
