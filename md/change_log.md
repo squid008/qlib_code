@@ -3,6 +3,24 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.69] - 2026-09-13
+
+### Performance
+- **单因子测试接入特征面板磁盘缓存 + 缓存容量治理**（`factors/single_test.py` / `engine/feature_cache.py`）：
+  - **背景**：`feature_cache` 此前**只在回测路径**生效（`CachedQlibDataLoader`）；单因子测试走自研 `panel_expr` 面板求值器（`_load_feature_panel`），**每次重跑同参数都从零求值**。实测（全A + 5 年 + h=5）：`feature_s = 18.6~19.9s`（其中约 12s 是并行求值结果回传），且 `workdir/feature_cache` 里**没有任何今天产生的文件**。
+  - **改动**：在 `_load_feature_panel` 调用处包一层「查缓存 → 未命中则求值并写缓存」。缓存 key（`_cache_path` 新增 `extra` 参数）含**全部影响结果的参数** —— 池 / 表达式 / 列名 / 区间 / **`warmup_days`** / **`freeze_suspended_price`** / **信号截断日** / 数据版本（缺任一都会跨参数命中脏缓存）。尊重 `QLIB_SFT_PANEL=0`（关闭时不查不写）；面板求值失败（回退 qlib）不写；读写异常全部吞掉、不影响主流程。
+  - **缓存治理（新增 `_prune_cache`）**：①**过期清理**（mtime 早于 `QLIB_CACHE_MAX_AGE_DAYS`，默认 30 天，直接删）；②**LRU**（超 `QLIB_CACHE_MAX_MB` 默认 4096 或 `QLIB_CACHE_MAX_FILES` 默认 200 时按 mtime 从旧到新删，一并清 `*.tmp` 残留）。每次写缓存后就地治理，失败不影响主流程。
+  - **实测收益**（全A + 2021-2025 + h=5 + 10 个 K 档）：`feature_s` **19.85s → 0.136s**；`total_s` **45.4s → 25.7s（−43%）**。
+- **分位组聚合改用二维 `bincount`**（`factors/single_test.py`）：
+  - 原实现 `for q, g in tmp.groupby("_q")` + `g.groupby(level=dt)["LABEL"].mean()` = **10 次两级 groupby**；改为按 (分位组, 日期) 展平成桶号后一次 `bincount`。pandas 侧实测 **6.8×**（`ai_test/probe_hotspots.py`：124 万行 0.029s → 0.004s）。
+  - **口径逐位一致**：`ai_test/verify_v1869_agg.py` 用 `git stash` 在同一会话切换新旧实现、同参数对拍 ⇒ `baseline_mean`、10 个分位的 `mean_ret`、区间累计、`ic`/`rank_ic`/`icir` **全部逐位相同**。
+  - ⚠ 两个计数必须分开：`count`（组内**行数**，含 LABEL 为空样本，与原 `len(g)` 一致）vs 有效样本数（等价 `groupby.mean` 的 skipna）。
+
+### Not done（实测否证，故未采用 —— 无残留代码）
+- **「向量化分组秩」未采用**：实测 `_compute_ic` 内 `groupby.rank()` 占 **85%**（1 年 1.02s / 全函数 1.2s），但它已是 pandas **Cython** 实现；numpy 改写实测仅 **1.1×**（且对拍未通过）⇒ 收益不足以承担口径风险，**已完整回滚**。
+- **「label 组内秩跨因子复用」未采用**：`_compute_ic_stats` 的输入行由 `_sub_pos = (~isna(因子列)) & (~isna(LABEL))` 决定（`single_test.py:444`）⇒ **每个因子的有效行集合不同**，其上的 label 秩随子集变化，**无法跨因子复用**（改用全样本秩则属口径变更）。
+- 版本 1.18.68 → 1.18.69。
+
 ## [1.18.68] - 2026-09-13
 
 ### Fixed

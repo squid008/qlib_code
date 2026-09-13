@@ -715,14 +715,37 @@ def _test_one(
                 lambda x: pd.qcut(x, _qn, labels=False, duplicates="drop") + 1
             )
             tmp = tmp.dropna(subset=["_q"])
+            # v1.18.69 性能：分位组的「日截面均值」改**一次二维 bincount** —— 原实现
+            # `for q, g in tmp.groupby("_q")` + `g.groupby(level=dt)["LABEL"].mean()` 是
+            # **10 次两级 groupby**（全A 5 年面板实测占 mean 类开销的大头）。按
+            # (分位组, 日期) 展平成一维桶号后 `bincount`，pandas 侧实测 **6.8×**
+            # （`ai_test/probe_hotspots.py`：124 万行 0.029s→0.004s，max|Δ|=0）。
+            # ⚠ 两个计数必须分开：`_cnt_row`（该组**行数** = 原 `len(g)`，含 LABEL 为空的样本）
+            #   与 `_cnt_ok`（LABEL 有限的有效样本数，等价 `groupby.mean` 的 skipna）。
+            _qarr = tmp["_q"].to_numpy()
+            _lab_g = tmp["LABEL"].to_numpy(dtype=np.float64)
+            _codes_g, _uniq_g = pd.factorize(tmp.index.get_level_values(dt_pos), sort=True)
+            _nd_g = len(_uniq_g)
+            _nq_g = int(_qarr.max()) if _qarr.size else 0
+            _ne_g = max(1, _nq_g * _nd_g)
+            _slots = (_qarr.astype(np.int64) - 1) * _nd_g + _codes_g
+            _cnt_row = np.bincount(_slots, minlength=_ne_g)
+            _ok_g = np.isfinite(_lab_g)
+            _cnt_ok = np.bincount(_slots[_ok_g], minlength=_ne_g).astype(np.float64)
+            _sum_g = np.bincount(_slots[_ok_g], weights=_lab_g[_ok_g], minlength=_ne_g)
+            with np.errstate(all="ignore"):
+                _mean_g = np.divide(_sum_g, _cnt_ok, out=np.full(_ne_g, np.nan),
+                                    where=_cnt_ok > 0)
             groups, _q_dms = [], {}
-            for q, g in tmp.groupby("_q"):
-                # 日截面：每天组内样本先取均值 → 对所有参与交易日再平均
-                dm = g.groupby(level=dt_pos)["LABEL"].mean()
-                _q_dms[int(q)] = dm          # 曲线与 `mean_ret` **同源**（同一次 groupby）
+            for _gi in range(_nq_g):
+                _sl = slice(_gi * _nd_g, (_gi + 1) * _nd_g)
+                if not (_cnt_ok[_sl] > 0).any():
+                    continue      # 该分位组无样本（`qcut(duplicates="drop")` 会掉档）
+                dm = pd.Series(_mean_g[_sl], index=_uniq_g).dropna()
+                _q_dms[_gi + 1] = dm     # 曲线与 `mean_ret` **同源**（同一次聚合）
                 groups.append({
-                    "quantile": int(q),
-                    "count": int(len(g)),                        # 该组剔除后样本总数（观测数）
+                    "quantile": _gi + 1,
+                    "count": int(_cnt_row[_sl].sum()),           # 该组剔除后样本总数（观测数）
                     "n_days": int(len(dm)),                      # 参与交易日数
                     "mean_ret": round(float(dm.mean()), 6),      # 日截面平均收益
                 })
@@ -1366,12 +1389,39 @@ def run_single_factor_tests(
     all_cols = factor_cols + list(label_cols.values()) + base_names + ["PX"] + tag_names
 
     _ph_t0 = _tmod.perf_counter()
-    df = _load_feature_panel(
-        instruments, fields, all_cols, start_date, load_end,
-        freeze_suspended_price=freeze_suspended_price, end_date=end_date,
-        cancelled=cancelled, progress_cb=progress_cb, factors=factors,
-        warmup_days=warmup_days,
-    )
+    # v1.18.69：单因子面板**接入磁盘缓存**。此前 `feature_cache` 只在回测路径生效，
+    # 单因子每次重跑同参数都要重新求值（全A 5 年实测 `feature_s` ≈ 18.6s，其中一大块是
+    # 并行求值结果回传）。key 必须含**全部影响结果的参数**（表达式 / 列名 / 区间 /
+    # warmup / 冻结价 / 信号截断日 / 数据版本），否则会跨参数命中脏缓存。
+    # 容量治理（大小上限 + 过期 + LRU）在 `feature_cache._save_cache` 内自动执行。
+    import os as _os_sft
+
+    _pc = None
+    if _os_sft.environ.get("QLIB_SFT_PANEL", "1") != "0":
+        try:
+            from ..engine.feature_cache import _cache_path, _load_cache, _save_cache
+            _pc = _cache_path(
+                instruments, list(fields), all_cols, start_date, load_end,
+                extra="sft|w=%s|f=%s|e=%s" % (warmup_days, freeze_suspended_price, end_date),
+            )
+        except Exception:
+            _pc = None
+    df = _load_cache(_pc) if _pc else None
+    if df is not None:
+        if progress_cb:
+            progress_cb(None, 30.0, "特征面板缓存命中，跳过求值")
+    else:
+        df = _load_feature_panel(
+            instruments, fields, all_cols, start_date, load_end,
+            freeze_suspended_price=freeze_suspended_price, end_date=end_date,
+            cancelled=cancelled, progress_cb=progress_cb, factors=factors,
+            warmup_days=warmup_days,
+        )
+        if df is not None and _pc:
+            try:
+                _save_cache(_pc, df)
+            except Exception:
+                pass      # 缓存写失败不影响主流程
     _ph_feat = _tmod.perf_counter() - _ph_t0
     if df is None:
         # 面板加载失败（不支持的算子/数据异常）→ 回退 qlib D.features

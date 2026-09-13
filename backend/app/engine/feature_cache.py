@@ -21,6 +21,7 @@ import hashlib
 import os
 import pickle
 import re
+import time
 
 import pandas as pd
 
@@ -93,11 +94,15 @@ def _sr_wrap_expr(expr: str) -> str:
     return _SR_FIELD_RE.sub(_repl, expr)
 
 
-def _cache_path(instruments, exprs, names, start_time, end_time) -> str:
+def _cache_path(instruments, exprs, names, start_time, end_time, extra="") -> str:
     """缓存 key 必须同时含表达式与列名（names）。
 
     同一批表达式在不同 Handler 下可能映射不同列名（如"混合"模式下 Alpha158/360
     的特征会加 A158_/A360_ 前缀），若 key 只含表达式会导致跨场景命中脏缓存。
+
+    `extra`（v1.18.69）：额外的**影响结果的参数**指纹。单因子测试的面板求值器除了
+    表达式/区间，还受 `warmup_days` / `freeze_suspended_price` / 信号截断日等影响
+    —— 这些不放进 key 就会**跨参数命中脏缓存**，故调用方必须把它们拼进来。
     """
     parts = [
         "v1",
@@ -107,6 +112,7 @@ def _cache_path(instruments, exprs, names, start_time, end_time) -> str:
         str(start_time),
         str(end_time),
         _data_version(),
+        str(extra or ""),
     ]
     raw = "|".join(parts)
     return os.path.join(_CACHE_DIR, hashlib.md5(raw.encode("utf-8")).hexdigest()[:24] + ".pkl")
@@ -136,6 +142,69 @@ def _save_cache(path, df):
         os.replace(tmp, path)
     except Exception:
         pass
+    _prune_cache()                    # v1.18.69：写入后就地治理（上限 / 过期 / LRU）
+
+
+# ---------------------------------------------------------------------------
+# 缓存容量治理（v1.18.69）：大小上限 + 过期清理 + LRU
+# ---------------------------------------------------------------------------
+# 单因子测试接入缓存后，单份面板动辄数百 MB（全A 5 年 ≈ 590 万行），反复调参会迅速
+# 撑爆磁盘（此前只有回测路径写缓存、量小，故缺治理）。策略：
+#   ① 过期：mtime 早于 `max_age_days` 的文件直接删；
+#   ② LRU：仍超 `max_bytes` 或 `max_files` 时，按 mtime 从旧到新继续删。
+# 环境变量可覆盖：QLIB_CACHE_MAX_MB（默认 4096）/ QLIB_CACHE_MAX_FILES（200）/
+# QLIB_CACHE_MAX_AGE_DAYS（30）。⚠ 治理失败绝不影响主流程。
+_CACHE_MAX_BYTES = int(os.environ.get("QLIB_CACHE_MAX_MB", "4096") or 0) * 1024 * 1024
+_CACHE_MAX_FILES = int(os.environ.get("QLIB_CACHE_MAX_FILES", "200") or 0)
+_CACHE_MAX_AGE_DAYS = float(os.environ.get("QLIB_CACHE_MAX_AGE_DAYS", "30") or 0)
+
+
+def _prune_cache(max_bytes=None, max_age_days=None, max_files=None):
+    """按「过期 + LRU」清理缓存目录，返回 `(删除文件数, 剩余字节数)`。
+
+    只处理 `*.pkl` 与 `*.tmp`（原子替换的中间产物）。任何异常都被吞掉 —— 缓存治理
+    失败不能影响主流程。
+    """
+    try:
+        if not os.path.isdir(_CACHE_DIR):
+            return (0, 0)
+        mb = _CACHE_MAX_BYTES if max_bytes is None else int(max_bytes)
+        mf = _CACHE_MAX_FILES if max_files is None else int(max_files)
+        ma = _CACHE_MAX_AGE_DAYS if max_age_days is None else float(max_age_days)
+        items = []
+        for fn in os.listdir(_CACHE_DIR):
+            if not (fn.endswith(".pkl") or fn.endswith(".tmp")):
+                continue
+            p = os.path.join(_CACHE_DIR, fn)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            items.append((st.st_mtime, st.st_size, p))
+        items.sort()                       # 旧的在前
+        removed = 0
+        if ma and ma > 0:                  # ① 过期
+            cutoff = time.time() - ma * 86400.0
+            for mtime, _size, p in items:
+                if mtime < cutoff:
+                    try:
+                        os.remove(p)
+                        removed += 1
+                    except OSError:
+                        pass
+        alive = [(m, s, p) for (m, s, p) in items if os.path.exists(p)]
+        total = sum(s for _, s, _ in alive)
+        while alive and ((mb and total > mb) or (mf and len(alive) > mf)):
+            _, size, p = alive.pop(0)      # ② LRU：最旧优先
+            try:
+                os.remove(p)
+                removed += 1
+                total -= size
+            except OSError:
+                pass
+        return (removed, total)
+    except Exception:
+        return (0, 0)
 
 
 # ---------------------------------------------------------------------------
