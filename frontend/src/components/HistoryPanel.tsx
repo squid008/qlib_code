@@ -184,7 +184,10 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
     if (seqs.length === 0) return null
     const lo = Math.min(...seqs)
     const hi = Math.max(...seqs)
-    return lo === hi ? `#${lo}` : `#${lo}~#${hi}`
+    const range = lo === hi ? `#${lo}` : `#${lo}~#${hi}`
+    // ⚠ 序号集可能**不连续**（此前被删过的目录会留下空档，如 #14~#52 实际只有 31 个）
+    //   ⇒ 区间后面补实际个数，避免被误读成"从 lo 到 hi 全都算"。
+    return seqs.length > 1 ? `${range}（${seqs.length} 个）` : range
   }
   const retentionHint = (() => {
     if (!retention || retention.count === 0) return null
