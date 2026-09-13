@@ -313,8 +313,11 @@ export interface PerfMetrics {
 export interface TopKBenchmark {
   code: string // 如 SH000300
   name: string // 展示名：沪深300 / 中证1000 …
-  cum: (number | null)[] // 逐调仓期**算术累加**；**数据不足的期及其后为 null**（前端断线，不猜）
+  cum: (number | null)[] // 逐调仓期**算术累加**；中期空洞为 null（前端断线，不猜）
   cum_compound?: (number | null)[] // v1.18.47 复利累乘（与组合曲线同口径切换；缺失语义同 cum）
+  /** 用「数据尾部价」兜底的期数（>0 ⇒ 末期持有窗口不足 h 个交易日，**与组合同口径**）。
+   *  组合侧对应 label 的「冻结价兜底」（`exit_px.where(notna, last_c)`）⇒ 两侧可直接相减。 */
+  n_partial?: number
   perf?: PerfMetrics | null // 逐日盯市绩效指标（与组合同口径，v1.18.48）
 }
 export interface TopKCurves {

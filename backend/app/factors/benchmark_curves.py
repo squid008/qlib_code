@@ -92,17 +92,29 @@ def load_bench_close(codes: Iterable[str] = BENCH_CODES, start=None, end=None,
 
 
 def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
-    """`{code: {"name": …, "cum": [float|None, …]}}`：各指数**逐调仓期收益的算术累加**。
+    """`{code: {"name": …, "cum": [float|None, …], …}}`：各指数**逐调仓期收益的算术累加**。
 
-    `close` —— `load_bench_close()` 的宽表（index 必须覆盖调仓日**及之后 h+1 个交易日**）。
+    `close` —— `load_bench_close()` 的宽表（index 覆盖调仓日**及之后 h+1 个交易日**）。
     每期 = `close[T+1] → close[T+h+1]`（与组合 `LABEL` **完全同口径**），各期**算术累加**。
 
-    缺失语义（两档，**不要混**）：
-      · **尾部越界**（`T+h+1` 超出可用区间）⇒ 该期**及其后全部** `None`（后面的期必然也不够）；
+    ⚠⚠ **`T+h+1` 越界（数据尾部不足）时必须用「该指数最后一个收盘价」兜底 —— 不许给 None**
+    （2026-09-13 用户报「负市值对数的基准曲线怎么 2026-08-14 就没了？几个分组的曲线倒是有的」）：
+    组合侧的 `freeze_suspended_price=True`（默认）会重算 label ——
+    `single_test.py` 的「冻结价 label 兜底」：
+        exit_px = Ref($close, -(h+1))；**越界处 `where(notna, last_c)` 兜底成该股最后一个收盘价**
+        （`last_c = CLOSE.ffill().groupby(inst).transform("last")`），entry_px = Ref($close, -1)
+    ⇒ **最后一期是「不完全持有窗口」**（例：调仓日 2026-08-14、数据尾 2026-08-21，实际只持有 4 个交易日），
+    组合/分组曲线照常有值。基准若坚持"越界即 None"，就会**比组合少最后一段**（图上表现为基准线提前断掉、
+    最后一期算不出超额）。故这里逐字对齐：卖点越界 ⇒ `p2 = 该列最后一个有限价`（部分持有期），
+    并在 `n_partial` 里回传**用了兜底的期数**（前端据此提示"末期持有窗口不足 h 日"）。
+
+    缺失语义（三档，**不要混**）：
+      · **买点 `T+1` 越界/无价** ⇒ 该期 `None`（组合侧 entry_px 也是 NaN ⇒ label 亦为 NaN，同口径）；
+      · **卖点 `T+h+1` 越界** ⇒ **用最后价算部分持有期**（上面那条，**不是** None）；
       · **中间某期取不到价**（单个空洞/停牌）⇒ **只有该期** `None`，**后续照算**。
-        ⚠ 曾经两种都按"其后全 None"处理 ⇒ 面板里 `SH000852` 2025-04-16 的一个空洞
-        把整条基准线从那天截断（用户当场发现）；`load_bench_close` 的 `ffill` + 这里的
-        "只断当期"是两道独立防线。
+        ⚠ 曾把"中间空洞"与"尾部越界"都按"其后全 None"处理 ⇒ 面板里 `SH000852` 2025-04-16 的
+        一个空洞把整条基准线从那天截断（用户当场发现）；`load_bench_close` 的 `ffill` +
+        这里的"只断当期"是两道独立防线。
     前端 Recharts 遇 null 会断开该点，比"猜一个数接着画"诚实。
     """
     h = max(0, int(horizon or 0))
@@ -112,10 +124,15 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
     for code in close.columns:
         s = close[code]
         sarr = s.to_numpy(dtype=np.float64)
+        # ⚠ 尾部兜底价 = 该列**最后一个有限值**（= 面板最后一日的收盘价）。与 label 侧的
+        #   `last_c = CLOSE.ffill().groupby(inst).transform("last")` 同义 ⇒ 两侧同口径。
+        _fin = np.flatnonzero(np.isfinite(sarr))
+        last_px = float(sarr[_fin[-1]]) if _fin.size else float("nan")
         # v1.18.47：同时给**算术累加**与**复利累乘**两条（前端默认显示复利，与组合曲线同口径）；
-        # 缺失语义两者完全一致（尾部越界 ⇒ 其后全 None；中间空洞 ⇒ 只断当期）。
+        # 缺失语义两者完全一致。
         cums, cums_cmp = [], []
-        cum, navc, truncated = 0.0, 1.0, False
+        cum, navc = 0.0, 1.0
+        n_partial = 0            # 用「最后价兜底」的期数（= 末期持有窗口不足 h 个交易日）
         # v1.18.48：逐日盯市净值（与组合同构：期内 [T+1, T+h] 走指数逐日、期末由期收益推进）
         # → 供「年化/最大回撤/夏普/索提诺/卡玛」使用（基准与组合同口径才有比较意义）。
         nav_arr = np.ones(n, dtype=np.float64)
@@ -123,41 +140,47 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
         _begb = 0                        # 第一个有效期的 T+1 位置（裁掉预热段的平坦点）
         for d in reb_dates:
             t = pd.Timestamp(d)
-            if truncated:                        # 尾部越界后：后面必然也越界
-                cums.append(None)
-                cums_cmp.append(None)
-                continue
             pos = int(idx.searchsorted(t))
-            i1, i2 = pos + 1, pos + 1 + h
-            # ⚠ 先判长度再 iloc（越界会抛 IndexError 而不是给 NaN）
-            p1 = float(s.iloc[i1]) if (0 <= i1 < n) else float("nan")
-            p2 = float(s.iloc[i2]) if (0 <= i2 < n) else float("nan")
-            if pos >= n or idx[pos] != t or i1 >= n or i2 >= n:
-                truncated = True                 # 尾部不够 ⇒ 其后全 None
+            if pos >= n or idx[pos] != t:
+                # 调仓日不在行情日历内（超出尾部/缺口）⇒ 该期 None（**不**牵连后续期）
                 cums.append(None)
                 cums_cmp.append(None)
                 continue
-            if not np.isfinite(p1) or not np.isfinite(p2) or p1 <= 0:
+            i1 = pos + 1
+            p1 = float(sarr[i1]) if i1 < n else float("nan")
+            if not np.isfinite(p1) or p1 <= 0:
+                # 买点（T+1）越界/无价：组合侧 entry_px 同是 NaN ⇒ label 亦 NaN ⇒ 同为 None
+                cums.append(None)
+                cums_cmp.append(None)
+                continue
+            # ⚠⚠ 卖点 T+h+1 越界 ⇒ **最后价兜底（不完全持有期）**，与组合 label 的冻结价兜底逐字对齐
+            i2 = pos + 1 + h
+            partial = i2 >= n
+            p2 = last_px if partial else float(sarr[i2])
+            if not np.isfinite(p2) or p2 <= 0:
                 cums.append(None)                # 仅当期缺（后续照算）
                 cums_cmp.append(None)
                 continue
+            if partial:
+                n_partial += 1
             rr = p2 / p1
             cum += (rr - 1.0)
             navc *= rr
             cums.append(round(cum, 6))
             cums_cmp.append(round(navc - 1.0, 6))
-            # 逐日路径（相对本期期初 p1）；i2 = T+h+1（同组合口径，`close` 已 ffill）
+            # 逐日路径（相对本期期初 p1）；卖点取 min(T+h+1, 数据尾下一格) —— 部分持有期时净值
+            # 只推进到数据尾（与 `p2 = 最后价` 的期收益一致）
             if _begb == 0:
                 _begb = i1               # 首个调仓期的 T+1（此前是预热/建仓前的平坦段）
             if i1 > cur:
                 nav_arr[cur:i1] = gd
-                cur = i1
-            seg = sarr[i1:i2] / p1               # [T+1, T+h]
+            i2c = min(i2, n)
+            seg = sarr[i1:i2c] / p1               # [T+1, T+h]
             if seg.size and np.all(np.isfinite(seg)):
-                nav_arr[i1:i2] = gd * seg
+                nav_arr[i1:i2c] = gd * seg
             gd = gd * rr
-            nav_arr[i2] = gd
-            cur = i2
+            nav_arr[i2c - 1] = gd
+            cur = i2c
         if cur < n:
             nav_arr[cur:] = gd
         # ⚠ 两边都要截：`close` 宽表带 warmup 前段（起点比组合面板早约 250 交易日）与尾部
@@ -171,5 +194,8 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
                 net[1:] = nav_arr[_b + 1:_endb] / nav_arr[_b:_endb - 1] - 1.0
         out[str(code)] = {"name": BENCH_NAMES.get(str(code), str(code)),
                           "cum": cums, "cum_compound": cums_cmp,
+                          # 用「最后价兜底」的期数（>0 ⇒ 末期持有窗口不足 h 日，与组合同口径；
+                          # 前端据此提示用户，避免把部分持有期的收益当完整一期读）
+                          "n_partial": n_partial,
                           "perf": compute_perf(net)}
     return out

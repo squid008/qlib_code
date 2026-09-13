@@ -3,6 +3,16 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.27] - 2026-09-13
+
+### Fixed
+- **持仓期曲线：基准比分组少最后一期（用户报「负市值对数的基准曲线怎么 2026-08-14 就没了？几个分组的曲线倒是有的」，全 A / 2026-09-01 / h=40）**：
+  - **根因（口径没对齐，不是数据问题）**：默认 `freeze_suspended_price=True` 时，`single_test.py` 的「冻结价 label 兜底」把 label 的**卖点越界**兜底成该股最后一个收盘价（`exit_px.where(exit_px.notna(), last_c)`）⇒ **末期是「不完全持有窗口」**（本例调仓日 2026-08-14、T+1 = 08-17、数据尾 **08-21** ⇒ 只持有 **4** 个交易日），组合与分组照常有值；而 `benchmark_curves.period_return_cums` 旧实现「`T+h+1` 越界 ⇒ 该期及其后全 None」⇒ 基准必然少最后一段。
+  - **修复**：基准逐字对齐 —— 买点 `T+1` 越界/无价 ⇒ `None`；**卖点 `T+h+1` 越界 ⇒ 用该指数最后一个收盘价结算**（部分持有期），并回传 **`n_partial`**；删掉旧的 `truncated`（"其后全 None"）状态机，缺失语义收敛为 买点越界⇒None / 卖点越界⇒兜底 / 中间空洞⇒只断当期 三档；逐日盯市 `nav_arr` 卖点收敛到 `min(T+h+1, n)`。
+  - **前端**：`api.ts` 的 `TopKBenchmark` 加 `n_partial`；图下汇总在 `n_partial>0` 时提示「末期只持有不足 h 个交易日，两侧同口径用尾部价结算」，口径说明 ⑥ 补同一条。
+  - **实测**（用户原参数复现 + 跨路径对拍）：基准末期 `-0.070921`（修复前 `None`）、`n_partial = 1`；独立复算 `close[08-21]/close[08-17] − 1 = -0.025775` 与接口隐含末期收益 `-0.025774` 一致（|Δ|=1e-6）⇒ 末期超额 +1.82% 现在算得出来。
+  - **测试**：新增 **`backend/tests/test_benchmark_curves.py`（12 passed，随仓库上传）**含"用户报障现场复现"用例；`ai_test/check_params.py` 的 A22 改判「**全程无 None**」并新增 **A22b**（接口 `n_partial` == 独立手算）；`backend/tests` **205 passed**；`tsc` 0 + `build` 8.25s。
+
 ## [1.19.26] - 2026-09-13
 
 ### Changed

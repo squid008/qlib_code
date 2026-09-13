@@ -246,6 +246,10 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
     ''
   const benchItem =
     benchCode === EQW_CODE ? eqwBench : (benchList.find((b) => b.code === benchCode) ?? null)
+  // 「用数据尾部价兜底」的期数（后端 `n_partial`）：>0 ⇒ 末期持有窗口不足 h 日（数据到尾部了），
+  // 组合侧同样是部分持有期（label 的冻结价兜底）⇒ 两侧同口径、可直接相减；仅作提示。
+  // （「池内等权」由前端现算、无该字段 ⇒ 恒 0。）
+  const benchPartial = benchList.find((b) => b.code === benchCode)?.n_partial ?? 0
 
   // 图 1：选中档的三档累计曲线（0 / 0.004 / 0.008，均按调仓期扣费）+ 选中基准
   // 口径（basis）：复利取 `curves_compound` / `cum_compound`；后端旧版缺该字段时自动回退算术
@@ -645,6 +649,19 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   {signedPct(excess)}
                 </b>
                 {_bv == null ? '（基准尾部数据不足，已断线）' : ''}
+                {benchPartial > 0 && _bv != null && (
+                  <span
+                    className="ml-1 text-amber-600 dark:text-amber-400"
+                    title={
+                      '数据只到最近一个交易日 ⇒ 最后一期持有窗口不足 h 日：组合与基准都改用「数据最后一天的收盘价」结算' +
+                      '（组合侧即 label 的冻结价兜底），两侧同口径、可直接相减；n_partial = ' +
+                      benchPartial +
+                      '（用了兜底的期数）'
+                    }
+                  >
+                    （末期只持有不足 {tc?.rebalance_period ?? '-'} 个交易日，两侧同口径用尾部价结算）
+                  </span>
+                )}
               </div>
             )}
 
@@ -664,7 +681,10 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               ⑤ <b>多空 = 最强组 − 最弱组</b>，A 股空头收益拿不到 ⇒ <b>不可实现</b>，仅作有效性参考。
               两种口径都画：算术 = <b>逐期价差累加</b>（读数=累计价差）；复利 = <b>逐期价差复利</b>；
               ⑥ <b>基准与组合同口径</b>：指数在<b>同一调仓日</b>的 T+1 → T+h+1 收益、按当前口径累计
-              （价格指数、<b>不含分红</b>）⇒ 同口径可直接比超额。
+              （价格指数、<b>不含分红</b>）⇒ 同口径可直接比超额。⚠ <b>末期持有窗口可能不足 h 日</b>：
+              当调仓日之后的数据不足 h+1 个交易日时（数据只到最近一个交易日），<b>组合与基准</b>都改用
+              <b>数据最后一天的收盘价</b>结算该期（组合侧即 label 的「冻结价兜底」）⇒ 末期是<b>部分持有期</b>，
+              两侧同口径、可直接相减（`n_partial` 给出用兜底的期数）。
               ⑦ <b>「池内等权」基准（可选，默认不选中）</b>= 各分位组逐期收益的<b>平均</b>
               （等频分组 ⇒ 等价于池内全部成分股等权），与本图现算、不走后端行情；它<b>不是指数</b>，
               但<b>与组合完全同口径（同样含分红再投）</b>。
