@@ -822,14 +822,14 @@ def _test_one(
                         _h_i = int(horizon or 0)
                         if (_h_i <= 0 or _REBAL < _h_i or _n_inst_all <= 0
                                 or ("CLOSE_FF" not in tmp.columns and "CLOSE" not in tmp.columns)):
-                            return None
+                            return None, 0
                         if _k_kind == "decile" and _k_q is not None:
                             _held = _qr_row == float(_k_q)
                         else:
                             _held = _rkr_row <= float(_k_val)
                         _ok = _held & _valid & np.isfinite(_px0_row) & (_px0_row > 0)
                         if not _ok.any():
-                            return None
+                            return None, 0
                         _f = np.full(len(tmp), np.nan)
                         _f[_ok] = _close_row[_ok] / _px0_row[_ok]     # 相对 T+1 的价格比
                         _fin = _ok & np.isfinite(_f)
@@ -839,6 +839,7 @@ def _test_one(
                         _tv = np.asarray(_k_cc["turnover"], dtype=np.float64)
                         _kret = np.asarray(_k_ret, dtype=np.float64)
                         _out = {}
+                        _seg0_bad = 0        # 期内首点异常期数（v1.18.49：只诊断，不抛异常）
                         for _rate in (0.0, 0.004, 0.008):
                             _nav = np.full(_nd, 1.0)
                             _g = 1.0
@@ -866,17 +867,19 @@ def _test_one(
                                     elif np.isfinite(_lastv):
                                         _seg[_j] = _lastv
                                 if not np.isfinite(_seg[0]):
-                                    _seg[0] = float(_lastv) if np.isfinite(_lastv) else 1.0
+                                    # T+1 当天该档无有效样本（如 K=1 时唯一持仓股停牌/无行情）
+                                    # ⇒ 期初净值按 1 起（其后平坦至有值）。⚠ **不能**用段内末值
+                                    # 兜底：曾如此 → 首点=1.033 触发下面的自检 → 整条曲线被丢弃
+                                    # （用户报「选沪深300 时市值对数没有持仓曲线」，v1.18.49 修）。
+                                    _seg[0] = 1.0
                                 for _j in range(1, _seg.size):
                                     if not np.isfinite(_seg[_j]):
                                         _seg[_j] = _seg[_j - 1]
-                                # 自检④：路径首点（= T+1 当天）必须恰为 1 —— 抓「期划分错位 /
-                                # 价格分母取错 / 行对齐错」这类结构性错误（本轮靠它定位了
-                                # T+h+1 的期归属问题）。
-                                if _rate == 0.0 and abs(float(_seg[0]) - 1.0) > 1e-9:
-                                    raise AssertionError(
-                                        "逐日路径首点应为 1（%s / K=%s）：%.6f"
-                                        % (_k_kind, _k_val, float(_seg[0])))
+                                # 诊断（v1.18.49 起**不再抛异常**）：首点异常只累加计数并回传，
+                                # 绝不中断 `topk_curves` 组装 —— perf 是**附加信息**，不能拖垮
+                                # 主结果（曾因抛异常导致「持仓曲线整条消失」）。
+                                if _rate == 0.0 and abs(float(_seg[0]) - 1.0) > 1e-6:
+                                    _seg0_bad += 1
                                 _c = _rate * (float(_tv[_i]) if _i < _tv.size else 0.0)
                                 _start = _g * (1.0 - _c)
                                 _nav[_d0:_d1] = _start * _seg
@@ -894,7 +897,7 @@ def _test_one(
                             if _endi > 1:
                                 _net[1:] = _nav[1:_endi] / _nav[:_endi - 1] - 1.0
                             _out["%.4f" % _rate] = compute_perf(_net)
-                        return _out
+                        return _out, int(_seg0_bad)
 
                     def _append_item(_kind, _k, _ret, _sub, _n_hold=None, _quantile=None):
                         """调纯函数 + 追加一条明细（三个自检都在这里）。
@@ -946,7 +949,18 @@ def _test_one(
                             item["quantile"] = int(_quantile)
                         # v1.18.48：逐日盯市口径的绩效指标（年化/最大回撤/夏普/索提诺/卡玛），
                         # 三档成本各一份；不适用（调仓期 < 预测周期等）时为 None。
-                        item["perf"] = _perf_of(_kind, _k, _quantile, cc, _ret)
+                        # v1.18.49：perf 是**附加信息** —— 任何异常都必须被吞掉，绝不中断
+                        # `topk_curves` 的组装（v1.18.48 曾因内部自检抛 AssertionError 被外层
+                        # 捕获，导致「持仓曲线整条消失」，用户当场发现）。
+                        try:
+                            _perf_out, _seg0_bad = _perf_of(_kind, _k, _quantile, cc, _ret)
+                            item["perf"] = _perf_out
+                            if _seg0_bad:
+                                item["perf_note"] = (
+                                    "期内首点异常 %d 期（该档样本稀疏，指标仅供参考）" % _seg0_bad)
+                        except Exception as _pe:
+                            item["perf"] = None
+                            item["perf_error"] = repr(_pe)
                         _items.append(item)
                         return cc
 

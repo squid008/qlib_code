@@ -3,6 +3,17 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.18.49] - 2026-09-13
+
+### Fixed
+- **「持仓期曲线」整条消失 —— v1.18.48 引入的回归**（用户报「选沪深300 的时候，市值对数那个持仓曲线怎么没有呢？」）（`factors/single_test.py`）：
+  - **现象**：结果里 `topk_curves` 为空（**净值曲线 + 成本敏感度表全无**），但十分位曲线（`quantile_curves`）正常；`topk_curves_error = AssertionError('逐日路径首点应为 1（topk / K=1）：1.033113')`。
+  - **根因（两处叠加）**：① v1.18.48 逐日盯市的「期内首点兜底」写错 —— T+1 当天该档无有效样本时（**K=1 档只持 1 只股票，它停牌/无行情即触发**）取的是**段内末值**（1.033）而不是期初应有的 1.0；② 该处**自检④抛 AssertionError**，被 `topk_curves` 段外层 `except Exception` 捕获 ⇒ **整个 `topk_curves`（含 `topk_sensitivity`）不再写入**。
+  - **修复**：首点兜底改为 **1.0**（期初净值定义，其后平坦至有值）；自检④**降级为诊断计数**（经 `perf_note` 回传，不再抛异常）；并把 `_perf_of` 的调用整体包进 `try/except` —— **perf 是附加信息，任何异常都不得影响曲线本身**（失败改由 `perf_error` 字段回传原因）。
+  - **验证**：`ai_test/probe_v1849_fix.py`（复现用例：沪深300 + 市值对数 + h=20 + `topk_list=[1,50]`）→ `topk_curves=有（4 档）`、`topk_curves_error=None`、`topk_sensitivity=有`，K=1 档曲线与指标全部恢复（年化 −7.35% / 回撤 −88.54% / 夏普 0.45）。
+  - ⚠ **旧结果需重跑**：v1.18.48 期间产生的任务结果不会自动补算，请**重新提交**该因子测试即可看到曲线。
+- 版本 1.18.48 → 1.18.49。
+
 ## [1.18.48] - 2026-09-12
 
 ### Added
