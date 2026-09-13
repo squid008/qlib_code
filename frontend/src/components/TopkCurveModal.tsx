@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import {
   CartesianGrid,
   Legend,
@@ -66,10 +66,13 @@ const fmtRatio = (v: number | null | undefined) =>
  */
 function PerfCard({
   title,
+  titleExtra,
   perf,
   extra,
 }: {
   title: string
+  /** 标题行右侧的自定义控件（如「成本档」切换选项卡）。 */
+  titleExtra?: ReactNode
   perf?: PerfMetrics | null
   extra?: string
 }) {
@@ -82,7 +85,10 @@ function PerfCard({
   )
   return (
     <div className="border border-slate-200 dark:border-slate-700 rounded px-2 py-1">
-      <div className="text-slate-500 mb-1">{title}</div>
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <span className="text-slate-500">{title}</span>
+        {titleExtra}
+      </div>
       <div className="grid grid-cols-5 gap-1">
         {cell('年化', signedPct(perf.annual_return, 1))}
         {cell('最大回撤', signedPct(perf.max_drawdown, 1), 'text-red-500')}
@@ -112,6 +118,9 @@ type Basis = 'compound' | 'arith'
 
 export default function TopkCurveModal({ open, onClose, name, row }: Props) {
   const [sel, setSel] = useState(0)
+  /** 绩效卡的成本档（v1.18.54）：默认**往返 0.004**（更贴近实盘；无成本档常被高估）。
+   *  仅切换「年化 / 最大回撤 / 夏普 / 索提诺 / 卡玛」等指标卡，不影响曲线图（三档成本线始终都在图里、可显隐）。 */
+  const [perfCost, setPerfCost] = useState<'0.0000' | '0.0040' | '0.0080'>('0.0040')
   const [bench, setBench] = useState('')
   const [hidden, setHidden] = useState<Record<string, boolean>>({})
   // 口径（v1.18.47）：**默认复利**（= 实盘）；后端旧版无 curves_compound 时自动回退算术
@@ -189,9 +198,10 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
           ? null
           : (1 + _pv) / (1 + _bv) - 1
         : _pv - _bv
-  // 绩效指标（v1.18.48）：组合取**无成本档**（与曲线 c0 同口径）；基准用同口径指标。
+  // 绩效指标（v1.18.54）：按**成本档** `perfCost` 取（默认往返 0.004）—— 三档指标后端都已算好，
+  // 切换纯前端零重算；无成本档对应曲线 c0，0.004 / 0.008 对应 c004 / c008。
   // ⚠ 基于净值 ⇒ 仅复利口径展示（算术累加不是净值，回撤/波动无从定义）。
-  const itemPerf = item?.perf?.['0.0000'] ?? null
+  const itemPerf = item?.perf?.[perfCost] ?? null
   const benchPerf = benchItem?.perf ?? null
   const costAnnual = item?.perf
     ? `三档年化：无成本 ${signedPct(item.perf['0.0000']?.annual_return, 1)}`
@@ -304,7 +314,35 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                 item?.kind === 'decile'
                   ? `·最强分位组 Q${item?.quantile}`
                   : `·固定 K=${item?.k}`
-              }（无成本）`}
+              }`}
+              titleExtra={
+                <span className="flex items-center gap-0.5">
+                  {(
+                    [
+                      ['0.0000', '无成本'],
+                      ['0.0040', '往返 0.004'],
+                      ['0.0080', '往返 0.008'],
+                    ] as const
+                  ).map(([k, label]) => (
+                    <button
+                      key={k}
+                      onClick={() => setPerfCost(k)}
+                      title={
+                        k === '0.0000'
+                          ? '无成本：不扣往返费率（与曲线 c0 同口径）'
+                          : `往返（买+卖）合计 ${Number(k)} 费率：按调仓期只扣实际调仓股、首期建仓不计费`
+                      }
+                      className={`px-1 py-0.5 rounded border text-[10px] leading-none ${
+                        perfCost === k
+                          ? 'border-sky-500 text-sky-600 bg-sky-50 dark:bg-sky-900/30'
+                          : 'border-slate-300 text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/40'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </span>
+              }
               perf={itemPerf}
               extra={costAnnual}
             />
@@ -459,7 +497,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
             {/* 口径 / 免责（v1.18.52 下移至此：先看图与指标，再核对口径细则）——
                 与上方「绩效指标（年化 / 最大回撤）」面板对调了位置。 */}
             <div className="mt-3 px-3 py-2 rounded bg-amber-50 dark:bg-amber-900/20 text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">
-              <b>简化估算，读图前请先看口径</b>：① 费率是<b>往返（买+卖）合计</b>，按<b>调仓期</b>扣、
+              <b>简化估算 · 口径说明</b>（读图后可对照核对）：① 费率是<b>往返（买+卖）合计</b>，按<b>调仓期</b>扣、
               只扣<b>实际调仓</b>的股票（首期建仓不计费）；② <b>未考虑涨跌停、停牌、流动性冲击</b>；
               ③ 曲线 = 每期持有组合的收益（调仓日取信号、T+1 买入、持有到下一个调仓日；调仓期默认 =
               预测周期 h）—— 当前口径：<b>{basis === 'compound'
