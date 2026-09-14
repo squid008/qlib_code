@@ -341,6 +341,30 @@ function parseHorizons(text: string): { horizons: number[]; error?: string } {
   return { horizons: [...new Set(out)] } // 去重保序
 }
 
+/** 「预测周期」输入框的鼠标提示：静态语法说明（示例随 `parseHorizons` 的语义走，改语义时一起改）。 */
+const HORIZON_SYNTAX =
+  '单个数字=测一个周期；逗号/全角逗号/分号/空格分隔可批量混写（如 1:2:7,60 → 1,3,5,7,60）；\n' +
+  '三段 a:b:c = 起点:步长:终点（含终点），如 1:5:20 → 1,6,11,16；\n' +
+  '⚠ 两段 a:b = 起点:终点（步长 1）⇒ 1:5 → 1,2,3,4,5（不是"每隔 5"）。\n' +
+  '取值范围 1~250，自动去重并保持顺序。'
+
+/** 鼠标提示里的**实时预览**（用户 2026-09-14：「加预览加在鼠标 TAG 里」）：
+ *  把当前输入解析成人话，挂在 `title` 上 ⇒ 每敲一个字、悬停即见，避免"两段/三段的中间数含义不同"被误读
+ *  （最坏情况：把 `1:60` 当"每隔 60"，实际展开成 60 个周期，逐个算一遍很慢 ⇒ 周期数多时写明代价）。 */
+function horizonHint(text: string): string {
+  const r = parseHorizons(text)
+  if (r.error) return `当前输入：⚠ ${r.error}`
+  const n = r.horizons.length
+  if (!n) return '当前输入：空（提交时会提示「请填写预测周期」）'
+  // ⚠ 展开结果要**截断**：`1:60` 会展开 60 个数，全列进 tooltip 就没法读了（周期数才是重点）
+  const CAP = 10
+  const list = n > CAP
+    ? `${r.horizons.slice(0, CAP).join(', ')}, …, ${r.horizons[n - 1]}`
+    : r.horizons.join(', ')
+  const slow = n > 6 ? '；⚠ 周期数较多，本次测试要逐个周期各算一遍（耗时随周期数近似线性增加）' : ''
+  return `当前输入 ⇒ ${list}（${n} 个周期${slow}）`
+}
+
 interface SourceGroup {
   source: 'custom' | 'alpha158' | 'alpha360'
   label: string
@@ -919,7 +943,7 @@ export default function SingleFactorTestPanel({
             type="text"
             inputMode="numeric"
             placeholder="如 2 / 1,2,3,5 / 1:5:20 / 1:2:7,60"
-            title="单个数字=测一个周期；逗号/空格/分号分隔可批量混写，如 1:2:7,60 → 1,3,5,7,60；三段 a:b:c=起点:步长:终点（含终点），如 1:5:20 → 1,6,11,16；⚠ 两段 a:b=起点:终点（步长 1）⇒ 1:5 → 1,2,3,4,5。取值范围 1~250，自动去重并保持顺序"
+            title={`${HORIZON_SYNTAX}\n\n${horizonHint(labelHorizonText)}`}
             className="border rounded px-2 py-1"
             value={labelHorizonText}
             onChange={(e) => setLabelHorizonText(e.target.value)}
