@@ -126,12 +126,36 @@ function esExcessOf(r: TestResult, k?: number | null): number | null {
   return v == null ? null : v
 }
 
+/** 0/1 信号「反向条件成立」时的悬停说明（v1.19.34，用户 2026-09-14 定稿）。
+ *
+ * ⚠ **为什么反向不再作为结论**：0/1 信号的语义是「**1 = 要买**」，判"反向"等于叫你去买**未触发组**；
+ *   而稀疏信号（触发占比 p 极小）下未触发组 ≈ 全池 ⇒ 反向 = 拿 beta、**无 alpha**
+ *   （XG2 实测 p=0.028%：剔除影响与"未触发 vs 全池"都是 0.0005% 量级）；
+ *   并且「有效(反向)✓」带个绿勾会被读成"好消息"，而它对选股信号的真实含义是「**原方向无效**」。
+ *   ⇒ 反向下**直接按「待观察」**，这里只补充说明，不参与结论判定。
+ */
+function reverseNoteOf(r: TestResult): string {
+  // ⚠ 触发占比要**算准**：后端 `nonzero_ratio` 只存 4 位小数（0.0005 ⇒ 显示 0.050%，比真值 0.028% 大一倍）
+  //   ⇒ 优先用 `trigger.count / n_obs`（剔除后触发样本占比，也正是实际会交易到的比例）。
+  const n = r.trigger?.count ?? null
+  const tot = r.n_obs ?? null
+  const p = n != null && tot != null && tot > 0
+    ? n / tot
+    : (r.nonzero_ratio != null && Number.isFinite(r.nonzero_ratio) ? r.nonzero_ratio : null)
+  const pTxt = p == null ? '触发占比未知' : `触发占比 ${(p * 100).toFixed(3)}%`
+  const tail = p != null && p <= 0.05
+    ? '未触发组 ≈ 全池 ⇒ 反向只是拿 beta（无 alpha），不可落地'
+    : '仅在能反向交易时才有意义（A 股空头收益不可得）'
+  return `⚠ 反向条件也成立（${pTxt}）：${tail} ⇒ 不判「有效(反向)」，按原方向视作无效`
+}
+
 /** 「待观察」的原因文案（0/1 信号走事件研究路径）：逐条对比门槛，指出差在哪一项。 */
 function watchReasonOfBinary(
   pt: NonNullable<ReturnType<typeof esPointOf>>,
   ex: number | null,
   exThr: number,
   st: PairStability,
+  revNote?: string,
 ) {
   const med = pt.median ?? 0
   const win = pt.win ?? 0
@@ -167,6 +191,7 @@ function watchReasonOfBinary(
   ].filter(Boolean).join('、') || '未达任何有效判定条件'
   return [
     `结论：待观察（${why}）`,
+    ...(revNote ? [revNote] : []),
     `事件研究（持有 ${pt.k ?? '?'} 交易日，n=${pt.n ?? '?'}）：${medTxt}；${winTxt}；${exTxt}；${stTxt}`,
     `「有效✓」需同时满足：① 中位数 ≥0.50%；② 绝对收益胜率 ≥55%；③ 超额 ≥ 门槛（max(0.5%, 0.025%×持有期)，本次持有 ${pt.k ?? '?'} 日 → ${pct(exThr)}）；④ 日配对稳定（|HAC t| ≥2 或 日胜率 ≥55%）。`,
     '「彩票型」需 |中位数| <1% 且绝对收益胜率 45%~55% 且均值 >max(0.50%, 中位数×3)。',
@@ -252,15 +277,20 @@ function verdictOf(r: TestResult): VerdictStats {
     const lottery =
       Math.abs(med) < 0.01 && win >= 0.45 && win <= 0.55 && mean > Math.max(0.005, med * 3)
     good = esGood
+    // v1.19.34（用户 2026-09-14 定稿）：0/1 信号的「反向」**不再输出为结论** —— 一律按「待观察」，
+    //   反向条件成立时只在悬停里说明（理由见 `reverseNoteOf`）。表格保持简单明了，
+    //   不再出现会被读成"好消息"、实则「原方向无效」的绿勾。
+    //   ⚠ 此处**故意没有** `else if (esReverse) kind = 'goodReverse'`（原来有）。
     goodReverse = esReverse
     if (conflicting && !esGood) kind = 'conflicting'
     else if (esGood) kind = 'good'
-    else if (esReverse) kind = 'goodReverse'
     else if (lottery) kind = 'lottery'
     else kind = 'watch'
     return {
       significant, goodBase, conflicting, goodReverseBase, dT, stable, good, goodReverse, kind,
-      watchReason: kind === 'watch' ? watchReasonOfBinary(pt, ex, exThr, st) : undefined,
+      watchReason: kind === 'watch'
+        ? watchReasonOfBinary(pt, ex, exThr, st, esReverse ? reverseNoteOf(r) : undefined)
+        : undefined,
     }
   }
 
