@@ -127,6 +127,19 @@ export async function cancelBacktest(taskId: string): Promise<{ status: string }
   return data
 }
 
+/** 强制停止（v1.19.35）：普通取消是**协作式**的（只在阶段边界检查），任务卡在 joblib/loky
+ *  取数内部时永远等不到检查点（状态停在 `cancelling`，CPU/磁盘都为 0）⇒ 本接口额外
+ *  杀掉该进程的取数 worker，让任务立刻收尾为「已强制停止」。
+ *  ⚠ 会同时中断同进程内其它正在取数的回测（loky 池是进程内单例）。 */
+export async function forceCancelBacktest(
+  taskId: string,
+): Promise<{ status: string; task_id: string; killed_workers: number[] }> {
+  const { data } = await http.post<{ status: string; task_id: string; killed_workers: number[] }>(
+    `/backtest/${taskId}/force-cancel`,
+  )
+  return data
+}
+
 export async function resumeBacktest(taskId: string): Promise<TaskIdResponse> {
   const { data } = await http.post<TaskIdResponse>(`/backtest/${taskId}/resume`)
   return data

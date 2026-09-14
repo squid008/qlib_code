@@ -57,10 +57,68 @@ class TaskCancelledError(Exception):
         self.task_id = task_id
 
 
+def _is_pool_killed_error(e: Exception) -> bool:
+    """异常是否来自「取数 worker 被强制杀掉」（joblib/loky 的中断异常）。
+
+    用于把「用户按了强制停止」与「真的回测失败」区分开（`_execute` 里据此收尾成
+    `cancelled` 而不是 `failed`）。
+    """
+    # ⚠ 别把 `FileNotFoundError` 之类通用异常也算进来 —— 那会把真实的取数错误误判成"强制停止"
+    if type(e).__name__ in ("BrokenProcessPool", "TerminatedWorkerError", "WorkerInterrupted",
+                            "WorkerCrashError", "ProcessExpired"):
+        return True
+    msg = str(e).lower()
+    return any(k in msg for k in ("brokenprocesspool", "terminatedworker", "a worker process",
+                                  "loky", "was unexpectedly terminated"))
+
+
+def kill_loky_workers() -> list:
+    """杀掉**本进程**的 joblib/loky 取数 worker，返回被杀的 PID 列表。
+
+    为什么需要（2026-09-14 实测定位「取消的回测卡住」）：
+      回测取数走 qlib `DataLoader.load_group_df → joblib Parallel`（每股票一个任务、本例 12 个 worker），
+      而**取消是协作式的** —— `_check_cancel()` 只在**阶段边界**被调用（`qlib_engine.py` 的 4 处）。
+      一旦卡在 joblib/loky 内部（实测：**两个回测并发共享同一个 loky 池** ⇒ 调用线程停在
+      `Parallel._retrieve` 等结果、worker 全空闲、**CPU 与磁盘都为 0** 的死锁），
+      `cancel` 永远等不到检查点 ⇒ 状态停在 `cancelling` 不动。
+      这时只能从外部把 worker 杀掉：调用线程会拿到 `BrokenProcessPool`/`TerminatedWorkerError`，
+      `_execute` 据此把任务收尾成**「已强制停止」**（而不是「失败」）。
+
+    ⚠ loky 池是**进程内单例、被所有回测共享** ⇒ 杀掉会同时中断同进程内其它正在取数的回测
+      （这正是死锁场景的另一半）；故前端只在任务停在「停止中」时才提供该操作。
+    ⚠ 单因子/事件研究的多进程是 `panel_features` 自己的 multiprocessing 池（命令行含
+      `multiprocessing.spawn` / `spawn_main`，**不是** `popen_loky`）⇒ 不受影响。
+    """
+    killed: list = []
+    try:
+        import psutil
+    except Exception:                     # psutil 缺失（requirements 里有，理论上不该发生）
+        logger.warning("强制停止：psutil 不可用，无法杀取数 worker（已置协作式取消标志）")
+        return killed
+    try:
+        for ch in psutil.Process(os.getpid()).children(recursive=True):
+            try:
+                cl = " ".join(ch.cmdline() or [])
+            except Exception:
+                continue
+            # loky worker 的稳定特征（Windows/Linux 一致）
+            if "popen_loky" in cl or "reusable_executor" in cl:
+                try:
+                    ch.kill()
+                    killed.append(ch.pid)
+                except Exception:
+                    pass
+    except Exception as e:                # 枚举/终止失败不致命：协作式标志仍已置上
+        logger.warning("强制停止：枚举/终止取数 worker 失败：%r", e)
+    return killed
+
+
 class TaskManager:
     def __init__(self, work_dir: Optional[str] = None):
         self._tasks: Dict[str, BacktestTask] = {}
         self._cancel_flags: set = set()
+        # 走了「强制停止」（已杀取数 worker）的任务：收尾时记为「已强制停止」而非「失败」。
+        self._forced: set = set()
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._work_dir = work_dir
@@ -135,6 +193,30 @@ class TaskManager:
     def is_cancelled(self, task_id: str) -> bool:
         with self._lock:
             return task_id in self._cancel_flags
+
+    def force_cancel(self, task_id: str) -> Optional[dict]:
+        """强制停止：在协作式取消标志之外，**杀掉卡住的 joblib/loky 取数 worker**。
+
+        与 `cancel` 的差别（2026-09-14 用户报「取消的回测卡住了」之后加）：
+          · `cancel` 只置标志 ⇒ 卡在 joblib 内部时**永远等不到检查点**（状态停在 `cancelling`）；
+          · `force_cancel` 额外 `kill_loky_workers()` ⇒ 调用线程以 `BrokenProcessPool` /
+            `TerminatedWorkerError` 退出 ⇒ `_execute` 收尾成「已强制停止」。
+
+        返回 None 表示任务不存在或已结束。
+        ⚠ 会**同时中断同进程内其它正在取数的回测**（loky 池是进程内单例，见 `kill_loky_workers`）。
+        """
+        with self._lock:
+            t = self._tasks.get(task_id)
+            if t is None or t.status in ("success", "failed", "cancelled"):
+                return None
+            self._cancel_flags.add(task_id)
+            self._forced.add(task_id)
+            t.status = "cancelling"
+            t.message = "强制停止中（正在终止卡住的取数进程）"
+            self._cond.notify_all()
+        killed = kill_loky_workers()
+        logger.warning("强制停止 %s：杀掉 %d 个取数 worker（PID %s）", task_id, len(killed), killed)
+        return {"task_id": task_id, "killed_workers": killed}
 
     def submit(self, req: BacktestRequest) -> str:
         """提交回测任务，返回 task_id"""
@@ -219,6 +301,13 @@ class TaskManager:
         except TaskCancelledError:
             self._update(task_id, status="cancelled", progress=100.0, message="已停止", result=None)
         except Exception as e:
+            if task_id in self._forced or _is_pool_killed_error(e):
+                # 强制停止（或同进程 loky 池被强杀时的连带中断）⇒ 收尾成「已强制停止」，
+                # **不记失败**：这是用户主动操作的结果（见 force_cancel / kill_loky_workers）。
+                logger.warning("回测任务 %s 已被强制停止（%s）", task_id, type(e).__name__)
+                self._update(task_id, status="cancelled", progress=100.0,
+                             message="已强制停止（取数进程已终止）", result=None)
+                return
             # 堆栈只打到服务端日志；前端只显示友好错误信息，避免暴露内部堆栈
             import traceback
             logger.error("回测任务 %s 失败: %s\n%s", task_id, e, traceback.format_exc())
@@ -231,6 +320,7 @@ class TaskManager:
         finally:
             with self._lock:
                 self._cancel_flags.discard(task_id)
+                self._forced.discard(task_id)
                 # 任务已结束，清理请求快照（running_resume_sources 只关心运行中的）
                 self._reqs.pop(task_id, None)
             qlib_engine.set_progress_callback(None)

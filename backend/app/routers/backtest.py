@@ -204,6 +204,23 @@ def cancel_backtest(task_id: str):
     return {"status": "cancelling", "task_id": task_id}
 
 
+@router.post("/backtest/{task_id}/force-cancel",
+             summary="强制停止回测任务（终止卡住的取数进程）")
+def force_cancel_backtest(task_id: str):
+    """强制停止：`cancel` 是**协作式**的（只在阶段边界检查），一旦任务卡在 joblib/loky 取数
+    内部就永远等不到检查点（实测：两个回测并发共享同一 loky 池导致的死锁，状态会一直停在
+    `cancelling`，而 CPU / 磁盘都是 0）。本接口额外把该进程的取数 worker 杀掉，让任务立刻收尾。
+
+    ⚠ **会同时中断同进程内其它正在取数的回测**（loky 池是进程内单例）⇒ 前端只在任务停在
+    「停止中」长时间不动时才提供该操作。
+    """
+    manager = get_task_manager(config.WORK_DIR)
+    info = manager.force_cancel(task_id)
+    if info is None:
+        raise HTTPException(status_code=400, detail=f"任务 {task_id} 无法停止（不存在或已结束）")
+    return {"status": "cancelling", **info}
+
+
 @router.delete("/backtest/{task_id}", summary="删除某个回测的产物目录")
 def delete_backtest(task_id: str):
     """删除 artifacts 下对应的回测产物目录（含参数/结果/图片/模型等）。

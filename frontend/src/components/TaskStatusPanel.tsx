@@ -6,6 +6,9 @@ interface TaskStatusPanelProps {
   onRefresh: () => void
   onCancelAll: () => void
   onCancelOne: (taskId: string) => void
+  /** 强制停止（v1.19.35）：普通取消是协作式的，卡在取数进程里时无效 ⇒ 额外杀掉取数 worker。
+   *  仅当任务停在「cancelling」时才显示该按钮（避免误伤同进程内其它取数中的回测）。 */
+  onForceCancel?: (taskId: string) => void
   // 断点续跑：未完成（失败/已停止）的滚动回测，hover 显示"续测"按钮
   onResume?: (taskId: string) => void
   // 点击任务卡片：选中并展示该任务的曲线/已跑段（类似历史"查看"），再点取消展示
@@ -20,6 +23,7 @@ export default function TaskStatusPanel({
   onRefresh,
   onCancelAll,
   onCancelOne,
+  onForceCancel,
   onResume,
   onSelectTask,
   selectedTaskId,
@@ -123,15 +127,38 @@ export default function TaskStatusPanel({
                   )}
                 </div>
                 {isActive && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onCancelOne(t.task_id)
-                    }}
-                    className="px-3 py-1 rounded text-xs bg-red-600 text-white hover:bg-red-700"
-                  >
-                    取消
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {/* 强制停止（v1.19.35）：只在「取消后仍停在 cancelling」时出现 ——
+                        普通取消是协作式的（只在阶段边界检查），任务卡在 joblib/loky 取数内部
+                        （实测：多任务并发共享同一 loky 池导致死锁，CPU/磁盘都为 0）时永远等不到
+                        检查点。此按钮会杀掉取数 worker 让任务立刻收尾。
+                        ⚠ 会同时中断同进程内其它正在取数的回测 ⇒ 故给明确警示文案。 */}
+                    {t.status === 'cancelling' && onForceCancel && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onForceCancel(t.task_id)
+                        }}
+                        className="px-3 py-1 rounded text-xs bg-orange-600 text-white hover:bg-orange-700"
+                        title={
+                          '强制停止：把该进程里卡住的取数 worker 杀掉，任务立刻收尾为「已强制停止」。\n' +
+                          '适用于「点了取消但长时间不动」的情况（卡在 joblib/loky 取数内部，此时 CPU 与磁盘都是 0）。\n' +
+                          '⚠ 取数进程池是同进程共享的 ⇒ 会一并中断其它正在取数的回测。'
+                        }
+                      >
+                        强制停止
+                      </button>
+                    )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onCancelOne(t.task_id)
+                      }}
+                      className="px-3 py-1 rounded text-xs bg-red-600 text-white hover:bg-red-700"
+                    >
+                      取消
+                    </button>
+                  </div>
                 )}
               </div>
               <div className="w-full bg-slate-200 rounded-full h-3">
@@ -150,7 +177,8 @@ export default function TaskStatusPanel({
                 {t.progress.toFixed(1)}% - {t.message}
                 {t.status === 'cancelling' && (
                   <span className="ml-1 text-orange-600">
-                    （正在等待当前训练/回测块结束，训练块完成后会停止）
+                    （正在等待当前训练/回测块结束，训练块完成后会停止；若长时间不动 —— 多半卡在取数进程里
+                    —— 用上方「强制停止」）
                   </span>
                 )}
               </p>

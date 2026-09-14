@@ -7,6 +7,7 @@ import {
   getBacktestResult,
   getBacktestPartial,
   cancelBacktest,
+  forceCancelBacktest,
   resumeBacktest,
   getFactorCatalog,
   getBacktestSnapshot,
@@ -1649,6 +1650,27 @@ export default function App() {
                     : t,
                 ),
               )
+            }}
+            onForceCancel={async (taskId) => {
+              // 强制停止（v1.19.35）：普通取消无效时（卡在 joblib/loky 取数里，CPU/磁盘都为 0）
+              // ⇒ 后端杀掉该进程的取数 worker，任务收尾为「已强制停止」。
+              try {
+                const r = await forceCancelBacktest(taskId)
+                setTasks((prev) =>
+                  prev.map((t) =>
+                    t.task_id === taskId
+                      ? { ...t, status: 'cancelling' as const, message: '强制停止中（正在终止取数进程）...' }
+                      : t,
+                  ),
+                )
+                setError(
+                  r.killed_workers.length
+                    ? ''
+                    : '强制停止：未发现卡住的取数进程（可能它已不在取数阶段，协作式取消会在下一个检查点生效）',
+                )
+              } catch (e) {
+                setError(`强制停止失败：${e instanceof Error ? e.message : String(e)}`)
+              }
             }}
             onResume={handleResume}
             onSelectTask={handleSelectTask}

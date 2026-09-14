@@ -3,6 +3,21 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.35] - 2026-09-14
+
+### Added
+- **回测「强制停止」**（用户报「有个取消的回测卡住了，是不是多因子没优化、走了 qlib 原始引擎慢炸了」后加；用户定稿「加"强制停止"：杀该任务进程 + 标记 cancelled」）：
+  - 后端新增 `POST /api/backtest/{task_id}/force-cancel` → `TaskManager.force_cancel()` = 普通取消的**协作式标志** **+ 杀掉本进程卡住的 joblib/loky 取数 worker**（`kill_loky_workers()`，按命令行特征 `popen_loky`/`reusable_executor` 识别，psutil 实现，缺失时降级为仅置标志）；调用线程随即以 `BrokenProcessPool`/`TerminatedWorkerError` 退出 ⇒ 任务收尾为 **`cancelled` +「已强制停止（取数进程已终止）」**。
+  - `_is_pool_killed_error()` 把「强制停止（或同池被强杀时的连带中断）」与**真失败**分开 —— 前者记 `cancelled` 而不是 `failed`（6 例纯函数自检：不误判 `ValueError/FileNotFoundError/KeyError`）。
+  - **前端**：`TaskStatusPanel` 在任务处于 **`cancelling`** 时显示橙色「强制停止」按钮（tooltip 写明「卡在取数进程、CPU 与磁盘都为 0」的判据与副作用）；卡片底部提示同步改为「…若长时间不动 —— 多半卡在取数进程里 —— 用上方『强制停止』」。
+
+### Fixed / 说明
+- **本次只提供"逃生手段"，根因保持不变**：卡死是**两个回测并发共享同一个 joblib/loky 池**导致的死锁 —— 调用线程停在 `joblib Parallel._retrieve` 等结果、`ExecutorManagerThread` 在 dispatch、**worker 全空闲、CPU 与磁盘都是 0**（`py-spy dump` 实证）；而**取消是协作式的**（`_check_cancel()` 只在阶段边界，`qlib_engine.py` 4 处）⇒ 卡在 joblib 内部永远等不到检查点，状态一直停在 `cancelling`。
+  可选后续（本次未做）：`QLIB_MAX_CONCURRENT=1`、禁止 `cancelling` 期间提交新任务、回测取数接 `panel_features` / 合并层。
+- ⚠ `kill_loky_workers()` 杀的是**进程内共享**的 loky 池 ⇒ 会一并中断同进程内其它正在取数的回测（故按钮只在 `cancelling` 时出现）；单因子/事件研究走 `panel_features` 自己的 multiprocessing 池（命令行 `spawn_main`）⇒ **不受影响**。
+- **实测（端到端）**：`ai_test/check_force_cancel.py` —— 真实提交回测（all / LightGBM / 2022-06-01~2022-08-31）⇒ 6s 后进入取数（**12 个 loky worker**）⇒ 调强制停止 ⇒ 返回 `killed_workers` **12 个**、进程归零 ⇒ 任务收尾 **`cancelled`**、message「已强制停止（取数进程已终止）」；**0 失败**。
+- 版本 1.19.34 → 1.19.35。
+
 ## [1.19.34] - 2026-09-14
 
 ### Changed
