@@ -303,7 +303,11 @@ const kLabel = (k: number) => (k < 1 ? `${Math.round(k * 100)}%` : `${k}`)
  *  ⚠ 表格列数：显示耗时 = 18 列，隐藏 = 17 列（错误行的 colSpan 必须同步，否则整行错位）。 */
 const SHOW_TIMING_COL = false
 
-// 解析批量预测周期输入：单值 / 逗号枚举(1,2,3,5) / range 区间(1:5:20 = 起点:步长:终点，含终点)。
+// 解析批量预测周期输入：单值 / 逗号枚举(1,2,3,5) / range 区间。
+// ⚠ 区间有**两种写法，中间那个数的含义不同**（易踩，故提示里也写明）：
+//   · 三段 `a:b:c` = **起点:步长:终点**（含终点）⇒ `1:5:20` → 1,6,11,16、`1:2:7` → 1,3,5,7；
+//   · 两段 `a:b`   = **起点:终点**（步长默认 1）⇒ `1:5` → 1,2,3,4,5（**不是**"每隔 5"）。
+// 分隔符：逗号/全角逗号/分号/空格皆可；各段可混用（`1:2:7,60` → 1,3,5,7,60）。
 // 值范围 1~250（后端同样校验兜底）。返回去重后的周期列表，非法时带中文错误。
 function parseHorizons(text: string): { horizons: number[]; error?: string } {
   const s = text
@@ -330,7 +334,10 @@ function parseHorizons(text: string): { horizons: number[]; error?: string } {
     }
   }
   const bad = out.find((v) => v < 1 || v > 250)
-  if (bad) return { horizons: [], error: `预测周期需在 1~250 之间：${bad}` }
+  // ⚠⚠ 判"有没有找到"必须用 `!== undefined`：`out.find` 返回的是**命中的值本身**，而 `0` 是假值
+  //   ⇒ 写 `if (bad)` 会让 `0`（非法值）静默通过前端校验，直到后端 400
+  //   （后端用显式区间 `1 <= hi <= 250`，没这个洞；同一坑 `rebalance_period` 也踩过，见 routers/factors.py）。
+  if (bad !== undefined) return { horizons: [], error: `预测周期需在 1~250 之间：${bad}` }
   return { horizons: [...new Set(out)] } // 去重保序
 }
 
@@ -911,8 +918,8 @@ export default function SingleFactorTestPanel({
           <input
             type="text"
             inputMode="numeric"
-            placeholder="如 2 / 1,2,3,5 / 1:5:20"
-            title="单个数字=测一个周期；逗号枚举=批量测多个；a:b:c=起点:步长:终点(含终点)，如 1:5:20 → 1,6,11,16"
+            placeholder="如 2 / 1,2,3,5 / 1:5:20 / 1:2:7,60"
+            title="单个数字=测一个周期；逗号/空格/分号分隔可批量混写，如 1:2:7,60 → 1,3,5,7,60；三段 a:b:c=起点:步长:终点（含终点），如 1:5:20 → 1,6,11,16；⚠ 两段 a:b=起点:终点（步长 1）⇒ 1:5 → 1,2,3,4,5。取值范围 1~250，自动去重并保持顺序"
             className="border rounded px-2 py-1"
             value={labelHorizonText}
             onChange={(e) => setLabelHorizonText(e.target.value)}
