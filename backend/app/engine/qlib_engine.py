@@ -496,18 +496,27 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
 # 分层回测与 IC 计算已拆分到 .analysis 模块（见文件顶部 from .analysis import ...）
 
 
-def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str = None) -> None:
+def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str = None,
+                          prog: int = None) -> None:
     """信号合成（硬规则闸门 / Meta-Gate / 触发叠加，默认全关）：训练后覆盖该 recorder 的回测信号。
 
     single 与滚动（rolling，每段）共用：主模型 SignalRecord.generate() 之后调用。
     - 只影响回测选股/权重；IC/分层仍按主模型诊断（sr 原始预测，未被覆盖）。
     - 失败不阻塞回测：记录 warning 并回退主信号（pred.pkl 保持 sr 保存的主分）。
+    - `prog`：上报的进度值（**由调用方按自己的进度带给**）；省略时用一次性训练路径的 68/69。
+      ⚠ 为什么必须能传（v1.19.36 修的 BUG）：`context.py:report()` 是**单调不倒退**的
+      （`p < max_p` 时直接 return，**连 message 一起丢**），而滚动模式每段的进度带是
+      `20+70*(idx+1)/total`（训练）→ `25+60*(idx+1)/total`（分层/IC），段1 只有 21~26%。
+      旧代码写死 68/69（那是**一次性训练**路径的带内值）⇒ 段1 的信号合成把进度顶到 69% 并显示
+      「信号合成完成」，其后每段的 21/23/26/28%… 全被判"倒退"而丢弃 ⇒ **进度条与消息冻结到最后一刻
+      的 92%**，用户看着就是"卡死在段1"（2026-09-14 用户报「它现在一直在段1」）。
     """
     _ovl_cfg = getattr(req, "trigger_overlay_opts", None) or {}
     _ovl_on = bool(getattr(req, "trigger_overlay_opts", None)) and bool(_ovl_cfg.get("enabled"))
     if not (getattr(req, "meta_gate", False) or _ovl_on or getattr(req, "hard_filters", None)):
         return
-    _report(68, "信号合成（%s）..." % ("滚动%s" % seg_label if seg_label else "一次性"))
+    _p0 = 68 if prog is None else int(prog)
+    _report(_p0, "信号合成（%s）..." % ("滚动%s" % seg_label if seg_label else "一次性"))
     _check_cancel()
     from .signal_compose import compose_final_signal
     try:
@@ -516,7 +525,7 @@ def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str = None) 
         _summ = " | ".join(
             "%s(n=%d auc=%.3f)" % (k, v.get("n", 0), v.get("valid_auc", 0))
             for k, v in sinfo.items()) or "ok"
-        _report(69, "信号合成完成：%s" % _summ)
+        _report(_p0 + 1, "信号合成完成：%s" % _summ)
     except Exception as e:  # 失败不阻塞回测：记录并回退主信号（pred.pkl 仍是 sr 保存的主分）
         import logging
         import traceback
@@ -995,8 +1004,12 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
 
             # 信号合成（S1 Meta-Gate / S2 触发叠加 / 硬规则，默认都关）：每段在本段 train 窗上
             # 训练门控/叠加模型并覆盖本段回测信号（回退逻辑见 _maybe_compose_signal）
+            # ⚠ 进度值必须落在**本段进度带**内（v1.19.36）：训练 = 20+70x、分层/IC = 25+60x
+            #   （x=(idx+1)/total）⇒ 这里用 24+62x（段1 ≈ 25%），否则会把进度顶到 68/69% 并导致
+            #   其后各段的进度与消息被"单调不倒退"规则全部丢弃（看起来像卡死，详见函数 docstring）。
             _maybe_compose_signal(req, dataset, model, recorder,
-                                  seg_label="段%d" % seg_no if seg_no else None)
+                                  seg_label="段%d" % seg_no if seg_no else None,
+                                  prog=24 + int(62 * (idx + 1) / total))
 
             # 分层回测 + IC 分析（段标签从"段1"开始）
             _report(25 + int(60 * (idx + 1) / total), "段%d/%d: 计算分层与IC..." % (seg_no, total))
