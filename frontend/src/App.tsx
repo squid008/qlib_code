@@ -1683,6 +1683,14 @@ export default function App() {
         {(((task?.result && task.status === 'success') || viewResult?.result) ||
           viewArtifacts || (task?.status === 'running' && task.partial_result?.nav?.length) ||
           viewResult?.partial_result?.nav?.length) && (() => {
+          // ⚠ 用**实时任务列表**判定"是否还在跑"，而不是 viewResult 里那份点击时抓的快照（v1.19.39 修 BUG）：
+          //   用户点「取消」后任务进入 cancelling，再点「刷新」会把已结束的任务从 tasks 里移除，
+          //   但 viewResult 仍是旧快照（status='running'）⇒ 文案一直显示"⏳ 滚动训练进行中"，
+          //   用户以为没取消掉。改为：实时列表里有就按它的状态，没有（已被刷新清掉/任务已结束）⇒ 视为已停止。
+          const partialTaskId = viewResult?.task_id ?? task?.task_id ?? null
+          const livePartialTask = tasks.find((t) => t.task_id === partialTaskId) ?? null
+          const partialStatus = livePartialTask?.status ?? 'cancelled'
+          const partialRunning = partialStatus === 'running' || partialStatus === 'pending'
           const r = (task?.status === 'success' ? task.result : viewResult?.result) || null
           const a = (task?.status === 'success' ? artifacts : viewArtifacts) || null
           // 运行中：实时任务 partial；查看历史：viewResult 携带的 partial（任务已停止但保留已跑段）
@@ -1702,14 +1710,22 @@ export default function App() {
               ) : partial?.nav?.length ? (
                 <>
                   <div className="bg-white dark:bg-slate-800 rounded-xl shadow p-6 text-sm">
-                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                      {task?.status === 'running' || viewResult?.status === 'running'
+                    <span
+                      className={
+                        partialRunning
+                          ? 'text-emerald-600 dark:text-emerald-400 font-medium'
+                          : 'text-amber-600 dark:text-amber-400 font-medium'
+                      }
+                    >
+                      {partialRunning
                         ? '⏳ 滚动训练进行中'
-                        : '⏸ 回测未完成（已停止/中断）'}
+                        : partialStatus === 'cancelling'
+                          ? '⏹ 正在停止…'
+                          : '⏸ 回测未完成（已停止/中断）'}
                     </span>
                     <span className="ml-2 text-slate-500 dark:text-slate-300">
                       已跑 {partial.segments_done}/{partial.segments_total} 段，以下为已完成部分的结果
-                      {task?.status !== 'running' && viewResult?.status !== 'running' && '；如需继续，可在下方历史回测中点该任务的"续测"'}
+                      {!partialRunning && '；如需继续，可在下方历史回测中点该任务的"续测"'}
                     </span>
                   </div>
                   <NavChart nav={partial.nav} endDate={partial.end_date} />

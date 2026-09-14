@@ -17,9 +17,11 @@ Qlib 回测引擎（适配新版 Qlib，从源码安装）。
 from __future__ import annotations
 
 import os
+import time as _time
 import warnings
 from typing import Any, Dict, List, Optional
 
+from ..logger import get_logger as _get_logger
 from ..models.backtest import BacktestRequest, BacktestResult
 from .context import (
     set_progress_callback,
@@ -512,7 +514,7 @@ def _seg_prog(idx: int, total: int, frac: float) -> float:
 
 
 def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str = None,
-                          prog: float = None) -> None:
+                          prog: float = None, universe=None, span=None) -> None:
     """信号合成（硬规则闸门 / Meta-Gate / 触发叠加，默认全关）：训练后覆盖该 recorder 的回测信号。
 
     single 与滚动（rolling，每段）共用：主模型 SignalRecord.generate() 之后调用。
@@ -538,7 +540,7 @@ def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str = None,
     _check_cancel()
     from .signal_compose import compose_final_signal
     try:
-        frame, sinfo = compose_final_signal(dataset, model, req)
+        frame, sinfo = compose_final_signal(dataset, model, req, universe=universe, span=span)
         recorder.save_objects(**{"pred.pkl": frame})
         _summ = " | ".join(
             "%s(n=%d auc=%.3f)" % (k, v.get("n", 0), v.get("valid_auc", 0))
@@ -978,6 +980,16 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
         _report(_seg_prog(idx, total, 0.0), "段%d/%d: 训练 %s~%s, 测试 %s~%s" % (
             seg_no, total, train_start, train_end, test_start, test_end))
 
+        # 分阶段计时（v1.19.39）：每段一行 INFO，直接回答"哪儿慢"（界面上只看得到总时长，
+        # 2026-09-14 用户问"感觉哪儿哪儿都慢"时只能靠人工盯进度条 + 产物 mtime 推断）。
+        _spans, _tick = [], _time.perf_counter()
+
+        def _mark(label):
+            nonlocal _tick
+            _now = _time.perf_counter()
+            _spans.append((label, _now - _tick))
+            _tick = _now
+
         # 首段预热：把预测起点前移 n_days_hold 个交易日（回测窗口不变）。
         # 回测首日恰是全局调仓网格第 0 天，需要 T-1 信号，若预测从段首才开始则首日无信号
         # → 首段开头空仓一个持仓周期（净值平段）。预热后首日即可正常建仓。
@@ -1019,14 +1031,19 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             _check_cancel()  # 预测前检查
             sr = SignalRecord(model, dataset, recorder)
             sr.generate()
+            _mark("建数据集+训练+预测")
 
             # 信号合成（S1 Meta-Gate / S2 触发叠加 / 硬规则，默认都关）：每段在本段 train 窗上
             # 训练门控/叠加模型并覆盖本段回测信号（回退逻辑见 _maybe_compose_signal）
             # ⚠ 进度值一律走 `_seg_prog`（每段独占一条带、段内按阶段细分）—— 旧的两条穿插曲线会
             #   让"训练"消息从段2 起被"单调不倒退"规则吞掉（用户 2026-09-14 报"没有训练直接就信号合成"）。
+            # `universe`+`span` ⇒ 额外特征（gate 的 01 公式）按**整个回测区间**求值一次、按段切片
+            # （v1.19.39：此前每段重算一遍，实测 48.5s/段；等价性已用真实数据对拍验证）
             _maybe_compose_signal(req, dataset, model, recorder,
                                   seg_label="段%d" % seg_no if seg_no else None,
-                                  prog=_seg_prog(idx, total, 0.3))
+                                  prog=_seg_prog(idx, total, 0.3),
+                                  universe=instruments, span=(req.start_date, req.end_date))
+            _mark("信号合成")
 
             # 分层回测 + IC 分析（段标签从"段1"开始）
             _report(_seg_prog(idx, total, 0.6), "段%d/%d: 计算分层与IC..." % (seg_no, total))
@@ -1054,6 +1071,7 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                 if trpl is not None and len(trpl):
                     all_train_pred_label.append(trpl)
 
+            _mark("分层与IC")
             _check_cancel()  # 回测前检查
             # 段间持仓跨段传递：本段初始账户 = 上一段末持仓（若存在），否则纯现金。
             # qlib 原生支持 account 传 dict（{"cash": 现金, 股票: {"amount","price"}}），不动内核。
@@ -1069,6 +1087,7 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             # 用户看不出时间花在回测还是 IC 上）
             _report(_seg_prog(idx, total, 0.8), "段%d/%d: 组合回测(PortAna)..." % (seg_no, total))
             par.generate()
+            _mark("组合回测")
 
             # 传入段初账户总值：用 account 列计算段内收益，绕开 qlib return 列
             # 在带初始持仓时把"持仓市值误算为收益"的问题（否则段收益虚高爆炸）。
@@ -1087,6 +1106,7 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                 os.makedirs(seg_dir, exist_ok=True)
                 _report(_seg_prog(idx, total, 0.9), "段%d/%d: 生成曲线快照图..." % (seg_no, total))
                 _save_curve_snapshot(seg_dir, req, seg_result)
+            _mark("画图")
 
         # 拼接净值：段内各点 = 段起始全局净值 * (该点相对段起始账户的净值)
         seg_nav = seg_result.nav or []
@@ -1129,6 +1149,10 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
         _save_partial_result(art_dir, idx + 1, total, all_nav, layer_segments,
                              ic_train_list, ic_test_list, merged_layers, merged_test, merged_train,
                              target_end_date=req.end_date)
+        _mark("落盘/汇总")
+        _get_logger(__name__).info(
+            "段%d/%d 分阶段耗时：%s | 合计 %.1fs", seg_no, total,
+            " | ".join("%s %.1fs" % (k, v) for k, v in _spans), sum(v for _, v in _spans))
 
     # 汇总指标：基于拼接后的全局净值重新计算
     result = _aggregate_from_nav(all_nav, seg_results)

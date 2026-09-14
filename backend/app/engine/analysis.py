@@ -342,8 +342,21 @@ def _compute_analysis(model, dataset, instruments, seg_label: str, benchmark: Op
     test_pl / train_pl 分别是测试段/训练段的预测+label（调用方可复用于汇总合成，
     避免重复 predict）。失败项为 None。
     """
+    # 分阶段计时（v1.19.39）：预测+label 加载 vs 分层/IC 各占多少（此前只有一个总时长）
+    import time as _time
+    from ..logger import get_logger as _get_logger
+    _spans, _tick = [], _time.perf_counter()
+
+    def _mark(label):
+        nonlocal _tick
+        _now = _time.perf_counter()
+        _spans.append((label, _now - _tick))
+        _tick = _now
+
     test_pl = _get_pred_label(model, dataset, instruments, "test", label_horizon=label_horizon)
+    _mark("预测+label(test)")
     train_pl = _get_pred_label(model, dataset, instruments, "train", label_horizon=label_horizon)
+    _mark("预测+label(train)")
     # 裁剪预热期预测点（保留回测窗口内）后再做 IC/分层，保证口径与回测一致
     if clip_start is not None and test_pl is not None and len(test_pl):
         ts = pd.Timestamp(clip_start)
@@ -360,15 +373,21 @@ def _compute_analysis(model, dataset, instruments, seg_label: str, benchmark: Op
             benchmark_ret = _compute_benchmark_returns(benchmark, start, end)
         except Exception:
             benchmark_ret = None
+    _mark("基准收益")
 
     layers = None
     if test_pl is not None:
         layers = _compute_layers(test_pl, benchmark_ret=benchmark_ret, rebalance_period=rebalance_period)
         if layers:
             layers = {"segment": seg_label, "groups": layers, "benchmark": benchmark}
+    _mark("分层回测")
 
     ic_train = _compute_ic(train_pl)
     ic_test = _compute_ic(test_pl)
+    _mark("IC 计算")
+    _get_logger(__name__).info(
+        "分层与IC 分阶段（%s）：%s | 合计 %.1fs", seg_label,
+        " | ".join("%s %.1fs" % (k, v) for k, v in _spans), sum(v for _, v in _spans))
 
     return {
         "layers": layers,

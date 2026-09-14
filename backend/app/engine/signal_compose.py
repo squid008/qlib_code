@@ -16,6 +16,8 @@
 """
 from __future__ import annotations
 
+import threading
+
 import numpy as np
 import pandas as pd
 
@@ -107,25 +109,77 @@ def _codes_old(dataset):
     return [c for c in sorted(set(inst.astype(str))) if str(mindt[c]) <= train_start]
 
 
-def _extra_cols(dataset, exprs, idx, buffer_days=120) -> pd.DataFrame:
+def _extra_cols(dataset, exprs, idx, buffer_days=120, universe=None, span=None) -> pd.DataFrame:
     """为 gate 附加的表达式特征（如若干 01 触发公式列）：D.features 计算并对齐到 idx。
 
     注意：D.features 的列名是表达式原文（含 ( ) , / 等特殊字符），LightGBM 不接受
     作为 feature name（报 "Do not support special JSON characters"），统一重命名为
     extra_feature_0/1/...（train/test 顺序一致，predict 按位置即可对齐）。
+
+    `universe` + `span`（v1.19.39，**滚动回测必传**）：按**整个回测区间**求值一次、按段切片。
+    为什么：本函数每段（train / test 各一次）都会被调用，而 `D.features` 的缓存键含区间 ⇒
+    每段必然 miss，把同样几条表达式在**全A**上重算一遍（实测：用户那两条几千字符的 01 公式
+    一次要 **48.5s/段**，占"信号合成 117s"的四成）。
+    ⚠ 为什么等价：表达式全是**历史窗**运算（Ref/HHVBARS/DYN_* 等，无未来引用）⇒ 同一 (股票, 日期)
+      的值**与加载区间无关**，加宽区间只是多给了历史。已用真实数据对拍验证（`ai_test/check_extra_cols_equiv.py`：
+      3 条公式、NaN 掩码零差异、共同非 NaN 最大差 0）。
+    ⚠ 股票子集仍按**本段的** `_codes_old(dataset)` 过滤 ⇒ 与旧实现完全同一批行（不多不少）。
     """
     from qlib.data import D
     codes = _codes_old(dataset)
     lo = min(str(x)[:10] for x in idx.get_level_values("datetime"))
     hi = max(str(x)[:10] for x in idx.get_level_values("datetime"))
     start = (pd.to_datetime(lo) - pd.Timedelta(days=buffer_days)).strftime("%Y-%m-%d")
-    df = D.features(codes, list(exprs), start_time=start, end_time=hi)
+    if span and universe:
+        df = _span_features(universe, list(exprs), span[0], span[1])
+        if df is not None:
+            # 只保留本段那批股票（等价性关键：旧实现只加载 codes 这批）
+            df = df[df.index.get_level_values("instrument").astype(str).isin(set(codes))]
+        else:                                   # 整区间求值失败：退回旧路径（不阻塞回测）
+            df = D.features(codes, list(exprs), start_time=start, end_time=hi)
+    else:
+        df = D.features(codes, list(exprs), start_time=start, end_time=hi)
     aligned = align_trig(df, idx).astype(float)
     aligned.columns = ["extra_feature_%d" % i for i in range(aligned.shape[1])]
     return aligned.fillna(0.0)
 
 
-def train_gate(dataset, model, opts=None):
+# 整区间额外特征缓存：key=(排序后的股票元组, 表达式元组, start, end) -> DataFrame
+# （进程级；只留最近 2 份，避免多任务时内存膨胀。全A × 3 年 × 3 列 ≈ 90MB 量级。）
+_SPAN_CACHE: dict = {}
+_SPAN_LOCK = threading.Lock()
+_SPAN_CACHE_MAX = 2
+
+
+def _span_features(universe, exprs, span_start, span_end, buffer_days=120):
+    """按整个回测区间求值额外特征（带缓存）。失败返回 None（调用方退回逐段加载）。"""
+    from qlib.data import D
+    start = (pd.to_datetime(str(span_start)) - pd.Timedelta(days=buffer_days)).strftime("%Y-%m-%d")
+    end = str(span_end)
+    key = (tuple(sorted(str(c) for c in universe)), tuple(exprs), start, end)
+    with _SPAN_LOCK:
+        hit = _SPAN_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        df = D.features(list(universe), list(exprs), start_time=start, end_time=end)
+    except Exception:
+        return None
+    with _SPAN_LOCK:
+        _SPAN_CACHE[key] = df
+        while len(_SPAN_CACHE) > _SPAN_CACHE_MAX:
+            _SPAN_CACHE.pop(next(iter(_SPAN_CACHE)))
+    try:
+        from ..logger import get_logger
+        get_logger(__name__).info(
+            "额外特征整区间求值一次并缓存：%d 只 × %d 条 × %s~%s（此后各段只做切片）",
+            len(universe), len(exprs), start, end)
+    except Exception:
+        pass
+    return df
+
+
+def train_gate(dataset, model, opts=None, universe=None, span=None):
     import lightgbm as lgb
     o = dict(scope="all", ydef="abs", reject_ratio=0.25, extra_features=[])
     if opts:
@@ -136,7 +190,8 @@ def train_gate(dataset, model, opts=None):
     X = X.join(p.rename("primary_p"), how="inner")
     extra = o.get("extra_features") or []
     if extra:
-        X = X.join(_extra_cols(dataset, extra, X.index), how="left").fillna(0.0)
+        X = X.join(_extra_cols(dataset, extra, X.index, universe=universe, span=span),
+                   how="left").fillna(0.0)
     L = L.reindex(X.index)
     y = (L > 0).astype(int) if o["ydef"] == "abs" else \
         (L > L.groupby(level="datetime").transform("median")).astype(int)
@@ -159,7 +214,7 @@ def train_gate(dataset, model, opts=None):
                  "valid_auc": float(bst.best_score["valid_0"]["auc"])}
 
 
-def gate_z(dataset, bst, p_test: pd.Series, opts=None) -> pd.Series:
+def gate_z(dataset, bst, p_test: pd.Series, opts=None, universe=None, span=None) -> pd.Series:
     o = dict(extra_features=[])
     if opts:
         o.update({k: v for k, v in opts.items() if v is not None})
@@ -167,7 +222,8 @@ def gate_z(dataset, bst, p_test: pd.Series, opts=None) -> pd.Series:
     X = X.join(p_test.rename("primary_p"), how="inner")
     extra = o.get("extra_features") or []
     if extra:
-        X = X.join(_extra_cols(dataset, extra, X.index), how="left").fillna(0.0)
+        X = X.join(_extra_cols(dataset, extra, X.index, universe=universe, span=span),
+                   how="left").fillna(0.0)
     return pd.Series(bst.predict(X.values, num_iteration=bst.best_iteration), index=X.index)
 
 
@@ -290,14 +346,25 @@ def build_target_w(score_final: pd.Series, z_overlay: pd.Series,
     return out.fillna(0.0)
 
 
-def compose_final_signal(dataset, model, req) -> pd.DataFrame:
+def compose_final_signal(dataset, model, req, universe=None, span=None) -> pd.DataFrame:
     """引擎总入口：返回覆盖 pred.pkl 的 DataFrame。
 
     列：
       score: 最终主信号（S1 gate 开启时被拒 -inf；否则原主分）
       target_w: None/无叠加时为 None（策略保持等权 topk 旧路径）；S2 开启时给权重
     """
+    # 分阶段计时（v1.19.39）：回答"信号合成到底慢在哪"（预测 / gate 训练 / gate 打分+额外特征加载）
+    import time as _time
+    _spans, _tick = [], _time.perf_counter()
+
+    def _mark(label):
+        nonlocal _tick
+        _now = _time.perf_counter()
+        _spans.append((label, _now - _tick))
+        _tick = _now
+
     p_test = model.predict(dataset, segment="test")
+    _mark("预测 test")
     score = p_test.astype(float)
     info = {}
     # 硬规则闸门：确定性过滤先于一切（市值/股价等）
@@ -311,9 +378,12 @@ def compose_final_signal(dataset, model, req) -> pd.DataFrame:
 
     if gate_on:
         gopts = getattr(req, "meta_gate_opts", None)
-        bst_g, gi = train_gate(dataset, model, gopts)
-        z = gate_z(dataset, bst_g, p_test, gopts)
+        bst_g, gi = train_gate(dataset, model, gopts, universe=universe, span=span)
+        _mark("gate 训练")
+        z = gate_z(dataset, bst_g, p_test, gopts, universe=universe, span=span)
+        _mark("gate 打分（含额外特征 D.features）")
         score = compose_gate_tail(score, z, req.topk, float(gi["reject_ratio"]))
+        _mark("gate 拒尾合成")
         info["gate"] = gi
 
     trig_col = None
@@ -335,6 +405,12 @@ def compose_final_signal(dataset, model, req) -> pd.DataFrame:
         ovl_w = float(ovl_cfg.get("weight", 0.2) or 0.2)
         # 触发行列保留用于调试/可解释
         trig_col = trig_te["trig"].reindex(score.index).fillna(0.0)
+
+    _mark("收尾")
+    from ..logger import get_logger as _get_logger
+    _get_logger(__name__).info("信号合成分阶段：%s | 合计 %.1fs",
+                              " | ".join("%s %.1fs" % (k, v) for k, v in _spans),
+                              sum(v for _, v in _spans))
 
     frame = pd.DataFrame({"score": score})
     if ovl_on:
