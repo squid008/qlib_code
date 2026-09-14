@@ -350,7 +350,8 @@ const HORIZON_SYNTAX =
 
 /** 鼠标提示里的**实时预览**（用户 2026-09-14：「加预览加在鼠标 TAG 里」）：
  *  把当前输入解析成人话，挂在 `title` 上 ⇒ 每敲一个字、悬停即见，避免"两段/三段的中间数含义不同"被误读
- *  （最坏情况：把 `1:60` 当"每隔 60"，实际展开成 60 个周期，逐个算一遍很慢 ⇒ 周期数多时写明代价）。 */
+ *  （最坏情况：把 `1:60` 当"每隔 60"，实际展开成 60 个周期 —— 展开结果 + 周期数一眼可辨）。
+ *  ⚠ 不加"耗时提醒"（用户同日要求去掉：「周期数多时加耗时提醒这个去掉」）——只报事实，不劝。 */
 function horizonHint(text: string): string {
   const r = parseHorizons(text)
   if (r.error) return `当前输入：⚠ ${r.error}`
@@ -361,8 +362,7 @@ function horizonHint(text: string): string {
   const list = n > CAP
     ? `${r.horizons.slice(0, CAP).join(', ')}, …, ${r.horizons[n - 1]}`
     : r.horizons.join(', ')
-  const slow = n > 6 ? '；⚠ 周期数较多，本次测试要逐个周期各算一遍（耗时随周期数近似线性增加）' : ''
-  return `当前输入 ⇒ ${list}（${n} 个周期${slow}）`
+  return `当前输入 ⇒ ${list}（${n} 个周期）`
 }
 
 interface SourceGroup {
