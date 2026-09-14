@@ -144,6 +144,22 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8001
 
 > 端口说明：后端用 **8001**（8000 可能被其他服务占用）；前端 Vite 代理已指向 8001。
 
+> ⚠ **重启后端必须杀"进程树"**（2026-09-14 实测教训）：qlib 取数的 joblib/loky worker 是后端的**子进程**，
+> 只 `Stop-Process` 掉监听 8001 的那个进程的话，**12 个 worker 会变成孤儿活下来**（每个 hold 上百 MB，
+> 每重启一次累加一份，越跑越占内存）。正确做法：
+> ```powershell
+> # 1) 杀进程树（/T = 连同子进程）
+> $pid8001 = (Get-NetTCPConnection -LocalPort 8001 -State Listen).OwningProcess
+> taskkill /PID $pid8001 /T /F
+> # 2) 兜底：清掉"父进程已不在"的孤儿取数 worker
+> Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+>   Where-Object { $_.CommandLine -like "*popen_loky*" } |
+>   Where-Object { -not (Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue) } |
+>   ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+> ```
+> 本机已把这两步写进 `backend/workdir/restart_backend.ps1`（⚠ `workdir/` 是本地专用、不随仓库走，
+> 换机后需按上面自行补上）。
+
 ---
 
 ## 七、验证部署

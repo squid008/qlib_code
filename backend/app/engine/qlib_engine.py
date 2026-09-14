@@ -496,8 +496,23 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
 # 分层回测与 IC 计算已拆分到 .analysis 模块（见文件顶部 from .analysis import ...）
 
 
+def _seg_prog(idx: int, total: int, frac: float) -> float:
+    """滚动段内进度：第 idx 段独占 `[20+70*idx/total, 20+70*(idx+1)/total]`，再按 `frac` 细分。
+
+    ⚠ 为什么必须这样算（2026-09-14 用户第二次报"没有训练直接就是信号合成"）：
+      `context.report()` 会**丢弃任何低于历史最大值的上报（连 message 一起丢）**，旧实现用
+      两条互相穿插的曲线（训练 = `20+70x`、分层/IC = `25+60x`，`x=(idx+1)/total`）⇒
+      段2 起「训练」的值（如 23）低于上一段「分层与IC」的值（如 28）⇒ **训练消息被吞、看不到了**。
+      改成"每段一条独占带、段内按阶段细分"后，全流程**严格递增** ⇒ 每个阶段的消息都能上屏。
+      （浮点：段多时带宽会小于 1，必须用小数，不能用 int。）
+    """
+    lo = 20.0 + 70.0 * idx / max(1, total)
+    hi = 20.0 + 70.0 * (idx + 1) / max(1, total)
+    return round(lo + (hi - lo) * frac, 2)
+
+
 def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str = None,
-                          prog: int = None) -> None:
+                          prog: float = None) -> None:
     """信号合成（硬规则闸门 / Meta-Gate / 触发叠加，默认全关）：训练后覆盖该 recorder 的回测信号。
 
     single 与滚动（rolling，每段）共用：主模型 SignalRecord.generate() 之后调用。
@@ -515,7 +530,10 @@ def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str = None,
     _ovl_on = bool(getattr(req, "trigger_overlay_opts", None)) and bool(_ovl_cfg.get("enabled"))
     if not (getattr(req, "meta_gate", False) or _ovl_on or getattr(req, "hard_filters", None)):
         return
-    _p0 = 68 if prog is None else int(prog)
+    _p0 = 68.0 if prog is None else float(prog)
+    # 完成时的进度：一次性路径沿用 69；滚动路径只在本段带内小幅前进（0.05 个点），
+    # 不许加 1（段多时带宽 < 1，+1 会越过下一阶段的值而被"单调不倒退"吞掉）。
+    _p1 = 69.0 if prog is None else round(_p0 + 0.05, 2)
     _report(_p0, "信号合成（%s）..." % ("滚动%s" % seg_label if seg_label else "一次性"))
     _check_cancel()
     from .signal_compose import compose_final_signal
@@ -525,7 +543,7 @@ def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str = None,
         _summ = " | ".join(
             "%s(n=%d auc=%.3f)" % (k, v.get("n", 0), v.get("valid_auc", 0))
             for k, v in sinfo.items()) or "ok"
-        _report(_p0 + 1, "信号合成完成：%s" % _summ)
+        _report(_p1, "信号合成完成：%s" % _summ)
     except Exception as e:  # 失败不阻塞回测：记录并回退主信号（pred.pkl 仍是 sr 保存的主分）
         import logging
         import traceback
@@ -953,11 +971,11 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                 carry_position = data["end_position"]
             if data.get("bench_end") is not None:
                 global_bench = global_bench * data["bench_end"]
-            _report(20 + int(70 * (idx + 1) / total), "段%d/%d: 已完成，跳过（缓存 %s~%s）" % (
+            _report(_seg_prog(idx, total, 1.0), "段%d/%d: 已完成，跳过（缓存 %s~%s）" % (
                 seg_no, total, test_start, test_end))
             continue
 
-        _report(20 + int(70 * (idx + 1) / total), "段%d/%d: 训练 %s~%s, 测试 %s~%s" % (
+        _report(_seg_prog(idx, total, 0.0), "段%d/%d: 训练 %s~%s, 测试 %s~%s" % (
             seg_no, total, train_start, train_end, test_start, test_end))
 
         # 首段预热：把预测起点前移 n_days_hold 个交易日（回测窗口不变）。
@@ -1004,15 +1022,14 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
 
             # 信号合成（S1 Meta-Gate / S2 触发叠加 / 硬规则，默认都关）：每段在本段 train 窗上
             # 训练门控/叠加模型并覆盖本段回测信号（回退逻辑见 _maybe_compose_signal）
-            # ⚠ 进度值必须落在**本段进度带**内（v1.19.36）：训练 = 20+70x、分层/IC = 25+60x
-            #   （x=(idx+1)/total）⇒ 这里用 24+62x（段1 ≈ 25%），否则会把进度顶到 68/69% 并导致
-            #   其后各段的进度与消息被"单调不倒退"规则全部丢弃（看起来像卡死，详见函数 docstring）。
+            # ⚠ 进度值一律走 `_seg_prog`（每段独占一条带、段内按阶段细分）—— 旧的两条穿插曲线会
+            #   让"训练"消息从段2 起被"单调不倒退"规则吞掉（用户 2026-09-14 报"没有训练直接就信号合成"）。
             _maybe_compose_signal(req, dataset, model, recorder,
                                   seg_label="段%d" % seg_no if seg_no else None,
-                                  prog=24 + int(62 * (idx + 1) / total))
+                                  prog=_seg_prog(idx, total, 0.3))
 
             # 分层回测 + IC 分析（段标签从"段1"开始）
-            _report(25 + int(60 * (idx + 1) / total), "段%d/%d: 计算分层与IC..." % (seg_no, total))
+            _report(_seg_prog(idx, total, 0.6), "段%d/%d: 计算分层与IC..." % (seg_no, total))
             _check_cancel()
             seg_label = "段%d" % seg_no
             analysis = _compute_analysis(model, dataset, instruments, seg_label, benchmark=benchmark,
@@ -1048,6 +1065,9 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
                                                        account=seg_account, instruments=instruments,
                                                        rebalance_base=rebalance_base)
             par = PortAnaRecord(recorder, port_analysis_config, "day")
+            # 组合回测也是"沉默的大块头"（旧版本没有这一条上报 ⇒ 消息停在"计算分层与IC…"，
+            # 用户看不出时间花在回测还是 IC 上）
+            _report(_seg_prog(idx, total, 0.8), "段%d/%d: 组合回测(PortAna)..." % (seg_no, total))
             par.generate()
 
             # 传入段初账户总值：用 account 列计算段内收益，绕开 qlib return 列
@@ -1065,6 +1085,7 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             if art_dir:
                 seg_dir = os.path.join(art_dir, "segment_%s" % seg_no)
                 os.makedirs(seg_dir, exist_ok=True)
+                _report(_seg_prog(idx, total, 0.9), "段%d/%d: 生成曲线快照图..." % (seg_no, total))
                 _save_curve_snapshot(seg_dir, req, seg_result)
 
         # 拼接净值：段内各点 = 段起始全局净值 * (该点相对段起始账户的净值)
