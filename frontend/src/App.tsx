@@ -1666,7 +1666,7 @@ export default function App() {
                 setError(
                   r.killed_workers.length
                     ? ''
-                    : '强制停止：未发现卡住的取数进程（可能它已不在取数阶段，协作式取消会在下一个检查点生效）',
+                    : '已强制停止：未发现活动的取数进程（可能已自行结束），任务已直接标记为已停止',
                 )
               } catch (e) {
                 setError(`强制停止失败：${e instanceof Error ? e.message : String(e)}`)

@@ -141,7 +141,7 @@ export default function TaskStatusPanel({
                         }}
                         className="px-3 py-1 rounded text-xs bg-orange-600 text-white hover:bg-orange-700"
                         title={
-                          '强制停止：把该进程里卡住的取数 worker 杀掉，任务立刻收尾为「已强制停止」。\n' +
+                          '强制停止：杀掉该进程里卡住的取数进程并重置进程池，任务**立刻**标记为已停止（不再等线程响应）。\n' +
                           '适用于「点了取消但长时间不动」的情况（卡在 joblib/loky 取数内部，此时 CPU 与磁盘都是 0）。\n' +
                           '⚠ 取数进程池是同进程共享的 ⇒ 会一并中断其它正在取数的回测。'
                         }

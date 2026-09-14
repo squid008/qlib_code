@@ -3,6 +3,40 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.37] - 2026-09-14
+
+### Added
+- **取数串行化（根治「多任务共享同一 loky 池」的死锁）**（用户定稿：「把 qlib 取数（joblib）那一步串行化，可以的」）：
+  新模块 `backend/app/engine/patches/serial_load.py` —— `install_serial_load()` 在
+  `joblib.parallel.Parallel.__call__` 外套一把**进程级闸门**：同一时刻只允许一个 Parallel 调用进 loky 池
+  （loky 的 reusable executor 是**进程级单例**，两个任务同时取数会协调状态打架 ⇒ 死锁）。
+  - 同线程嵌套直接放行（线程本地 depth），避免自锁；**等闸门期间仍可被取消**（每秒查一次 `context.check_cancel()`）；
+  - 开关 `QLIB_SERIAL_LOAD=0`；幂等；在 `patches` 包导入时 + `resource._apply_kernels()`（所有任务准入路径）里安装；
+  - 只串行"取数"这一步，训练/回测/分析/画图照旧并行 —— 相比"限制用户提交任务"（🚫 用户否决：要上服务器、多人并发）是并发安全的做法。
+
+### Fixed
+- **「取消不了、强制停止也不行」**（用户报：任务停在 `cancelling`、点刷新依旧）—— 实测 `py-spy dump` 定位：
+  线程永久卡在 `analysis → data_cache.get_or_load → D.features → Parallel._retrieve`，**worker 已被杀光（0 个）、
+  后端 CPU 0**，`ExecutorManagerThread` 停在 `wait_result_broken_or_wakeup` ⇒ **"杀 worker"并不能唤醒卡在
+  `_retrieve` 里的线程**，故 v1.19.35 的强制停止在这种情况下只会把它钉在 `cancelling`。修法（不再依赖线程配合）：
+  - `kill_and_reset_loky_pool()`：杀 worker **并重置 joblib 池缓存**（`reusable_executor._executor=None`）⇒ 下一个任务不会复用损坏的池；
+  - `TaskManager.force_cancel()`：**立刻**把任务置为 `cancelled`（`_forced` 同时保证线程事后不能覆盖，见 `_finish`）
+    + **代卡死的线程归还并发配额**（新增 `_held_by` 记名 + `_release_hold_if_held` 幂等；否则攒几次新任务会被饿死）；
+  - 前端提示语修正（`killed_workers` 为空时不再说"未在取数阶段"，而是"任务已直接标记为已停止"）。
+
+### 验证
+- 新增 `backend/tests/test_force_cancel.py`（6 例：立刻落终态 / 配额幂等归还 / 二次调用返回 None /
+  **线程事后不得覆盖终态** / 正常 `_finish` / force_cancel 唤醒排队者）与 `backend/tests/test_serial_load.py`
+  （6 例：补丁幂等 / **锁的持有区间不重叠**（量锁而不是量调用，见下）/ 同线程嵌套不自锁 / 杀+重置清缓存 / 无池时安全 / 开关）。
+- `backend/tests` **217 passed**（原 205 + 12）；前端 `tsc` 0 + `build` 14.72s。
+- 端到端 `ai_test/check_force_cancel.py`（真提交回测 ⇒ 12 个 loky worker ⇒ 强制停止）：**0 失败** ——
+  `killed_workers` 12 个、`slot_released=True`、**接口刚返回时 status 已是 `cancelled`**、`capacity.running=0`、worker 归零。
+
+### 说明
+- ⚠ 强制停止仍会**同时中断同进程内其它正在取数的回测**（池是进程内共享）；loky worker 属 `popen_loky`，
+  单因子/事件研究的 `panel_features` 走 `spawn_main` ⇒ 不受影响。
+- 版本 1.19.36 → 1.19.37。
+
 ## [1.19.36] - 2026-09-14
 
 ### Fixed

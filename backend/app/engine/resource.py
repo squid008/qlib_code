@@ -327,6 +327,14 @@ def _apply_kernels(jobs: int) -> None:
         # 设置 loky 后端后立刻打免窗补丁（在首次 D.features spawn 之前）
         if C["joblib_backend"] == "loky":
             _patch_loky_nowin()
+            # 取数串行化（进程级闸门，幂等）：loky 池是**进程内单例** ⇒ 两个任务同时取数会死锁
+            # （2026-09-14 实证，见 patches/serial_load.py）。放在这里是因为"凡是配 joblib 后端的
+            # 路径都会经过本函数" —— 回测/单因子/外部任务都覆盖。
+            try:
+                from .patches.serial_load import install_serial_load
+                install_serial_load()
+            except Exception:
+                pass
     except Exception:
         pass
 

@@ -205,11 +205,13 @@ def cancel_backtest(task_id: str):
 
 
 @router.post("/backtest/{task_id}/force-cancel",
-             summary="强制停止回测任务（终止卡住的取数进程）")
+             summary="强制停止回测任务（终止取数进程 + 立刻落终态）")
 def force_cancel_backtest(task_id: str):
     """强制停止：`cancel` 是**协作式**的（只在阶段边界检查），一旦任务卡在 joblib/loky 取数
     内部就永远等不到检查点（实测：两个回测并发共享同一 loky 池导致的死锁，状态会一直停在
-    `cancelling`，而 CPU / 磁盘都是 0）。本接口额外把该进程的取数 worker 杀掉，让任务立刻收尾。
+    `cancelling`，而 CPU / 磁盘都是 0）。本接口：杀/重置取数进程池，**并且不依赖线程配合**——
+    立刻把任务置为 `cancelled`、代卡死的线程归还并发配额（见 `TaskManager.force_cancel`），
+    因为实测"杀 worker"并不总能唤醒卡在 `Parallel._retrieve` 里的线程。
 
     ⚠ **会同时中断同进程内其它正在取数的回测**（loky 池是进程内单例）⇒ 前端只在任务停在
     「停止中」长时间不动时才提供该操作。

@@ -127,16 +127,26 @@ export async function cancelBacktest(taskId: string): Promise<{ status: string }
   return data
 }
 
-/** 强制停止（v1.19.35）：普通取消是**协作式**的（只在阶段边界检查），任务卡在 joblib/loky
- *  取数内部时永远等不到检查点（状态停在 `cancelling`，CPU/磁盘都为 0）⇒ 本接口额外
- *  杀掉该进程的取数 worker，让任务立刻收尾为「已强制停止」。
+/** 强制停止（v1.19.35，v1.19.37 加强）：普通取消是**协作式**的（只在阶段边界检查），任务卡在
+ *  joblib/loky 取数内部时永远等不到检查点（状态停在 `cancelling`，CPU/磁盘都为 0）⇒ 本接口
+ *  杀掉**并重置**该进程的取数池，且**不依赖线程配合**：立刻把任务标记为 `cancelled`
+ *  （实测"杀 worker"不总能唤醒卡在 `Parallel._retrieve` 的线程）并代其归还并发配额。
  *  ⚠ 会同时中断同进程内其它正在取数的回测（loky 池是进程内单例）。 */
 export async function forceCancelBacktest(
   taskId: string,
-): Promise<{ status: string; task_id: string; killed_workers: number[] }> {
-  const { data } = await http.post<{ status: string; task_id: string; killed_workers: number[] }>(
-    `/backtest/${taskId}/force-cancel`,
-  )
+): Promise<{
+  status: string
+  task_id: string
+  killed_workers: number[]
+  /** 是否**代卡死的线程**归还了并发配额（幂等；false = 线程已自行归还或本就没占）。 */
+  slot_released?: boolean
+}> {
+  const { data } = await http.post<{
+    status: string
+    task_id: string
+    killed_workers: number[]
+    slot_released?: boolean
+  }>(`/backtest/${taskId}/force-cancel`)
   return data
 }
 
