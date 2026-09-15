@@ -216,6 +216,59 @@ def test_jq_trades_sells_sorted_before_buys_in_a_day():
     assert list(res.trades["side"]) == [-1, 1]        # 卖在前、买在后
 
 
+def test_split_multi_codes():
+    """一个单元格里塞多只（同事的 Excel 表）—— 只在"确实含 ≥2 个代码"时才拆。"""
+    from app.signals.codes import split_multi_codes
+
+    assert split_multi_codes("002200.XSHE,603555.XSHG") == ["002200.XSHE", "603555.XSHG"]
+    assert split_multi_codes("新宝股份(002705.XSHE)，大连电瓷(002606.XSHE)") == [
+        "新宝股份(002705.XSHE)", "大连电瓷(002606.XSHE)"]
+    assert split_multi_codes("002200.XSHE;603555.XSHG") == ["002200.XSHE", "603555.XSHG"]
+    # 单只 / 带空格的中文名 / 空 ⇒ 一律不拆（拆了会把中文名切碎 ⇒ 整行认不出）
+    assert split_multi_codes("新宝股份(002705.XSHE)") == ["新宝股份(002705.XSHE)"]
+    assert split_multi_codes("新 宝 股份(002705.XSHE)") == ["新 宝 股份(002705.XSHE)"]
+    assert split_multi_codes("") == []
+
+
+def test_parse_xlsx_with_multi_code_cells(tmp_path):
+    """xlsx：真实 Excel 日期对象 + 一格多只 ⇒ 拆成多条信号（用户 2026-09-15 要求支持 XLSX）。"""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["日期", "股票代码"])
+    ws.append(["2021-01-11", "002588.XSHE"])
+    ws.append(["2021-01-12", "002200.XSHE,603555.XSHG"])
+    ws.append(["2021-01-13", "新宝股份(002705.XSHE)，大连电瓷(002606.XSHE)"])
+    p = tmp_path / "t.xlsx"
+    wb.save(p)
+
+    res = parse_csv(p.read_bytes(), "t.xlsx")
+    assert res.kind == "signal_list" and res.encoding == "excel" and res.ok
+    assert res.stats["rows_total"] == 3 and res.stats["rows_valid"] == 5
+    assert res.stats["multi_code_cells"] == 2
+    assert set(res.signals["code"]) == {
+        "SZ002588", "SZ002200", "SH603555", "SZ002705", "SZ002606"}
+    assert str(res.signals["date"].min().date()) == "2021-01-11"
+    assert str(res.signals["date"].max().date()) == "2021-01-13"
+    assert res.signals["name"].tolist().count("新宝股份") == 1     # 中文名仅回显
+
+
+def test_binary_garbage_gets_friendly_error():
+    """二进制垃圾（加密/损坏的 xlsx、传错文件）必须**友好报错**，不能 500。"""
+    with pytest.raises(ValueError) as ei:
+        parse_csv(b"\x00\x01\x02 not an excel at all \xff\xfe" + b"\x00" * 100, "bad.xlsx")
+    assert "二进制" in str(ei.value)
+
+    # 非法文本（含 NUL 但不是 Excel 魔数）⇒ 也走友好报错而不是 pandas ParserError
+    res_holder = {}
+    try:
+        res_holder["r"] = parse_csv(b"a,b\n\x00\x01\x02\n", "bad2.csv")
+    except ValueError as e:
+        res_holder["err"] = str(e)
+    assert ("err" in res_holder) or (not res_holder["r"].ok)
+
+
 def test_empty_file():
     res = parse_csv(b"", "empty.csv")
     assert not res.ok and res.issues

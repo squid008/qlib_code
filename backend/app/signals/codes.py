@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 import pandas as pd
@@ -226,10 +227,46 @@ _DATE_FORMATS = (
 _EXCEL_EPOCH = pd.Timestamp("1899-12-30")
 
 
+# 单元格内多标的的分隔符（同事的 Excel 表：`002200.XSHE,603555.XSHG`）
+_MULTI_CODE_SEP_RE = re.compile(r"[,，;；|、/\\]+")
+
+
+def split_multi_codes(cell) -> List[str]:
+    """标的单元格 → 代码 token 列表（**一个格子里可能塞多只**）。
+
+    用户 2026-09-15：「同事发的表，某一天有多只，它会在一个格子里用逗号隔开」
+    （实测 `选股结果表.xlsx` 113 行里有 **12 个格子**是 `002200.XSHE,603555.XSHG` 这种）。
+
+    ⚠ 只在「这格**确实含 ≥2 个代码**」时才拆 —— 否则会把 `新 宝 股份(002705.XSHE)` 这类
+      带空格的中文名切碎，切碎后每段都认不出代码 ⇒ **整行被丢**（宁可少拆，不可多拆）。
+    """
+    s = str(cell or "").strip()
+    if not s:
+        return []
+    n_code = len(_ANY_CODE_RE.findall(s))
+    if n_code < 2:
+        return [s]
+    if _MULTI_CODE_SEP_RE.search(s):                     # 有明确分隔符：按分隔符拆
+        parts = [p.strip() for p in _MULTI_CODE_SEP_RE.split(s)]
+        keep = [p for p in parts if p and _ANY_CODE_RE.search(p)]
+        return keep or [s]
+    return [m.group(0) for m in _ANY_CODE_RE.finditer(s)] or [s]   # 无分隔符：直接抽代码 token
+
+
 def parse_date(raw) -> Optional[pd.Timestamp]:
     """任意日期写法 → Timestamp（当天 0 点）；无法解析返回 None（调用方记诊断）。"""
     if raw is None:
         return None
+    # ⚠ 从 **Excel 直接读**时单元格是 datetime/Timestamp（不是字符串）—— 2026-09-15 支持 xlsx 后新增；
+    #   纯数值则当 Excel 序列号（含 float 形式 42373.0）。
+    if isinstance(raw, (pd.Timestamp, datetime)):
+        return pd.Timestamp(raw).normalize()
+    if isinstance(raw, float) and raw != raw:            # NaN
+        return None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        v = int(raw)
+        if 20000 <= v <= 60000:
+            return (_EXCEL_EPOCH + pd.Timedelta(days=v)).normalize()
     s = str(raw).strip().strip("'\"")
     if not s or s.lower() in ("nan", "none", "nat", "-", "null"):
         return None

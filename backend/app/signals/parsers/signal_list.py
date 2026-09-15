@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from ..codes import normalize_code, parse_date
+from ..codes import normalize_code, parse_date, split_multi_codes
 from .base import (AMOUNT_ALIASES, CODE_ALIASES, DATE_ALIASES, FEE_ALIASES, PRICE_ALIASES,
                    QTY_ALIASES, STATUS_ALIASES, SIDE_ALIASES, ParseResult, decode_bytes,
                    pick_col, read_table, side_of, num)
@@ -46,6 +46,7 @@ def parse_signal_list(raw, filename: str = "") -> ParseResult:
     rows, issues, seen = [], [], set()
     n_dup = n_drop = n_index = 0
     n_buy = n_sell = 0
+    n_multi_cells = 0
     unresolved: dict = {}
     for i, r in enumerate(df.itertuples(index=False), start=(2 if had_header else 1)):
         rec = dict(zip(df.columns, r))
@@ -58,39 +59,44 @@ def parse_signal_list(raw, filename: str = "") -> ParseResult:
             n_drop += 1
             res.add_issue(i, "%s | %s" % (raw_date, raw_code), "日期无法识别")
             continue
-        info = normalize_code(raw_code)
-        if info.qlib_code is None:
-            n_drop += 1
-            for msg in (info.issues or ["标的无法识别"]):
-                key = msg.split("：")[0]
-                unresolved[key] = unresolved.get(key, 0) + 1
-            res.add_issue(i, "%s | %s" % (raw_date, raw_code), (info.issues or ["标的无法识别"])[0])
-            continue
-        if info.is_index:
-            n_index += 1
-            res.add_issue(i, "%s | %s" % (raw_date, raw_code),
-                          "指数（%s）：信号回测只支持股票，已忽略" % info.qlib_code)
-            continue
-        side = side_of(rec.get(side_col)) if side_col else 1
-        if side is None:
-            side = 1                                    # 方向列认不出来 ⇒ 保守当买入（同事全是买入）
-        if info.issues:                                 # 例如"无后缀有歧义"——行仍然可用
-            for msg in info.issues:
-                unresolved[msg] = unresolved.get(msg, 0) + 1
-            res.add_issue(i, "%s | %s" % (raw_date, raw_code), info.issues[0])
-        key = (dt, info.qlib_code, side)
-        if key in seen:
-            n_dup += 1
-            continue
-        seen.add(key)
-        # ⚠ 买卖计数放在**去重之后**：否则 `buy_signals + sell_signals != rows_valid`，
-        #   界面上会显得"信号数比有效行多"（2026-09-15 单测抓到）。
-        if side > 0:
-            n_buy += 1
-        else:
-            n_sell += 1
-        rows.append({"date": dt, "code": info.qlib_code, "side": side,
-                     "name": info.name, "raw_date": str(raw_date), "raw_code": str(raw_code)})
+        # ⚠ 一个单元格里可能塞多只（同事的 Excel 表用逗号隔开）⇒ 拆成多个信号（同一日期）
+        toks = split_multi_codes(raw_code)
+        if len(toks) > 1:
+            n_multi_cells += 1
+        for tok in toks:
+            info = normalize_code(tok)
+            if info.qlib_code is None:
+                n_drop += 1
+                for msg in (info.issues or ["标的无法识别"]):
+                    key = msg.split("：")[0]
+                    unresolved[key] = unresolved.get(key, 0) + 1
+                res.add_issue(i, "%s | %s" % (raw_date, tok), (info.issues or ["标的无法识别"])[0])
+                continue
+            if info.is_index:
+                n_index += 1
+                res.add_issue(i, "%s | %s" % (raw_date, tok),
+                              "指数（%s）：信号回测只支持股票，已忽略" % info.qlib_code)
+                continue
+            side = side_of(rec.get(side_col)) if side_col else 1
+            if side is None:
+                side = 1                                # 方向列认不出来 ⇒ 保守当买入（同事全是买入）
+            if info.issues:                             # 例如"无后缀有歧义"——行仍然可用
+                for msg in info.issues:
+                    unresolved[msg] = unresolved.get(msg, 0) + 1
+                res.add_issue(i, "%s | %s" % (raw_date, tok), info.issues[0])
+            key = (dt, info.qlib_code, side)
+            if key in seen:
+                n_dup += 1
+                continue
+            seen.add(key)
+            # ⚠ 买卖计数放在**去重之后**：否则 `buy_signals + sell_signals != rows_valid`，
+            #   界面上会显得"信号数比有效行多"（2026-09-15 单测抓到）。
+            if side > 0:
+                n_buy += 1
+            else:
+                n_sell += 1
+            rows.append({"date": dt, "code": info.qlib_code, "side": side,
+                         "name": info.name, "raw_date": str(raw_date), "raw_code": str(tok)})
 
     sig = pd.DataFrame(rows)
     res.signals = sig
@@ -109,6 +115,8 @@ def parse_signal_list(raw, filename: str = "") -> ParseResult:
         "date_max": str(sig["date"].max().date()) if len(sig) else None,
         "max_signals_per_day": int(per_day.max()) if len(per_day) else 0,
         "signals_per_day_avg": round(float(per_day.mean()), 2) if len(per_day) else 0.0,
+        # 一个格子里塞了多只的单元格数（同事的 Excel 表；拆分后 rows_valid 会 > rows_total）
+        "multi_code_cells": int(n_multi_cells),
         "warnings": dict(sorted(unresolved.items(), key=lambda kv: -kv[1])[:8]),
     })
     return res

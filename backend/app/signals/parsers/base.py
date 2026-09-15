@@ -176,14 +176,54 @@ def detect_kind(df: pd.DataFrame) -> str:
     return "signal_list"
 
 
+# Excel 文件魔数：xlsx = zip（PK\x03\x04）、xls = OLE2（D0CF11E0…）、xls(BIFF5) = 0908100000060500
+_EXCEL_MAGIC = (b"PK\x03\x04", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", b"\x09\x08\x10\x00\x00\x06\x05\x00")
+
+
+def excel_to_csv_text(raw) -> Optional[str]:
+    """`xlsx`/`xls` 原始字节 → CSV 文本（第一张工作表）；不是 Excel 返回 None。
+
+    用户 2026-09-15：「XLSX/XLS 文件不支持」+ 同事发的 `选股结果表.xlsx`。
+
+    ⚠ 设计选择：**转成 CSV 文本再复用整条管线**（而不是另开一条 DataFrame 路径）——
+      这样编码诊断、分隔符嗅探、表头判定、去重、单元格内多代码拆分（同事那张表有 12 个格子
+      用逗号塞了多只）等逻辑**只有一份**，不会出现"CSV 能过、Excel 走另一套"的口径分叉。
+      `dtype=str` 读取：代码列不会因整数化丢前导零；日期列变成 ISO 文本，`parse_date` 直接能吃。
+    """
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) < 8:
+        return None
+    if not any(raw[:8].startswith(m) for m in _EXCEL_MAGIC):
+        # 不是已知的 Excel 魔数，但含 NUL ⇒ 是二进制（加密 xlsx / 损坏文件 / 传错文件）
+        # ⇒ 明确报错，不要去 decode 成乱码再让 pandas 抛 ParserError（2026-09-15 单测抓到）
+        if b"\x00" in bytes(raw[:4096]):
+            raise ValueError("这不是文本文件（含二进制内容）—— 可能是加密/损坏的 xlsx，"
+                             "或传错了文件；请给 CSV/TXT 或完整的 XLSX/XLS")
+        return None
+    try:
+        df = pd.read_excel(io.BytesIO(bytes(raw)), sheet_name=0, dtype=str)
+    except Exception as e:                                   # 加密/损坏/缺引擎
+        raise ValueError("Excel 读取失败（需要 openpyxl/xlrd）：%s" % e)
+    df.columns = [str(c).strip() for c in df.columns]
+    return df.to_csv(index=False)
+
+
 def parse_csv(raw, filename: str = "") -> ParseResult:
-    """统一入口：自动识别格式并解析。"""
-    text, enc = decode_bytes(raw)
+    """统一入口：自动识别格式并解析（**支持 CSV/文本 与 Excel `xlsx`/`xls`**）。"""
+    xl_text = excel_to_csv_text(raw)
+    if xl_text is not None:
+        text, enc = xl_text, "excel"        # Excel：先归一化成 CSV 文本，再走**同一条**解析管线
+    else:
+        text, enc = decode_bytes(raw)
     if not text.strip():
         res = ParseResult(kind="", encoding=enc)
         res.add_issue(0, "", "文件内容为空")
         return res
-    df, sep, had_header = read_table(text)
+    try:
+        df, sep, had_header = read_table(text)
+    except ValueError as e:                                  # 坏文本/乱码文件 ⇒ 友好报错，别 500
+        res = ParseResult(kind="", encoding=enc)
+        res.add_issue(0, str(text.strip().splitlines()[0][:60] if text.strip() else ""), str(e))
+        return res
     kind = detect_kind(df)
     # ⚠ 延迟 import：解析器都 import 本模块 ⇒ 模块级互相 import 会成环
     if kind == "signal_list":
@@ -192,7 +232,8 @@ def parse_csv(raw, filename: str = "") -> ParseResult:
         from .jq_perf import parse_jq_perf as _parse
     else:
         from .jq_trades import parse_jq_trades as _parse
-    res = _parse(raw, filename)
+    # ⚠ 传**文本**而不是 raw：Excel 已经归一化成 CSV 文本了，各解析器统一按文本处理
+    res = _parse(text, filename)
     res.encoding = enc
     res.sep = sep
     res.headers = [str(c) for c in df.columns]
