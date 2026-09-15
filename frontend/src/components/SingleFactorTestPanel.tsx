@@ -149,6 +149,25 @@ function reverseNoteOf(r: TestResult): string {
   return `⚠ 反向条件也成立（${pTxt}）：${tail} ⇒ 不判「有效(反向)」，按原方向视作无效`
 }
 
+/** 「有效(反向)」徽章的悬停文案（v1.19.40，用户 2026-09-15）。
+ *
+ *  抽成**模块级函数**（而不是写在 JSX 里）是为了能被回归脚本 `ai_test/check_binary_reverse.mjs`
+ *  按函数名截出来断言措辞，避免"改文案改坏语义"没人发现。
+ *  ⚠ 必须说清三件事：① 判定条件；② **它不是"好消息"**（原方向无效）；③ 保留可落地性提醒 +
+ *     用途（研究线索：能否当离场因子），并把「图上红点」告诉用户。
+ */
+function reverseTitleOf(r: TestResult): string {
+  if (!r.is_binary) {
+    return '连续因子：高分位组收益显著更低且 IC/ICIR 稳定为负，因子值与未来收益负相关，需反向使用（因子值低时买入）'
+  }
+  return [
+    '0/1 信号按事件研究判定：中位数 ≤−0.50%、绝对收益胜率 ≤45%、超额 ≤ −门槛(k)，且日配对稳定（反向口径）。',
+    '⚠ 这不是"好消息"：0/1 的语义是「1 = 要买」，判「反向」意味着**原方向无效**。',
+    reverseNoteOf(r),
+    '用途：作为「研究线索」—— 可研究它能否当**离场因子**（持有中被触发就提前离场）；事件研究图上该类持有日的锚点已标为**红色**。',
+  ].join('\n')
+}
+
 /** 「待观察」的原因文案（0/1 信号走事件研究路径）：逐条对比门槛，指出差在哪一项。 */
 function watchReasonOfBinary(
   pt: NonNullable<ReturnType<typeof esPointOf>>,
@@ -277,13 +296,16 @@ function verdictOf(r: TestResult): VerdictStats {
     const lottery =
       Math.abs(med) < 0.01 && win >= 0.45 && win <= 0.55 && mean > Math.max(0.005, med * 3)
     good = esGood
-    // v1.19.34（用户 2026-09-14 定稿）：0/1 信号的「反向」**不再输出为结论** —— 一律按「待观察」，
-    //   反向条件成立时只在悬停里说明（理由见 `reverseNoteOf`）。表格保持简单明了，
-    //   不再出现会被读成"好消息"、实则「原方向无效」的绿勾。
-    //   ⚠ 此处**故意没有** `else if (esReverse) kind = 'goodReverse'`（原来有）。
+    // v1.19.40（用户 2026-09-15 定稿，**推翻 v1.19.34**）：0/1 信号的「反向」**恢复为结论**。
+    //   目的：把这类因子当「**研究线索**」捞出来 —— 典型用途是研究它能否当**离场因子**
+    //   （持有中被触发就提前离场；负 alpha 在 long-only 下唯一可变现的形式）。
+    //   ⚠ 但语义与呈现都必须说清：**它不是"好消息"**（对选股信号的真实含义是「原方向无效」）⇒
+    //     表格用**红色**呈现（不是绿勾），悬停里保留 `reverseNoteOf` 的可落地性提醒
+    //     （p ≤ 5% ⇒ 未触发组≈全池 ⇒ 反向只是拿 beta）；事件研究图上该类持有日的锚点也为**红色**。
     goodReverse = esReverse
     if (conflicting && !esGood) kind = 'conflicting'
     else if (esGood) kind = 'good'
+    else if (esReverse) kind = 'goodReverse'
     else if (lottery) kind = 'lottery'
     else kind = 'watch'
     return {
@@ -1521,10 +1543,7 @@ export default function SingleFactorTestPanel({
                               有效✓
                             </span>
                           ) : verdictKind === 'goodReverse' ? (
-                            <span
-                              className="text-emerald-600 font-semibold"
-                              title="连续因子：高分位组收益显著更低且 IC/ICIR 稳定为负，因子值与未来收益负相关，需反向使用（因子值低时买入）"
-                            >
+                            <span className="text-red-600 font-semibold" title={reverseTitleOf(r)}>
                               有效(反向)✓
                             </span>
                           ) : verdictKind === 'lottery' ? (

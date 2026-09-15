@@ -13,7 +13,7 @@ import {
 } from 'recharts'
 import { cancelEventStudy, createEventStudy, getEventStudyProgress } from '../api'
 import type { EventStudyRequest, EventStudyResult } from '../api'
-import { excessThresholdOf, pairStabilityOf } from './verdictRules'
+import { excessThresholdOf, isValidAt, isReverseValidAt, pairStabilityOf } from './verdictRules'
 
 interface Props {
   open: boolean
@@ -45,52 +45,33 @@ const pct = (v: number | null | undefined, nd = 3) =>
 const num = (v: number | null | undefined, nd = 1) =>
   v == null || !Number.isFinite(v) ? '-' : `${(v * 100).toFixed(nd)}%`
 
-/** 某个持有期 k 是否判定「有效」（正向）—— 与弹窗末点提示的 good 分支**同条件**（v1.19.25）。
- *
- *  抽成**模块级纯函数**供三处共用，避免口径漂移：
- *    ① 末点提示 `verdictHint`（good 分支）；② 两张曲线 tooltip（悬停显示 有效/待观察）；
- *    ③ 两条紫色曲线的**锚点**（只在判定有效的持有日画圆点）。
- *  条件与表格「有效✓」一致：中位数 ≥0.50% + 绝对收益胜率 ≥55%
- *    + 日配对超额 ≥ max(0.5%, 0.025%×k)（无基准时不启用）+ 日配对稳定（|HAC t|≥2 或 日胜率≥55%）。
- */
-function isValidAt(
-  k: number,
-  med: number | null,
-  win: number | null,
-  ex: number | null,
-  stableOk: boolean,
-): boolean {
-  return (
-    med != null &&
-    win != null &&
-    med >= 0.005 &&
-    win >= 0.55 &&
-    (ex == null || ex >= excessThresholdOf(k)) &&
-    stableOk
-  )
-}
+/** 「有效」/「反向有效」的逐 k 判定已下沉到共享模块 `verdictRules.ts`
+ *  （`isValidAt` / `isReverseValidAt`，v1.19.40）—— 表格结论、图上锚点、末点提示、悬停文案
+ *  全部共用同一对纯函数，杜绝"图上标有效、说明说待观察"这类口径漂移。 */
 
-/** 「判定有效」持有日的锚点圆点（v1.19.25，用户要求：在两条紫色曲线上标出有效的持有日）。
+/** 「判定有效 / 反向有效」持有日的锚点圆点（v1.19.25 起；v1.19.40 加反向=红点）。
  *
  *  ⚠ Recharts 的 `dot` 回调**必须返回带 `key` 的元素**（不画时也要返回空 `<g/>`），否则告警。
- *  只在 `payload.valid === true` 且该点有数值时画实心圆点。
+ *  · `payload.valid === true`      ⇒ 正向有效 ⇒ 用 `color`（紫 `#7c3aed`）
+ *  · `payload.validRev === true`   ⇒ **反向有效 ⇒ 红色 `#dc2626`**（用户 2026-09-15：红色 = 研究线索）
  */
-function validAnchorDot(field: string, color: string) {
+function validAnchorDot(field: string, color: string, revColor = '#dc2626') {
   return (p: {
     key?: string | number
     cx?: number
     cy?: number
-    payload?: { k?: number; valid?: boolean } & Record<string, unknown>
+    payload?: { k?: number; valid?: boolean; validRev?: boolean } & Record<string, unknown>
   }) => {
     const v = p.payload?.[field]
-    if (p.payload?.valid === true && typeof v === 'number' && v != null) {
+    const rev = p.payload?.validRev === true
+    if ((p.payload?.valid === true || rev) && typeof v === 'number' && v != null) {
       return (
         <circle
           key={p.key ?? `anchor-${p.payload?.k ?? ''}`}
           cx={p.cx}
           cy={p.cy}
           r={3.5}
-          fill={color}
+          fill={rev ? revColor : color}
           stroke="#fff"
           strokeWidth={1}
         />
@@ -242,20 +223,25 @@ export default function EventStudyModal({
   // 与末点提示 `verdictHint` 同源（同一个 `isValidAt`），不会出现"图上标有效、说明说待观察"。
   // ⚠ 第④条口径：新结果按 k（`baseline.t_hac/win`）；**旧结果整体回退行级**（`pair` prop），
   //   与 `verdictHint` 里的回退规则一致。
-  const validKs = useMemo(() => {
-    const out = new Set<number>()
+  const validKind = useMemo(() => {
+    // v1.19.40：从 Set<k> 升级为 Map<k, 'good' | 'reverse'> —— 正向有效锚点紫色、**反向有效锚点红色**
+    const out = new Map<number, 'good' | 'reverse'>()
     const bl = result?.baseline
     if (!result || viewCurve.length === 0) return out
     const perK = Array.isArray(bl?.t_hac) && Array.isArray(bl?.win)
     for (const c of viewCurve) {
       const i = bl && bl.ks ? bl.ks.indexOf(c.k) : -1
       const ex = i >= 0 ? (bl?.excess?.[i] ?? null) : null
-      const st = pairStabilityOf(
-        perK && i >= 0
-          ? { t: bl!.t_hac![i] ?? null, win: bl!.win![i] ?? null }
-          : { t: pair?.t, win: pair?.win },
-      )
-      if (isValidAt(c.k, c.median ?? null, c.win ?? null, ex, st.ok)) out.add(c.k)
+      const raw = perK && i >= 0
+        ? { t: bl!.t_hac![i] ?? null, win: bl!.win![i] ?? null }
+        : { t: pair?.t, win: pair?.win }
+      const med = c.median ?? null
+      const win = c.win ?? null
+      if (isValidAt(c.k, med, win, ex, pairStabilityOf(raw, false).ok)) {
+        out.set(c.k, 'good')
+      } else if (isReverseValidAt(c.k, med, win, ex, pairStabilityOf(raw, true).ok)) {
+        out.set(c.k, 'reverse')   // 同时具备：表格判「有效(反向)」时这里也会亮红点
+      }
     }
     return out
   }, [result, viewCurve, pair])
@@ -298,10 +284,12 @@ export default function EventStudyModal({
         // 事件级口径（与 median 同口径）
         baseline_median: bm == null ? null : bm * 100,
         // v1.19.25：该持有日是否判定「有效」—— tooltip 文案与紫色曲线锚点共用
-        valid: validKs.has(c.k),
+        // v1.19.40：`validRev` = 判定「反向有效」⇒ 锚点画**红色**
+        valid: validKind.get(c.k) === 'good',
+        validRev: validKind.get(c.k) === 'reverse',
       }
     })
-  }, [viewCurve, result, validKs])
+  }, [viewCurve, result, validKind])
 
   // 超额曲线（触发组 − 基准）：均值口径（日配对）+ 中位数口径（事件级）两条线
   const excessChart = useMemo(() => {
@@ -315,12 +303,13 @@ export default function EventStudyModal({
           k,
           excess: v == null ? null : v * 100,
           excess_median: vm == null ? null : vm * 100,
-          // v1.19.25：同 `chartData` —— 有效持有日（锚点 + tooltip 文案）
-          valid: validKs.has(k),
+          // v1.19.25：同 `chartData` —— 有效持有日（锚点 + tooltip 文案）；v1.19.40 加反向（红点）
+          valid: validKind.get(k) === 'good',
+          validRev: validKind.get(k) === 'reverse',
         }
       })
       .filter((d) => d.k <= maxK)
-  }, [result, maxK, validKs])
+  }, [result, maxK, validKind])
 
   // 后端是否给出了中位数口径（旧结果没有该字段时不画这条线）
   const hasExcessMedian = useMemo(
@@ -391,11 +380,12 @@ export default function EventStudyModal({
     // ⚠ 旧结果（v1.19.24 之前算的）没有该字段 ⇒ 回退到行级口径，并在提示里明确标注。
     // ⚠ 回退是**整体**的（不逐字段混用）：新结果 ⇒ ④ 全按 k；旧结果 ⇒ ④ 全按行级。
     const hasPerK = bi >= 0 && Array.isArray(bl?.t_hac) && Array.isArray(bl?.win)
-    const st = pairStabilityOf(
-      hasPerK
-        ? { t: bl!.t_hac![bi] ?? null, win: bl!.win![bi] ?? null }
-        : { t: pair?.t, win: pair?.win },
-    )
+    const rawStats = hasPerK
+      ? { t: bl!.t_hac![bi] ?? null, win: bl!.win![bi] ?? null }
+      : { t: pair?.t, win: pair?.win }
+    const st = pairStabilityOf(rawStats)
+    // v1.19.40：反向口径的稳定性（日胜率 ≤45% 算通过），供「反向有效」提示与红点判定共用
+    const stRev = pairStabilityOf(rawStats, true)
     const stFromRow = !hasPerK
     const scope =
       `（本提示按当前「最长持有 ${lastPoint.k ?? '?'} 日」口径；表格结论按该行「周期」列口径）` +
@@ -445,6 +435,16 @@ export default function EventStudyModal({
       return {
         tone: 'good' as const,
         text: `中位数为正、绝对收益胜率高于 50%，且日配对超额 ≥${thrTxt}、日配对稳定：存在可复制的正向事件效应。${scope}`,
+      }
+    }
+    // v1.19.40（用户 2026-09-15）：**反向有效**单独给提示（与表格「有效(反向)」同一条件集），
+    //   并写明用途与注意 —— 它是「**研究线索**」（典型用途：研究能否当**离场因子**），不是"好消息"。
+    if (isReverseValidAt(lastPoint.k, med, win, ex, stRev.ok)) {
+      return {
+        tone: 'bad' as const,
+        text: `中位数为负、绝对收益胜率低于 50%，且日配对超额 ≤ −${thrTxt}、日配对稳定：判定「反向有效」` +
+          `（对选股信号的含义是「原方向无效」）—— 图上该持有日标为**红点**，可作研究线索` +
+          `（如：持有中被触发就提前离场）。⚠ 稀疏 0/1 信号的反向 ≈ 拿 beta，落地前先验可行域。${scope}`,
       }
     }
     if (med < -0.005) {
@@ -638,9 +638,13 @@ export default function EventStudyModal({
             <div className="border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
               <div className="text-slate-500 mb-1">
                 持有期收益曲线（T+1 收盘买入，持有 k 个交易日；单位 %）
-                {/* v1.19.25：新增锚点图例（紫点 = 判定有效的持有日；悬停 tooltip 也会写 有效/待观察） */}
+                {/* v1.19.25：新增锚点图例（紫点 = 判定有效的持有日；悬停 tooltip 也会写 有效/待观察）
+                    v1.19.40：**红点 = 判定「反向有效」的持有日**（研究线索，不是好消息） */}
                 <span className="text-violet-600 dark:text-violet-400 ml-2">
-                  ● 紫色曲线上的圆点 = 判定「有效」的持有日
+                  ● 紫点 = 判定「有效」的持有日
+                </span>
+                <span className="text-red-600 dark:text-red-400 ml-2">
+                  ● 红点 = 判定「反向有效」的持有日（研究线索：可查能否当离场因子）
                 </span>
                 <span className="text-amber-600 dark:text-amber-400 ml-2">
                   ⚠ 两套口径不可混算。默认只显示两对<b>同口径</b>曲线：
@@ -683,11 +687,18 @@ export default function EventStudyModal({
                     labelFormatter={(l) =>
                       /* v1.19.26：卡片里「有效 ✓」标绿（沿用结论列的 emerald）、「待观察」保持默认色不变（用户要求）。
                          ⚠ Recharts 会判断 `React.isValidElement` ⇒ 返回 JSX 原样渲染（不会被转成字符串）。 */
-                      validKs.has(Number(l)) ? (
+                      validKind.get(Number(l)) === 'good' ? (
                         <span>
                           持有 {l} 个交易日 ·{' '}
                           <span className="text-emerald-700 dark:text-emerald-300 font-semibold">
                             有效 ✓
+                          </span>
+                        </span>
+                      ) : validKind.get(Number(l)) === 'reverse' ? (
+                        <span>
+                          持有 {l} 个交易日 ·{' '}
+                          <span className="text-red-600 dark:text-red-400 font-semibold">
+                            反向有效 ⟲
                           </span>
                         </span>
                       ) : (
@@ -724,7 +735,10 @@ export default function EventStudyModal({
                 <div className="text-slate-500 mb-1">
                   超额曲线（触发组 − 基准·未触发组；单位 %）
                   <span className="text-violet-600 dark:text-violet-400 ml-2">
-                    ● 紫色曲线上的圆点 = 判定「有效」的持有日
+                    ● 紫点 = 判定「有效」的持有日
+                  </span>
+                  <span className="text-red-600 dark:text-red-400 ml-2">
+                    ● 红点 = 判定「反向有效」的持有日
                   </span>
                   <span className="text-slate-400 ml-2">
                     均值＝日配对口径（易被少数暴涨事件主导）；中位数＝事件级口径（典型一次触发的超额）
@@ -740,11 +754,18 @@ export default function EventStudyModal({
                       labelFormatter={(l) =>
                       /* v1.19.26：卡片里「有效 ✓」标绿（沿用结论列的 emerald）、「待观察」保持默认色不变（用户要求）。
                          ⚠ Recharts 会判断 `React.isValidElement` ⇒ 返回 JSX 原样渲染（不会被转成字符串）。 */
-                      validKs.has(Number(l)) ? (
+                      validKind.get(Number(l)) === 'good' ? (
                         <span>
                           持有 {l} 个交易日 ·{' '}
                           <span className="text-emerald-700 dark:text-emerald-300 font-semibold">
                             有效 ✓
+                          </span>
+                        </span>
+                      ) : validKind.get(Number(l)) === 'reverse' ? (
+                        <span>
+                          持有 {l} 个交易日 ·{' '}
+                          <span className="text-red-600 dark:text-red-400 font-semibold">
+                            反向有效 ⟲
                           </span>
                         </span>
                       ) : (

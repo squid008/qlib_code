@@ -52,3 +52,50 @@ export function pairStabilityOf(p: PairStats, reverse = false): PairStability {
   const missing = tVal == null && winVal == null
   return { ok: !missing && (tOk || winOk), tOk, winOk, missing, tVal, winVal }
 }
+
+/** 某个持有期 k 是否判定「有效」（正向）—— 与表格「有效✓」**同条件**（v1.19.25 起，
+ *  v1.19.40 从 `EventStudyModal` 移入本模块，与反向判定并列，杜绝两处口径漂移）。
+ *
+ *  中位数 ≥ 0.50% + 绝对收益胜率 ≥ 55% + 日配对超额 ≥ 门槛(k)（无基准时不启用）+ 日配对稳定（正向口径）。
+ */
+export function isValidAt(
+  k: number,
+  med: number | null,
+  win: number | null,
+  ex: number | null,
+  stableOk: boolean,
+): boolean {
+  return (
+    med != null &&
+    win != null &&
+    med >= 0.005 &&
+    win >= 0.55 &&
+    (ex == null || ex >= excessThresholdOf(k)) &&
+    stableOk
+  )
+}
+
+/** 某个持有期 k 是否判定「反向有效」（v1.19.40，用户 2026-09-15 要求）。
+ *
+ *  镜像条件：中位数 ≤ −0.50% + 绝对收益胜率 ≤ 45% + 日配对超额 ≤ −门槛(k) + 日配对稳定（**反向**口径：
+ *  |HAC t| ≥ 2 或 日胜率 ≤ 45%）。
+ *
+ *  ⚠ 语义：「反向有效」对**选股信号**的含义是「**原方向无效**」，它不是"好消息"；
+ *    保留它的目的是当「**研究线索**」（典型用途：研究能否当**离场因子**）。
+ */
+export function isReverseValidAt(
+  k: number,
+  med: number | null,
+  win: number | null,
+  ex: number | null,
+  stableRevOk: boolean,
+): boolean {
+  return (
+    med != null &&
+    win != null &&
+    med <= -0.005 &&
+    win <= 0.45 &&
+    (ex == null || ex <= -excessThresholdOf(k)) &&
+    stableRevOk
+  )
+}
