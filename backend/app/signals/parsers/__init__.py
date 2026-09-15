@@ -11,6 +11,7 @@ from .base import (                                     # noqa: F401
 )
 from .signal_list import parse_signal_list              # noqa: F401
 from .jq_trades import parse_jq_trades                  # noqa: F401
+from .jq_perf import parse_jq_perf                      # noqa: F401
 
 __all__ = ["ParseResult", "decode_bytes", "parse_csv", "detect_kind",
-           "SIDE_ALIASES", "parse_signal_list", "parse_jq_trades"]
+           "SIDE_ALIASES", "parse_signal_list", "parse_jq_trades", "parse_jq_perf"]

@@ -17,6 +17,10 @@ class SignalTestRequest(BaseModel):
         description="CSV 原始字节的 base64（**推荐**）：实测用户文件是 **GBK**，"
                     "前端直接读文本会乱码；传字节让后端按 utf-8-sig→utf-8→gbk→gb18030 嗅探解码")
     filename: str = Field("", description="仅用于回显/诊断")
+    perf_b64: Optional[str] = Field(
+        None,
+        description="（可选）聚宽《收益概述》result_1.csv 的 base64：有它就把**官方净值**叠加到图上做校准 "
+                    "（同时逐日核对成交明细的买卖金额是否完整）")
     kind: Optional[str] = Field(None, description="强制指定格式：signal_list / jq_trades；默认自动识别")
 
     # ---- 通用 ----

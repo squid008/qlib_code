@@ -44,13 +44,14 @@ _SELL_WORDS = ("卖", "sell", "s", "证券卖出", "融券卖出", "赎回")
 
 @dataclass
 class ParseResult:
-    """解析结果（两种模式共用外壳；具体明细放 signals / trades 里）。"""
-    kind: str = ""                       # "signal_list" | "jq_trades"
+    """解析结果（三种模式共用外壳；具体明细放 signals / trades / perf 里）。"""
+    kind: str = ""                       # "signal_list" | "jq_trades" | "jq_perf"
     encoding: str = ""
     sep: str = ","
     headers: List[str] = field(default_factory=list)
     signals: Optional[pd.DataFrame] = None   # 信号清单模式：date, code, side, raw...
     trades: Optional[pd.DataFrame] = None    # 流水模式：date, time, code, side, qty, price…
+    perf: Optional[pd.DataFrame] = None      # 聚宽《收益概述》：date, strat_cum, bench_cum, nav…
     stats: Dict = field(default_factory=dict)
     issues: List[Dict] = field(default_factory=list)
 
@@ -61,7 +62,7 @@ class ParseResult:
     @property
     def ok(self) -> bool:
         n = 0
-        for df in (self.signals, self.trades):
+        for df in (self.signals, self.trades, self.perf):
             if df is not None:
                 n += len(df)
         return n > 0
@@ -156,9 +157,16 @@ def side_of(v) -> Optional[int]:
 
 
 def detect_kind(df: pd.DataFrame) -> str:
-    """按列名判断格式：有"委托时间/交易类型/成交价"这套 ⇒ 聚宽流水，否则 ⇒ 信号清单。"""
+    """按列名判断格式（三种）：
+
+    · **聚宽《收益概述》**：有 `策略收益` + `基准收益`（逐日绩效序列）；
+    · **聚宽成交明细**：有 `委托时间/成交价` 或 `交易类型+成交数量`；
+    · 其余按**信号清单**（第 1 列日期、第 2 列标的）。
+    """
     cols = [_norm_col(c) for c in df.columns]
     joined = "|".join(cols)
+    if "策略收益" in joined and "基准收益" in joined:
+        return "jq_perf"
     has_jq = all(k in joined for k in ("委托时间", "成交价")) or \
         ("交易类型" in joined and "成交数量" in joined)
     if has_jq:
@@ -177,9 +185,11 @@ def parse_csv(raw, filename: str = "") -> ParseResult:
         return res
     df, sep, had_header = read_table(text)
     kind = detect_kind(df)
-    # ⚠ 延迟 import：两个解析器都 import 本模块 ⇒ 模块级互相 import 会成环
+    # ⚠ 延迟 import：解析器都 import 本模块 ⇒ 模块级互相 import 会成环
     if kind == "signal_list":
         from .signal_list import parse_signal_list as _parse
+    elif kind == "jq_perf":
+        from .jq_perf import parse_jq_perf as _parse
     else:
         from .jq_trades import parse_jq_trades as _parse
     res = _parse(raw, filename)

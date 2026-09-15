@@ -53,7 +53,10 @@ def replay_trades(trades: pd.DataFrame, close: pd.DataFrame, *, capital: float,
     dates = pd.DatetimeIndex(close.index)
     d0, d1 = tr["date"].min(), tr["date"].max()
     if end:
-        d1 = min(d1, pd.Timestamp(end))
+        # ⚠ `end` 语义 = **延长窗口**（不与末笔成交取 min）：与官方《收益概述》对齐时必须用它
+        #   把窗口推到官方序列的末日，否则两条曲线停在不同的日子上比较
+        #   （实测明细止于 2024-12-30、官方到 12-31，12-31 又跌 2% ⇒ 平白多出 2% 偏差）。
+        d1 = max(d1, pd.Timestamp(end))
     win = dates[(dates >= d0) & (dates <= d1)]
     if len(win) < 2:
         out["diag"] = {"error": "成交日期与行情日历无交集"}

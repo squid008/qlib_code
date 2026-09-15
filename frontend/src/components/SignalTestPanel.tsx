@@ -46,6 +46,38 @@ const ALLOC_LABEL: Record<string, string> = {
   cash_even: '现金等分（不主动再平衡）',
 }
 
+const NAV_LABEL: Record<string, string> = {
+  benchmark: '基准',
+  nav_sim_fee: 'A 模拟它的成本',
+  nav_my_cost: 'B 我的成本',
+  nav_exact: 'C 精确（成交价+手续费）',
+  nav_exact_min: 'C′ 现金非负下界口径',
+  nav_official: '官方净值（聚宽）',
+  nav_official_bench: '官方基准（聚宽）',
+}
+const NAV_COLOR: Record<string, string> = {
+  benchmark: '#94a3b8',
+  nav_sim_fee: '#0ea5e9',
+  nav_my_cost: '#f59e0b',
+  nav_exact: '#10b981',
+  nav_exact_min: '#a855f7',
+  nav_official: '#e11d48',
+  nav_official_bench: '#9ca3af',
+}
+
+/** 净值列名 → 中文标签 / 颜色（两条曲线图共用，避免两处口径漂移）。 */
+function navLabel(k: string): string {
+  return NAV_LABEL[k] ?? allocLabel(k)
+}
+function navColor(k: string, i: number): string {
+  return NAV_COLOR[k] ?? ['#0ea5e9', '#f59e0b', '#10b981', '#ef4444'][i % 4]
+}
+function navDash(k: string): string | undefined {
+  if (k === 'nav_exact_min' || k === 'nav_official_bench') return '5 3'
+  if (k === 'benchmark') return '4 3'
+  return undefined
+}
+
 /** 资金方案列名 → 中文标签（`event_even_band5` 这类"同方案不同死区"的对比档也认）。 */
 function allocLabel(mode: string): string {
   if (ALLOC_LABEL[mode]) return ALLOC_LABEL[mode]
@@ -105,6 +137,9 @@ export default function SignalTestPanel({ defaultCapital = 1e9, defaultBenchmark
   const [opts, setOpts] = useState<SignalTestOptions | null>(null)
   const [fileName, setFileName] = useState('')
   const [b64, setB64] = useState('')
+  // （可选）聚宽《收益概述》：把官方净值叠加上图做校准
+  const [perfName, setPerfName] = useState('')
+  const [perfB64, setPerfB64] = useState('')
   const [parsed, setParsed] = useState<SignalTestParseResult | null>(null)
   const [parsing, setParsing] = useState(false)
   const [running, setRunning] = useState(false)
@@ -167,6 +202,7 @@ export default function SignalTestPanel({ defaultCapital = 1e9, defaultBenchmark
       const req: SignalTestRequest = {
         content_b64: b64,
         filename: fileName,
+        perf_b64: perfB64 || undefined,
         cost,
         benchmark,
         horizon,
@@ -186,7 +222,7 @@ export default function SignalTestPanel({ defaultCapital = 1e9, defaultBenchmark
     } finally {
       setRunning(false)
     }
-  }, [b64, fileName, cost, benchmark, horizon, fill, capital, strictLimit, rebalBand, pool, jqCapital])
+  }, [b64, fileName, perfB64, cost, benchmark, horizon, fill, capital, strictLimit, rebalBand, pool, jqCapital])
 
   // ---------------- 事件研究：逐 k 表 + 锚点 ----------------
   const eventRows = useMemo<EventRow[]>(() => {
@@ -278,13 +314,42 @@ export default function SignalTestPanel({ defaultCapital = 1e9, defaultBenchmark
             {fileName}
             {parsed && (
               <>
-                ｜格式 <b>{parsed.mode === 'jq_trades' ? '聚宽成交明细' : '信号清单'}</b>
+                ｜格式{' '}
+                <b>
+                  {parsed.mode === 'jq_trades'
+                    ? '聚宽成交明细'
+                    : parsed.mode === 'jq_perf'
+                      ? '聚宽收益概述'
+                      : '信号清单'}
+                </b>
                 ｜编码 {parsed.encoding}
                 {parseStats.had_header === false && '（无表头，按位置识别）'}
               </>
             )}
           </span>
         )}
+        <label className="flex flex-col">
+          <span className="text-sm text-slate-500">（可选）聚宽《收益概述》result_1.csv</span>
+          <input
+            type="file"
+            accept=".csv,.txt"
+            className="mt-1 text-sm"
+            onChange={async (e) => {
+              const f = e.target.files?.[0]
+              if (!f) return
+              setPerfName(f.name)
+              try {
+                setPerfB64(bufToBase64(await f.arrayBuffer()))
+              } catch {
+                setPerfB64('')
+              }
+            }}
+          />
+          <span className="text-[10px] text-slate-400 mt-1">
+            有它就把**官方净值**叠加上图做校准（逐日买卖金额也会与成交明细对账）
+          </span>
+        </label>
+        {perfName && <span className="text-xs text-slate-500">已附：{perfName}</span>}
         {parsing && <span className="text-xs text-sky-600">解析中…</span>}
       </div>
 
@@ -598,14 +663,10 @@ export default function SignalTestPanel({ defaultCapital = 1e9, defaultBenchmark
                     key={k}
                     type="monotone"
                     dataKey={k}
-                    name={k}
-                    stroke={
-                      k === 'benchmark'
-                        ? '#94a3b8'
-                        : ['#0ea5e9', '#f59e0b', '#10b981', '#ef4444'][i % 4]
-                    }
+                    name={navLabel(k)}
+                    stroke={navColor(k, i)}
                     strokeWidth={k === navFocus ? 2.4 : 1.3}
-                    strokeDasharray={k === 'benchmark' ? '4 3' : undefined}
+                    strokeDasharray={navDash(k)}
                     dot={false}
                   />
                 ))}
@@ -678,9 +739,87 @@ export default function SignalTestPanel({ defaultCapital = 1e9, defaultBenchmark
         </div>
       )}
 
+      {/* ---------------- 模式③：只上传《收益概述》⇒ 只看官方净值 ---------------- */}
+      {result?.mode === 'jq_perf' && (
+        <div className="space-y-3">
+          <div className="text-xs text-slate-500">
+            只上传了《收益概述》⇒ 仅展示**官方净值**（含官方基准），不做重建。想校准重建净值请同时上传成交明细。
+          </div>
+          <ResponsiveContainer width="100%" height={320}>
+            <LineChart data={navData} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
+              <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
+              <Tooltip formatter={(v: any) => (v == null ? '-' : Number(v).toFixed(4))} />
+              <Legend />
+              {navKeys.map((k, i) => (
+                <Line
+                  key={k}
+                  type="monotone"
+                  dataKey={k}
+                  name={navLabel(k)}
+                  stroke={navColor(k, i)}
+                  strokeWidth={2}
+                  strokeDasharray={navDash(k)}
+                  dot={false}
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            {[
+              ['期末净值', String((result.official as any)?.stats?.nav_end ?? '-')],
+              ['总收益', pct((result.official as any)?.stats?.total_return)],
+              ['最大回撤', pct((result.official as any)?.stats?.max_drawdown)],
+              ['官方基准期末', String((result.official as any)?.stats?.bench_nav_end ?? '-')],
+              ['超额收益(%)', String((result.official as any)?.stats?.excess_end_pct ?? '-')],
+              ['区间', `${(result.official as any)?.stats?.date_min ?? '-'} ~ ${(result.official as any)?.stats?.date_max ?? '-'}`],
+              ['买入合计', Number((result.official as any)?.stats?.buy_total ?? 0).toLocaleString()],
+              ['卖出合计', Number((result.official as any)?.stats?.sell_total ?? 0).toLocaleString()],
+            ].map(([k, v]) => (
+              <div key={k} className="border rounded p-2">
+                <div className="text-slate-500">{k}</div>
+                <div className="font-medium">{v}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ---------------- 模式②：聚宽成交明细 ---------------- */}
-      {replay && (
+      {replay && result?.mode === 'jq_trades' && (
         <div className="space-y-4">
+          {/* 官方《收益概述》校准（可选上传）：官方净值 vs 我方重建 + 逐日金额对账 */}
+          {result?.official && (result.official as any).calib && (
+            <div className="border rounded p-3 text-xs space-y-1 bg-emerald-50 dark:bg-emerald-950/30">
+              <div className="font-medium">
+                官方《收益概述》校准（截至 {(result.official as any).calib.as_of ?? '-'}，两条曲线同一天比较）
+              </div>
+              <div>
+                官方期末净值 <b>{String((result.official as any).calib.official_final ?? '-')}</b>｜
+                我方 C（成交价+实际手续费）<b>{String((result.official as any).calib.rebuilt_final)}</b>｜
+                偏差 <b>{pct((result.official as any).calib.diff_final, 3)}</b>｜最大偏差{' '}
+                {String((result.official as any).calib.max_abs_diff ?? '-')}
+              </div>
+              <div>
+                逐日买卖金额一致{' '}
+                <b>
+                  {(result.official as any).calib.matched_days}/
+                  {(result.official as any).calib.matched_days +
+                    (result.official as any).calib.mismatched_days}
+                </b>{' '}
+                天 ⇒{' '}
+                {(result.official as any).calib.mismatched_days === 0
+                  ? '成交明细完整 ✓ 重建可信'
+                  : '⚠ 有对不上的日子，明细可能不完整'}
+              </div>
+              <div>
+                官方最大回撤 {pct((result.official as any).stats?.max_drawdown)}｜官方基准期末{' '}
+                {String((result.official as any).stats?.bench_nav_end ?? '-')}（可作为"基准"下拉的参考选择）
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
             <div className="border rounded p-3 space-y-1">
               <div className="font-medium">费率反推（从它的手续费列）</div>
@@ -745,35 +884,15 @@ export default function SignalTestPanel({ defaultCapital = 1e9, defaultBenchmark
                 <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
                 <Tooltip formatter={(v: any) => (v == null ? '-' : Number(v).toFixed(4))} />
                 <Legend />
-                {navKeys.map((k) => (
+                {navKeys.map((k, i) => (
                   <Line
                     key={k}
                     type="monotone"
                     dataKey={k}
-                    name={
-                      k === 'nav_sim_fee'
-                        ? 'A 模拟它的成本'
-                        : k === 'nav_my_cost'
-                          ? 'B 我的成本'
-                          : k === 'nav_exact'
-                            ? 'C 精确（成交价+手续费）'
-                            : k === 'nav_exact_min'
-                              ? 'C′ 现金非负下界口径'
-                              : '基准'
-                    }
-                    stroke={
-                      k === 'nav_sim_fee'
-                        ? '#0ea5e9'
-                        : k === 'nav_my_cost'
-                          ? '#f59e0b'
-                          : k === 'nav_exact'
-                            ? '#10b981'
-                            : k === 'nav_exact_min'
-                              ? '#a855f7'
-                              : '#94a3b8'
-                    }
-                    strokeWidth={k === 'benchmark' ? 1.4 : 2}
-                    strokeDasharray={k === 'nav_exact_min' ? '5 3' : k === 'benchmark' ? '4 3' : undefined}
+                    name={navLabel(k)}
+                    stroke={navColor(k, i)}
+                    strokeWidth={k === 'benchmark' || k === 'nav_official_bench' ? 1.4 : 2}
+                    strokeDasharray={navDash(k)}
                     dot={false}
                   />
                 ))}

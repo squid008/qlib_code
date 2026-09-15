@@ -182,6 +182,40 @@ def test_jq_qty_and_fee_are_positive_numbers():
     assert list(tr[tr["date"] == pd.Timestamp("2016-01-05")]["side"]) == [-1, -1]
 
 
+def test_parse_jq_perf():
+    """聚宽《收益概述》（逐日绩效序列）：`策略收益`/`基准收益` = 相对初始资金的**累计收益率(%)**。"""
+    text = ("时间,基准收益,策略收益,当日盈利,当日亏损,当日买入,当日卖出,超额收益(%)\n"
+            "2016-01-04 16:00:00,-8.33,-9.15,0,-914744.04,9993467,0,-0.89\n"
+            "2016-01-05 16:00:00,-9.56,-11.95,0,-280569,0,0,-2.64\n"
+            "2024-12-31 16:00:00,-24.84,767.62,0,-1627596,0,0,1054.36\n")
+    res = parse_csv(text.encode("gbk"), "result_1.csv")
+    assert res.kind == "jq_perf" and res.ok
+    pf = res.perf
+    assert len(pf) == 3
+    assert pf["nav"].iloc[0] == pytest.approx(1 - 0.0915)      # -9.15% ⇒ 0.9085
+    assert pf["nav"].iloc[-1] == pytest.approx(8.6762)         # +767.62% ⇒ 8.6762
+    assert pf["bench_nav"].iloc[-1] == pytest.approx(0.7516)
+    st = res.stats
+    assert st["nav_end"] == pytest.approx(8.6762) and st["total_return"] == pytest.approx(7.6762)
+    assert st["max_drawdown"] < 0
+    assert st["buy_total"] == pytest.approx(9993467.0)
+    assert st["sell_total"] == pytest.approx(0.0)
+
+
+def test_jq_trades_sells_sorted_before_buys_in_a_day():
+    """同一交易日内**卖单排在买单前面**（A 股：卖出所得当日可用于买入）。
+
+    ⚠ 这条顺序是被"聚宽《收益概述》逐日金额对账"逼出来的：按买先卖后排，现金最深缺口会被
+      夸大 60 倍（−96.5 万 → −6099 万），并据此误报"流水不闭合"。
+    """
+    text = ("日期,委托时间,品种,标的,交易类型,成交数量,成交价,成交额,手续费,状态\n"
+            "2016-01-11,09:30:00,股票,某股A(002001.XSHE),买,1000股,10.00,10000,3,全部成交\n"
+            "2016-01-11,14:00:00,股票,某股B(002002.XSHE),卖,-2000股,20.00,-40000,52,全部成交\n")
+    res = parse_csv(text.encode("utf-8"), "t.csv")
+    assert res.kind == "jq_trades"
+    assert list(res.trades["side"]) == [-1, 1]        # 卖在前、买在后
+
+
 def test_empty_file():
     res = parse_csv(b"", "empty.csv")
     assert not res.ok and res.issues

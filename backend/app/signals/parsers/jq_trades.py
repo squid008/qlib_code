@@ -111,7 +111,16 @@ def parse_jq_trades(raw, filename: str = "") -> ParseResult:
 
     tr = pd.DataFrame(rows)
     if len(tr):
-        tr = tr.sort_values(["date", "time", "side"], ascending=[True, True, False]) \
+        # ⚠⚠ 同一交易日内**卖单排在买单前面**：A 股「卖出所得资金当日可用于买入」，
+        #   这是唯一能让"账户按流水逐日推演时现金不为负"的顺序（也是 `replay.py` 用的顺序，
+        #   两者必须一致）。2026-09-15 我一度按"买先卖后"（`ascending=False`）排序，
+        #   结果把该文件的现金最深缺口从 **−96.5 万** 夸大到 **−6099 万**（60 倍），
+        #   并据此误报"流水不闭合"—— 后来用聚宽《收益概述》逐日金额对账（2187/2187 天一致）
+        #   才定位到是排序问题。时间相同时（如都是 09:30）也按卖先，偏保守。
+        # ⚠ 排序键顺序必须是 (date, **side**, time)：**日内先卖后买**要跨过时间生效
+        #   （买单多在 09:30、卖单多在 14:00；若把 time 放前面，卖单永远排在买单之后 ⇒ 顺序失效，
+        #   2026-09-15 单测 `test_jq_trades_sells_sorted_before_buys_in_a_day` 抓到）。
+        tr = tr.sort_values(["date", "side", "time"], ascending=[True, True, True]) \
                .reset_index(drop=True)
     res.trades = tr
     res.stats.update(_trade_stats(tr, n_drop, n_cancel, n_mid, int(len(df))))

@@ -642,6 +642,8 @@ export interface SignalTestRequest {
   /** 纯文本（UTF-8），与 content_b64 二选一 */
   content?: string
   filename?: string
+  /** （可选）聚宽《收益概述》result_1.csv 的 base64：叠加官方净值做校准 + 逐日买卖金额对账 */
+  perf_b64?: string
   /** 强制格式：signal_list / jq_trades；默认自动识别 */
   kind?: string
   /** 往返（买+卖）合计费率，与连续信号 0.004 同义 */
@@ -725,6 +727,19 @@ export interface SignalTestRunResult {
   } | null
   capital?: Record<string, any>
   fees?: Record<string, number | null>
+  /** 聚宽《收益概述》：官方逐日净值统计 + 与重建净值的校准结果（可选上传才有） */
+  official?: {
+    stats: Record<string, any>
+    calib?: {
+      official_final: number | null
+      rebuilt_final: number
+      diff_final: number | null
+      max_abs_diff: number | null
+      matched_days: number
+      mismatched_days: number
+    }
+    issues?: SignalTestIssue[]
+  }
   elapsed?: number
 }
 
