@@ -28,14 +28,30 @@ import numpy as np
 import pandas as pd
 
 
+def _use_open(r) -> bool:
+    """这条成交是否应按**开盘价**成交（与 C 口径一致：`09:30` 开盘、午后收盘）。
+
+    ⚠ 没有时间列（`time` 为空）时按**收盘价**（保持原来的行为，向后兼容）。
+    """
+    tm = str(r.get("time") or "")
+    if not tm:
+        return False
+    try:
+        return int(tm.split(":")[0]) < 13
+    except Exception:
+        return False
+
+
 def replay_trades(trades: pd.DataFrame, close: pd.DataFrame, *, capital: float,
                   capital_ref: Optional[float] = None, my_cost: float = 0.004,
                   fee_buy: Optional[float] = None, fee_sell: Optional[float] = None,
-                  end: Optional[str] = None) -> Dict:
+                  end: Optional[str] = None, open_: Optional[pd.DataFrame] = None) -> Dict:
     """跑三条净值曲线。
 
     `close`：**我们数据**的后复权收盘宽表（须含全部交易标的）；
-    `capital_ref`：A/B 缩放基准（默认 = 首日买入总额 ⇒ 与 `capital` 相同时缩放系数 1.0）。
+    `capital_ref`：A/B 缩放基准（默认 = 首日买入总额 ⇒ 与 `capital` 相同时缩放系数 1.0）；
+    `open_`（v1.19.53）：**我们数据**的后复权开盘宽表 —— A/B 按它的**委托时间**选价用
+    （09:30 → 开盘），与 C 的成交价口径对齐；不给则退回"一律收盘价"的旧行为。
     """
     out: Dict = {"nav": None, "stats": {}, "diag": {}}
     if trades is None or not len(trades) or close is None or not len(close):
@@ -131,7 +147,18 @@ def replay_trades(trades: pd.DataFrame, close: pd.DataFrame, *, capital: float,
                     px = float(r["price"])                  # 它的成交价
                     fee = float(r["fee"]) * code_scale      # 它的实际手续费
                 else:
-                    px = float(Pm[c][i])
+                    # ⚠ A/B 的成交价必须与 **C 同口径**：按它的**委托时间**选价
+                    #   （09:30 → 开盘价、午后 → 收盘价，见 `_use_open`）。
+                    #   原来一律用"我们的收盘价"⇒ 2016-01-04（熔断日，官方首日 −9.15%）A/B 因为
+                    #   "买入价 = 当天收盘价"而**当天不亏**，起点 0.9997 vs C/官方 0.906 ⇒ 两者起点差 9%
+                    #   被误读成"费率档次影响"/"分红口径"，实际是**成交价口径不同**（用户 2026-09-15
+                    #   按曲线起点对比时抓出来）。
+                    mat = Pm
+                    if open_ is not None and _use_open(r) and c in getattr(open_, "columns", ()):
+                        cand = float(open_[c][i])
+                        if np.isfinite(cand) and cand > 0:
+                            mat = open_
+                    px = float(mat[c][i])
                     if not np.isfinite(px) or px <= 0:
                         continue
                     rate = (rb if r["side"] > 0 else rsl) if kind == "sim_fee" else half

@@ -201,7 +201,8 @@ def run(req: SignalTestRequest) -> Dict:
             elif pr is not None:
                 warnings.append("上传的《收益概述》没解析出逐日净值（需含 `时间` + `策略收益` 列），已忽略")
         t0 = time.perf_counter()
-        panel = load_price_panel(codes, start, end, need_open=False)
+        # v1.19.53：A/B 要按"它的委托时间"取价（09:30 → 开盘）⇒ 必须带**开盘价**
+        panel = load_price_panel(codes, start, end, need_open=True)
         timings["prices"] = round(time.perf_counter() - t0, 3)
         if "CLOSE" not in panel:
             raise HTTPException(status_code=400, detail="取不到成交标的的行情数据")
@@ -209,7 +210,8 @@ def run(req: SignalTestRequest) -> Dict:
         rep = replay_trades(tr, panel["CLOSE"], capital=capital,
                             capital_ref=(caps if req.jq_scale_capital else None),
                             my_cost=req.cost, fee_buy=res.stats.get("fee_rate_buy"),
-                            fee_sell=res.stats.get("fee_rate_sell"), end=end)
+                            fee_sell=res.stats.get("fee_rate_sell"), end=end,
+                            open_=panel.get("OPEN"))
         timings["replay"] = round(time.perf_counter() - t0, 3)
         if rep.get("nav") is None:
             raise HTTPException(status_code=400,
@@ -229,7 +231,8 @@ def run(req: SignalTestRequest) -> Dict:
             rep_lo = replay_trades(tr, panel["CLOSE"], capital=mincap,
                                    capital_ref=(caps if req.jq_scale_capital else None),
                                    my_cost=req.cost, fee_buy=res.stats.get("fee_rate_buy"),
-                                   fee_sell=res.stats.get("fee_rate_sell"))
+                                   fee_sell=res.stats.get("fee_rate_sell"),
+                                   open_=panel.get("OPEN"))
             if rep_lo.get("nav") is not None:
                 rep["nav"]["nav_exact_min"] = rep_lo["nav"]["nav_exact"]
                 cap_info["interval"] = {

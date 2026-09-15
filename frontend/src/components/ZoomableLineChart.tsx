@@ -202,9 +202,15 @@ export default function ZoomableLineChart({
    *  ① tooltip 同时给出**原始值**；② 保留"不对齐"档让人随时回看真实水平。
    *  **性能**：O(可见点数 × 曲线数)，和角标同量级（实测 ~10 µs），可忽略。 */
   const anchorKeyOf = anchorKey ?? statKey
+  /** ⚠ 只在**缩放后**才归一（用户 2026-09-15：「最开始时展示全部区间，所有曲线都是 1.0 开始的，
+   *  选各自对齐曲线不应该变」）。他说的其实不成立 —— 各列**首行本来就不是 1.0**
+   *  （A/B = 1 − 首日费；C 0.9057 与聚宽官方 0.9085 是**首日熔断暴跌 −9%** 的真实结果），
+   *  所以"按首值归一"在全区间会整体缩放。既然如此，就按他的预期来：
+   *  **全区间一律显示原始净值（三档切换完全不变）**，缩放后才按所选口径重锚。 */
+  const zoomed = win[0] > 0 || win[1] < n - 1
   const view = useMemo(() => {
     const slice = data.slice(win[0], win[1] + 1)
-    if (align === 'none' || slice.length < 2) return slice
+    if (!zoomed || align === 'none' || slice.length < 2) return slice
     const firstOf = (k: string): number | null => {
       for (const row of slice) {
         const v = row[k]
@@ -281,7 +287,6 @@ export default function ZoomableLineChart({
     }
   }, [view, statKey, xKey])
 
-  const zoomed = win[0] > 0 || win[1] < n - 1
   const fmt = format ?? ((v: any) => (v == null ? '-' : Number(v).toFixed(4)))
 
   return (
@@ -306,7 +311,7 @@ export default function ZoomableLineChart({
           </button>
         )}
         <label className="flex items-center gap-1">
-          起点对齐
+          缩放后起点对齐
           <select
             className="border border-slate-300 dark:border-slate-600 rounded px-1 py-0.5 text-[11px]"
             value={align}
@@ -319,6 +324,7 @@ export default function ZoomableLineChart({
             ))}
           </select>
         </label>
+        {!zoomed && <span>（全区间：显示原始净值，切换上面这档不会变）</span>}
       </div>
       <div
         ref={wrapRef}
