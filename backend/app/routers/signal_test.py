@@ -23,8 +23,8 @@ from ..signals.engine import attach_benchmark, run_backtest
 from ..signals.event import coverage, normalize_events, run_event_study
 from ..signals.models import SignalTestRequest
 from ..signals.parsers import parse_csv
-from ..signals.pricing import (fill_limits, load_bench_wide, load_price_panel,
-                              resolve_universe)
+from ..signals.pricing import (fill_limits, load_bench_wide, load_close_wide,
+                              load_price_panel, resolve_universe)
 from ..signals.replay import replay_trades
 
 router = APIRouter(prefix="/api/signal-test", tags=["signal-test"])
@@ -356,6 +356,7 @@ def run(req: SignalTestRequest) -> Dict:
         t0 = time.perf_counter()
         pool_key = req.pool or "all"
         pool_close, pool_n = None, 0
+        t_pool = time.perf_counter()
         try:
             if pool_key == "@signals":
                 pool_close = panel["CLOSE"]
@@ -364,16 +365,21 @@ def run(req: SignalTestRequest) -> Dict:
                 pool_codes = resolve_universe(pool_key, start, end)
                 pool_n = len(pool_codes)
                 if pool_codes:
-                    pp = load_price_panel(pool_codes, start, end, need_open=False)
-                    pool_close = pp.get("CLOSE")
+                    # v1.19.48：基准池**只要 CLOSE**（`compute_baseline_curves` 只用它）⇒ 走快路径：
+                    # 只求 `$close` + 宽表落盘缓存（全A 实测 12s/次 → 首次 ~2s、之后 ~0.3s）。
+                    pool_close = load_close_wide(pool_codes, start, end)
         except Exception as e:                                  # 池取失败不阻塞主流程
             warnings.append("基准池 %s 取数失败，已退化为「信号标的并集」：%r" % (pool_key, e))
             pool_close = panel["CLOSE"]
-        es = run_event_study(ev, panel["CLOSE"], pool_close, horizon)
+        timings["pool"] = round(time.perf_counter() - t_pool, 3)   # 池取数（全A 的耗时大头）
+        # v1.19.48：事件研究**内容缓存**（基准池那段每 k 过一遍大矩阵，全A 15~30s 且原来每次重算）
+        es = run_event_study(ev, panel["CLOSE"], pool_close, horizon,
+                             cache_ns="%s|%s|%s" % (pool_key, start, end))
         es["coverage"] = coverage(ev, panel["CLOSE"])
         es["pool"] = {"key": pool_key, "n_codes": int(pool_n),
                       "name": dict(POOLS).get(pool_key, pool_key)}
         timings["event"] = round(time.perf_counter() - t0, 3)
+        timings["event_cached"] = bool(es.get("cached"))          # 前端显示「缓存命中」
         resp["event"] = es
 
     # ---- 回测（两种资金方案一起给）----

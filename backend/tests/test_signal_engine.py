@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from app.signals import event as sigevent
 from app.signals.engine import run_backtest
 
 
@@ -146,3 +147,43 @@ def test_event_even_rebalances_after_new_signal():
     assert "rebalance_buy" in reasons or "rebalance_sell" in reasons or len(bt.trades) >= 3
     # 等权：两个标的的持仓市值应接近（允许整手误差）
     assert bt.stats["event_even"]["min_cash"] >= -1e-6
+
+
+def test_event_study_content_cache(tmp_path, monkeypatch):
+    """事件研究**内容缓存**（v1.19.48）：同输入第二次命中、任一输入变了必须失效。
+
+    动因：基准池那段对每个 k 过一遍「(配对日 × 池内股票)」大矩阵（全A 15~30s），
+    用户实测「重跑一样慢」。数学不能改（单因子测试共用），只能在重复请求上省时间。
+    """
+    monkeypatch.setattr(sigevent, "_event_cache_dir", lambda: str(tmp_path))
+    dates = pd.bdate_range("2021-01-04", periods=60)
+    codes = ["SH600000", "SH600001", "SH600002"]
+    rng = np.random.default_rng(0)
+    px = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.01, (60, len(codes))), axis=0),
+                  index=dates, columns=codes)
+    events = pd.DataFrame({"date": [dates[5], dates[10]], "code": [codes[0], codes[1]]})
+
+    r1 = sigevent.run_event_study(events, px, px, 5, cache_ns="all|2021-01-01|2021-12-31")
+    assert r1.get("cached") is False
+    assert r1.get("baseline") is not None
+
+    r2 = sigevent.run_event_study(events, px, px, 5, cache_ns="all|2021-01-01|2021-12-31")
+    assert r2.get("cached") is True                                  # 同输入 ⇒ 命中
+    assert r2["curve"][0]["mean"] == r1["curve"][0]["mean"]          # 且数值逐位一致
+
+    ev2 = events.copy()
+    ev2.loc[0, "code"] = codes[2]                                    # 事件变了 ⇒ 必须重算
+    assert sigevent.run_event_study(ev2, px, px, 5,
+                                cache_ns="all|2021-01-01|2021-12-31").get("cached") is False
+
+    # 池子/区间变了（命名空间不同）⇒ 不能命中
+    assert sigevent.run_event_study(events, px, px, 5,
+                                cache_ns="csi1000|2021-01-01|2021-12-31").get("cached") is False
+    # max_k 变了 ⇒ 不能命中（曲线期数不同）
+    assert sigevent.run_event_study(events, px, px, 4,
+                                cache_ns="all|2021-01-01|2021-12-31").get("cached") is False
+    # 不给 cache_ns ⇒ 永不缓存（单因子测试那条路径的行为不变）
+    n_before = len(list(tmp_path.glob("*.pkl")))
+    assert sigevent.run_event_study(events, px, px, 5).get("cached") is False
+    assert len(list(tmp_path.glob("*.pkl"))) == n_before, "无 cache_ns 时不该落盘"
+    assert n_before >= 1, "有 cache_ns 时应该落了缓存文件"

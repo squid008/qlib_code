@@ -3,6 +3,42 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.48] - 2026-09-15
+
+### Fixed
+- **「有效反向」锚点画成紫色**（用户：「有效反向锚点还是紫色的，没有改成红色」）：
+  根因是**函数签名与调用点错配** —— 我照抄了 `EventStudyModal.validAnchorDot(field, color, revColor)`
+  的**调用写法**（`anchorDot('trigger_pair', '#7c3aed')`），却把自写的工具函数签名写成
+  `anchorDot(color, revColor)` ⇒ dataKey 字符串被当成**颜色**、紫色被当成**反向色**
+  ⇒ 实际渲染 `fill="trigger_pair"`（无效色）+ **反向点紫色**。
+  修法：签名对齐弹窗（`field` 参与取值、`revColor` 默认 `#dc2626`），且「只画有效/反向锚点、
+  其余点不画」也对齐（原来我额外画了灰色小点）。顺带两处：
+  ① 逐 k 取值改为按 `baseline.ks` 定位（原来假设 `arr[k-1]`，ks 非 1..N 时会整体错位）；
+  ② 结论列改为 `valid ? 有效✓ : validRev ? 有效(反向)✓ : -`。
+
+### Performance（用户：「这次怎么测试速度感觉慢了很多呢，纯信号也算这么慢吗」）
+- **先量后改**（`ai_test/timing_signal.py`，分段计时）：
+  · 全A 基准池 **每次重跑 15~30s**，且**第二次一样慢** ⇒ `run_event_study` 的基准曲线段
+    （每个 k 过一遍「配对日 × 池内股票」大矩阵）**每次重算、无缓存**；
+  · `load_price_panel(全A)` 还要为 6~7 个字段各做一次 long→wide ⇒ **38s/次**，而基准**只用 CLOSE**。
+- **修 1｜事件研究内容缓存**（`signals/event.py`）：按 (池/区间, max_k, **事件集合**,
+  面板形状+列集合, 数据版本, `_EVENT_CACHE_VERSION`) 指纹落盘 `workdir/cache/signal_event/`；
+  同参数重跑直接返回，返回带 `cached` 字段，界面显示「缓存命中」。
+- **修 2｜基准池只取 CLOSE 的快路径**（`signals/pricing.load_close_wide` + 宽表缓存）：
+  **先证明与旧路径逐位一致再替换** —— 全A 5588 只 × 2186 天：形状/列集合/日期索引全同、
+  NaN 分布 **0 处不同**、共同有效元素**最大差 0**（`ai_test/check_pool_wide.py` + `datareq` 回归测试）
+  ⇒ 池取数 **38s → 首次 10.5s、之后 0.03s**。（唯一差异：列顺序，上下游都按列名取数 ⇒ 不影响结果。）
+- **顺手修隐患**：`resolve_universe()` 自己不做 qlib 初始化，单独调用时 `D.list_instruments`
+  **静默返回空池**（写校验脚本时踩到：池 = 0 只且完全看不出原因）⇒ 改为自己 `_ensure_init()`。
+- **实测结果**：同事.csv 全A **21.3s → 3.36s**、xlsx 全A **8.2s → 0.96s**（`@signals`：2.7s / 0.7s）。
+  **首次**仍要付"基准曲线首算"（同事全A 18s、xlsx 7.5s）—— 那段数学是**单因子测试共用的已验证实现，
+  没有动**（动它等于改已验证口径）；界面已按池子大小提示预期耗时。
+
+### 验证
+- 单测：`-m "not datareq"` **270 passed**；新增 `datareq` 2 例（快慢路径逐位等价 + 缓存命中）**2 passed**；
+  ruff 0；前端 `tsc` 0 + `build` 6.22s。
+- 版本 1.19.47 → 1.19.48。
+
 ## [1.19.47] - 2026-09-15
 
 ### Fixed

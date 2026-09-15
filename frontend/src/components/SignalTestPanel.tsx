@@ -157,17 +157,34 @@ function bufToBase64(buf: ArrayBuffer): string {
 
 const ACCEPT_EXT = ['.csv', '.txt', '.xlsx', '.xls']
 
-function anchorDot(color: string, revColor: string) {
-  return (props: any) => {
-    const { cx, cy, payload, index } = props
-    if (cx == null || cy == null) return <g key={`e${index}`} />
-    if (payload?.valid) {
-      return <circle key={`v${index}`} cx={cx} cy={cy} r={5} fill={color} stroke="#fff" strokeWidth={1} />
+/**
+ * 锚点：**只在判定有效的持有日画点**（紫 `#7c3aed` = 有效、**红 `#dc2626` = 有效反向**），其余点不画。
+ *
+ * ⚠⚠ 签名必须与 `EventStudyModal.validAnchorDot` **完全一致**：`(field, color, revColor)`。
+ *   2026-09-15 的教训：我照抄了弹窗的**调用写法**（`anchorDot('trigger_pair', '#7c3aed')`），
+ *   却写了另一个签名 `anchorDot(color, revColor)` ⇒ 第一个参数（dataKey 字符串）被当成**颜色**、
+ *   第二个（紫）被当成**反向色** ⇒ 实际渲染成 `fill="trigger_pair"`（无效色）+ **反向点紫色**
+ *   —— 用户当场发现"有效反向锚点还是紫色的，没有改成红色"。
+ *   修法：把签名对齐弹窗（`field` 参与取值、`revColor` 默认红），而不是去改一堆调用点。
+ */
+function anchorDot(field: string, color: string, revColor = '#dc2626') {
+  return (p: any) => {
+    const v = p.payload?.[field]
+    const rev = p.payload?.validRev === true
+    if ((p.payload?.valid === true || rev) && typeof v === 'number' && v != null) {
+      return (
+        <circle
+          key={p.key ?? `a-${p.payload?.k ?? ''}`}
+          cx={p.cx}
+          cy={p.cy}
+          r={3.5}
+          fill={rev ? revColor : color}
+          stroke="#fff"
+          strokeWidth={1}
+        />
+      )
     }
-    if (payload?.validRev) {
-      return <circle key={`r${index}`} cx={cx} cy={cy} r={5} fill={revColor} stroke="#fff" strokeWidth={1} />
-    }
-    return <circle key={`n${index}`} cx={cx} cy={cy} r={1.6} fill="#94a3b8" />
+    return <g key={p.key ?? `a-${p.payload?.k ?? ''}`} />
   }
 }
 
@@ -289,7 +306,15 @@ export default function SignalTestPanel() {
     const es = result?.event as any
     if (!es) return []
     const bl = es.baseline ?? null
-    const at = (arr: any, k: number) => (arr && arr[k - 1] != null ? Number(arr[k - 1]) : null)
+    // ⚠ 按 `baseline.ks` 定位（与事件研究弹窗同口径），不要假设 ks 一定是 [1..N]（`arr[k-1]` 会错位）
+    const idx = new Map<number, number>()
+    if (Array.isArray(bl?.ks)) bl.ks.forEach((kk: number, i: number) => idx.set(Number(kk), i))
+    const at = (arr: any, k: number) => {
+      if (!arr) return null
+      const i = idx.size ? idx.get(k) : k - 1
+      const v = i == null ? null : arr[i]
+      return v == null || !Number.isFinite(Number(v)) ? null : Number(v)
+    }
     const rows: EventRow[] = (es.curve ?? []).map((c: any) => {
       const k = Number(c.k)
       const ex = at(bl?.excess, k)
@@ -409,7 +434,9 @@ export default function SignalTestPanel() {
             {result.timings &&
               `（解析 ${result.timings.parse}s / 取价 ${result.timings.prices ?? '-'}s / 事件 ${
                 result.timings.event ?? '-'
-              }s / 回测 ${result.timings.backtest ?? result.timings.replay ?? '-'}s）`}
+              }s${result.timings.event_cached ? '·缓存命中' : ''} / 回测 ${
+                result.timings.backtest ?? result.timings.replay ?? '-'
+              }s）`}
           </span>
         )}
       </header>
@@ -569,6 +596,13 @@ export default function SignalTestPanel() {
                   </option>
                 ))}
               </select>
+              {/* v1.19.48：把"池子大小 → 耗时"讲在明处 —— 全A 要过一遍 (配对日 × 全A) 大矩阵，
+                  首次数十秒；同参数重跑走内容缓存（见 `signals/event.py` 的说明）。 */}
+              <span className="text-[10px] text-slate-400 leading-tight">
+                {pool === '@signals'
+                  ? '只取信号涉及的股票：通常 <1s'
+                  : '全A 较重：首次约 5~20s（基准曲线首算），同参数重跑走缓存 ~1~3s'}
+              </span>
             </label>
             <label className={field}>
               <span className="text-xs text-slate-500">初始资金</span>
@@ -827,9 +861,13 @@ export default function SignalTestPanel() {
                         <td className="px-2 py-0.5">{r.t == null ? '-' : r.t.toFixed(2)}</td>
                         <td className="px-2 py-0.5">{pct(r.dWin, 1)}</td>
                         <td className="px-2 py-0.5 whitespace-nowrap">
-                          {r.valid && <span className="text-violet-700 font-medium">有效✓</span>}
-                          {r.validRev && <span className="text-red-600 font-medium">有效(反向)✓</span>}
-                          {!r.valid && !r.validRev && <span className="text-slate-400">-</span>}
+                          {r.valid ? (
+                            <span className="text-violet-700 font-medium">有效✓</span>
+                          ) : r.validRev ? (
+                            <span className="text-red-600 font-medium">有效(反向)✓</span>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
                         </td>
                       </tr>
                     ))}

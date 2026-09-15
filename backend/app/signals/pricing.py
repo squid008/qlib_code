@@ -45,8 +45,14 @@ def resolve_universe(universe: str, start: str, end: str) -> List[str]:
     """股票池 → 成分股**并集**（与单因子测试同口径：区间内曾在池中的都算）。
 
     `universe` 支持 qlib 市场名：`all` / `csi300` / `csi500` / `csi800` / `csi1000` / `csiall`。
+
+    ⚠ v1.19.48：这里**必须自己做 qlib 初始化** —— 原来依赖调用方先 init，单独调用时
+      `D.list_instruments` 会**静默返回空池**（2026-09-15 我写校验脚本时踩到：
+      池 = 0 只，还看不出原因）。
     """
     from qlib.data import D
+
+    _ensure_init()
 
     try:
         insts = D.list_instruments(D.instruments(market=str(universe or "all")),
@@ -146,6 +152,71 @@ def load_price_panel(codes: Sequence[str], start: str, end: str,
     if cal is not None:
         out["CALENDAR"] = pd.DataFrame(index=pd.DatetimeIndex(cal))
     return out
+
+
+# ---------------------------------------------------------------------------
+# 基准池「只要收盘宽表」的专用快路径（v1.19.48）
+#
+# 为什么单开一条：`load_price_panel` 会为 **6~7 个字段**各做一次 long→wide（unstack+ffill），
+# 全A 实测 **12s/次**；而「未触发组」基准**只用到 CLOSE 一个字段**。
+# 于是：① 只求 `$close`；② 把**宽表**（而不是 long 面板）落盘缓存 ⇒ 第二次读 ~0.3s。
+# ⚠ 数值口径必须与 `load_price_panel` 的 CLOSE 完全一致 —— 因此复用同一个 `_wide(..., ffill=True)`。
+#    改动本文件的取值口径时，记得 +1 `_POOL_WIDE_VERSION`（并在 `signals/event.py` 同步
+#    `_EVENT_CACHE_VERSION`，否则旧的事件缓存会掩盖变化）。
+# ---------------------------------------------------------------------------
+_POOL_WIDE_VERSION = "v1"
+
+
+def _pool_wide_cache_dir() -> str:
+    import os
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "workdir", "cache", "signal_pool_wide")
+
+
+def load_close_wide(codes: Sequence[str], start: str, end: str) -> Optional[pd.DataFrame]:
+    """基准池 → 后复权收盘宽表（**只取 CLOSE**，带宽表磁盘缓存）。失败返回 None。"""
+    import hashlib
+    import os
+    import pickle
+
+    from app.factors.panel_expr import panel_features
+
+    _ensure_init()
+    want = sorted({str(c).upper() for c in codes if str(c).strip()})
+    if not want:
+        return None
+    h = hashlib.md5()
+    h.update(("%s|%s|%s|%d" % (_POOL_WIDE_VERSION, start, end, len(want))).encode("utf-8"))
+    h.update(("|" + "|".join(want)).encode("utf-8"))          # 列集合进 key：池子变了必须失效
+    try:
+        from app.engine.feature_cache import _data_version
+        h.update(("|dv=%s" % _data_version()).encode("utf-8"))
+    except Exception:
+        pass
+    path = os.path.join(_pool_wide_cache_dir(), h.hexdigest()[:32] + ".pkl")
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as f:
+                w = pickle.load(f)
+            if isinstance(w, pd.DataFrame) and len(w):
+                return w
+        except Exception:                                  # 坏缓存当未命中
+            pass
+    pdf = panel_features(want, [("$close", "CLOSE")], start, end, warmup_days=0)
+    if pdf is None or not len(pdf):
+        return None
+    w = _wide(pdf, "CLOSE", ffill=True)
+    if w is None or not len(w):
+        return None
+    try:
+        os.makedirs(_pool_wide_cache_dir(), exist_ok=True)
+        tmp = path + ".tmp%d" % os.getpid()
+        with open(tmp, "wb") as f:
+            pickle.dump(w, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)                              # 原子替换
+    except Exception:
+        pass
+    return w
 
 
 def fill_limits(panel: Dict[str, pd.DataFrame], strict: bool = True) -> Dict[str, pd.DataFrame]:

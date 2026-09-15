@@ -696,7 +696,8 @@ export interface SignalTestOptions {
 export interface SignalTestRunResult {
   ok: boolean
   mode: string
-  timings?: Record<string, number>
+  /** 分段耗时（秒）；`event_cached` 是布尔（事件研究内容缓存是否命中） */
+  timings?: Record<string, number | boolean>
   warnings?: string[]
   parse?: {
     stats: Record<string, unknown>
