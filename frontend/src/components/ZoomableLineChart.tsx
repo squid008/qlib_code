@@ -305,11 +305,13 @@ export default function ZoomableLineChart({
           </LineChart>
         </ResponsiveContainer>
       </div>
-      {/* 右上角角标：**当前可见区间**的区间收益 / 最大回撤（跟随缩放实时变动）。
+      {/* 角标：**当前可见区间**的区间收益 / 最大回撤（跟随缩放实时变动）。
+          · 位置在**左上角**（用户 2026-09-15：「好策略净值右边都比较高，放右边正好挡住」）；
+            但 Y 轴宽 56px、刻度画在左边 ⇒ 从 `left-16`（64px）起，**不压刻度**。
           · 红涨绿跌（A 股习惯）；`pointer-events-none` ⇒ 不会挡住拖动/缩放。
           · 计算只扫可见切片（微秒级），不是性能瓶颈；滚轮已用 rAF 合并到每帧一次。 */}
       {stat && (
-        <div className="pointer-events-none absolute right-3 top-7 z-10 rounded border border-slate-200 bg-white/90 px-2 py-1 text-[11px] leading-snug shadow-sm dark:border-slate-700 dark:bg-slate-900/90">
+        <div className="pointer-events-none absolute left-16 top-7 z-10 rounded border border-slate-200 bg-white/90 px-2 py-1 text-[11px] leading-snug shadow-sm dark:border-slate-700 dark:bg-slate-900/90">
           <div className="text-slate-500">{statKey ? labelOf(statKey) : ''}（当前区间）</div>
           <div>
             区间收益{' '}
