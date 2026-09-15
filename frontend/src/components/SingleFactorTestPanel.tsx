@@ -559,6 +559,12 @@ export default function SingleFactorTestPanel({
   const [clearing, setClearing] = useState(false)
   const [exporting, setExporting] = useState(false)
   const taskIdRef = useRef<string | null>(null)
+  /**
+   * **已完成任务的 id**（v1.19.61）：`stopPolling()` 会把 `taskIdRef` 清空，但任务跑完后再打开
+   * 「事件研究」弹窗仍需要它（后端要靠它找到本次算好的触发事件 ⇒ 画净值曲线）。
+   * 用户 2026-09-15 报「净值曲线暂不可用：需要任务上下文」就是这个 ref 已被清空导致的。
+   */
+  const [doneTaskId, setDoneTaskId] = useState<string | null>(null)
   const pollTimerRef = useRef<number | null>(null)
 
   // 组件卸载时停止轮询
@@ -682,6 +688,7 @@ export default function SingleFactorTestPanel({
         setProgress(p.progress)
         setProgressMsg(p.message)
         if (p.status === 'success') {
+          setDoneTaskId(taskId)          // 先记下来再 stopPolling（它会把 taskIdRef 清空）
           stopPolling()
           setResults(p.result?.items ?? [])
           setRunning(false)
@@ -763,6 +770,7 @@ export default function SingleFactorTestPanel({
     setCancelling(false)
     setError('')
     setResults([])
+    setDoneTaskId(null)
     setProgress(1)
     setProgressMsg('提交任务...')
     try {
@@ -839,6 +847,7 @@ export default function SingleFactorTestPanel({
     try {
       await clearSingleFactorTest()
       setResults([])
+    setDoneTaskId(null)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
       setError(`清理失败：${msg}`)
@@ -1663,8 +1672,10 @@ export default function SingleFactorTestPanel({
           data={estData}
           pair={estPair}
           defaultK={estK}
-          /* v1.19.60：净值曲线要复用**本任务**里已算好的触发事件（"秒开"路径没有独立事件研究任务） */
-          sourceTaskId={taskIdRef.current}
+          /* v1.19.60/61：净值曲线要复用**本任务**里已算好的触发事件（"秒开"路径没有独立事件研究任务）。
+             ⚠ 优先用 `doneTaskId`（任务成功后保留）—— `taskIdRef` 在任务完成时会被 `stopPolling()` 清空，
+               只用它会导致"跑完再点开弹窗 ⇒ 提示需要任务上下文"（用户 2026-09-15 报）。 */
+          sourceTaskId={doneTaskId ?? taskIdRef.current}
         />
       </EsErrorBoundary>
 

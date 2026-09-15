@@ -145,22 +145,25 @@ export default function EventStudyModal({
   useEffect(() => {
     if (!result || navK == null) return
     const tid = sourceTaskId || taskRef.current
-    if (!tid) {
-      setNavErr('净值曲线需要任务上下文（请点上方"重新计算"后再用）')
+    // ⚠ 没有任务 id 也可以试：后端会按**因子表达式**在最近的任务里找回触发事件
+    //   （v1.19.61）；只有连表达式都没有时才真的没法算。
+    const expr = (req?.factor as { expression?: string } | undefined)?.expression
+    if (!tid && !expr) {
+      setNavErr('这次结果没有关联到测试任务，也没有因子表达式 ⇒ 无法复用触发明细；' +
+        '点上方「重新计算」重跑一次即可看到净值曲线')
       return
     }
-    const key = `${navK}|${navCost}`
+    const key = `${navK}|${navCost}|${tid ?? ''}`
     const hit = navCacheRef.current.get(key)
     if (hit) {
       setNavRes(hit)
       setNavErr('')
       return
     }
-    const expr = (req?.factor as { expression?: string } | undefined)?.expression
     setNavBusy(true)
     setNavErr('')
     const timer = window.setTimeout(() => {
-      runEventNav({ task_id: tid, hold_days: navK, cost: navCost, factor_id: expr })
+      runEventNav({ task_id: tid ?? '', hold_days: navK, cost: navCost, factor_id: expr })
         .then((r) => {
           navCacheRef.current.set(key, r)
           setNavRes(r)

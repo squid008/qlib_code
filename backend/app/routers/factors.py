@@ -204,7 +204,12 @@ def _sft_store(task_id: str, state: dict) -> None:
 
 
 def _sft_trim_results() -> None:
-    """内存治理：已完成任务只保留最近 _SFT_RESULT_KEEP 条的完整 result，更早的置 None。"""
+    """内存治理：已完成任务只保留最近 _SFT_RESULT_KEEP 条的完整 result，更早的置 None。
+
+    ⚠ v1.19.61：**同时释放 `_evs`**（0/1 因子的触发明细）—— 它是给"净值曲线"复用的事件表，
+      一个任务可能有几万行；只清 `result` 不清它，跑几十次后内存白占（而净值端点里那条
+      "按表达式在最近任务里找回事件"的兜底只扫最近几个任务，清掉更早的正好）。
+    """
     with _SFT_LOCK:
         finished = sorted(
             (k for k, v in _SFT_TASKS.items() if v.get("status") in ("success", "failed")),
@@ -214,6 +219,8 @@ def _sft_trim_results() -> None:
         for k in finished[_SFT_RESULT_KEEP:]:
             if _SFT_TASKS[k].get("result") is not None:
                 _SFT_TASKS[k]["result"] = None
+            if _SFT_TASKS[k].get("_evs") is not None:
+                _SFT_TASKS[k]["_evs"] = None
 
 
 def _sft_get(task_id: str):
@@ -835,6 +842,9 @@ class EventNavRequest(BaseModel):
     # ⚠ 两种来源：① 独立事件研究任务（`/event-study`）⇒ 用 `_ev`；
     #   ② 单因子测试的"秒开"路径（弹窗直接用表格里的 event_study 结果，没有独立任务）
     #      ⇒ 任务状态里存的是**按表达式分组**的 `_evs`，用因子表达式取。
+    #   `task_id` 允许为空（v1.19.61）：前端拿不到任务 id 时，仅凭 `factor_id` 也能在**最近的任务**里
+    #   找回触发事件（用户 2026-09-15 报「净值曲线暂不可用：需要任务上下文」）。
+    task_id: str = ""
     factor_id: Optional[str] = None
 
 
@@ -847,20 +857,35 @@ def event_study_nav(req: EventNavRequest):
       触发事件与价格面板都复用现成的（事件存在任务状态、面板走 `feature_cache`）⇒ 单次请求 ~0.5~1s。
     """
     # 事件研究任务与单因子测试任务**共用这个 id 查询**（两类状态字典都认一下）
-    state = _est_get(req.task_id)
-    if state is None:
-        state = _sft_get(req.task_id)
-    if state is None or state.get("status") != "success":
+    state = _est_get(req.task_id) or _sft_get(req.task_id)
+    if state is None and req.task_id:
         raise HTTPException(status_code=404, detail="任务不存在或未完成（结果可能已被清理）")
-    rq = state.get("_req") or {}
+    rq = (state or {}).get("_req") or {}
     ev = None
     if req.factor_id:
-        ev = (state.get("_evs") or {}).get(req.factor_id)
-    if ev is None:
+        ev = ((state or {}).get("_evs") or {}).get(req.factor_id)
+    if ev is None and state is not None:
         ev = state.get("_ev")
+    if ev is None and req.factor_id:
+        # 兜底（v1.19.61）：任务 id 失效/没传时，按**因子表达式**在最近的任务里找触发明细。
+        # 只扫最近 _SFT_RESULT_KEEP 个"有事件"的任务，命中即用（单因子测试常连跑多次，同因子很容易找到）。
+        for st in sorted(_SFT_TASKS.values(), key=lambda v: v.get("ts", 0), reverse=True):
+            found = (st.get("_evs") or {}).get(req.factor_id)
+            if found is not None and len(found):
+                ev, state = found, st
+                rq = st.get("_req") or rq
+                break
+        if ev is None:
+            for st in sorted(_EST_TASKS.values(), key=lambda v: v.get("ts", 0), reverse=True):
+                found = st.get("_ev")
+                if found is not None and len(found):
+                    ev, state = found, st
+                    rq = st.get("_req") or rq
+                    break
     if ev is None or not len(ev):
         raise HTTPException(status_code=400,
-                            detail="该任务的触发事件已释放，请重新跑一次事件研究/单因子测试再看净值曲线")
+                            detail="找不到这次信号的触发明细（任务已清理或因子没触发过）—— "
+                                   "点「重新计算」重跑一次事件研究即可看净值曲线")
     start, end = rq.get("start_date"), rq.get("end_date")
     k = max(1, min(int(req.hold_days or 20), 250))
     codes = sorted(ev["code"].astype(str).unique().tolist())
