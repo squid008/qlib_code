@@ -1005,6 +1005,9 @@ export default function SignalTestPanel() {
               hidden={hidden}
               onToggle={toggleSeries}
               statKey={navFocus || navKeys[0]}
+              /* v1.19.66：两套资金方案是同策略的不同记账口径 ⇒ 缩放后默认**锚定主曲线起点**
+                 （共同分母 ⇒ 保序 ⇒ 显示高低永远与真实水平一致；「各自对齐」会把历史水平差除成假优势） */
+              defaultAlign="anchor"
               height={300}
             />
           </div>
@@ -1235,6 +1238,9 @@ export default function SignalTestPanel() {
             <div className="text-sm font-medium mb-1">
               净值对比：A 模拟它的成本 / B 我的成本 / C 它的成交价+手续费 / 基准
               <span className="text-[11px] text-slate-400 ml-2">点击图例可隐藏/显示任意曲线</span>
+              <span className="text-[11px] text-slate-400 ml-2">
+                （缩放后默认锚定「C 精确」起点：费率越高、曲线越低的直觉在任何窗口都成立）
+              </span>
             </div>
             <ZoomableLineChart
               data={navData}
@@ -1245,6 +1251,10 @@ export default function SignalTestPanel() {
               hidden={hidden}
               onToggle={toggleSeries}
               statKey={navKeys.includes('nav_exact') ? 'nav_exact' : navKeys[0]}
+              /* v1.19.66：A/B/C 是**同一批成交的不同记账口径**（费率/价格来源），缩放后默认锚定「C 精确」起点
+                 —— 实测 2186 个交易日 A（费率低）**每一天**都高于 B，锚定共同分母就永远符合这个直觉；
+                 若用「各自归一」→ B 的起点被历史费用压低 12.7%，百分比反超 A（分母陷阱）。 */
+              defaultAlign="anchor"
               height={320}
             />
           </div>

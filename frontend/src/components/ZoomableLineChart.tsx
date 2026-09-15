@@ -48,6 +48,16 @@ interface Props {
   statKey?: string
   /** 起点对齐的"锚定曲线"（默认取 `statKey`；`anchor` 模式下所有曲线都除以它的区间起点值） */
   anchorKey?: string
+  /**
+   * 缩放后的**初始**对齐口径（默认 `each`）。
+   *
+   * ⚠ 什么时候该给 `anchor`（2026-09-15 用户追问「A 更便宜 ⇒ A 该更高，为啥算出 B 更强」后定的）：
+   *   **同一策略的几种记账口径之间比较**（A/B/C）必须用 `anchor` —— 它们只是费率不同、拿的是同一批股数，
+   *   `each` 会把"起点水平差（历史费用造成）"除掉、只留下"分母更小 ⇒ 百分比更大"的放大效应 ⇒ **排序反转**。
+   *   而 `anchor` 是**共同分母** ⇒ **保序** ⇒ 显示出来的高低永远与真实水平一致（费率越高越低）。
+   * ⚠ 但**策略 vs 基准/指数**这种"本来就不该同尺度"的对比仍应用 `each`（各自的区间涨幅才有意义）。
+   */
+  defaultAlign?: AlignMode
 }
 
 /**
@@ -105,6 +115,7 @@ export default function ZoomableLineChart({
   minSpan = 6,
   statKey,
   anchorKey,
+  defaultAlign = 'each',
 }: Props) {
   const n = data.length
   const wrapRef = useRef<HTMLDivElement | null>(null)
@@ -113,7 +124,7 @@ export default function ZoomableLineChart({
   const dragRef = useRef<{ x: number; a: number; b: number } | null>(null)
   const rafRef = useRef<number | null>(null)
   const pendingRef = useRef<{ fx: number; dir: number } | null>(null)
-  const [align, setAlign] = useState<AlignMode>('each')
+  const [align, setAlign] = useState<AlignMode>(defaultAlign)
   /** 鼠标所指的数据点索引（`null` = 不在图上 ⇒ 读数列显示**最右端**的值）。
    *
    * ⚠ v1.19.55：不再用 Recharts 的 `<Tooltip>` —— 它那块浮层太大、正好挡住曲线
@@ -247,7 +258,8 @@ export default function ZoomableLineChart({
       for (const k of keys) {
         const v = row[k]
         o.__raw[k] = v
-        const den = align === 'anchor' ? shared : bases[k]
+        // ⚠ `shared` 取不到（锚定曲线在可见区间内没有有限值）时**退回各自起点**，而不是整条曲线变 null
+        const den = align === 'anchor' ? (shared ?? bases[k]) : bases[k]
         o[k] = typeof v === 'number' && Number.isFinite(v) && den ? v / den : null
       }
       return o

@@ -927,6 +927,8 @@ export default function EventStudyModal({
                     hidden={hidden}
                     onToggle={toggleSeries}
                     statKey={navRes.alloc_default}
+                    /* v1.19.66：两种资金方案是同策略的不同记账口径 ⇒ 缩放后默认锚定主曲线起点（保序） */
+                    defaultAlign="anchor"
                     height={240}
                   />
                   <div className="flex flex-wrap gap-x-6 gap-y-1 text-[11px] text-slate-400 mt-1">
