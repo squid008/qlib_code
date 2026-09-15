@@ -155,24 +155,63 @@ def run(req: SignalTestRequest) -> Dict:
         if rep.get("nav") is None:
             raise HTTPException(status_code=400,
                                 detail="净值重建失败：%s" % (rep.get("diag", {}).get("error", "未知")))
-        t0 = time.perf_counter()
-        bench = load_bench_wide([bench_code], start, end)
-        nav = attach_benchmark(rep["nav"], bench, bench_code)
-        timings["benchmark"] = round(time.perf_counter() - t0, 3)
-        mincap = res.stats.get("min_capital") or 0.0
+        mincap = float(res.stats.get("min_capital") or 0.0)
         neg = (rep.get("diag") or {}).get("negative_cash_bars") or {}
+        cap_info: Dict = {"used": capital, "suggest": caps, "min_viable": mincap,
+                          "first_day_buy_amount": res.stats.get("first_day_buy_amount"),
+                          "negative_cash_bars": neg}
+        # ---- 流水"现金不闭合"时的处置：再算一条「现金非负下界」口径的 C 曲线 ⇒ 给收益区间 ----
+        # 为什么（用户 2026-09-15 报"真实资金就是 1000 万"）：实测这份明细 2016-01-04 满仓 8 只花到
+        # 只剩 3,535 元（⇒ 本金确为 ~1000 万 ✓），但 **2016-01-11 在没有任何卖出的情况下又买入 101.97 万**
+        # ⇒ 现金变 −101.6 万 ⇒ **流水缺现金流**（分红入账 / 期初已有持仓或入金 / 只是某段窗口）。
+        # 此时"用本金记的 C"与"用现金非负下界记的 C"分别是乐观/保守两个极端，真值在两者之间。
+        if mincap > capital * 1.01:
+            t0 = time.perf_counter()
+            rep_lo = replay_trades(tr, panel["CLOSE"], capital=mincap,
+                                   capital_ref=(caps if req.jq_scale_capital else None),
+                                   my_cost=req.cost, fee_buy=res.stats.get("fee_rate_buy"),
+                                   fee_sell=res.stats.get("fee_rate_sell"))
+            if rep_lo.get("nav") is not None:
+                rep["nav"]["nav_exact_min"] = rep_lo["nav"]["nav_exact"]
+                cap_info["interval"] = {
+                    "low": {"capital": mincap,
+                            "final_nav": (rep_lo.get("stats") or {}).get("nav_exact", {}).get("final_nav")},
+                    "high": {"capital": capital,
+                             "final_nav": (rep.get("stats") or {}).get("nav_exact", {}).get("final_nav")},
+                }
+            timings["replay_min"] = round(time.perf_counter() - t0, 3)
+
+        # 首次"现金为负"的证据（用于把警示写实，而不是笼统说"加杠杆"）
+        cf = (tr["amount"] * tr["side"] * -1.0) - tr["fee"]
+        first_neg = tr[(capital + cf.cumsum()) < 0].head(1)
+        cap_info["first_negative"] = (None if not len(first_neg) else {
+            "date": str(first_neg.iloc[0]["date"].date()),
+            "code": first_neg.iloc[0]["code"],
+            "side": "买" if first_neg.iloc[0]["side"] > 0 else "卖",
+            "amount": round(float(first_neg.iloc[0]["amount"]), 2),
+        })
         if (neg.get("exact") or 0) > 0:
-            warnings.append("初始资金 %.0f 小于「现金非负」下界 %.0f（C 曲线有 %d 根 K 线现金为负）"
-                            "⇒ C 等效于加了杠杆、收益被高估；请把「聚宽初始资金」填成 ≥ %.0f"
-                            "（或它策略的真实资金）" % (capital, mincap, neg["exact"], mincap))
+            fn = cap_info["first_negative"]
+            warnings.append(
+                "⚠ 这份成交明细在**现金层面不闭合**：按本金 %.0f 推演，最早在 %s 就出现"
+                "「现金已为负」的%s（%s，%.0f 元）⇒ 日志很可能缺现金流（分红入账 / 期初已有持仓或入金 / "
+                "只是某段窗口）。已额外给出「现金非负下界 %.0f」口径的 C 曲线 ⇒ **真值在两者之间**："
+                "期末净值 %.2f（本金口径）~ %.2f（下界口径）；两者重合则说明流水自洽。"
+                "要以 A/B（相对比较）为主，或提供聚宽账户净值序列来校准。"
+                % (capital, (fn or {}).get("date", "?"), (fn or {}).get("side", "买入"),
+                   (fn or {}).get("code", "?"), float((fn or {}).get("amount") or 0.0), mincap,
+                   float((cap_info.get("interval") or {}).get("high", {}).get("final_nav") or 0.0),
+                   float((cap_info.get("interval") or {}).get("low", {}).get("final_nav") or 0.0)))
         elif abs(capital - caps) / max(caps, 1.0) > 0.05:
             warnings.append("初始资金与「首日买入总额」相差 %.0f%%（A/B 按资金等比缩放股数，"
                             "C 按它原始股数记账；要公平比较请填它的真实资金）"
                             % (100 * abs(capital - caps) / max(caps, 1.0)))
+        t0 = time.perf_counter()
+        bench = load_bench_wide([bench_code], start, end)
+        nav = attach_benchmark(rep["nav"], bench, bench_code)
+        timings["benchmark"] = round(time.perf_counter() - t0, 3)
         resp.update({
-            "capital": {"used": capital, "suggest": caps, "min_viable": mincap,
-                        "first_day_buy_amount": res.stats.get("first_day_buy_amount"),
-                        "negative_cash_bars": neg},
+            "capital": cap_info,
             "fees": {"rate_buy": res.stats.get("fee_rate_buy"),
                      "rate_sell": res.stats.get("fee_rate_sell"),
                      "stamp_tax_est": res.stats.get("stamp_tax_est")},
@@ -246,9 +285,14 @@ def run(req: SignalTestRequest) -> Dict:
     # ---- 回测（两种资金方案一起给）----
     if not req.signals_only:
         t0 = time.perf_counter()
+        # 资金方案：默认那档（死区取界面值）+ 现金等分；**再自动加一档「死区 5%」做对比**
+        # （用户 2026-09-15 要求「给个"死区 5%"的对比曲线」⇒ 实测全调平 9 年吃掉 53% 本金）
+        specs = ["event_even", "cash_even"]
+        if abs(float(req.rebal_band) - 0.05) > 1e-9:
+            specs.append("event_even@0.05")
         bt = run_backtest(sig, panel, hold_days=horizon, fill=req.fill, cost=req.cost,
                           capital=req.capital, strict_limit=req.strict_limit,
-                          rebal_band=req.rebal_band)
+                          rebal_band=req.rebal_band, alloc_modes=tuple(specs))
         if not bt.nav.shape[1]:
             raise HTTPException(status_code=400,
                                 detail="回测没有产出净值：%s" % bt.diag.get("error", "未知"))

@@ -112,6 +112,22 @@ def test_both_alloc_modes_returned_and_cash_even_splits():
         assert g[g["side"] == "买"].iloc[0]["date"] == str(idx[1].date())
 
 
+def test_deadband_comparison_curves():
+    """`event_even@0.05` 这种写法 = 同一方案多跑一档死区做对比（用户要的"死区 5% 对比曲线"）。"""
+    from app.signals.engine import _split_mode
+
+    assert _split_mode("event_even") == ("event_even", None, "event_even")
+    assert _split_mode("event_even@0.05") == ("event_even", 0.05, "event_even_band5")
+    assert _split_mode("event_even@0.075") == ("event_even", 0.075, "event_even_band7p5")
+    panel, idx = make_panel(days=12)
+    bt = run_backtest(sig([idx[0]]), panel, hold_days=3, fill="t1_open", capital=100000.0,
+                      rebal_band=0.0, alloc_modes=("event_even", "event_even@0.05"))
+    assert set(bt.nav.columns) == {"event_even", "event_even_band5"}
+    assert bt.stats["event_even"]["rebal_band"] == 0.0
+    assert bt.stats["event_even_band5"]["rebal_band"] == 0.05
+    assert bt.stats["event_even"]["alloc"] == "event_even"
+
+
 def test_event_even_rebalances_after_new_signal():
     """event_even：新信号成交后把老仓一起调平到等权（会多出再平衡成交）。"""
     idx = pd.bdate_range("2024-01-01", periods=14)

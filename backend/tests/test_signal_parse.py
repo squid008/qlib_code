@@ -165,9 +165,9 @@ def test_parse_jq_trades():
     assert st["stamp_tax_est"] == pytest.approx(0.001, abs=1e-5)
     # 成交价口径：09:30 ⇒ 开盘价(2 笔)；14:00/10:30 ⇒ 收盘价(2 笔)，其中 10:30 属"日中委托"要计数
     assert st["fill_open"] == 2 and st["fill_close"] == 2 and st["intraday_orders"] == 1
-    # 初始资金推断 = 首日买入总额
+    # 初始资金推断：首日买入总额（原值）+ 向上取整到 10 万元的默认资金
     assert st["first_day_buy_amount"] == pytest.approx(2497556.0, abs=1.0)
-    assert st["suggest_capital"] == st["first_day_buy_amount"]
+    assert st["suggest_capital"] == pytest.approx(2500000.0)
     assert st["open_positions"] == 0        # 新宝买卖各一、大连电瓷未平 ⇒ 1 只
     assert any("已撤单" in str(i.get("reason", "")) or True for i in res.issues) or True
 

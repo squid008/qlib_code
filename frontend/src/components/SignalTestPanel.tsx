@@ -41,6 +41,20 @@ const FILL_LABEL: Record<string, string> = {
   t1_close: '次日收盘价',
 }
 
+const ALLOC_LABEL: Record<string, string> = {
+  event_even: '事件驱动再平衡（有信号/到期就调平）',
+  cash_even: '现金等分（不主动再平衡）',
+}
+
+/** 资金方案列名 → 中文标签（`event_even_band5` 这类"同方案不同死区"的对比档也认）。 */
+function allocLabel(mode: string): string {
+  if (ALLOC_LABEL[mode]) return ALLOC_LABEL[mode]
+  const m = /^event_even_band(.+)$/.exec(mode)
+  if (m) return `事件等权 · 死区 ${m[1].replace('p', '.')}%（自动对比档）`
+  if (mode === 'nav_exact_min') return 'C′ 现金非负下界口径'
+  return mode
+}
+
 /** 事件研究逐 k 行（图表与表格共用；锚点由 `verdictRules` 判定，与单因子测试同源）。 */
 interface EventRow {
   k: number
@@ -604,7 +618,8 @@ export default function SignalTestPanel({ defaultCapital = 1e9, defaultBenchmark
             {Object.entries(bt.stats).map(([mode, st]: [string, any]) => (
               <div key={mode} className="border rounded p-3 text-xs space-y-1">
                 <div className="font-medium">
-                  {mode === 'event_even' ? '事件驱动再平衡（有信号/到期就调平）' : '现金等分（不主动再平衡）'}
+                  {allocLabel(mode)}
+                  {st.rebal_band ? `（死区 ${(st.rebal_band * 100).toFixed(1)}%）` : ''}
                   {mode === bt.alloc_default && <span className="text-emerald-600"> · 默认</span>}
                 </div>
                 <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
@@ -678,6 +693,22 @@ export default function SignalTestPanel({ defaultCapital = 1e9, defaultBenchmark
               <div>采用 {Number(result?.capital?.used ?? 0).toLocaleString()} 元</div>
               <div>首日买入总额 {Number(result?.capital?.suggest ?? 0).toLocaleString()}</div>
               <div>现金非负下界 {Number(result?.capital?.min_viable ?? 0).toLocaleString()}</div>
+              {result?.capital?.first_negative && (
+                <div className="text-amber-700">
+                  首次现金转负 {(result.capital.first_negative as any).date}（
+                  {(result.capital.first_negative as any).side}
+                  {(result.capital.first_negative as any).code}）
+                  ⇒ 流水疑缺现金流
+                </div>
+              )}
+              {result?.capital?.interval && (
+                <div className="text-slate-600">
+                  C 真值区间：期末净值{' '}
+                  <b>{String((result.capital.interval as any).low?.final_nav ?? '-')}</b> ~{' '}
+                  <b>{String((result.capital.interval as any).high?.final_nav ?? '-')}</b>
+                  （下界 ~ 本金口径）
+                </div>
+              )}
             </div>
             <div className="border rounded p-3 space-y-1">
               <div className="font-medium">口径一致性体检</div>
@@ -726,7 +757,9 @@ export default function SignalTestPanel({ defaultCapital = 1e9, defaultBenchmark
                           ? 'B 我的成本'
                           : k === 'nav_exact'
                             ? 'C 精确（成交价+手续费）'
-                            : '基准'
+                            : k === 'nav_exact_min'
+                              ? 'C′ 现金非负下界口径'
+                              : '基准'
                     }
                     stroke={
                       k === 'nav_sim_fee'
@@ -735,10 +768,12 @@ export default function SignalTestPanel({ defaultCapital = 1e9, defaultBenchmark
                           ? '#f59e0b'
                           : k === 'nav_exact'
                             ? '#10b981'
-                            : '#94a3b8'
+                            : k === 'nav_exact_min'
+                              ? '#a855f7'
+                              : '#94a3b8'
                     }
                     strokeWidth={k === 'benchmark' ? 1.4 : 2}
-                    strokeDasharray={k === 'benchmark' ? '4 3' : undefined}
+                    strokeDasharray={k === 'nav_exact_min' ? '5 3' : k === 'benchmark' ? '4 3' : undefined}
                     dot={false}
                   />
                 ))}

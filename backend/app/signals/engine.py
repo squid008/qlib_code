@@ -37,6 +37,21 @@ REJECT_TEXT = {
 }
 
 
+def _split_mode(spec: str) -> Tuple[str, Optional[float], str]:
+    """`alloc_modes` 元素 → (基础方案, 该方案死区或 None, 净值列名)。
+
+    允许 `"event_even@0.05"` 这种写法 ⇒ 同一个方案可以跑**多档再平衡死区**做对比
+    （用户 2026-09-15：「给个"死区 5%"的对比曲线」）⇒ 列名 `event_even_band5`。
+    不带 `@` 时死区取函数参数 `rebal_band`（= 界面上那一档），列名就是方案名（向后兼容）。
+    """
+    base, _, band_s = str(spec).partition("@")
+    if not band_s:
+        return base, None, base
+    b = float(band_s)
+    tag = ("%g" % (b * 100)).replace(".", "p")
+    return base, b, "%s_band%s" % (base, tag)
+
+
 @dataclass
 class BtResult:
     nav: pd.DataFrame = field(default_factory=pd.DataFrame)      # index=date, 各方案净值
@@ -182,7 +197,9 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
               "limits_from": "inferred" if "_limits_inferred" in panel else "exchange_tag"})
     all_trades, all_rejects, navs = [], [], {}
 
-    for mode in alloc_modes:
+    for mode_spec in alloc_modes:
+        _base, _band, mode = _split_mode(mode_spec)
+        band = float(rebal_band) if _band is None else float(_band)
         cash = float(capital)
         sh: Dict[int, int] = {}                       # 列号 → 股数
         dsz: Dict[int, int] = {}                      # 列号 → 已持有交易日数
@@ -305,7 +322,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         # 死区：偏差小于「目标市值的 rebal_band」就不动（默认 0 = 每次事件完全调平，
                         # 即用户口径"有信号/到期就平衡"）。实测全调平的代价是 9 年 45% 本金的费用
                         # ⇒ 想让成本下来就把 band 调到 1%~10%（界面上可调）。
-                        gap_of = lambda tv, px: max(float(rebal_band) * tv, px * lot)
+                        gap_of = lambda tv, px: max(band * tv, px * lot)   # 死区随方案（可 @ 指定）
                         # ① 减仓超配（腾出现金给新信号）
                         for k in list(sh.keys()):
                             px = _price(i, k)
@@ -364,6 +381,8 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         net = navs[mode].pct_change().fillna(0.0).to_numpy()
         perf = _perf(net)
         out.stats[mode] = {
+            "alloc": _base,
+            "rebal_band": band,
             "min_cash": round(float(min_cash), 2),
             "final_nav": round(float(navs[mode].iloc[-1]), 4) if len(navs[mode]) else None,
             "total_return": (round(float(navs[mode].iloc[-1] - 1), 4) if len(navs[mode]) else None),

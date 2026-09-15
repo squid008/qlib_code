@@ -16,6 +16,8 @@
 """
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 
 from ..codes import normalize_code, parse_date, parse_time
@@ -147,10 +149,15 @@ def _trade_stats(tr: pd.DataFrame, n_drop: int, n_cancel: int, n_mid: int, n_tot
     d0 = tr["date"].min()
     first_buys = buy[buy["date"] == d0]
     st["first_day"] = str(d0.date())
-    st["first_day_buy_amount"] = round(float(first_buys["amount"].sum()), 2)
+    raw_first = round(float(first_buys["amount"].sum()), 2)
+    st["first_day_buy_amount"] = raw_first
     st["first_day_buy_trades"] = int(len(first_buys))
-    st["suggest_capital"] = st["first_day_buy_amount"]          # 默认值：首日买入总额
-    # 现金非负约束：cash(t) = C0 + Σ(卖出净额 − 买入总额) ≥ 0 ⇒ C0 ≥ −min(cum)
+    # 默认资金 = 首日买入总额 **向上取整到 10 万元**（资金一般是整数）。
+    # ⚠ 不能直接用首日金额：它不含手续费，会让"首日满仓"那一刻的现金算成 −2998 元，
+    #   于是"首次现金转负"被误报成首日（2026-09-15 实测）。取整后本例 = 1000 万，
+    #   与用户确认的真实资金一致，且首次转负落到真正那天（2016-01-11）。
+    st["suggest_capital"] = float(math.ceil(raw_first / 1e5) * 1e5)
+    # 现金非负约束：cash(t) = C0 + Σ(卖出净额 − 买入总额 − 费用) ≥ 0 ⇒ C0 ≥ −min(cum)
     flow = (tr["amount"] * tr["side"] * -1.0) - tr["fee"]       # 买 ⇒ −(额+费)；卖 ⇒ +额−费
     cum = flow.cumsum()
     st["min_capital"] = round(float(max(0.0, -cum.min())), 2)
