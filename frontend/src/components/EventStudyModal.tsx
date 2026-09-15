@@ -162,20 +162,52 @@ export default function EventStudyModal({
     }
     setNavBusy(true)
     setNavErr('')
+    let cancelled = false
     const timer = window.setTimeout(() => {
-      runEventNav({ task_id: tid ?? '', hold_days: navK, cost: navCost, factor_id: expr })
-        .then((r) => {
-          navCacheRef.current.set(key, r)
-          setNavRes(r)
-        })
-        .catch((e) => {
-          const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-          setNavErr(d || (e instanceof Error ? e.message : String(e)))
-          setNavRes(null)
-        })
-        .finally(() => setNavBusy(false))
+      /**
+       * 取净值（失败时**自动重试**）。
+       *
+       * ⚠ 为什么要有重试（用户 2026-09-15 报「净值曲线暂不可用：Network Error」）：
+       *   `Network Error` 是 axios 在**拿不到 HTTP 响应**时的文案（连接被掐/后端没在听），与业务错误无关。
+       *   本项目**发版会重启后端**（`restart_backend.ps1` 杀进程再起，约 4~6s 不可用）——
+       *   用户若正好在这个窗口点开弹窗/点「重新计算」，就会看到它。
+       *   所以这里对"无响应"这一类失败自动重试 2 次（1.5s / 4s，合计覆盖 ~6s 重启窗口），
+       *   并把文案写成"连接中断（后端可能正在重启）"而不是甩一句英文 `Network Error`。
+       *   ⚠ 有响应（400/404 等）**不重试**：那是真结论（例如触发明细已被清理），重试没意义。
+       */
+      const attempt = (left: number) => {
+        if (cancelled) return
+        runEventNav({ task_id: tid ?? '', hold_days: navK, cost: navCost, factor_id: expr })
+          .then((r) => {
+            if (cancelled) return
+            navCacheRef.current.set(key, r)
+            setNavRes(r)
+            setNavErr('')
+            setNavBusy(false)
+          })
+          .catch((e: unknown) => {
+            if (cancelled) return
+            const resp = (e as { response?: { data?: { detail?: string } } })?.response
+            const netish = !resp                     // 无响应 ⇒ 连接层失败（不是业务错误）
+            if (netish && left > 0) {
+              setNavErr(`连接中断，正在自动重试（剩 ${left} 次）…`)
+              window.setTimeout(() => attempt(left - 1), left === 2 ? 1500 : 4000)
+              return
+            }
+            setNavErr(netish
+              ? '连接中断（后端可能正在重启）—— 已自动重试仍失败：点「重新计算」再试即可，'
+                + '不用重跑整个测试'
+              : (resp?.data?.detail || (e instanceof Error ? e.message : String(e))))
+            setNavRes(null)
+            setNavBusy(false)
+          })
+      }
+      attempt(2)
     }, 250)
-    return () => window.clearTimeout(timer)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
   }, [result, navK, navCost, sourceTaskId, req])
 
   const taskRef = useRef<string | null>(null)
