@@ -364,8 +364,9 @@ export default function ZoomableLineChart({
       </div>
       <div
         ref={wrapRef}
-        /* ⚠ `select-none` + 拖动时 `preventDefault`：否则拖动会选中坐标轴/日期文字（用户反馈） */
-        className="select-none"
+        /* ⚠ `select-none` + 拖动时 `preventDefault`：否则拖动会选中坐标轴/日期文字（用户反馈）；
+           另加 `relative` ⇒ 角标以**图表区域**为定位父级（否则会盖住上方控件行） */
+        className="relative select-none"
         style={{ cursor: dragging ? 'grabbing' : 'grab' }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
@@ -427,6 +428,31 @@ export default function ZoomableLineChart({
             )}
           </LineChart>
         </ResponsiveContainer>
+        {/* 角标：**当前可见区间**的区间收益 / 最大回撤（跟随缩放实时变动）。
+            ⚠ 挂在**图表区域内部**定位（不是整个组件上）：原先挂外层 + `top-7`，
+            而顶部控件行（"缩放后起点对齐"那排）比 28px 高 ⇒ 被卡片盖住（用户 2026-09-15 报：
+            "这个图有个BUG，挡住了"）。放进图表区后无论控件行多高都不会重叠。
+            位置取左上角（好策略净值右边高，放右边会挡），`left-16` 避开 56px 的 Y 轴刻度。
+            红涨绿跌（A 股习惯）；`pointer-events-none` ⇒ 不挡拖动/缩放。 */}
+        {stat && (
+          <div className="pointer-events-none absolute left-16 top-2 z-10 rounded border border-slate-200 bg-white/90 px-2 py-1 text-[11px] leading-snug shadow-sm dark:border-slate-700 dark:bg-slate-900/90">
+            <div className="text-slate-500">
+              {statKey ? labelOf(statKey) : ''}（{stat.fromStart ? '自建仓起' : '当前区间'}）
+            </div>
+            <div>
+              {stat.fromStart ? '累计收益' : '区间收益'}{' '}
+              <b className={stat.ret >= 0 ? 'text-red-600' : 'text-emerald-600'}>
+                {`${stat.ret >= 0 ? '+' : ''}${(stat.ret * 100).toFixed(2)}%`}
+              </b>
+            </div>
+            <div>
+              最大回撤 <b className="text-slate-700 dark:text-slate-200">{(stat.mdd * 100).toFixed(2)}%</b>
+            </div>
+            <div className="text-slate-400">
+              {stat.from} ~ {stat.to}（{stat.n} 点）
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 读数列（取代原来那个盖住曲线的 tooltip）：**上排是标签、下排全是可变值**，
@@ -467,30 +493,6 @@ export default function ZoomableLineChart({
         })}
       </div>
 
-      {/* 角标：**当前可见区间**的区间收益 / 最大回撤（跟随缩放实时变动）。
-          · 位置在**左上角**（用户 2026-09-15：「好策略净值右边都比较高，放右边正好挡住」）；
-            但 Y 轴宽 56px、刻度画在左边 ⇒ 从 `left-16`（64px）起，**不压刻度**。
-          · 红涨绿跌（A 股习惯）；`pointer-events-none` ⇒ 不会挡住拖动/缩放。
-          · 计算只扫可见切片（微秒级），不是性能瓶颈；滚轮已用 rAF 合并到每帧一次。 */}
-      {stat && (
-        <div className="pointer-events-none absolute left-16 top-7 z-10 rounded border border-slate-200 bg-white/90 px-2 py-1 text-[11px] leading-snug shadow-sm dark:border-slate-700 dark:bg-slate-900/90">
-          <div className="text-slate-500">
-            {statKey ? labelOf(statKey) : ''}（{stat.fromStart ? '自建仓起' : '当前区间'}）
-          </div>
-          <div>
-            {stat.fromStart ? '累计收益' : '区间收益'}{' '}
-            <b className={stat.ret >= 0 ? 'text-red-600' : 'text-emerald-600'}>
-              {`${stat.ret >= 0 ? '+' : ''}${(stat.ret * 100).toFixed(2)}%`}
-            </b>
-          </div>
-          <div>
-            最大回撤 <b className="text-slate-700 dark:text-slate-200">{(stat.mdd * 100).toFixed(2)}%</b>
-          </div>
-          <div className="text-slate-400">
-            {stat.from} ~ {stat.to}（{stat.n} 点）
-          </div>
-        </div>
-      )}
     </div>
   )
 }
