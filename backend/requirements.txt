@@ -8,6 +8,13 @@ numpy
 pandas
 pyarrow
 
+# 交易信号测试：上传 XLSX / XLS 需要的 Excel 引擎（v1.19.46 起）
+# ⚠ 本机开发环境早就有它们，CI 的 pip 列表里原先没有 ⇒ 2026-09-15 那次 push CI 直接红
+#   （`ModuleNotFoundError: No module named 'openpyxl'`）。运行时缺失只会得到友好报错，
+#   但**依赖必须声明**，别只在本机装着。
+openpyxl>=3.0        # .xlsx
+xlrd>=2.0            # .xls（老格式）
+
 # 回测模型（qlib 环境已装，如缺失可取消注释）
 lightgbm>=3.0
 

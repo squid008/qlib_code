@@ -1228,8 +1228,10 @@ export default function App() {
             onUpdate={updateModelParam}
           />
 
-          {/* 交易信号测试面板（独立整行，收起来=CSS 隐藏而非卸载：上传的文件与结果都保留） */}
-          <div id="signal-test-panel" className={showSignalTestPanel ? '' : 'hidden'}>
+          {/* 交易信号测试面板（独立整行，收起来=CSS 隐藏而非卸载：上传的文件与结果都保留）
+              ⚠ v1.19.47：与上方「模型超参数」提示之间要留距离 —— 用户反馈"挨太近了"，
+                 所以展开时给 `mt-6`（收起时仍是纯 hidden，不留空档）。 */}
+          <div id="signal-test-panel" className={showSignalTestPanel ? 'mt-6' : 'hidden'}>
             <SignalTestPanel />
           </div>
 

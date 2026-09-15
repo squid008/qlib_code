@@ -3,6 +3,28 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.47] - 2026-09-15
+
+### Fixed
+- **CI 变红（`ModuleNotFoundError: No module named 'openpyxl'`）**：v1.19.46 加了 xlsx 支持，
+  本机环境**早就有** openpyxl/xlrd，但 **CI 的 pip 列表里没有**、`backend/requirements.txt` 也没声明
+  ⇒ CI 上 `test_parse_xlsx_with_multi_code_cells` 直接红（`gh run view --log-failed` 确认：
+  `1 failed, 268 passed`）。三处一起补齐：
+  1. `.github/workflows/ci.yml`：pip 列表加 `openpyxl xlrd`（**别只在本机装着**）；
+  2. `backend/requirements.txt`：声明 `openpyxl>=3.0`（xlsx）/ `xlrd>=2.0`（老 xls），并注明运行时缺失
+     只会得到友好报错、但**依赖必须声明**；
+  3. 测试改 `pytest.importorskip("openpyxl")`：环境真缺引擎时**跳过而不是失败**（依赖缺失是环境问题，
+     不该让 CI 红）。已用本地模拟验证：真缺模块 ⇒ `268 passed, 1 skipped`（pytest 9.1.1 只把
+     "模块确实不存在"当 skip，自定义 ImportError 仍算失败——这正是我们想要的严格性）。
+- **面板与上方文字挨太近**：`App.tsx` 里「交易信号测试」面板紧贴在 `ModelParamsForm` 的提示
+  （"提示：深度过深 / 叶子数过多…"）下面（两者同为 `<section>` 的直接子元素，**中间原本 0 间距**）
+  ⇒ 展开时给面板容器加 `mt-6`（收起时仍是纯 `hidden`，不留空档）。
+
+### 验证
+- 本地：`pytest -m "not datareq"` **269 passed**、模拟无 openpyxl **268 passed + 1 skipped**、ruff 0、前端 `tsc` 0；
+  push 后 **CI 两个 job 全绿**（`gh run watch` 确认）。
+- 版本 1.19.46 → 1.19.47。
+
 ## [1.19.46] - 2026-09-15
 
 ### Added

@@ -231,7 +231,12 @@ def test_split_multi_codes():
 
 
 def test_parse_xlsx_with_multi_code_cells(tmp_path):
-    """xlsx：真实 Excel 日期对象 + 一格多只 ⇒ 拆成多条信号（用户 2026-09-15 要求支持 XLSX）。"""
+    """xlsx：真实 Excel 日期对象 + 一格多只 ⇒ 拆成多条信号（用户 2026-09-15 要求支持 XLSX）。
+
+    ⚠ 没有 Excel 引擎的环境**跳过**而不是报错：依赖缺失是环境问题，不该让整个 CI 红
+      （2026-09-15 CI 就是这么红了一次 —— 本机有 openpyxl，CI 的 pip 列表里没有）。
+    """
+    pytest.importorskip("openpyxl", reason="缺 openpyxl（见 backend/requirements.txt）")
     from openpyxl import Workbook
 
     wb = Workbook()
