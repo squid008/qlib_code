@@ -987,7 +987,7 @@ export default function SignalTestPanel() {
                 </span>
                 {appliedHold != null && appliedHold !== horizon && (
                   <span className="text-[11px] text-amber-600">
-                    净值按 {appliedHold} 天 · 下方事件研究（k 图/锚点）仍按 {horizon} 天
+                    净值按 {appliedHold} 天 · 上方事件研究（k 图/锚点）仍按 {horizon} 天
                   </span>
                 )}
                 {navInfo && (
