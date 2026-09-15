@@ -906,6 +906,7 @@ export default function SignalTestPanel() {
               focus={navFocus}
               hidden={hidden}
               onToggle={toggleSeries}
+              statKey={navFocus || navKeys[0]}
               height={300}
             />
           </div>
@@ -1019,6 +1020,7 @@ export default function SignalTestPanel() {
               dashOf={navDash}
               hidden={hidden}
               onToggle={toggleSeries}
+              statKey={navKeys[0]}
               height={320}
             />
           </div>
@@ -1144,6 +1146,7 @@ export default function SignalTestPanel() {
               dashOf={navDash}
               hidden={hidden}
               onToggle={toggleSeries}
+              statKey={navKeys.includes('nav_exact') ? 'nav_exact' : navKeys[0]}
               height={320}
             />
           </div>

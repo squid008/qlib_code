@@ -44,6 +44,39 @@ interface Props {
   format?: (v: any) => string
   /** 至少保留多少个点（防止缩到没有） */
   minSpan?: number
+  /** 右上角"区间收益 / 最大回撤"要算哪条曲线（不给就不显示该角标） */
+  statKey?: string
+}
+
+/**
+ * Y 轴"好看"的刻度步长阶梯（优先整数/0.5/0.25/0.1…）。
+ *
+ * 用户 2026-09-15：「缩放的时候纵坐标轴搞成整数吧？或者 0.5 这样，不然都是小数看着很费劲」。
+ * ⚠ 缩到很窄的区间时（比如净值只在 1.02~1.06）**必须允许小数**（否则只剩 1 个刻度、反而看不懂），
+ *   所以做法是"从粗到细挑第一个能给出 2~8 个刻度的档位"，而不是硬取整。
+ */
+const NICE_STEPS = [
+  0.001, 0.002, 0.005, 0.01, 0.02, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5,
+  1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000,
+]
+
+function niceTicks(lo: number, hi: number, target = 6): number[] {
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return []
+  const rough = (hi - lo) / Math.max(2, target)
+  const step = NICE_STEPS.find((s) => s >= rough) ?? rough
+  const start = Math.ceil(lo / step - 1e-9) * step
+  const out: number[] = []
+  for (let i = 0; i < 24; i += 1) {
+    const v = start + i * step
+    if (v > hi + 1e-9) break
+    out.push(Number(v.toFixed(6)))
+  }
+  return out
+}
+
+function tickText(v: number): string {
+  if (Math.abs(v) >= 1000) return v.toFixed(0)
+  return String(Number(v.toFixed(3)))
 }
 
 export default function ZoomableLineChart({
@@ -59,12 +92,15 @@ export default function ZoomableLineChart({
   xKey = 'date',
   format,
   minSpan = 6,
+  statKey,
 }: Props) {
   const n = data.length
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const [win, setWin] = useState<[number, number]>([0, Math.max(0, n - 1)])
   const [dragging, setDragging] = useState(false)
   const dragRef = useRef<{ x: number; a: number; b: number } | null>(null)
+  const rafRef = useRef<number | null>(null)
+  const pendingRef = useRef<{ fx: number; dir: number } | null>(null)
 
   // 数据换了（新结果/换文件）⇒ 重置到全区间（否则会停在上一轮的缩放窗口）
   const sig = `${n}|${String(data[0]?.[xKey] ?? '')}|${String(data[n - 1]?.[xKey] ?? '')}`
@@ -88,25 +124,43 @@ export default function ZoomableLineChart({
   useEffect(() => {
     const el = wrapRef.current
     if (!el || n < minSpan * 2) return
+    // ⚠ 滚轮事件可能一帧来很多次（触摸板尤其）：用 `requestAnimationFrame` **合并到每帧一次**，
+    //   否则每个事件都触发一次 Recharts 重渲染 ⇒ 拖手感变卡（也比"节流 100ms"更顺滑）。
     const onWheel = (ev: WheelEvent) => {
       ev.preventDefault()
       const rect = el.getBoundingClientRect()
-      const fx = Math.min(1, Math.max(0, (ev.clientX - rect.left) / Math.max(1, rect.width - 56)))
-      setWin(([a, b]) => {
-        const span = b - a
-        const want = Math.round(span * (ev.deltaY < 0 ? 0.78 : 1.28))
-        const newSpan = Math.max(minSpan, Math.min(n - 1, want))
-        if (newSpan === span) return [a, b]
-        const anchor = a + fx * span
-        return clampWin(anchor - fx * newSpan, anchor - fx * newSpan + newSpan)
+      pendingRef.current = {
+        fx: Math.min(1, Math.max(0, (ev.clientX - rect.left) / Math.max(1, rect.width - 56))),
+        dir: ev.deltaY < 0 ? -1 : 1,
+      }
+      if (rafRef.current != null) return
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null
+        const p = pendingRef.current
+        if (!p) return
+        setWin(([a, b]) => {
+          const span = b - a
+          const want = Math.round(span * (p.dir < 0 ? 0.78 : 1.28))
+          const newSpan = Math.max(minSpan, Math.min(n - 1, want))
+          if (newSpan === span) return [a, b]
+          const anchor = a + p.fx * span
+          return clampWin(anchor - p.fx * newSpan, anchor - p.fx * newSpan + newSpan)
+        })
       })
     }
     el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
+    return () => {
+      el.removeEventListener('wheel', onWheel)
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
   }, [n, minSpan, clampWin])
 
   const onMouseDown = (e: React.MouseEvent) => {
     if (n === 0) return
+    // ⚠ 必须 preventDefault：否则拖动时会把坐标轴文字/日期文字**选成蓝色高亮**
+    //   （用户 2026-09-15："底下的日期文字和纵坐标轴容易被选中"）+ 容器样式再配 `select-none`。
+    e.preventDefault()
     dragRef.current = { x: e.clientX, a: win[0], b: win[1] }
     setDragging(true)
   }
@@ -126,8 +180,8 @@ export default function ZoomableLineChart({
 
   const view = useMemo(() => data.slice(win[0], win[1] + 1), [data, win])
 
-  /** Y 轴范围按**可见切片**重算（"缩放到局部要自适应高度"）。 */
-  const yDomain = useMemo(() => {
+  /** Y 轴范围按**可见切片**重算（"缩放到局部要自适应高度"），刻度用"好看"的步长。 */
+  const { yDomain, yTicks } = useMemo(() => {
     let lo = Infinity
     let hi = -Infinity
     for (const row of view) {
@@ -140,14 +194,45 @@ export default function ZoomableLineChart({
         }
       }
     }
-    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return ['auto', 'auto'] as any
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+      return { yDomain: ['auto', 'auto'] as any, yTicks: undefined as number[] | undefined }
+    }
     if (hi === lo) {
       const d = Math.abs(hi) * 0.02 || 0.01
-      return [lo - d, hi + d] as any
+      return { yDomain: [lo - d, hi + d] as any, yTicks: undefined }
     }
     const pad = (hi - lo) * 0.06
-    return [lo - pad, hi + pad] as any
+    return { yDomain: [lo - pad, hi + pad] as any, yTicks: niceTicks(lo, hi) }
   }, [view, keys, hidden])
+
+  /** 右上角角标：**当前可见区间**的区间收益 / 最大回撤（跟随缩放变动）。
+   *
+   * 性能：这里只对**可见切片**做一次 O(点数) 扫描（最多几千点）⇒ 微秒级；
+   * 真正花时间的是 Recharts 重绘本身，与这个角标无关。滚轮已用 rAF 合并 ⇒ 每帧最多重算一次。
+   */
+  const stat = useMemo(() => {
+    if (!statKey) return null
+    const vals: number[] = []
+    for (const row of view) {
+      const v = row[statKey]
+      if (typeof v === 'number' && Number.isFinite(v)) vals.push(v)
+    }
+    if (vals.length < 2) return null
+    let peak = vals[0]
+    let mdd = 0
+    for (const v of vals) {
+      if (v > peak) peak = v
+      const dd = v / peak - 1
+      if (dd < mdd) mdd = dd
+    }
+    return {
+      ret: vals[vals.length - 1] / vals[0] - 1,
+      mdd,
+      n: vals.length,
+      from: String(view[0]?.[xKey] ?? ''),
+      to: String(view[view.length - 1]?.[xKey] ?? ''),
+    }
+  }, [view, statKey, xKey])
 
   const zoomed = win[0] > 0 || win[1] < n - 1
   const fmt = format ?? ((v: any) => (v == null ? '-' : Number(v).toFixed(4)))
@@ -176,18 +261,28 @@ export default function ZoomableLineChart({
       </div>
       <div
         ref={wrapRef}
+        /* ⚠ `select-none` + 拖动时 `preventDefault`：否则拖动会选中坐标轴/日期文字（用户反馈） */
+        className="select-none"
         style={{ cursor: dragging ? 'grabbing' : 'grab' }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={endDrag}
         onMouseLeave={endDrag}
+        onDragStart={(e) => e.preventDefault()}
         onDoubleClick={() => setWin([0, Math.max(0, n - 1)])}
       >
         <ResponsiveContainer width="100%" height={height}>
           <LineChart data={view} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey={xKey} tick={{ fontSize: 10 }} minTickGap={40} />
-            <YAxis tick={{ fontSize: 11 }} domain={yDomain} allowDataOverflow width={56} />
+            <YAxis
+              tick={{ fontSize: 11 }}
+              domain={yDomain}
+              ticks={yTicks}
+              tickFormatter={(v: number) => tickText(v)}
+              allowDataOverflow
+              width={56}
+            />
             <Tooltip formatter={fmt} />
             <Legend
               wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
@@ -210,6 +305,26 @@ export default function ZoomableLineChart({
           </LineChart>
         </ResponsiveContainer>
       </div>
+      {/* 右上角角标：**当前可见区间**的区间收益 / 最大回撤（跟随缩放实时变动）。
+          · 红涨绿跌（A 股习惯）；`pointer-events-none` ⇒ 不会挡住拖动/缩放。
+          · 计算只扫可见切片（微秒级），不是性能瓶颈；滚轮已用 rAF 合并到每帧一次。 */}
+      {stat && (
+        <div className="pointer-events-none absolute right-3 top-7 z-10 rounded border border-slate-200 bg-white/90 px-2 py-1 text-[11px] leading-snug shadow-sm dark:border-slate-700 dark:bg-slate-900/90">
+          <div className="text-slate-500">{statKey ? labelOf(statKey) : ''}（当前区间）</div>
+          <div>
+            区间收益{' '}
+            <b className={stat.ret >= 0 ? 'text-red-600' : 'text-emerald-600'}>
+              {`${stat.ret >= 0 ? '+' : ''}${(stat.ret * 100).toFixed(2)}%`}
+            </b>
+          </div>
+          <div>
+            最大回撤 <b className="text-slate-700 dark:text-slate-200">{(stat.mdd * 100).toFixed(2)}%</b>
+          </div>
+          <div className="text-slate-400">
+            {stat.from} ~ {stat.to}（{stat.n} 点）
+          </div>
+        </div>
+      )}
     </div>
   )
 }
