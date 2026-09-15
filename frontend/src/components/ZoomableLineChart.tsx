@@ -3,6 +3,8 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceDot,
+  ReferenceLine,
   ResponsiveContainer,
   XAxis,
   YAxis,
@@ -316,6 +318,10 @@ export default function ZoomableLineChart({
     }
   }, [view, statKey, xKey, win])
 
+  /** 安全的悬停下标：缩放/平移后 `hover` 可能落在切片之外 ⇒ 退回"最右端"（别显示空值）。 */
+  const hIdx = hover != null && hover < view.length ? hover : null
+  const hRow = hIdx != null ? view[hIdx] : view[view.length - 1]
+
   /** 读数列的数值格式（用户要求：**三位小数**就够）。 */
   const fmt = format ?? ((v: any) => (v == null || !Number.isFinite(Number(v)) ? '-' : Number(v).toFixed(3)))
 
@@ -394,20 +400,47 @@ export default function ZoomableLineChart({
                 isAnimationActive={false}
               />
             ))}
+            {/* 移动锚点（用户 2026-09-15：「移动的锚点还是要加的，视觉效果好一点，不然鼠标移动
+                都不知道锚点在哪里」）：一条**竖向指示线** + 每条曲线在该 x 上的**圆点**。
+                ⚠ 用自己的 `hover` 下标画（不依赖 Recharts 的 activeDot —— 我们已不用 <Tooltip>，
+                  它的内部 active 索引不一定更新）。 */}
+            {hIdx != null && view[hIdx] && (
+              <>
+                <ReferenceLine x={view[hIdx][xKey]} stroke="#94a3b8" strokeDasharray="3 3" />
+                {keys.map((k, i) => {
+                  if (hidden?.[k]) return null
+                  const v = view[hIdx]?.[k]
+                  return typeof v === 'number' && Number.isFinite(v) ? (
+                    <ReferenceDot
+                      key={`dot-${k}`}
+                      x={view[hIdx][xKey]}
+                      y={v}
+                      r={3.5}
+                      fill={colorOf(k, i)}
+                      stroke="#fff"
+                      strokeWidth={1}
+                      isFront
+                    />
+                  ) : null
+                })}
+              </>
+            )}
           </LineChart>
         </ResponsiveContainer>
       </div>
 
-      {/* 读数列（v1.19.55 取代原来那个盖住曲线的 tooltip）：**标签在上、数值在下**，
-          每格间距拉开（`gap-x-6`）⇒ 上下自然对齐；点标签 = 隐藏/显示该曲线。
-          鼠标不在图上时显示**最右端**的值（即"当前净值"）。 */}
-      <div className="mt-1 flex flex-wrap items-start gap-x-6 gap-y-1 text-[11px] select-none">
-        <div className="text-slate-400 tabular-nums leading-tight">
-          {String((hover != null ? view[hover] : view[view.length - 1])?.[xKey] ?? '')}
-          <div className="text-slate-300 dark:text-slate-600">{hover != null ? '鼠标所指' : '最右端'}</div>
+      {/* 读数列（取代原来那个盖住曲线的 tooltip）：**上排是标签、下排全是可变值**，
+          整行**居中**放在图下方（用户 2026-09-15：要"底下都是可变值"、"整体挪到图的下方中央"）；
+          点标签 = 隐藏/显示该曲线。鼠标不在图上时显示**最右端**的值（即"当前净值"）。 */}
+      <div className="mt-1 flex flex-wrap items-start justify-center gap-x-6 gap-y-1 text-[11px] select-none">
+        <div className="flex flex-col items-start leading-tight text-left text-slate-500">
+          <span className="pl-3">{hIdx != null ? '鼠标所指' : '最右端'}</span>
+          <span className="tabular-nums text-slate-600 dark:text-slate-300 pl-3">
+            {String(hRow?.[xKey] ?? '')}
+          </span>
         </div>
         {keys.map((k, i) => {
-          const row = hover != null ? view[hover] : view[view.length - 1]
+          const row = hRow
           const v = row?.[k]
           const raw = (row as any)?.__raw?.[k]
           const dim = !!hidden?.[k]
