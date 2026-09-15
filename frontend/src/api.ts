@@ -764,3 +764,36 @@ export async function runSignalTest(req: SignalTestRequest): Promise<SignalTestR
   })
   return data
 }
+
+// ---------------------------------------------------------------------------
+// 单因子「事件研究」面板里的净值曲线（v1.19.60）
+//
+// 复用事件研究任务里已算好的**触发事件**与磁盘缓存的价格面板 ⇒ 只花"一次回测"的钱
+// （实测 0.12~0.6s/次，见 `ai_test/check_event_nav.py`）⇒ 持仓周期可以自己调、净值跟着变。
+// ---------------------------------------------------------------------------
+export interface EventNavRequest {
+  task_id: string
+  hold_days: number
+  cost?: number
+  capital?: number
+  benchmark?: string
+  /** 单因子测试任务里按**因子表达式**存触发事件（"秒开"路径没有独立事件研究任务） */
+  factor_id?: string
+}
+
+export interface EventNavResult {
+  hold_days: number
+  nav: Record<string, number | string | null>[]
+  stats: Record<string, Record<string, any>>
+  diag: Record<string, any>
+  nav_columns: string[]
+  alloc_default: string
+  timings: Record<string, number>
+}
+
+export async function runEventNav(req: EventNavRequest): Promise<EventNavResult> {
+  const { data } = await http.post<EventNavResult>('/factors/event-study/nav', req, {
+    timeout: 600000,
+  })
+  return data
+}

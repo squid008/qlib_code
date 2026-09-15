@@ -1663,6 +1663,8 @@ export default function SingleFactorTestPanel({
           data={estData}
           pair={estPair}
           defaultK={estK}
+          /* v1.19.60：净值曲线要复用**本任务**里已算好的触发事件（"秒开"路径没有独立事件研究任务） */
+          sourceTaskId={taskIdRef.current}
         />
       </EsErrorBoundary>
 

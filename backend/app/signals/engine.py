@@ -436,3 +436,19 @@ def attach_benchmark(nav: pd.DataFrame, bench_wide: Optional[pd.DataFrame],
     out = nav.copy()
     out["benchmark"] = (b / base).astype(float)
     return out
+
+
+def nav_rows(nav: pd.DataFrame) -> list:
+    """净值宽表 → Recharts 友好的行数组（列名即曲线名；NaN → None，前端断线不猜数）。
+
+    ⚠ 由 `routers/signal_test.py` 移到这里（v1.19.60）：单因子「事件研究」面板也要画净值曲线
+      ⇒ 序列化**只留一份**，避免两条路径各写一套（本项目最忌讳的格式/口径分叉）。
+    """
+    rows = []
+    for d, row in nav.iterrows():
+        rec = {"date": str(pd.Timestamp(d).date())}
+        for c in nav.columns:
+            v = row[c]
+            rec[str(c)] = None if not pd.notna(v) else round(float(v), 5)
+        rows.append(rec)
+    return rows

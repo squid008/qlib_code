@@ -11,9 +11,11 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { cancelEventStudy, createEventStudy, getEventStudyProgress } from '../api'
-import type { EventStudyRequest, EventStudyResult } from '../api'
+import { cancelEventStudy, createEventStudy, getEventStudyProgress, runEventNav } from '../api'
+import type { EventNavResult, EventStudyRequest, EventStudyResult } from '../api'
 import { excessThresholdOf, isValidAt, isReverseValidAt, pairStabilityOf } from './verdictRules'
+import { navColor, navDash, navLabel } from './navSeries'
+import ZoomableLineChart from './ZoomableLineChart'
 
 interface Props {
   open: boolean
@@ -34,6 +36,11 @@ interface Props {
    * 这类多周期下会出现「点"周期 3"那行、弹窗却默认显示 7 日口径」的问题（用户报）。
    */
   defaultK?: number | null
+  /**
+   * 单因子测试任务 id（v1.19.60）：该任务的触发事件已按因子表达式存在后端状态里
+   * ⇒ 「净值曲线」可以直接复用（无需重算因子、无需独立事件研究任务）。
+   */
+  sourceTaskId?: string | null
 }
 
 type EstStatus = 'idle' | 'running' | 'success' | 'failed' | 'cancelled'
@@ -89,6 +96,7 @@ export default function EventStudyModal({
   data,
   pair,
   defaultK,
+  sourceTaskId,
 }: Props) {
   const [status, setStatus] = useState<EstStatus>('idle')
   const [progress, setProgress] = useState(0)
@@ -114,6 +122,58 @@ export default function EventStudyModal({
     if (typeof key !== 'string' || !key) return
     setHidden((h) => ({ ...h, [key]: !h[key] }))
   }, [])
+
+  // ---- 净值曲线（v1.19.60）：复用任务里已算好的触发事件 + 缓存价格面板，只花"一次回测"的钱
+  //      （实测 0.12~0.6s/次）⇒ 持仓周期可自己调、净值跟着变；按 k 缓存 ⇒ 来回改秒开。
+  const [navK, setNavK] = useState<number | null>(null)
+  const [navCost, setNavCost] = useState(0.004)
+  const [navRes, setNavRes] = useState<EventNavResult | null>(null)
+  const [navBusy, setNavBusy] = useState(false)
+  const [navErr, setNavErr] = useState('')
+  const navCacheRef = useRef<Map<string, EventNavResult>>(new Map())
+
+  // 净值曲线：默认持仓周期 = 当前展示的 k；按 (k, cost) 缓存 ⇒ 来回改秒开。
+  useEffect(() => {
+    if (!result) return
+    navCacheRef.current.clear()
+    const last = result.curve?.length ? result.curve[result.curve.length - 1].k : null
+    setNavK(defaultK ?? last ?? 20)
+    setNavRes(null)
+    setNavErr('')
+  }, [result, defaultK])
+
+  useEffect(() => {
+    if (!result || navK == null) return
+    const tid = sourceTaskId || taskRef.current
+    if (!tid) {
+      setNavErr('净值曲线需要任务上下文（请点上方"重新计算"后再用）')
+      return
+    }
+    const key = `${navK}|${navCost}`
+    const hit = navCacheRef.current.get(key)
+    if (hit) {
+      setNavRes(hit)
+      setNavErr('')
+      return
+    }
+    const expr = (req?.factor as { expression?: string } | undefined)?.expression
+    setNavBusy(true)
+    setNavErr('')
+    const timer = window.setTimeout(() => {
+      runEventNav({ task_id: tid, hold_days: navK, cost: navCost, factor_id: expr })
+        .then((r) => {
+          navCacheRef.current.set(key, r)
+          setNavRes(r)
+        })
+        .catch((e) => {
+          const d = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+          setNavErr(d || (e instanceof Error ? e.message : String(e)))
+          setNavRes(null)
+        })
+        .finally(() => setNavBusy(false))
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [result, navK, navCost, sourceTaskId, req])
 
   const taskRef = useRef<string | null>(null)
   const timerRef = useRef<number | null>(null)
@@ -814,6 +874,73 @@ export default function EventStudyModal({
                 )}
               </div>
             )}
+
+            {/* 净值曲线（v1.19.60）：用**任务里已算好的触发事件** + 缓存价格面板跑一次回测
+                （实测 0.12~0.6s/次）⇒ 持仓周期可以自己调、净值跟着变；按 k 缓存 ⇒ 往回改秒开。 */}
+            <div className="border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
+              <div className="flex flex-wrap items-center gap-3 text-xs mb-1">
+                <span className="text-slate-500">净值曲线（两种资金方案 + 基准）</span>
+                <label className="flex items-center gap-1 text-slate-500">
+                  持仓周期
+                  <input
+                    type="number"
+                    min={1}
+                    max={250}
+                    className="w-16 border rounded px-1 py-0.5"
+                    value={navK ?? ''}
+                    onChange={(e) => setNavK(Math.max(1, Math.min(250, Number(e.target.value))))}
+                  />
+                  天
+                </label>
+                <label className="flex items-center gap-1 text-slate-500">
+                  成本（往返）
+                  <input
+                    type="number"
+                    step={0.0005}
+                    min={0}
+                    className="w-20 border rounded px-1 py-0.5"
+                    value={navCost}
+                    onChange={(e) => setNavCost(Number(e.target.value))}
+                  />
+                </label>
+                {navBusy && <span className="text-sky-600">计算中…</span>}
+                {navRes && !navBusy && (
+                  <span className="text-slate-400">
+                    取价 {navRes.timings?.prices}s + 回测 {navRes.timings?.backtest}s（按持仓周期缓存，改回去秒开）
+                  </span>
+                )}
+              </div>
+              {navErr ? (
+                <div className="text-slate-400 text-xs">净值曲线暂不可用：{navErr}</div>
+              ) : navRes ? (
+                <>
+                  <ZoomableLineChart
+                    data={navRes.nav}
+                    keys={navRes.nav_columns}
+                    labelOf={navLabel}
+                    colorOf={navColor}
+                    dashOf={navDash}
+                    focus={navRes.alloc_default}
+                    hidden={hidden}
+                    onToggle={toggleSeries}
+                    statKey={navRes.alloc_default}
+                    height={240}
+                  />
+                  <div className="flex flex-wrap gap-x-6 gap-y-1 text-[11px] text-slate-400 mt-1">
+                    {Object.entries(navRes.stats ?? {}).map(([m, st]: [string, any]) => (
+                      <span key={m}>
+                        {navLabel(m)}：期末 <b className="text-slate-600 dark:text-slate-300">{st.final_nav}</b>
+                        　最大回撤 {pct(st.perf?.max_drawdown, 1)}
+                        　成交 {st.trades} 笔
+                        {st.rejects_no_cash ? `（资金不足被拒 ${st.rejects_no_cash}）` : ''}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="text-slate-400 text-xs">（选好持仓周期后自动计算；首次约 0.1~0.6s）</div>
+              )}
+            </div>
 
             <div className="grid grid-cols-2 gap-3">
               {/* 概率表 */}

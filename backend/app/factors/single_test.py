@@ -1199,6 +1199,7 @@ def run_single_factor_tests(
     quantiles: int = 10,
     rebalance_period: Optional[int] = None,
     topk_list: Optional[list] = None,
+    events_out: Optional[Dict] = None,   # 出参：0/1 因子的**触发事件**（键=表达式）⇒ 供净值曲线复用
 ) -> Dict[int, list]:
     """多预测周期单因子测试：所有周期【共享一次特征加载】，再逐周期分别统计。
 
@@ -1588,6 +1589,11 @@ def run_single_factor_tests(
                                 "code": trig_out[0].get_level_values(es_inst).astype(str).values,
                                 "dt": pd.to_datetime(trig_out[0].get_level_values(es_dt)).values,
                             })
+                            # v1.19.60：把触发事件**带出去**（键 = 因子表达式）⇒ 路由层存进任务状态，
+                            # 供「事件研究」弹窗里的净值曲线复用（不然"秒开"路径没有任务 id、拿不到事件）。
+                            # ⚠ 不进 HTTP 响应（几万行会撑大结果）。
+                            if events_out is not None:
+                                events_out[str(f.get("expression") or col_name)] = _ev
                             _es = build_event_stats(_px, _ev, es_k)
                             # 补参数信息：前端头部展示用，并据此判断「最长持有」是否需要重算
                             _es["params"] = {

@@ -19,7 +19,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException
 
 from ..factors.benchmark_curves import BENCHMARKS, BENCH_NAMES
-from ..signals.engine import attach_benchmark, run_backtest
+from ..signals.engine import attach_benchmark, nav_rows as _nav_rows, run_backtest
 from ..signals.event import coverage, normalize_events, run_event_study
 from ..signals.models import SignalTestRequest
 from ..signals.parsers import parse_csv
@@ -48,16 +48,8 @@ ALLOCS = (
 )
 
 
-def _nav_rows(nav: pd.DataFrame) -> List[Dict]:
-    """净值宽表 → Recharts 友好的行数组（列名即曲线名；NaN → None，前端断线不猜数）。"""
-    rows = []
-    for d, row in nav.iterrows():
-        rec = {"date": str(pd.Timestamp(d).date())}
-        for c in nav.columns:
-            v = row[c]
-            rec[str(c)] = None if not pd.notna(v) else round(float(v), 5)
-        rows.append(rec)
-    return rows
+# ⚠ `_nav_rows` 已移到 `signals/engine.nav_rows`（v1.19.60）—— 单因子「事件研究」面板也要画
+#   净值曲线 ⇒ 序列化只留一份。上面用 import 别名，调用点一行都不用改。
 
 
 def _records(df: Optional[pd.DataFrame], cap: int = 1500) -> List[Dict]:

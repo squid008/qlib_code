@@ -691,4 +691,8 @@ def run_event_study(
         **stats,
         # 基准（未触发组）/超额曲线；None 或 {"error": ...} 时前端自动隐藏对应图
         "baseline": baseline,
-    }
+        # ⚠ v1.19.60：把**触发事件**（date/code）**临时**带出去 —— 路由层会 `pop` 掉它存进任务状态，
+        #   供"净值曲线"端点复用（`/factors/event-study/nav`）；**绝不进 HTTP 响应**
+        #   （几万行会把事件研究结果撑大，而且前端也不需要）。
+        "_ev": ev,
+        }

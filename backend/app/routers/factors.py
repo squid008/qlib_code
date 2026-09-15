@@ -10,6 +10,7 @@ import time
 import uuid
 from typing import List, Optional
 
+import pandas as pd
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -486,6 +487,7 @@ def single_factor_test(req: SingleFactorTestRequest):
                     if state.get("cancel_requested"):
                         raise FactorTestCancelled()
 
+                _evs: dict = {}          # 出参：0/1 因子的触发事件（键=因子表达式）
                 res = run_single_factor_tests(
                     label_horizons=horizons,
                     universe=req.universe,
@@ -508,8 +510,13 @@ def single_factor_test(req: SingleFactorTestRequest):
                     quantiles=quantiles,
                     rebalance_period=rebalance_period,
                     topk_list=topk_list,
+                    events_out=_evs,     # v1.19.60：0/1 因子的触发事件（键=表达式）⇒ 供净值曲线复用
                 )
                 with lock:
+                    if _evs:
+                        # ⚠ 不进 HTTP 响应（几万行会撑大结果）：存任务状态，供 /factors/event-study/nav 复用
+                        state["_evs"] = dict(_evs)
+                        state["_req"] = req.model_dump()
                     for h, rows in (res or {}).items():
                         per_h[h] = rows
                         if h not in done_set:
@@ -799,6 +806,11 @@ def event_study(req: EventStudyRequest):
                 state.update(status="failed", progress=100.0, message=res["error"],
                              error=res["error"], ts=time.time())
             else:
+                # ⚠ v1.19.60：触发事件（`_ev`）**不进 HTTP 响应**（几万行会把结果撑大、前端也不用），
+                #   存进任务状态供「净值曲线」端点复用（`/factors/event-study/nav`）；
+                #   同时留一份请求参数（取价需要区间）。
+                state["_ev"] = res.pop("_ev", None)
+                state["_req"] = req.model_dump()
                 state.update(status="success", progress=100.0, message="事件研究完成",
                              result=_json_safe(res), ts=time.time())
         except FactorTestCancelled:
@@ -811,6 +823,80 @@ def event_study(req: EventStudyRequest):
 
     threading.Thread(target=_run, daemon=True).start()
     return {"task_id": task_id}
+
+
+class EventNavRequest(BaseModel):
+    """「事件研究」面板里再画一条净值曲线（两种资金方案 + 基准）。"""
+    task_id: str
+    hold_days: int = 20
+    cost: float = 0.004
+    capital: float = 1e9
+    benchmark: str = "SH000300"
+    # ⚠ 两种来源：① 独立事件研究任务（`/event-study`）⇒ 用 `_ev`；
+    #   ② 单因子测试的"秒开"路径（弹窗直接用表格里的 event_study 结果，没有独立任务）
+    #      ⇒ 任务状态里存的是**按表达式分组**的 `_evs`，用因子表达式取。
+    factor_id: Optional[str] = None
+
+
+@router.post("/event-study/nav", summary="事件研究的净值曲线（两种资金方案 + 基准）")
+def event_study_nav(req: EventNavRequest):
+    """复用事件研究任务里**已经算好的触发事件**与磁盘缓存的价格面板，只花"一次回测"的钱。
+
+    ⚠ 为什么单开端点、不塞进事件研究任务：净值要**跟随持仓周期 k 变动** ⇒ 每次改 k 都得重跑一遍
+      回测（实测 0.34~0.59s/次，见 `ai_test/bench_event_nav.py`），不能一次算死。
+      触发事件与价格面板都复用现成的（事件存在任务状态、面板走 `feature_cache`）⇒ 单次请求 ~0.5~1s。
+    """
+    # 事件研究任务与单因子测试任务**共用这个 id 查询**（两类状态字典都认一下）
+    state = _est_get(req.task_id)
+    if state is None:
+        state = _sft_get(req.task_id)
+    if state is None or state.get("status") != "success":
+        raise HTTPException(status_code=404, detail="任务不存在或未完成（结果可能已被清理）")
+    rq = state.get("_req") or {}
+    ev = None
+    if req.factor_id:
+        ev = (state.get("_evs") or {}).get(req.factor_id)
+    if ev is None:
+        ev = state.get("_ev")
+    if ev is None or not len(ev):
+        raise HTTPException(status_code=400,
+                            detail="该任务的触发事件已释放，请重新跑一次事件研究/单因子测试再看净值曲线")
+    start, end = rq.get("start_date"), rq.get("end_date")
+    k = max(1, min(int(req.hold_days or 20), 250))
+    codes = sorted(ev["code"].astype(str).unique().tolist())
+    # 单向依赖：factors → signals（signals 侧不反向依赖 factors，无环）
+    from ..signals.engine import attach_benchmark, nav_rows, run_backtest
+    from ..signals.pricing import fill_limits, load_bench_wide, load_price_panel
+
+    timings: dict = {}
+    try:
+        t0 = time.perf_counter()
+        panel = load_price_panel(codes, start, end, need_open=True)
+        timings["prices"] = round(time.perf_counter() - t0, 3)
+        if "CLOSE" not in panel:
+            raise HTTPException(status_code=400, detail="取不到触发标的的行情数据")
+        panel = fill_limits(panel, strict=True)
+        t0 = time.perf_counter()
+        events = pd.DataFrame({"date": pd.to_datetime(ev["dt"]),
+                               "code": ev["code"].astype(str), "side": 1})
+        bt = run_backtest(events, panel, hold_days=k, fill="t1_open", cost=float(req.cost),
+                          capital=float(req.capital), strict_limit=True,
+                          alloc_modes=("event_even", "cash_even"))
+        timings["backtest"] = round(time.perf_counter() - t0, 3)
+        if bt.nav is None:
+            raise HTTPException(status_code=400, detail="回测没有产出净值：%s" % bt.diag.get("error"))
+        t0 = time.perf_counter()
+        bench = load_bench_wide([req.benchmark], start, end)
+        nav = attach_benchmark(bt.nav, bench, req.benchmark)
+        timings["benchmark"] = round(time.perf_counter() - t0, 3)
+        return {"hold_days": k, "nav": nav_rows(nav), "stats": bt.stats, "diag": bt.diag,
+                "nav_columns": [str(c) for c in nav.columns],
+                "alloc_default": "event_even", "timings": timings}
+    except HTTPException:
+        raise
+    except Exception as e:                                      # noqa: BLE001
+        # 这类失败基本都是数据侧问题（标的/区间/字段缺失）⇒ 给**可读原因**而不是裸 500
+        raise HTTPException(status_code=400, detail="净值计算失败：%s: %s" % (type(e).__name__, e))
 
 
 @router.get("/event-study/progress/{task_id}", summary="查询事件研究任务进度")
