@@ -208,9 +208,13 @@ export default function ZoomableLineChart({
    *  所以"按首值归一"在全区间会整体缩放。既然如此，就按他的预期来：
    *  **全区间一律显示原始净值（三档切换完全不变）**，缩放后才按所选口径重锚。 */
   const zoomed = win[0] > 0 || win[1] < n - 1
+  /** 只在**数据首点被裁掉**时才重锚（`win[0] > 0`）：
+   *  · 全区间 / 缩放到含起点的那段 ⇒ 显示原始净值（与角标的"自建仓起 1.0"口径一致）；
+   *  · 首点被裁掉 ⇒ 才按所选口径重锚（这就是"起点对齐"要解决的问题）。 */
+  const rebasing = win[0] > 0 && align !== 'none'
   const view = useMemo(() => {
     const slice = data.slice(win[0], win[1] + 1)
-    if (!zoomed || align === 'none' || slice.length < 2) return slice
+    if (!rebasing || slice.length < 2) return slice
     const firstOf = (k: string): number | null => {
       for (const row of slice) {
         const v = row[k]
@@ -258,10 +262,16 @@ export default function ZoomableLineChart({
     return { yDomain: [lo - pad, hi + pad] as any, yTicks: niceTicks(lo, hi) }
   }, [view, keys, hidden])
 
-  /** 右上角角标：**当前可见区间**的区间收益 / 最大回撤（跟随缩放变动）。
+  /** 左上角角标：**当前可见区间**的区间收益 / 最大回撤（跟随缩放变动）。
    *
-   * 性能：这里只对**可见切片**做一次 O(点数) 扫描（最多几千点）⇒ 微秒级；
-   * 真正花时间的是 Recharts 重绘本身，与这个角标无关。滚轮已用 rAF 合并 ⇒ 每帧最多重算一次。
+   * ⚠⚠ 起点口径（2026-09-15 用户抓出的 bug）：**净值序列的 1.0 是"建仓前"**，
+   *   不是**首行值** —— 首行已经含着首日盈亏（本例 2016-01-04 熔断日 −9%）。
+   *   用首行做分母会把累计收益算高：C 8.4992/0.9057−1 = 838% ✗，正确是 8.4992−1 = **749.9%** ✓。
+   *   **可用聚宽文件自证**：它末行 `策略收益 = 767.62%`，而 `nav = 8.6762` ⇒ 基点确实是 1.0 ✓。
+   *   ⇒ 规则：窗口**从数据首点开始**时基点取 **1.0**；缩放后（首点被裁掉）取**窗口首值**。
+   *
+   * 性能：只对**可见切片**做一次 O(点数) 扫描 ⇒ 微秒级；真正的成本是 Recharts 重绘本身。
+   * 滚轮已用 rAF 合并 ⇒ 每帧最多重算一次。
    */
   const stat = useMemo(() => {
     if (!statKey) return null
@@ -271,7 +281,10 @@ export default function ZoomableLineChart({
       if (typeof v === 'number' && Number.isFinite(v)) vals.push(v)
     }
     if (vals.length < 2) return null
-    let peak = vals[0]
+    // 原点 = 建仓前的 1.0（窗口只要还包含数据首点就用它）；首点被裁掉 ⇒ 退化为"窗口内相对收益"
+    const fromStart = win[0] === 0
+    const base = fromStart ? 1.0 : vals[0]
+    let peak = base                       // peak 初值 = base ⇒ 首日跌幅也计入最大回撤 ✓
     let mdd = 0
     for (const v of vals) {
       if (v > peak) peak = v
@@ -279,13 +292,14 @@ export default function ZoomableLineChart({
       if (dd < mdd) mdd = dd
     }
     return {
-      ret: vals[vals.length - 1] / vals[0] - 1,
+      ret: vals[vals.length - 1] / base - 1,
       mdd,
       n: vals.length,
+      fromStart,
       from: String(view[0]?.[xKey] ?? ''),
       to: String(view[view.length - 1]?.[xKey] ?? ''),
     }
-  }, [view, statKey, xKey])
+  }, [view, statKey, xKey, win])
 
   const fmt = format ?? ((v: any) => (v == null ? '-' : Number(v).toFixed(4)))
 
@@ -324,7 +338,7 @@ export default function ZoomableLineChart({
             ))}
           </select>
         </label>
-        {!zoomed && <span>（全区间：显示原始净值，切换上面这档不会变）</span>}
+        {!rebasing && <span>（含起点时显示原始净值，这档不生效；缩到首点之后才重锚）</span>}
       </div>
       <div
         ref={wrapRef}
@@ -391,9 +405,11 @@ export default function ZoomableLineChart({
           · 计算只扫可见切片（微秒级），不是性能瓶颈；滚轮已用 rAF 合并到每帧一次。 */}
       {stat && (
         <div className="pointer-events-none absolute left-16 top-7 z-10 rounded border border-slate-200 bg-white/90 px-2 py-1 text-[11px] leading-snug shadow-sm dark:border-slate-700 dark:bg-slate-900/90">
-          <div className="text-slate-500">{statKey ? labelOf(statKey) : ''}（当前区间）</div>
+          <div className="text-slate-500">
+            {statKey ? labelOf(statKey) : ''}（{stat.fromStart ? '自建仓起' : '当前区间'}）
+          </div>
           <div>
-            区间收益{' '}
+            {stat.fromStart ? '累计收益' : '区间收益'}{' '}
             <b className={stat.ret >= 0 ? 'text-red-600' : 'text-emerald-600'}>
               {`${stat.ret >= 0 ? '+' : ''}${(stat.ret * 100).toFixed(2)}%`}
             </b>
