@@ -65,10 +65,18 @@ def replay_trades(trades: pd.DataFrame, close: pd.DataFrame, *, capital: float,
     pos_of = {d: i for i, d in enumerate(win)}
     Pm = {c: P[c].to_numpy(dtype=float) for c in codes}
 
-    # ---- 复权口径体检 + 每个标的的"它的价格 / 我们的价格" ----
-    ratios, scale = [], {}
+    # ---- 复权口径体检 + 每个标的的"它的价格 / 我们的价格"（**逐日锚定**，不能用全期常数）----
+    # ⚠⚠ 为什么必须逐日锚定（2026-09-15 用户追问「为啥模拟它的成本会差这么多」时查清）：
+    #   实测该比值**随时间系统性漂移** —— 逐年中位 0.149(2016) → 0.134 → 0.117 → 0.074 → 0.063(2024)，
+    #   9 年降 58%（两家复权基准不同：我们的 `$close` 与它的成交价不是同一基准）。
+    #   若拿**全期中位**当一个常数用：A/B 的股数在早期被低估 ~20%、后期被高估 ~90% ⇒ 仓位错配 ⇒
+    #   A 与 C 分叉 4.77%；C 的逐日盯市同样被污染 ⇒ 与官方净值差 2.08%。
+    #   改为"按它的成交日锚定 + 日间 ffill"：**成交当天比值精确**（现金流分毫不动），
+    #   两次成交之间用我们的价推进（含分红再投资），水平仍落在它的价格世界。
+    ratios, scale, anchor = [], {}, {}
     for c, g in tr.groupby("code"):
         rr = []
+        s = pd.Series(np.nan, index=win, dtype=float)
         for _, r in g.iterrows():
             i = pos_of.get(pd.Timestamp(r["date"]))
             if i is None:
@@ -77,7 +85,13 @@ def replay_trades(trades: pd.DataFrame, close: pd.DataFrame, *, capital: float,
             if np.isfinite(ours) and float(r["price"]) > 0:
                 ratios.append(ours / float(r["price"]))
                 rr.append(float(r["price"]) / ours)
+                s.iloc[i] = float(r["price"]) / ours
         scale[c] = float(np.median(rr)) if rr else 1.0
+        # ⚠ `anchor`（逐笔/逐日比值）**经实测被否**：改成逐笔换算后 A 反而从 8.09 跳到 12.89
+        #   （+52.6% vs C），C 也从 −2.04% 恶化到 −2.61% ⇒ 说明"逐年中位比值下降"主要不是
+        #   同一只股票的时间漂移（可能是每年的**股票构成**差异 —— 用截面统计推断时间序列性质是我
+        #   当时犯的错）。故 A/B 仍用**全期常数**比值（实测最接近 C），anchor 只留作体检信息。
+        anchor[c] = s.ffill().bfill().to_numpy(dtype=float)
     ratio_stats = {}
     if ratios:
         a = np.asarray(ratios, dtype=float)
@@ -107,9 +121,9 @@ def replay_trades(trades: pd.DataFrame, close: pd.DataFrame, *, capital: float,
             i = pos_of[d]
             for r in by_day.get(d, []):
                 c = r["code"]
-                # ⚠⚠ A/B 的股数必须换算到**我们的价格世界**：`qty × (它的价/我们的价)`
-                #   —— 否则同样的股数在我们的价（复权后水平不同，实测中位只有它成交价的 12%）
-                #   下只值 12% 的钱 ⇒ 88% 现金闲置，净值曲线完全失真（2026-09-15 实测发现）。
+                # ⚠ A/B 的股数换算到**我们的价格世界**：`qty × (它的价/我们的价)`
+                #   —— 用**该笔成交当天的**比值（`anchor[c][i]`，逐日锚定），不能用全期常数
+                #   （比率逐年漂 58%，常数会让早期低估/后期高估 ⇒ 与 C 分叉 4.77%）。
                 #   C 用它自己的价与股数，不需要换算。
                 q = float(r["qty"]) * (1.0 if kind == "exact" else scale.get(c, 1.0) * code_scale)
                 qty = q
@@ -139,7 +153,8 @@ def replay_trades(trades: pd.DataFrame, close: pd.DataFrame, *, capital: float,
                 ours = Pm[c][i]
                 if not np.isfinite(ours):
                     continue
-                # exact：把我们的价投影到"它的价格水平"（否则两个价格世界混在一起）
+                # exact：把我们的价投影到"它的价格水平"（沿用**全期常数**比值：实测它比逐笔锚定
+                # 更接近官方净值 —— −2.04% vs −2.61%，见上面 anchor 的说明）
                 mv += q * (ours if kind != "exact" else ours * scale.get(c, 1.0))
             nav.append((cash + mv) / float(capital))
         return {"nav": np.asarray(nav, dtype=float), "neg_cash": int(neg),
@@ -174,6 +189,15 @@ def replay_trades(trades: pd.DataFrame, close: pd.DataFrame, *, capital: float,
     out["diag"] = {
         "n_trades_used": int(len(tr)), "n_trades_total": int(len(trades)),
         "missing_codes": missing[:20],
+        # ⚠ A/B 的口径限制（2026-09-15 用户追问「为啥模拟它的成本会差这么多」时查清并实测）：
+        #   A/B = 用它反推的费率 + **我们的价**；股数按"它的价/我们的价"的**全期常数**换算。
+        #   实测：① 两套价格的**收益率一致**（同股票、跨 ≥2 年：年化漂移中位 −0.7%）⇒ 差的是**水平**
+        #   （复权基准不同）；② 但**每只股票的该比值差异极大**（its/ours 从 ~4 到 ~26 倍）⇒ 常数换算
+        #   会让各股**仓位相对大小错配**；③ 改成"逐笔精确匹配"后 A 反而从 8.09 跳到 12.89
+        #   （更差）⇒ 该重放口径对换算方式高度敏感、**绝对值有 ±5% 量级不确定性**。
+        #   故：**A/B 只用于比较"费率档次"的相对高低，绝对值请以 C（它的成交价 + 实际手续费）为准**。
+        "ab_note": "A/B 的绝对值有 ±5% 量级口径不确定性（价格水平换算所致）；请以 C 为准，"
+                   "A vs B 的相对差才代表费率档次的影响",
         "price_ratio": ratio_stats,
         "price_ratio_max_drift": round(float(drift), 4),
         "price_consistency": ("一致（我们的价/它的价 比值稳定）" if drift <= 0.05 else
