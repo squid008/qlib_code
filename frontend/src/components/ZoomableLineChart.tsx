@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   CartesianGrid,
-  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
-  Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
@@ -114,6 +112,12 @@ export default function ZoomableLineChart({
   const rafRef = useRef<number | null>(null)
   const pendingRef = useRef<{ fx: number; dir: number } | null>(null)
   const [align, setAlign] = useState<AlignMode>('each')
+  /** 鼠标所指的数据点索引（`null` = 不在图上 ⇒ 读数列显示**最右端**的值）。
+   *
+   * ⚠ v1.19.55：不再用 Recharts 的 `<Tooltip>` —— 它那块浮层太大、正好挡住曲线
+   *   （用户：「鼠标移动的时候那个显示面板太大了，都挡住后面曲线了」）⇒ 改成**图例下方的读数列**
+   *   （标签在上、数值在下，3 位小数；起点对齐时附原始值）。索引由鼠标 X 自己算，不依赖 Recharts 内部状态。 */
+  const [hover, setHover] = useState<number | null>(null)
 
   // 数据换了（新结果/换文件）⇒ 重置到全区间（否则会停在上一轮的缩放窗口）
   const sig = `${n}|${String(data[0]?.[xKey] ?? '')}|${String(data[n - 1]?.[xKey] ?? '')}`
@@ -178,9 +182,20 @@ export default function ZoomableLineChart({
     setDragging(true)
   }
   const onMouseMove = (e: React.MouseEvent) => {
+    const rect = wrapRef.current?.getBoundingClientRect()
+    const span = win[1] - win[0] + 1              // 可见切片长度（此处还读不到下方的 `view`）
+    // ① 读数列：把鼠标 X 映射成可见切片里的下标（左轴 56px + 右边距 12px 要扣掉）
+    if (rect && span > 1) {
+      const fx = (e.clientX - rect.left - 56) / Math.max(1, rect.width - 56 - 12)
+      if (fx < -0.02 || fx > 1.02) {
+        setHover(null)
+      } else {
+        setHover(Math.round(Math.min(1, Math.max(0, fx)) * (span - 1)))
+      }
+    }
+    // ② 拖动平移
     const d = dragRef.current
     if (!d) return
-    const rect = wrapRef.current?.getBoundingClientRect()
     const w = Math.max(1, (rect?.width ?? 600) - 56)
     const shift = Math.round(((e.clientX - d.x) / w) * (d.b - d.a))
     const [na, nb] = clampWin(d.a - shift, d.b - shift)
@@ -301,12 +316,13 @@ export default function ZoomableLineChart({
     }
   }, [view, statKey, xKey, win])
 
-  const fmt = format ?? ((v: any) => (v == null ? '-' : Number(v).toFixed(4)))
+  /** 读数列的数值格式（用户要求：**三位小数**就够）。 */
+  const fmt = format ?? ((v: any) => (v == null || !Number.isFinite(Number(v)) ? '-' : Number(v).toFixed(3)))
 
   return (
     <div className="relative">
       <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400 mb-1">
-        <span>滚轮缩放 · 按住拖动平移</span>
+        <span>滚轮缩放 · 按住拖动平移 · 鼠标移动时下方读数（点标签可隐藏/显示）</span>
         <span>
           显示第 {win[0] + 1}~{win[1] + 1} 点 / 共 {n} 点
           {view.length >= 2 && (
@@ -364,23 +380,6 @@ export default function ZoomableLineChart({
               allowDataOverflow
               width={56}
             />
-            <Tooltip
-              /* 起点对齐时**同时给出原始净值**（用户问过"以 C 为准科不科学"——
-                 归一只是换刻度、不改信息；但会把"起点本身的水平差"藏起来，所以这里显式给原始值）。 */
-              formatter={(v: any, name: any, item: any) => {
-                const k = keys.find((kk) => labelOf(kk) === String(name)) ?? String(name)
-                const raw = item?.payload?.__raw?.[k]
-                const shown = fmt(v)
-                if (align !== 'none' && typeof raw === 'number' && Number.isFinite(raw)) {
-                  return `${shown}（原始 ${raw.toFixed(4)}）`
-                }
-                return shown
-              }}
-            />
-            <Legend
-              wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
-              onClick={(d) => onToggle?.((d as { dataKey?: string }).dataKey)}
-            />
             {keys.map((k, i) => (
               <Line
                 key={k}
@@ -398,6 +397,43 @@ export default function ZoomableLineChart({
           </LineChart>
         </ResponsiveContainer>
       </div>
+
+      {/* 读数列（v1.19.55 取代原来那个盖住曲线的 tooltip）：**标签在上、数值在下**，
+          每格间距拉开（`gap-x-6`）⇒ 上下自然对齐；点标签 = 隐藏/显示该曲线。
+          鼠标不在图上时显示**最右端**的值（即"当前净值"）。 */}
+      <div className="mt-1 flex flex-wrap items-start gap-x-6 gap-y-1 text-[11px] select-none">
+        <div className="text-slate-400 tabular-nums leading-tight">
+          {String((hover != null ? view[hover] : view[view.length - 1])?.[xKey] ?? '')}
+          <div className="text-slate-300 dark:text-slate-600">{hover != null ? '鼠标所指' : '最右端'}</div>
+        </div>
+        {keys.map((k, i) => {
+          const row = hover != null ? view[hover] : view[view.length - 1]
+          const v = row?.[k]
+          const raw = (row as any)?.__raw?.[k]
+          const dim = !!hidden?.[k]
+          return (
+            <button
+              key={k}
+              type="button"
+              title={`${labelOf(k)}：点一下隐藏/显示`}
+              onClick={() => onToggle?.(k)}
+              className={`flex flex-col items-start leading-tight text-left ${dim ? 'opacity-40' : ''}`}
+            >
+              <span className="flex items-center gap-1" style={{ color: colorOf(k, i) }}>
+                <span className="inline-block h-2 w-2 rounded-sm" style={{ background: colorOf(k, i) }} />
+                <span className={dim ? 'line-through' : ''}>{labelOf(k)}</span>
+              </span>
+              <span className="tabular-nums text-slate-600 dark:text-slate-300 pl-3">
+                {fmt(v)}
+                {rebasing && typeof raw === 'number' && Number.isFinite(raw)
+                  ? `（原始 ${raw.toFixed(3)}）`
+                  : ''}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+
       {/* 角标：**当前可见区间**的区间收益 / 最大回撤（跟随缩放实时变动）。
           · 位置在**左上角**（用户 2026-09-15：「好策略净值右边都比较高，放右边正好挡住」）；
             但 Y 轴宽 56px、刻度画在左边 ⇒ 从 `left-16`（64px）起，**不压刻度**。
