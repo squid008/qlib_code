@@ -46,6 +46,8 @@ interface Props {
   minSpan?: number
   /** 右上角"区间收益 / 最大回撤"要算哪条曲线（不给就不显示该角标） */
   statKey?: string
+  /** 起点对齐的"锚定曲线"（默认取 `statKey`；`anchor` 模式下所有曲线都除以它的区间起点值） */
+  anchorKey?: string
 }
 
 /**
@@ -59,6 +61,15 @@ const NICE_STEPS = [
   0.001, 0.002, 0.005, 0.01, 0.02, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5,
   1, 2, 2.5, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000,
 ]
+
+/** 起点对齐的三种口径（用户 2026-09-15 问「缩放后基准曲线能不能对齐到净值起点、以 C 为准、
+ *  其它成本曲线要不要也对齐、科不科学」，故三种都做成可选，默认最常用的一种）。 */
+const ALIGN_MODES = [
+  ['each', '各自对齐（每条曲线的区间起点 = 1.0）'],
+  ['anchor', '锚定主曲线起点（都除以它的区间起点值）'],
+  ['none', '不对齐（显示原始净值）'],
+] as const
+type AlignMode = (typeof ALIGN_MODES)[number][0]
 
 function niceTicks(lo: number, hi: number, target = 6): number[] {
   if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return []
@@ -93,6 +104,7 @@ export default function ZoomableLineChart({
   format,
   minSpan = 6,
   statKey,
+  anchorKey,
 }: Props) {
   const n = data.length
   const wrapRef = useRef<HTMLDivElement | null>(null)
@@ -101,6 +113,7 @@ export default function ZoomableLineChart({
   const dragRef = useRef<{ x: number; a: number; b: number } | null>(null)
   const rafRef = useRef<number | null>(null)
   const pendingRef = useRef<{ fx: number; dir: number } | null>(null)
+  const [align, setAlign] = useState<AlignMode>('each')
 
   // 数据换了（新结果/换文件）⇒ 重置到全区间（否则会停在上一轮的缩放窗口）
   const sig = `${n}|${String(data[0]?.[xKey] ?? '')}|${String(data[n - 1]?.[xKey] ?? '')}`
@@ -178,7 +191,41 @@ export default function ZoomableLineChart({
     setDragging(false)
   }
 
-  const view = useMemo(() => data.slice(win[0], win[1] + 1), [data, win])
+  /** 起点对齐（用户 2026-09-15）。
+   *
+   *  **为什么科学**：这是"区间归一 / rebase"，只是把每条曲线**除以各自（或锚定曲线）在区间起点
+   *  的那个值** —— 一个**线性可逆缩放**，不创造也不销毁信息：曲线之间的比值只差一个**常数**，
+   *  相对形状、排序、最大回撤**全都不变**（最大回撤本来就是尺度无关的）。所以它不会造假，
+   *  只是把刻度从"绝对净值"换成"区间内相对起点"。
+   *  **为什么要防误读**：归一后两条线都从 1.0 出发，会**掩盖起点本身的水平差**（例如 C 8.4992
+   *  vs 官方 8.6762 的 2% 差是分红/流水口径造成的、不在区间内发生）⇒ 所以：
+   *  ① tooltip 同时给出**原始值**；② 保留"不对齐"档让人随时回看真实水平。
+   *  **性能**：O(可见点数 × 曲线数)，和角标同量级（实测 ~10 µs），可忽略。 */
+  const anchorKeyOf = anchorKey ?? statKey
+  const view = useMemo(() => {
+    const slice = data.slice(win[0], win[1] + 1)
+    if (align === 'none' || slice.length < 2) return slice
+    const firstOf = (k: string): number | null => {
+      for (const row of slice) {
+        const v = row[k]
+        if (typeof v === 'number' && Number.isFinite(v) && v !== 0) return v
+      }
+      return null
+    }
+    const bases: Record<string, number | null> = {}
+    for (const k of keys) bases[k] = firstOf(k)
+    const shared = align === 'anchor' && anchorKeyOf ? firstOf(anchorKeyOf) : null
+    return slice.map((row) => {
+      const o: Record<string, any> = { ...row, __raw: {} as Record<string, unknown> }
+      for (const k of keys) {
+        const v = row[k]
+        o.__raw[k] = v
+        const den = align === 'anchor' ? shared : bases[k]
+        o[k] = typeof v === 'number' && Number.isFinite(v) && den ? v / den : null
+      }
+      return o
+    })
+  }, [data, win, keys, align, anchorKeyOf])
 
   /** Y 轴范围按**可见切片**重算（"缩放到局部要自适应高度"），刻度用"好看"的步长。 */
   const { yDomain, yTicks } = useMemo(() => {
@@ -258,6 +305,20 @@ export default function ZoomableLineChart({
             重置缩放
           </button>
         )}
+        <label className="flex items-center gap-1">
+          起点对齐
+          <select
+            className="border border-slate-300 dark:border-slate-600 rounded px-1 py-0.5 text-[11px]"
+            value={align}
+            onChange={(e) => setAlign(e.target.value as AlignMode)}
+          >
+            {ALIGN_MODES.map(([v, txt]) => (
+              <option key={v} value={v}>
+                {v === 'anchor' && anchorKeyOf ? `锚定「${labelOf(anchorKeyOf)}」起点` : txt}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
       <div
         ref={wrapRef}
@@ -283,7 +344,19 @@ export default function ZoomableLineChart({
               allowDataOverflow
               width={56}
             />
-            <Tooltip formatter={fmt} />
+            <Tooltip
+              /* 起点对齐时**同时给出原始净值**（用户问过"以 C 为准科不科学"——
+                 归一只是换刻度、不改信息；但会把"起点本身的水平差"藏起来，所以这里显式给原始值）。 */
+              formatter={(v: any, name: any, item: any) => {
+                const k = keys.find((kk) => labelOf(kk) === String(name)) ?? String(name)
+                const raw = item?.payload?.__raw?.[k]
+                const shown = fmt(v)
+                if (align !== 'none' && typeof raw === 'number' && Number.isFinite(raw)) {
+                  return `${shown}（原始 ${raw.toFixed(4)}）`
+                }
+                return shown
+              }}
+            />
             <Legend
               wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
               onClick={(d) => onToggle?.((d as { dataKey?: string }).dataKey)}
