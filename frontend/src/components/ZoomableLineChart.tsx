@@ -338,16 +338,6 @@ export default function ZoomableLineChart({
             </>
           )}
         </span>
-        {/* 重置缩放：位置在「缩放后起点对齐」**左边**（用户 2026-09-15 要求放回原位 —— 即 1c5e20c 挪动之前的布局） */}
-        {zoomed && (
-          <button
-            type="button"
-            className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
-            onClick={() => setWin([0, Math.max(0, n - 1)])}
-          >
-            重置缩放
-          </button>
-        )}
         <label className="flex items-center gap-1">
           缩放后起点对齐
           <select
@@ -362,6 +352,17 @@ export default function ZoomableLineChart({
             ))}
           </select>
         </label>
+        {/* 重置缩放紧挨「缩放后起点对齐」右边（v1.19.58 起的版式）。
+            ⚠ v1.19.67 我误当成"1c5e20c 之前的左边位置"滚过头了，v1.19.68 挪回这里。 */}
+        {zoomed && (
+          <button
+            type="button"
+            className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
+            onClick={() => setWin([0, Math.max(0, n - 1)])}
+          >
+            重置缩放
+          </button>
+        )}
       </div>
       <div
         ref={wrapRef}
