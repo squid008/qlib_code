@@ -48,16 +48,6 @@ interface Props {
   statKey?: string
   /** 起点对齐的"锚定曲线"（默认取 `statKey`；`anchor` 模式下所有曲线都除以它的区间起点值） */
   anchorKey?: string
-  /**
-   * 缩放后的**初始**对齐口径（默认 `each`）。
-   *
-   * ⚠ 什么时候该给 `anchor`（2026-09-15 用户追问「A 更便宜 ⇒ A 该更高，为啥算出 B 更强」后定的）：
-   *   **同一策略的几种记账口径之间比较**（A/B/C）必须用 `anchor` —— 它们只是费率不同、拿的是同一批股数，
-   *   `each` 会把"起点水平差（历史费用造成）"除掉、只留下"分母更小 ⇒ 百分比更大"的放大效应 ⇒ **排序反转**。
-   *   而 `anchor` 是**共同分母** ⇒ **保序** ⇒ 显示出来的高低永远与真实水平一致（费率越高越低）。
-   * ⚠ 但**策略 vs 基准/指数**这种"本来就不该同尺度"的对比仍应用 `each`（各自的区间涨幅才有意义）。
-   */
-  defaultAlign?: AlignMode
 }
 
 /**
@@ -115,7 +105,6 @@ export default function ZoomableLineChart({
   minSpan = 6,
   statKey,
   anchorKey,
-  defaultAlign = 'each',
 }: Props) {
   const n = data.length
   const wrapRef = useRef<HTMLDivElement | null>(null)
@@ -124,7 +113,7 @@ export default function ZoomableLineChart({
   const dragRef = useRef<{ x: number; a: number; b: number } | null>(null)
   const rafRef = useRef<number | null>(null)
   const pendingRef = useRef<{ fx: number; dir: number } | null>(null)
-  const [align, setAlign] = useState<AlignMode>(defaultAlign)
+  const [align, setAlign] = useState<AlignMode>('each')
   /** 鼠标所指的数据点索引（`null` = 不在图上 ⇒ 读数列显示**最右端**的值）。
    *
    * ⚠ v1.19.55：不再用 Recharts 的 `<Tooltip>` —— 它那块浮层太大、正好挡住曲线
@@ -349,6 +338,16 @@ export default function ZoomableLineChart({
             </>
           )}
         </span>
+        {/* 重置缩放：位置在「缩放后起点对齐」**左边**（用户 2026-09-15 要求放回原位 —— 即 1c5e20c 挪动之前的布局） */}
+        {zoomed && (
+          <button
+            type="button"
+            className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
+            onClick={() => setWin([0, Math.max(0, n - 1)])}
+          >
+            重置缩放
+          </button>
+        )}
         <label className="flex items-center gap-1">
           缩放后起点对齐
           <select
@@ -363,27 +362,6 @@ export default function ZoomableLineChart({
             ))}
           </select>
         </label>
-        {/* ⚠ 防误读（用户 2026-09-15 追问「A 更便宜 ⇒ A 应该更高，为啥算出 B 更强？」）：
-            「各自对齐」把**起点水平差**除掉后，百分比会因分母不同而**反转排序** ——
-            实测窗口 2024-09-18 起：A 水平 6.3022→9.0857（绝对 +2.7836）恒高于 B 5.5029→8.2296（+2.7267），
-            但各自归一后 B 49.55% > A 44.17% —— 因为 B 的起点被**窗口之前**的历史费用压低了 12.7%，
-            账户更小 ⇒ 同一批股数的盈亏落在更小分母上被放大。横向比 A/B/C 必须用「锚定」档。 */}
-        {rebasing && align === 'each' && (
-          <span className="text-[11px] text-amber-600">
-            各自对齐只比「单条曲线相对自己起点」的涨幅；起点水平不同的曲线不能横向比强弱（会反转排序），
-            横向比 A / B / C 请选「锚定主曲线起点」
-          </span>
-        )}
-        {/* 重置缩放放在「起点对齐」右边（用户 2026-09-15：把那句说明删掉，按钮挪到这里） */}
-        {zoomed && (
-          <button
-            type="button"
-            className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
-            onClick={() => setWin([0, Math.max(0, n - 1)])}
-          >
-            重置缩放
-          </button>
-        )}
       </div>
       <div
         ref={wrapRef}
