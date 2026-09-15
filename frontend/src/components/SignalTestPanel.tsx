@@ -223,6 +223,15 @@ export default function SignalTestPanel() {
 
   // 参数
   const [horizon, setHorizon] = useState(60)
+  /** 净值曲线自己的持有周期（v1.19.62，默认跟随上面「预测周期」）。
+   *
+   *  用户 2026-09-15：「交易信号测试里是不是也要搞成输入不同周期出来不同净值曲线的模式？」
+   *  ⇒ 净值区加一个周期选择器：改它**只重跑回测**（`backtest_only` 跳过事件研究那十几秒），
+   *     事件研究那两张 k 图**保持不动** —— 它们算的是面板里的「预测周期」，与净值周期是两件事，
+   *     所以界面上必须显式标出"净值按 X 天 / 事件研究按 Y 天"（口径分叉要写在明处）。 */
+  const [navHold, setNavHold] = useState(60)
+  const [navBusy, setNavBusy] = useState(false)
+  const [navInfo, setNavInfo] = useState('')
   const [fill, setFill] = useState('t1_open')
   const [cost, setCost] = useState(0.004)
   const [capital, setCapital] = useState(1e9)
@@ -317,6 +326,23 @@ export default function SignalTestPanel() {
     [pickPerf],
   )
 
+  /** 组装请求体 —— `run`（整套）与「净值周期」重算（只回测）**共用一份**，避免两处参数走偏。 */
+  const buildReq = useCallback(
+    (extra?: Partial<SignalTestRequest>): SignalTestRequest => ({
+      content_b64: b64,
+      filename: fileName,
+      perf_b64: perfB64 || undefined,
+      cost, benchmark, horizon, fill, capital,
+      strict_limit: strictLimit,
+      rebal_band: rebalBand,
+      pool,
+      jq_capital: typeof jqCapital === 'number' ? jqCapital : undefined,
+      ...extra,
+    }),
+    [b64, fileName, perfB64, cost, benchmark, horizon, fill, capital, strictLimit,
+      rebalBand, pool, jqCapital],
+  )
+
   const run = useCallback(async () => {
     if (!b64) {
       setError('请先选择（或拖入）信号文件')
@@ -325,28 +351,59 @@ export default function SignalTestPanel() {
     setRunning(true)
     setError('')
     setResult(null)
+    setNavInfo('')
     try {
-      const req: SignalTestRequest = {
-        content_b64: b64,
-        filename: fileName,
-        perf_b64: perfB64 || undefined,
-        cost, benchmark, horizon, fill, capital,
-        strict_limit: strictLimit,
-        rebal_band: rebalBand,
-        pool,
-        jq_capital: typeof jqCapital === 'number' ? jqCapital : undefined,
-      }
-      const r = await runSignalTest(req)
+      const r = await runSignalTest(buildReq())
       setResult(r)
       const cols = r.backtest?.nav_columns ?? []
       setNavFocus(r.backtest?.alloc_default ?? cols[2] ?? '')
+      // 净值周期跟随本次运行的「预测周期」（后端回的 diag.hold_days 是真正用上的那个）
+      setNavHold(Number(r.backtest?.diag?.hold_days) || horizon)
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? (e instanceof Error ? e.message : String(e)))
     } finally {
       setRunning(false)
     }
-  }, [b64, fileName, perfB64, cost, benchmark, horizon, fill, capital, strictLimit,
-    rebalBand, pool, jqCapital])
+  }, [b64, buildReq, horizon])
+
+  const appliedHold = Number((result?.backtest as { diag?: { hold_days?: number } } | undefined)
+    ?.diag?.hold_days) || null
+  /** 净值周期切换只在"有回测且周期真的会改变净值"的模式下出现（聚宽流水模式的净值与持有周期无关） */
+  const canNavHold = !!result?.backtest && parsed?.mode !== 'jq_trades' && parsed?.mode !== 'jq_perf'
+
+  /**
+   * **只重跑回测**（净值曲线的持有周期切换，v1.19.62）。
+   *
+   * ⚠ 只替换 `result.backtest`（净值 / 统计 / 成交 / 被拒资金 全部随之更新）；
+   *   `event`（事件研究那两张 k 图与锚点）与解析诊断**原样保留** —— 它们算的是运行时填的
+   *   「预测周期」，不该被净值周期改动（界面上另有 amber 提示写明两者不同）。
+   */
+  const recalcNav = useCallback(
+    async (k: number) => {
+      const kk = Math.max(1, Math.min(250, Math.round(Number(k) || 0)))
+      if (!b64 || !kk) return
+      setNavBusy(true)
+      setNavInfo('')
+      const t0 = performance.now()
+      try {
+        const r = await runSignalTest(buildReq({ horizon: kk, backtest_only: true }))
+        if (!r.backtest) throw new Error('后端未返回回测结果')
+        setResult((prev) => (prev ? { ...prev, backtest: r.backtest } : r))
+        setNavHold(kk)
+        setNavInfo(
+          `已按 ${kk} 天重算净值（用时 ${((performance.now() - t0) / 1000).toFixed(1)}s；` +
+            `只重跑回测，事件研究仍是 ${horizon} 天口径）`,
+        )
+      } catch (e: any) {
+        setNavInfo(
+          '重算失败：' + (e?.response?.data?.detail ?? (e instanceof Error ? e.message : String(e))),
+        )
+      } finally {
+        setNavBusy(false)
+      }
+    },
+    [b64, buildReq, horizon],
+  )
 
   // ---------------- 事件研究：逐 k 数据（与 EventStudyModal 完全同构） ----------------
   const eventRows = useMemo<EventRow[]>(() => {
@@ -883,7 +940,9 @@ export default function SignalTestPanel() {
                  （不重算的话 20 年曲线缩到局部会被全局 scale 压成一条扁线）。 */}
           <div className="border rounded-lg p-3">
             <div className="flex flex-wrap items-center gap-3 mb-1">
-              <span className="text-sm font-medium">净值曲线（两种资金方案 + 基准）</span>
+              <span className="text-sm font-medium">
+                净值曲线（{appliedHold ?? horizon} 天持有 · 两种资金方案 + 基准）
+              </span>
               <select
                 className="text-xs border rounded px-2 py-1"
                 value={navFocus}
@@ -897,6 +956,45 @@ export default function SignalTestPanel() {
               </select>
               <span className="text-[11px] text-slate-400">点击图例可隐藏/显示任意曲线</span>
             </div>
+            {/* 净值周期切换（v1.19.62，用户 2026-09-15）：
+                ⚠ 走 `backtest_only` ⇒ **只重跑回测**（跳过事件研究那十几秒，约 2~3s）；
+                  事件研究那张 k 图与锚点**保持不动**（按运行时填的「预测周期」）——
+                  两者不一致时下面给 amber 提示，避免把两个口径看混。 */}
+            {canNavHold && (
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <span className="text-xs text-slate-500">净值持有周期</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={250}
+                  className="w-16 text-xs border rounded px-2 py-1"
+                  value={navHold}
+                  onChange={(e) => setNavHold(Number(e.target.value))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void recalcNav(navHold)
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={navBusy || !b64}
+                  onClick={() => void recalcNav(navHold)}
+                  className="px-2.5 py-1 rounded text-xs bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-40"
+                >
+                  {navBusy ? '重算中…' : '按此周期重算净值'}
+                </button>
+                <span className="text-[11px] text-slate-400">
+                  只重跑回测（跳过事件研究），约 2~3 秒
+                </span>
+                {appliedHold != null && appliedHold !== horizon && (
+                  <span className="text-[11px] text-amber-600">
+                    净值按 {appliedHold} 天 · 下方事件研究（k 图/锚点）仍按 {horizon} 天
+                  </span>
+                )}
+                {navInfo && (
+                  <span className="text-[11px] text-slate-500 basis-full">{navInfo}</span>
+                )}
+              </div>
+            )}
             <ZoomableLineChart
               data={navData}
               keys={navKeys}
