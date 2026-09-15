@@ -54,6 +54,27 @@ _STOCK_PREFIX = {
     "SZ": ("000", "001", "002", "003", "300", "301", "200"),
     "BJ": ("43", "83", "87", "88", "92", "82"),
 }
+# 各市场**合法号段首位**（只看首位，用于"后缀与号段不符"的**早提示**：
+# 不改识别结果 —— 后缀永远优先，因为它是指数/股票同码的唯一区分手段 —— 但 99% 是笔误）
+# · SH：6/9 = 股票与 B 股、5 = 基金、0/1 = 指数（000300 这类）
+# · SZ：0/2/3 = 股票、1 = 基金（指数是 399xxx，首位 3 ⇒ 已含）
+# · BJ：4/8/9 = 北交所（43/83/87/88/920）
+_MARKET_PREFIX_OK = {
+    "SH": ("6", "9", "5", "0", "1"),
+    "SZ": ("0", "1", "2", "3"),
+    "BJ": ("4", "8", "9"),
+}
+_MARKET_CN = {"SH": "沪市", "SZ": "深市", "BJ": "北交所"}
+
+
+def _segment_mismatch(market: str, code: str) -> Optional[str]:
+    """后缀/前缀写的市场 与 代码号段 是否明显不符（返回人类可读提示，或 None）。"""
+    ok = _MARKET_PREFIX_OK.get(market)
+    if ok and code and code[0] not in ok:
+        return ("后缀与号段不符：%s%s —— %s没有该号段，请核对是否写错后缀"
+                "（如 `300003.SH` 应为 `300003.SZ` / `SZ300003`）"
+                % (market, code, _MARKET_CN.get(market, market)))
+    return None
 # 已知的**指数**代码（⚠ 存**裸 6 位码**，与 `_infer_bare(code)` 的入参同构；
 # 曾经误写成带市场前缀 ⇒ 无后缀的 `000300` 被当成深市股票、`000001` 的歧义提示也丢了）
 _KNOWN_INDEX = {
@@ -102,13 +123,16 @@ def normalize_code(raw: str) -> CodeInfo:
         return info
 
     market = code = None
+    explicit = False                         # 市场是否由用户**明确写出**（前缀/后缀），而非推断
     m = _PREFIX_RE.match(token)
-    if m:                                    # qlib 写法
+    if m:                                    # qlib 写法（SZ300003 / sz300003 / SZ.300003 …）
         market, code = m.group(1).upper(), m.group(2)
+        explicit = True
     else:
         m = _SUFFIX_RE.match(token)
         if m:                                # 聚宽/米筐/Wind 写法
             code, market = m.group(1), _SUFFIX_MAP[m.group(2).upper()]
+            explicit = True
         else:
             m = _BARE_RE.match(token)
             if m:                            # 无后缀：推断 + 歧义诊断
@@ -137,6 +161,11 @@ def normalize_code(raw: str) -> CodeInfo:
     info.qlib_code = qlib_code
     info.market = market
     info.is_index = is_index_code(qlib_code)
+    # 后缀/前缀与号段明显不符 ⇒ 写诊断（识别结果仍按用户明确写的市场，不擅自改）
+    if explicit:
+        mm = _segment_mismatch(market, code)
+        if mm:
+            info.issues.append(mm)
     return info
 
 

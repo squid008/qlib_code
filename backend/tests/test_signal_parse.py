@@ -22,6 +22,13 @@ from app.signals.parsers import parse_csv
     ("000001.SZ", "SZ000001", False),
     ("sz000001", "SZ000001", False),                  # qlib 写法（小写）
     ("SH600000", "SH600000", False),
+    ("SZ300003", "SZ300003", False),                  # **前缀写法**（用户问"放前面的能识别吗"）
+    ("Sz300003", "SZ300003", False),                  # 混合大小写
+    ("SZ.300003", "SZ300003", False),                 # 前缀 + 分隔符
+    ("SZ_300003", "SZ300003", False),
+    ("SZ-300003", "SZ300003", False),
+    ("sz300059 东方财富", "SZ300059", False),          # 前缀 + 中文名（名字只回显）
+    ("东方财富 SZ300059", "SZ300059", False),
     ("430047.BJ", "BJ430047", False),                 # 北交所
     ("BJ430047", "BJ430047", False),
     ("600000", "SH600000", False),                    # 无后缀：按号段推断
@@ -49,6 +56,16 @@ def test_bare_unknown_segment_flagged():
     info = normalize_code("999999")
     assert info.qlib_code is None
     assert info.issues
+
+
+def test_suffix_segment_mismatch_is_warned():
+    """`300003.SH` 这类"后缀与号段不符"：**仍按用户写的市场识别**，但必须出诊断（九成是笔误）。"""
+    info = normalize_code("300003.SH")
+    assert info.qlib_code == "SH300003"                 # 后缀优先，不擅自改
+    assert any("号段不符" in s for s in info.issues)
+    # 正常写法不应有该诊断
+    assert not any("号段不符" in s for s in normalize_code("SZ300003").issues)
+    assert not any("号段不符" in s for s in normalize_code("SH600000").issues)
 
 
 def test_chinese_name_only_is_not_a_code():
