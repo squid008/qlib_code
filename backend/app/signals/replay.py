@@ -80,6 +80,11 @@ def replay_trades(trades: pd.DataFrame, close: pd.DataFrame, *, capital: float,
     P = close.reindex(index=win, columns=codes).ffill()          # 我们的后复权价
     pos_of = {d: i for i, d in enumerate(win)}
     Pm = {c: P[c].to_numpy(dtype=float) for c in codes}
+    # ⚠ 取价一律用 numpy 数组：`Series[int]`（位置索引）已被 pandas 弃用
+    #   （FutureWarning "treating keys as positions is deprecated"），pandas 3 会按**标签**解释 ⇒
+    #   日期索引上直接 KeyError（2026-09-15 排查净值问题时发现日志被这堆告警刷屏）。
+    Om = ({c: open_[c].reindex(win).ffill().to_numpy(dtype=float) for c in codes}
+          if open_ is not None and len(getattr(open_, "columns", ())) else None)
 
     # ---- 复权口径体检 + 每个标的的"它的价格 / 我们的价格"（**逐日锚定**，不能用全期常数）----
     # ⚠⚠ 为什么必须逐日锚定（2026-09-15 用户追问「为啥模拟它的成本会差这么多」时查清）：
@@ -153,12 +158,12 @@ def replay_trades(trades: pd.DataFrame, close: pd.DataFrame, *, capital: float,
                     #   "买入价 = 当天收盘价"而**当天不亏**，起点 0.9997 vs C/官方 0.906 ⇒ 两者起点差 9%
                     #   被误读成"费率档次影响"/"分红口径"，实际是**成交价口径不同**（用户 2026-09-15
                     #   按曲线起点对比时抓出来）。
-                    mat = Pm
-                    if open_ is not None and _use_open(r) and c in getattr(open_, "columns", ()):
-                        cand = float(open_[c][i])
+                    arr = Pm
+                    if Om is not None and _use_open(r) and c in Om:
+                        cand = float(Om[c][i])
                         if np.isfinite(cand) and cand > 0:
-                            mat = open_
-                    px = float(mat[c][i])
+                            arr = Om
+                    px = float(arr[c][i])
                     if not np.isfinite(px) or px <= 0:
                         continue
                     rate = (rb if r["side"] > 0 else rsl) if kind == "sim_fee" else half
