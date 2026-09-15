@@ -473,7 +473,7 @@ export default function SignalTestPanel() {
       <header className="flex flex-wrap items-baseline gap-3">
         <h3 className="font-semibold">交易信号测试</h3>
         <span className="text-xs text-slate-500">
-          外部买入信号（同事 CSV / Excel 表 / 聚宽成交明细 / 聚宽《收益概述》）⇒ 事件研究 + 等权持有回测
+          外部买入信号（CSV / Excel 表 / 聚宽成交明细 / 聚宽《收益概述》）⇒ 事件研究 + 等权持有回测
         </span>
         {result && (
           <span className="text-xs text-emerald-600">
