@@ -337,15 +337,6 @@ export default function ZoomableLineChart({
             </>
           )}
         </span>
-        {zoomed && (
-          <button
-            type="button"
-            className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
-            onClick={() => setWin([0, Math.max(0, n - 1)])}
-          >
-            重置缩放
-          </button>
-        )}
         <label className="flex items-center gap-1">
           缩放后起点对齐
           <select
@@ -360,7 +351,16 @@ export default function ZoomableLineChart({
             ))}
           </select>
         </label>
-        {!rebasing && <span>（含起点时显示原始净值，这档不生效；缩到首点之后才重锚）</span>}
+        {/* 重置缩放放在「起点对齐」右边（用户 2026-09-15：把那句说明删掉，按钮挪到这里） */}
+        {zoomed && (
+          <button
+            type="button"
+            className="px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
+            onClick={() => setWin([0, Math.max(0, n - 1)])}
+          >
+            重置缩放
+          </button>
+        )}
       </div>
       <div
         ref={wrapRef}
