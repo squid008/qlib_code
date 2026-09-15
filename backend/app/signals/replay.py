@@ -196,12 +196,12 @@ def replay_trades(trades: pd.DataFrame, close: pd.DataFrame, *, capital: float,
         #   会让各股**仓位相对大小错配**；③ 改成"逐笔精确匹配"后 A 反而从 8.09 跳到 12.89
         #   （更差）⇒ 该重放口径对换算方式高度敏感、**绝对值有 ±5% 量级不确定性**。
         #   故：**A/B 只用于比较"费率档次"的相对高低，绝对值请以 C（它的成交价 + 实际手续费）为准**。
-        "ab_note": "A/B 的绝对值有 ±5% 量级口径不确定性（价格水平换算所致）；请以 C 为准，"
-                   "A vs B 的相对差才代表费率档次的影响",
+        #   ⚠ v1.19.49：这段提醒**不再以 `ab_note` 字段上屏**（用户 2026-09-15 要求删掉那句，
+        #   "让三个方块的下边缘往上走"）—— 改到前端 A/B 图的 hover 说明里（不占版面）。
         "price_ratio": ratio_stats,
         "price_ratio_max_drift": round(float(drift), 4),
         "price_consistency": ("一致（我们的价/它的价 比值稳定）" if drift <= 0.05 else
-                              "⚠ 比值漂移 >5%：两边复权口径/数据源不同，曲线差异请打折看"),
+                              "比值漂移 >5%：两边复权口径/数据源不同，曲线差异请打折看"),
         "qty_scale_ab": round(float(rs_flag), 4),
         "negative_cash_bars": {"sim_fee": A["neg_cash"], "my_cost": B["neg_cash"],
                                "exact": C["neg_cash"]},

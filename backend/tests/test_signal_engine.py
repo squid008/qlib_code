@@ -149,6 +149,47 @@ def test_event_even_rebalances_after_new_signal():
     assert bt.stats["event_even"]["min_cash"] >= -1e-6
 
 
+def test_cash_even_hoards_then_starves_on_single_signal_days():
+    """`cash_even` 的集中度机制（用户 2026-09-15：「现金等分不主动再平衡为啥弱爆了？
+    是不是持有超过预测周期没卖出的 BUG？」）。
+
+    结论先说：**不是"不卖出"的 BUG**（到期卖出在 `alloc` 分支之外、两种方案都执行），
+    而是**设计使然**：现金等分只在"每日新信号"之间分**可用现金** ⇒ 信号稀疏日会把**全部现金**
+    押给当天那 1 个信号（全仓单票），且**从不卖老仓去接新信号** ⇒ 后续信号因没钱被拒
+    （`rejects_no_cash`）、组合长期停在早期那几只 ⇒ 集中度↑ ⇒ 回撤↑。
+
+    本用例把这个机制钉成可回归的事实：d0 只有 1 个信号、d1 有 2 个新信号、价格恒定。
+    """
+    idx = pd.bdate_range("2024-01-01", periods=8)
+    codes = ["SZ000001", "SZ000002", "SZ000003"]
+    C = pd.DataFrame({c: [10.0] * len(idx) for c in codes}, index=idx)
+    panel = {"CALENDAR": pd.DataFrame(index=idx), "CLOSE": C, "OPEN": C.copy(),
+             "CLOSE_RAW": C.copy(), "OPEN_RAW": C.copy(),
+             "LIMIT_UP": pd.DataFrame(np.nan, index=idx, columns=codes),
+             "LIMIT_DOWN": pd.DataFrame(np.nan, index=idx, columns=codes)}
+    events = pd.DataFrame({"date": [idx[0], idx[1], idx[1]],
+                           "code": ["SZ000001", "SZ000002", "SZ000003"],
+                           "side": [1, 1, 1]})
+    bt = run_backtest(events, panel, hold_days=5, fill="t1_open", capital=1_000_000.0,
+                      alloc_modes=("event_even", "cash_even"))
+
+    ce, ee = bt.stats["cash_even"], bt.stats["event_even"]
+    tr = bt.trades
+    # ⚠ 成交记录里 `side` 是中文"买/卖"（不是 ±1）—— 2026-09-15 我按数字比较踩到 TypeError
+    is_buy = tr["side"].astype(str).str.contains("买")
+    ce_buy = set(tr[(tr["mode"] == "cash_even") & is_buy]["code"])
+    ee_buy = set(tr[(tr["mode"] == "event_even") & is_buy]["code"])
+    # ① 现金等分：d0 的单个信号**把现金吃光**（全仓单票）⇒ d1 的两个新信号买不进
+    assert len(ce_buy) == 1, ce_buy
+    assert ce["rejects_no_cash"] >= 2, ce
+    # ② 事件等权：当天把全体调平 ⇒ 3 只都拿到（分散）
+    assert len(ee_buy) == 3, ee_buy
+    assert ee["rejects_no_cash"] == 0, ee
+    # ③ 两种方案**都会**到期卖出（不存在"过期不卖"的 BUG）
+    assert ce["closed_trades"] >= 1 and ee["closed_trades"] >= 1, (ce, ee)
+    assert ce["sell_deferrals"] == 0 and ee["sell_deferrals"] == 0
+
+
 def test_event_study_content_cache(tmp_path, monkeypatch):
     """事件研究**内容缓存**（v1.19.48）：同输入第二次命中、任一输入变了必须失效。
 

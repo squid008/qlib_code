@@ -254,14 +254,13 @@ def run(req: SignalTestRequest) -> Dict:
         })
         if (neg.get("exact") or 0) > 0:
             warnings.append(
-                "ℹ 现金口径说明：按「**卖出所得当日可用于买入**」推演，现金最低 %s 元（占本金 %.1f%%）、"
-                "期末 %s 元 —— 缺口量级与**分红入账**相当（成交明细天然不含现金红利），"
-                "不影响「用它的成交价 + 实际手续费」重建净值的可信度%s。"
+                "现金口径：按卖出所得当日即可用于买入推演，现金最低 %s 元（占本金 %.1f%%）、期末 %s 元。"
+                "缺口量级与分红入账相当（成交明细不含现金红利），不影响本次重建的可信度%s。"
                 % (("{:,.0f}".format(cap_info["min_cash"])), 100 * abs(cap_info["min_cash"]) / max(capital, 1.0),
                    "{:,.0f}".format(cap_info["cash_end"]),
                    "（下方已用官方《收益概述》校准）" if perf_res else "（建议一并上传官方《收益概述》校准）"))
         elif abs(capital - caps) / max(caps, 1.0) > 0.05:
-            warnings.append("初始资金与「首日买入总额」相差 %.0f%%（A/B 按资金等比缩放股数，"
+            warnings.append("初始资金与首日买入总额相差 %.0f%%（A/B 按资金等比缩放股数，"
                             "C 按它原始股数记账；要公平比较请填它的真实资金）"
                             % (100 * abs(capital - caps) / max(caps, 1.0)))
         t0 = time.perf_counter()
@@ -299,9 +298,9 @@ def run(req: SignalTestRequest) -> Dict:
             }
             if off_end:
                 warnings.append(
-                    "✅ 官方《收益概述》已叠加校准：官方期末净值 %.4f、官方最大回撤 %.2f%%｜"
-                    "我方 C（它的成交价 + 实际手续费）%.4f ⇒ **偏差 %+.2f%%**；"
-                    "逐日买卖金额与成交明细一致 **%d/%d 天** ⇒ 重建可信。"
+                    "官方《收益概述》已叠加校准：官方期末净值 %.4f、官方最大回撤 %.2f%%；"
+                    "我方 C（它的成交价 + 实际手续费）%.4f，偏差 %+.2f%%。"
+                    "逐日买卖金额与成交明细一致 %d/%d 天，重建可信。"
                     % (off_end, 100 * float((perf_res.stats or {}).get("max_drawdown") or 0.0),
                        exact_end, 100 * (exact_end / off_end - 1.0), ok_n, ok_n + bad_n))
         resp.update({

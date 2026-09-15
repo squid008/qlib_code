@@ -21,6 +21,7 @@ import {
   type SignalTestRunResult,
 } from '../api'
 import { isValidAt, isReverseValidAt, pairStabilityOf } from './verdictRules'
+import ZoomableLineChart from './ZoomableLineChart'
 
 /**
  * 交易信号测试面板（v1.19.38 起；v1.19.46 起支持 **xlsx/xls + 单元格内多只 + 拖拽替换**）。
@@ -119,6 +120,23 @@ function navLabel(k: string): string {
 function navColor(k: string, i: number): string {
   return NAV_COLOR[k] ?? ['#0ea5e9', '#f59e0b', '#10b981', '#ef4444'][i % 4]
 }
+/** 悬停说明（用户 2026-09-15 追问"C 精确是怎么重建净值的？换策略（比如高分红股）误差会不会很大"）
+ *  —— 放 `title` 里**不占版面**，也避免再往卡片里堆长句（那段长句正是他要删的）。 */
+const NAV_TITLE: Record<string, string> = {
+  nav_official: '聚宽《收益概述》里的官方净值（策略收益），用来给重建结果做校准。',
+  nav_official_bench: '聚宽《收益概述》里的官方基准累计收益（默认隐藏，避免和"基准"下拉互相压扁）。',
+  nav_sim_fee: '模拟它的成本：成交时点与股数按它的流水，价格换成我们的后复权价，费率用它反推的佣金+印花税。',
+  nav_my_cost: '同上，费率换成本界面设定的 cost（往返合计）；A 与 B 的差就是费率档次的影响。'
+    + 'A/B 的绝对值有 ±5% 量级口径不确定性（价格水平换算所致），只宜比较相对高低。',
+  nav_exact: '精确重建：把成交明细当流水逐笔重放 —— 股数、成交价、手续费全部用 CSV 里的实际值'
+    + '（成交价按委托时间取当日开盘价或收盘价），逐日按我们的收盘价盯市，所以价格水平差异被消掉了。'
+    + '注意：成交明细只记买卖，不含现金分红入账（也含送转带来的股数变化由后续成交体现），'
+    + '因此高分红/高送转策略会系统性偏低，缺口量级≈分红；它检验的是"流水是否记得全"，不代表策略本身好坏。',
+  nav_exact_min: '用"现金非负下界"资金跑同一套流水（用于定位资金口径的影响）。',
+  benchmark: '你选的指数基准（后复权口径）。',
+}
+const NAV_FALLBACK_TITLE = '净值曲线（起点归一为 1，可比）'
+
 function navDash(k: string): string | undefined {
   if (k === 'nav_exact_min' || k === 'nav_official_bench') return '5 3'
   if (k === 'benchmark' || k === 'baseline' || k === 'baseline_median') return '4 4'
@@ -201,6 +219,7 @@ export default function SignalTestPanel() {
   const [error, setError] = useState('')
   const [showIssues, setShowIssues] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [perfDragOver, setPerfDragOver] = useState(false)
 
   // 参数
   const [horizon, setHorizon] = useState(60)
@@ -215,8 +234,10 @@ export default function SignalTestPanel() {
   const [navFocus, setNavFocus] = useState('')
 
   // 曲线显隐（点击图例切换）。k 图与净值图共用一份（键名不重叠）。
+  // 默认隐藏：均值/分位（无同口径基准，见事件研究弹窗说明）+ **官方基准**（用户 2026-09-15：
+  // 「官方基准聚宽默认不显示」——它和"基准"下拉是两条不同的东西，一起画会互相压扁）
   const [hidden, setHidden] = useState<Record<string, boolean>>({
-    mean: true, p25: true, p75: true,
+    mean: true, p25: true, p75: true, nav_official_bench: true,
   })
   const toggleSeries = useCallback((key?: string | number) => {
     if (typeof key !== 'string' || !key) return
@@ -268,6 +289,32 @@ export default function SignalTestPanel() {
       if (f) void onPickFile(f)
     },
     [onPickFile],
+  )
+
+  /** ② 可选的《收益概述》：同样支持**拖拽**（用户 2026-09-15：「我怎么不能拖CSV进去？鼠标变成叉」
+   *  —— 因为它原来只是个普通容器，没挂 dragover/drop 处理，浏览器就用"禁止"光标 ✗）。 */
+  const pickPerf = useCallback(async (f: File) => {
+    const ext = f.name.slice(f.name.lastIndexOf('.')).toLowerCase()
+    if (!ACCEPT_EXT.includes(ext)) {
+      setError(`《收益概述》不支持的文件类型「${ext}」—— 请给 CSV / TXT / XLSX / XLS`)
+      return
+    }
+    setPerfName(f.name)
+    try {
+      setPerfB64(bufToBase64(await f.arrayBuffer()))
+    } catch {
+      setPerfB64('')
+    }
+  }, [])
+
+  const onDropPerf = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      setPerfDragOver(false)
+      const f = e.dataTransfer.files?.[0]
+      if (f) void pickPerf(f)
+    },
+    [pickPerf],
   )
 
   const run = useCallback(async () => {
@@ -426,7 +473,7 @@ export default function SignalTestPanel() {
       <header className="flex flex-wrap items-baseline gap-3">
         <h3 className="font-semibold">交易信号测试</h3>
         <span className="text-xs text-slate-500">
-          外部买入信号（同事 CSV / **Excel 表** / 聚宽成交明细 / 聚宽《收益概述》）⇒ 事件研究 + 等权持有回测
+          外部买入信号（同事 CSV / Excel 表 / 聚宽成交明细 / 聚宽《收益概述》）⇒ 事件研究 + 等权持有回测
         </span>
         {result && (
           <span className="text-xs text-emerald-600">
@@ -458,7 +505,7 @@ export default function SignalTestPanel() {
         >
           <div className="flex items-center justify-between gap-2">
             <span className="text-sm text-slate-600 dark:text-slate-300">
-              ① 信号文件：**拖进来**，或
+              ① 信号文件：拖进来，或
             </span>
             <button
               type="button"
@@ -479,7 +526,7 @@ export default function SignalTestPanel() {
             />
           </div>
           <div className="text-[11px] text-slate-400">
-            支持 CSV / TXT / **XLSX / XLS**（GBK 或 UTF-8 都行）；拖入新文件会**替换**当前文件与结果
+            支持 CSV / TXT / XLSX / XLS（GBK 或 UTF-8 都行）；拖入新文件会替换当前文件与结果
           </div>
           {fileName && (
             <div className="text-xs text-slate-600 dark:text-slate-300 flex flex-wrap items-center gap-2">
@@ -517,10 +564,22 @@ export default function SignalTestPanel() {
           )}
         </div>
 
-        <div className="rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-600 p-3 flex flex-col gap-2">
+        <div
+          onDragOver={(e) => {
+            e.preventDefault()
+            setPerfDragOver(true)
+          }}
+          onDragLeave={() => setPerfDragOver(false)}
+          onDrop={onDropPerf}
+          className={`rounded-lg border-2 border-dashed p-3 flex flex-col gap-2 transition-colors ${
+            perfDragOver
+              ? 'border-sky-500 bg-sky-50 dark:bg-sky-950/30'
+              : 'border-slate-300 dark:border-slate-600'
+          }`}
+        >
           <div className="flex items-center justify-between gap-2">
             <span className="text-sm text-slate-600 dark:text-slate-300">
-              ②（可选）聚宽《收益概述》
+              ②（可选）聚宽《收益概述》：拖进来，或
             </span>
             <label className="text-xs border rounded px-2 py-1 text-sky-600 hover:bg-sky-50 dark:text-sky-400 cursor-pointer">
               选择文件
@@ -528,21 +587,15 @@ export default function SignalTestPanel() {
                 type="file"
                 accept=".csv,.txt,.xlsx,.xls"
                 className="hidden"
-                onChange={async (e) => {
+                onChange={(e) => {
                   const f = e.target.files?.[0]
-                  if (!f) return
-                  setPerfName(f.name)
-                  try {
-                    setPerfB64(bufToBase64(await f.arrayBuffer()))
-                  } catch {
-                    setPerfB64('')
-                  }
+                  if (f) void pickPerf(f)
                 }}
               />
             </label>
           </div>
           <div className="text-[11px] text-slate-400">
-            有它就把**官方净值**叠加上图做校准，并按逐日买卖金额核对成交明细是否完整
+            有它就把官方净值叠加上图做校准，并按逐日买卖金额核对成交明细是否完整
           </div>
           {perfName && (
             <div className="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-2">
@@ -596,13 +649,6 @@ export default function SignalTestPanel() {
                   </option>
                 ))}
               </select>
-              {/* v1.19.48：把"池子大小 → 耗时"讲在明处 —— 全A 要过一遍 (配对日 × 全A) 大矩阵，
-                  首次数十秒；同参数重跑走内容缓存（见 `signals/event.py` 的说明）。 */}
-              <span className="text-[10px] text-slate-400 leading-tight">
-                {pool === '@signals'
-                  ? '只取信号涉及的股票：通常 <1s'
-                  : '全A 较重：首次约 5~20s（基准曲线首算），同参数重跑走缓存 ~1~3s'}
-              </span>
             </label>
             <label className={field}>
               <span className="text-xs text-slate-500">初始资金</span>
@@ -730,7 +776,7 @@ export default function SignalTestPanel() {
       {result?.warnings?.length ? (
         <div className="text-xs text-amber-700 space-y-1">
           {result.warnings.map((w, i) => (
-            <div key={i}>⚠ {w}</div>
+            <div key={i}>{w}</div>
           ))}
         </div>
       ) : null}
@@ -831,6 +877,39 @@ export default function SignalTestPanel() {
             </>
           )}
 
+          {/* 净值（两种资金方案 + 基准）
+              v1.19.49：① 位置移到逐 k 明细表**上面**（用户 2026-09-15）；
+              ② 换成可滚轮缩放/拖动平移的 `ZoomableLineChart`，且缩放后 **Y 轴按可见区间重算**
+                 （不重算的话 20 年曲线缩到局部会被全局 scale 压成一条扁线）。 */}
+          <div className="border rounded-lg p-3">
+            <div className="flex flex-wrap items-center gap-3 mb-1">
+              <span className="text-sm font-medium">净值曲线（两种资金方案 + 基准）</span>
+              <select
+                className="text-xs border rounded px-2 py-1"
+                value={navFocus}
+                onChange={(e) => setNavFocus(e.target.value)}
+              >
+                {navKeys.map((k) => (
+                  <option key={k} value={k}>
+                    {navLabel(k)}
+                  </option>
+                ))}
+              </select>
+              <span className="text-[11px] text-slate-400">点击图例可隐藏/显示任意曲线</span>
+            </div>
+            <ZoomableLineChart
+              data={navData}
+              keys={navKeys}
+              labelOf={navLabel}
+              colorOf={navColor}
+              dashOf={navDash}
+              focus={navFocus}
+              hidden={hidden}
+              onToggle={toggleSeries}
+              height={300}
+            />
+          </div>
+
           {/* 逐 k 明细表 */}
           {eventRows.length > 0 && (
             <div className="overflow-auto max-h-72 border rounded-lg">
@@ -875,50 +954,6 @@ export default function SignalTestPanel() {
               </table>
             </div>
           )}
-
-          {/* 净值（两种资金方案 + 基准） */}
-          <div className="border rounded-lg p-3">
-            <div className="flex flex-wrap items-center gap-3 mb-1">
-              <span className="text-sm font-medium">净值曲线（两种资金方案 + 基准）</span>
-              <select
-                className="text-xs border rounded px-2 py-1"
-                value={navFocus}
-                onChange={(e) => setNavFocus(e.target.value)}
-              >
-                {navKeys.map((k) => (
-                  <option key={k} value={k}>
-                    {navLabel(k)}
-                  </option>
-                ))}
-              </select>
-              <span className="text-[11px] text-slate-400">点击图例可隐藏/显示任意曲线</span>
-            </div>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={navData} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
-                <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} width={50} />
-                <Tooltip formatter={(v: any) => (v == null ? '-' : Number(v).toFixed(4))} />
-                <Legend
-                  wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
-                  onClick={(d) => toggleSeries((d as { dataKey?: string }).dataKey)}
-                />
-                {navKeys.map((k, i) => (
-                  <Line
-                    key={k}
-                    type="monotone"
-                    dataKey={k}
-                    name={navLabel(k)}
-                    stroke={navColor(k, i)}
-                    strokeWidth={k === navFocus ? 2.4 : 1.3}
-                    strokeDasharray={navDash(k)}
-                    dot={false}
-                    hide={!!hidden[k]}
-                  />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
 
           {/* 统计卡（两方案） */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -973,25 +1008,19 @@ export default function SignalTestPanel() {
       {result?.mode === 'jq_perf' && (
         <div className="space-y-3">
           <div className="text-xs text-slate-500">
-            只上传了《收益概述》⇒ 仅展示**官方净值**（含官方基准），不做重建。想校准重建净值请同时上传成交明细。
+            只上传了《收益概述》⇒ 仅展示官方净值（含官方基准），不做重建。想校准重建净值请同时上传成交明细。
           </div>
           <div className="border rounded-lg p-3">
-            <ResponsiveContainer width="100%" height={320}>
-              <LineChart data={navData} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
-                <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} width={50} />
-                <Tooltip formatter={(v: any) => (v == null ? '-' : Number(v).toFixed(4))} />
-                <Legend
-                  wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
-                  onClick={(d) => toggleSeries((d as { dataKey?: string }).dataKey)}
-                />
-                {navKeys.map((k, i) => (
-                  <Line key={k} type="monotone" dataKey={k} name={navLabel(k)} stroke={navColor(k, i)}
-                    strokeWidth={2} strokeDasharray={navDash(k)} dot={false} hide={!!hidden[k]} />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
+            <ZoomableLineChart
+              data={navData}
+              keys={navKeys}
+              labelOf={navLabel}
+              colorOf={navColor}
+              dashOf={navDash}
+              hidden={hidden}
+              onToggle={toggleSeries}
+              height={320}
+            />
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
             {[
@@ -1044,8 +1073,8 @@ export default function SignalTestPanel() {
               </div>
               <div className="text-slate-500">
                 {official.calib.mismatched_days === 0
-                  ? '成交明细完整 ✓ 重建可信'
-                  : '⚠ 有对不上的日子，明细可能不完整'}
+                  ? '成交明细完整，重建可信'
+                  : '有对不上的日子，明细可能不完整'}
                 ｜官方最大回撤 {pct(official.stats?.max_drawdown)}｜官方基准期末{' '}
                 {String(official.stats?.bench_nav_end ?? '-')}（可据此选「基准」下拉）
               </div>
@@ -1054,7 +1083,9 @@ export default function SignalTestPanel() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
             <div className={card}>
-              <div className="font-medium">费率反推（从它的手续费列）</div>
+              <div className="font-medium" title="从 CSV 的手续费列按买卖成交额反推：佣金（含滑点）+ 印花税">
+                费率反推（从它的手续费列）
+              </div>
               <div className="flex justify-between"><span className="text-slate-500">买入</span><span>{pct(result?.fees?.rate_buy, 4)}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">卖出</span><span>{pct(result?.fees?.rate_sell, 4)}</span></div>
               <div className="flex justify-between"><span className="text-slate-500">其中印花税(反推)</span><span>{pct(result?.fees?.stamp_tax_est, 4)}</span></div>
@@ -1096,7 +1127,7 @@ export default function SignalTestPanel() {
                 <span className="text-slate-500">期末未平仓</span>
                 <span>{String(replay.diag?.open_positions_end ?? '-')} 只</span>
               </div>
-              {replay.diag?.ab_note && <div className="text-slate-500">⚠ {String(replay.diag.ab_note)}</div>}
+
             </div>
           </div>
 
@@ -1105,28 +1136,24 @@ export default function SignalTestPanel() {
               净值对比：A 模拟它的成本 / B 我的成本 / C 它的成交价+手续费 / 基准
               <span className="text-[11px] text-slate-400 ml-2">点击图例可隐藏/显示任意曲线</span>
             </div>
-            <ResponsiveContainer width="100%" height={320}>
-              <LineChart data={navData} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={40} />
-                <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} width={50} />
-                <Tooltip formatter={(v: any) => (v == null ? '-' : Number(v).toFixed(4))} />
-                <Legend
-                  wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
-                  onClick={(d) => toggleSeries((d as { dataKey?: string }).dataKey)}
-                />
-                {navKeys.map((k, i) => (
-                  <Line key={k} type="monotone" dataKey={k} name={navLabel(k)} stroke={navColor(k, i)}
-                    strokeWidth={2} strokeDasharray={navDash(k)} dot={false} hide={!!hidden[k]} />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
+            <ZoomableLineChart
+              data={navData}
+              keys={navKeys}
+              labelOf={navLabel}
+              colorOf={navColor}
+              dashOf={navDash}
+              hidden={hidden}
+              onToggle={toggleSeries}
+              height={320}
+            />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
             {Object.entries(replay.stats).map(([k, st]: [string, any]) => (
               <div key={k} className={card}>
-                <div className="font-medium">{navLabel(k)}</div>
+                <div className="font-medium" title={NAV_TITLE[k] ?? NAV_FALLBACK_TITLE}>
+                  {navLabel(k)}
+                </div>
                 <div className="flex justify-between"><span className="text-slate-500">期末净值</span><span className="font-medium">{st.final_nav}</span></div>
                 <div className="flex justify-between"><span className="text-slate-500">年化</span><span>{pct(st.perf?.annual_return)}</span></div>
                 <div className="flex justify-between"><span className="text-slate-500">最大回撤</span><span>{pct(st.perf?.max_drawdown)}</span></div>
