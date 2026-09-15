@@ -32,6 +32,7 @@ import HistoryPanel from './components/HistoryPanel'
 import FormulaPanel from './components/FormulaPanel'
 import FeatureSelectPanel from './components/FeatureSelectPanel'
 import SingleFactorTestPanel from './components/SingleFactorTestPanel'
+import SignalTestPanel from './components/SignalTestPanel'
 import DateInput, { type DateInputHandle, isValidDateStr } from './components/DateInput'
 import ModelParamsForm from './components/ModelParamsForm'
 import TaskStatusPanel from './components/TaskStatusPanel'
@@ -137,6 +138,8 @@ export default function App() {
   const [editingText, setEditingText] = useState('')
   // 单因子测试面板（不训练模型，勾选因子后快速诊断）
   const [showSingleTestPanel, setShowSingleTestPanel] = useState(false)
+  // 交易信号测试面板（v1.19.38）：上传外部买入信号 CSV（同事格式 / 聚宽成交明细）
+  const [showSignalTestPanel, setShowSignalTestPanel] = useState(false)
   // 刷新后若后台仍有运行中的单因子测试任务：自动展开面板并滚动定位（仅"恢复"场景触发一次）
   const panelScrollRef = useRef(false)
   // 日期三段输入：开始日期"填到完整"后自动跳到结束日期的年份框
@@ -1129,6 +1132,19 @@ export default function App() {
               >
                 {showSingleTestPanel ? '收起单因子测试 ▲' : '单因子测试 ▼'}
               </button>
+              {/* 交易信号测试（v1.19.38）：外部信号 CSV ⇒ 事件研究 + 等权持有回测；
+                  独立模块（后端 app/signals），与单因子测试零耦合，只共用判定规则与图表风格 */}
+              <button
+                type="button"
+                onClick={() => setShowSignalTestPanel(!showSignalTestPanel)}
+                className={`w-full text-xs border rounded px-2 py-1.5 ${
+                  showSignalTestPanel
+                    ? 'bg-sky-600 text-white border-sky-600'
+                    : 'text-sky-600 hover:bg-sky-50 dark:text-sky-400'
+                }`}
+              >
+                {showSignalTestPanel ? '收起交易信号测试 ▲' : '交易信号测试 ▼'}
+              </button>
             </div>
 
             <label className="flex flex-col">
@@ -1211,6 +1227,11 @@ export default function App() {
             modelParams={form.model_params}
             onUpdate={updateModelParam}
           />
+
+          {/* 交易信号测试面板（独立整行，收起来=CSS 隐藏而非卸载：上传的文件与结果都保留） */}
+          <div id="signal-test-panel" className={showSignalTestPanel ? '' : 'hidden'}>
+            <SignalTestPanel />
+          </div>
 
           {/* 交易成本与成交设置 */}
           <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-700">

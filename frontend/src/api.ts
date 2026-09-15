@@ -631,3 +631,120 @@ export async function listDataSources(): Promise<DataSourceInfo> {
   const { data } = await http.get<DataSourceInfo>('/data-sources')
   return data
 }
+
+// ---------- 交易信号测试（v1.19.38）----------
+// 上传外部买入信号 CSV（同事的「日期,标的」清单 / 聚宽成交明细），
+// A 模式 = 事件研究 + 等权持有回测；B 模式 = 三条净值对比（不做 0/1 统计）。
+
+export interface SignalTestRequest {
+  /** 原始字节的 base64（推荐）：用户文件多为 GBK，交后端嗅探解码 */
+  content_b64?: string
+  /** 纯文本（UTF-8），与 content_b64 二选一 */
+  content?: string
+  filename?: string
+  /** 强制格式：signal_list / jq_trades；默认自动识别 */
+  kind?: string
+  /** 往返（买+卖）合计费率，与连续信号 0.004 同义 */
+  cost?: number
+  benchmark?: string
+  price_mode?: string
+  /** 预测周期 N：事件研究 1..N + 持有 N 日 */
+  horizon?: number
+  /** 成交时点：t_close / t1_open / t1_close */
+  fill?: string
+  capital?: number
+  strict_limit?: boolean
+  alloc_default?: string
+  /** 事件再平衡死区（0=完全调平；调大 1%~10% 降费用） */
+  rebal_band?: number
+  /** 事件研究「未触发组」的池：all/csi300/csi500/csi800/csi1000/@signals */
+  pool?: string
+  signals_only?: boolean
+  backtest_only?: boolean
+  jq_capital?: number
+  jq_scale_capital?: boolean
+}
+
+export interface SignalTestIssue {
+  row: number
+  raw: string
+  reason: string
+}
+
+export interface SignalTestParseResult {
+  ok: boolean
+  mode: string
+  encoding?: string
+  sep?: string
+  headers?: string[]
+  stats: Record<string, number | string | Record<string, number> | null>
+  issues: SignalTestIssue[]
+  preview?: Record<string, unknown>[]
+  elapsed?: number
+}
+
+export interface SignalTestOptions {
+  benchmarks: { code: string; name: string }[]
+  pools: { key: string; name: string }[]
+  fills: { key: string; name: string }[]
+  allocs: { key: string; name: string }[]
+  defaults: Record<string, number | string | boolean>
+}
+
+export interface SignalTestRunResult {
+  ok: boolean
+  mode: string
+  timings?: Record<string, number>
+  warnings?: string[]
+  parse?: {
+    stats: Record<string, unknown>
+    issues: SignalTestIssue[]
+    headers?: string[]
+    encoding?: string
+  }
+  benchmark?: { code: string; name: string; options: { code: string; name: string }[] }
+  signal?: Record<string, unknown>
+  /** 事件研究（复用单因子测试那套：curve / baseline / prob / upside …） */
+  event?: Record<string, any> | null
+  backtest?: {
+    nav: Record<string, number | string | null>[]
+    stats: Record<string, Record<string, any>>
+    diag: Record<string, any>
+    trades: Record<string, any>[]
+    rejects: Record<string, any>[]
+    nav_columns: string[]
+    alloc_default: string
+    fill: string
+    cost: number
+    capital: number
+  } | null
+  replay?: {
+    stats: Record<string, Record<string, any>>
+    diag: Record<string, any>
+    nav: Record<string, number | string | null>[]
+  } | null
+  capital?: Record<string, any>
+  fees?: Record<string, number | null>
+  elapsed?: number
+}
+
+export async function getSignalTestOptions(): Promise<SignalTestOptions> {
+  const { data } = await http.get<SignalTestOptions>('/signal-test/options')
+  return data
+}
+
+/** 只解析（上传后立刻出识别结果与诊断；不跑统计）。 */
+export async function parseSignalCsv(req: SignalTestRequest): Promise<SignalTestParseResult> {
+  const { data } = await http.post<SignalTestParseResult>('/signal-test/parse', req, {
+    timeout: 120000,
+  })
+  return data
+}
+
+/** 跑测试（同步返回；池=全A 首次取价可能 10~30s，之后有磁盘缓存）。 */
+export async function runSignalTest(req: SignalTestRequest): Promise<SignalTestRunResult> {
+  const { data } = await http.post<SignalTestRunResult>('/signal-test/run', req, {
+    timeout: 600000,
+  })
+  return data
+}
