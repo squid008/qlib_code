@@ -119,12 +119,44 @@ class TestBatchSplit:
         assert len(x[x["side"] == "卖"]) == 0, "加仓不该伴随卖出"
         assert len(_touching(bt, "Y")) == 1, "份数没变的票应完全不动"
 
-    def test_units_decrease_does_not_sell(self):
-        """份数变少 ⇒ 按他的口径**不动**（只加不减）。"""
-        px = {c: [10.0] * len(DATES) for c in ("X",)}
-        rows = [(0, "X", "A", 2), (3, "X", "A", 1)]      # 2 份 → 1 份
+    def test_units_decrease_trims_excess(self):
+        """★ 用户 2026-09-16 纠正：份数变少**要减** ——「原来 2 份、现在 1 份，要减掉 1 份的，
+        实际上他**有目标资金占比**」。
+
+        一批 [X(2 份), Y(1 份),（总 3 份）] → 刷新为 [X(1), Y(1), Z(1),（总 3 份）]：
+        · X 目标 2/3 → 1/3 ⇒ **部分卖出**（既不是清仓，也不是"留下的不动"）；
+        · Y 目标 1/3 → 1/3 ⇒ **占比没变 ⇒ 不动**；
+        · Z 新增 ⇒ 用 X 减仓的回款买满 1/3。
+        """
+        px = {c: [10.0] * len(DATES) for c in ("X", "Y", "Z")}
+        rows = [(0, "X", "A", 2), (0, "Y", "A", 1),
+                (3, "X", "A", 1), (3, "Y", "A", 1), (3, "Z", "A", 1)]
         bt = _run(rows, _panel(px))
-        assert len(_sells_of(bt, "X")) == 0
+        x = _touching(bt, "X")
+        buys, sells = x[x["side"] == "买"], x[x["side"] == "卖"]
+        assert len(sells) >= 1, "份数变少 ⇒ 应减掉多出来的那一份"
+        assert (sells["reason"] == "sell_trim_units").any()
+        buy_amt = float(buys["amount"].sum())
+        sell_amt = float(sells["amount"].sum())
+        assert 0 < sell_amt < buy_amt, "减仓是**部分**卖出（不是清仓）"
+        # 2/3 → 1/3 ⇒ 卖掉原来的一半（整手，留一点误差）
+        assert abs(sell_amt / buy_amt - 0.5) < 0.06, "卖出额应≈原持仓的一半"
+        assert len(_touching(bt, "Y")) == 1, "占比没变的票不动"
+        assert len(_touching(bt, "Z")) == 1, "新增的票用减仓回款买"
+
+    def test_units_decrease_deferred_when_cannot_sell(self):
+        """份数变少但**跌停卖不出** ⇒ 记顺延、次日接着卖（不能就这么算了）。"""
+        px = {c: [10.0] * len(DATES) for c in ("X", "Y")}
+        ld = {"X": [None] * len(DATES)}
+        ld["X"][4] = 10.0                                  # 刷新成交日跌停 ⇒ 当天卖不出
+        rows = [(0, "X", "A", 2), (0, "Y", "A", 1),
+                (3, "X", "A", 1), (3, "Y", "A", 1)]
+        bt = _run(rows, _panel(px, ld=ld))
+        sells = _sells_of(bt, "X")
+        assert len(sells) >= 1, "跌停卖不出 ⇒ 次日应顺延卖出"
+        assert str(sells.iloc[0]["date"]) == str(DATES[5].date()), "顺延到下一交易日成交"
+        rej = bt.rejects
+        assert ((rej["code"] == "X") & (rej["reason"] == "limit_down")).any()
 
     def test_avg_hold_days_is_reported(self):
         """平均持有天数不能是 null（用户 2026-09-16：「为啥会是 null 日？」）。"""

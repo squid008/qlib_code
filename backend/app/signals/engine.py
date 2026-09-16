@@ -484,11 +484,15 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
       · 信号里的 `bucket` 列 = 批次（如 `W_0..W_4`）⇒ **资金按批数平分**（5 批 ⇒ 各 20%）；
         没有 bucket 列就当作单一批次（= 全部资金）。
       · **批间资金互不挪用**：每批从自己的 20% 起步、各自复利（他的"把资金分 5 份来买"）。
-      · **只在该批名单刷新日动该批的票**：移出名单 ⇒ 卖；新增 ⇒ 买；**留下的不动**（不调平 ——
-        他的原话"不在新 W_3 的股票卖掉，买新 W_3 多出来的股票"）；再次回到名单 ⇒ 撤销待卖单。
+      · **只在该批名单刷新日动该批的票**，且**一切都按"目标资金占比"对齐**（用户 2026-09-16 确认：
+        「实际上他**有目标资金占比**」）：每只的目标 = `该批当前权益 × 份数 / 本批总份数` ⇒
+        移出名单（目标 0）⇒ **全卖**；份数变少或总份数变多 ⇒ **减仓**（卖掉超出的部分，不是清仓）；
+        份数变多 ⇒ **加仓**（补买差额）。⚠ 只有**占比没变**的票才真的不动 —— 他的"留下的不动"
+        是指"不因为股价波动去调平"，而不是"份额比例变了也不动"。
+        顺序：**先卖（移出 + 减仓）→ 再买（新增 + 加仓）**，回款当天可用。
       · 批内**按份数等权**：信号里的 `weight` 列 = 份数（同一只票重复出现 = **有意加仓** ⇒ 2 份，
         与他的 `目标资金占比 = 0.2 ÷ 行数` 完全一致）；缺列 ⇒ 每只 1 份。
-      · 每只新增股的目标金额 = **该批当前权益 × 份数占比**（该批卖出回款 + 现金支付；不够则整体缩水
+      · 买单的目标金额 = **该批当前权益 × 份数占比**（该批卖出回款 + 现金支付；不够则整体缩水
         并记 `no_cash`）。
       · 成交/限制口径与主引擎**共用同一套**（`_limit_ctx`）：T+1 开盘成交；**涨停买不进=放弃该笔**；
         **跌停/停牌卖不出=逐日顺延**；停牌两边都不做；整手 100 股；单边费率 cost/2。
@@ -551,6 +555,10 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     basis: Dict[str, Dict[int, float]] = {b: {} for b in buckets}
     entry: Dict[Tuple[str, int], int] = {}          # (批, 列号) → 建仓交易日位置（算平均持有）
     sell_q: Dict[Tuple[str, int], Tuple[int, str]] = {}
+    # 待**减仓**（份数变少 ⇒ 超配部分要卖）：(批, 列号) → (决策日, 目标份数, 当期总份数)
+    #   ⚠ 与 sell_q（移出名 ⇒ 全卖）分开：一个是"卖掉多出来的部分"、一个是"清仓"。
+    #   跌停/停牌当天卖不出时登记在此、逐日重试（价格在变 ⇒ 每次都按当前权益重算目标）。
+    trim_q: Dict[Tuple[str, int], Tuple[int, float, float]] = {}
     trades: List[dict] = []
     rejects: List[dict] = []
     nav_dates, nav_vals = [], []
@@ -619,6 +627,33 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 continue
             _log_trade(i, b, c, -1, sh[b][c], px, reason)
             sell_q.pop(key, None)
+        # 1b) 待**减仓**（份数变少 ⇒ 超配部分）逐日重试：跌停/停牌当天卖不掉的，明天再卖
+        #     每次都按**当前**权益重算目标金额（价格在动，目标也在动）
+        for key in list(trim_q.keys()):
+            b, c = key
+            dec, units, tot_u_ = trim_q[key]
+            if i < dec + lag or c not in sh[b]:
+                continue
+            px = _price(i, c)
+            if not np.isfinite(px):
+                _reject(i, b, c, "no_price", dec)
+                continue
+            mv = sum(sh[b][k] * (_price(i, k) if np.isfinite(_price(i, k)) else 0.0)
+                     for k in sh[b])
+            excess = sh[b][c] * px - (cash[b] + mv) * units / tot_u_
+            if excess <= px * lot:
+                trim_q.pop(key, None)                    # 已回到目标（或被加仓补上）⇒ 结束
+                continue
+            bad = can_sell(i, c)
+            if bad:
+                n_defer_sell += 1
+                _reject(i, b, c, bad, dec)
+                continue
+            q = int(excess / px / lot) * lot
+            if q <= 0:
+                trim_q.pop(key, None)
+                continue
+            _log_trade(i, b, c, -1, q, px, "sell_trim_units")
         # 2) 本批名单刷新
         for (b, lst, dec) in execs.get(i, []):
             new_codes = set(lst.keys())
@@ -627,6 +662,7 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             #   ⚠ 不能先排队、次日才成交：那样"卖掉的钱"赶不上同日的买入 ⇒ 新增股会被判 no_cash
             #     而新增只在刷新日尝试一次 ⇒ 整批新增直接丢掉（单测 test_each_batch... 抓到）。
             for c in sorted(held - new_codes):
+                trim_q.pop((b, c), None)               # 全卖在即 ⇒ 撤下"待减仓"
                 if (b, c) in sell_q:
                     continue
                 bad = can_sell(i, c)
@@ -641,18 +677,42 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     sell_q[(b, c)] = (i, "sell_out_of_list")
                     continue
                 _log_trade(i, b, c, -1, sh[b][c], px, "sell_out_of_list")
-            for c in sorted(held & new_codes):         # 又回到名单 ⇒ 撤销待卖（留下的不动）
+            for c in sorted(held & new_codes):         # 又回到名单 ⇒ 撤销**全卖**排队（见①）
                 if (b, c) in sell_q:
                     sell_q.pop((b, c), None)
                     n_refresh += 1
-            # ③ 新增 / **加仓** ⇒ 买入
-            #   ⚠ 用户 2026-09-16 补的关键口径：「如果有两条重复的，比原来多一条，他就**多买一份**」
-            #     ⇒ 持仓里**份数变多**的票也要补买差额（旧实现只买 `new_codes - held`，把加仓漏了）；
-            #       份数变少或持平 ⇒ **不动**（他的口径：留下的不动）。
+            # 目标资金占比 = `equity × 份数 / 本批总份数` —— 本批的三件事都是它：
+            #   移出名单（目标 0）⇒ 全卖 ①；份数变少 ⇒ 减仓 ②；份数变多/新增 ⇒ 补买 ③。
             tot_u = sum(float(lst[c]) for c in new_codes) or 1.0
             mv = sum(sh[b][k] * (_price(i, k) if np.isfinite(_price(i, k)) else 0.0)
                      for k in sh[b])
             equity = cash[b] + mv
+            # ② 仍在名单但**超配**（份数变少）⇒ 卖掉多出来的那一部分（部分卖出，不是清仓）
+            #   ⚠ 用户 2026-09-16 纠正：「份数变少要减的哈，比如原来 2 份、现在 1 份，要减掉 1 份的，
+            #     实际上他**有目标资金占比**」⇒ 按占比对齐，而不是"留下的不动"。
+            #     减仓回款**当天就用于本批买入**（顺序：先减仓/卖出 → 再买入）。
+            for c in sorted(held & new_codes):
+                px = _price(i, c)
+                if not np.isfinite(px):
+                    _reject(i, b, c, "no_price", dec)
+                    continue
+                excess = sh[b][c] * px - equity * float(lst[c]) / tot_u
+                if excess <= px * lot:
+                    trim_q.pop((b, c), None)             # 已回到目标 ⇒ 撤下待减仓
+                    continue
+                bad = can_sell(i, c)
+                if bad:                                  # 跌停/停牌卖不出 ⇒ 登记后逐日顺延
+                    n_defer_sell += 1
+                    _reject(i, b, c, bad, dec)
+                    trim_q[(b, c)] = (dec, float(lst[c]), tot_u)
+                    continue
+                q = int(excess / px / lot) * lot
+                if q > 0:
+                    _log_trade(i, b, c, -1, q, px, "sell_trim_units")
+                trim_q.pop((b, c), None)
+            # ③ 新增 / **加仓** ⇒ 买入
+            #   ⚠ 用户 2026-09-16 补：「如果有两条重复的，比原来多一条，他就**多买一份**」
+            #     ⇒ 份数变多的持仓股也补买差额（旧实现只买 `new_codes - held`，把加仓漏了）。
             plans = []                                   # (列号, 本次拟买金额, 现价)
             for c in sorted(new_codes):
                 px = _price(i, c)
@@ -665,6 +725,7 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     plans.append((c, want, px))          # 新增 ⇒ 买满目标
                 elif want - cur > px * lot:
                     plans.append((c, want - cur, px))    # 份数变多 ⇒ 补差额（多买一份）
+                    trim_q.pop((b, c), None)             # 目标调高了 ⇒ 撤下待减仓
             ok = []
             for c, amt, px in plans:
                 bad = can_buy(i, c)
