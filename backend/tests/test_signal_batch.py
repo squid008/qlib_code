@@ -100,9 +100,44 @@ class TestBatchSplit:
         amt = {r["code"]: r["amount"] for _, r in _trades(bt)[_trades(bt)["side"] == "买"].iterrows()}
         assert amt["X"] > amt["Y"] * 1.8, "2 份的票买入金额应≈1 份的 2 倍（整手会有小差）"
 
+    def test_units_increase_triggers_topup_buy(self):
+        """★ 用户 2026-09-16 补的口径：「如果有两条重复的，比原来多一条，他就**多买一份**」。
+
+        X 从 1 份变 2 份 ⇒ 刷新日应**再买一笔**（`buy_add_units`），且**不卖出** X；
+        份数没变（Y）⇒ 完全不动。
+        """
+        px = {c: [10.0] * len(DATES) for c in ("X", "Y", "Z")}
+        # X 从 1 份 → 2 份（加仓）；同时 Z 被移出 ⇒ 腾出资金买那一份
+        # ⚠ 加仓**只能用它自己那批的钱**（批间不挪用；全仓且无人移出时买不满 ⇒ 那是口径本身如此）
+        rows = [(0, "X", "A", 1), (0, "Y", "A", 1), (0, "Z", "A", 1),
+                (3, "X", "A", 2), (3, "Y", "A", 1)]
+        bt = _run(rows, _panel(px))
+        x = _touching(bt, "X")
+        buys = x[x["side"] == "买"]
+        assert len(buys) >= 2, "份数变多 ⇒ 应补买一份（旧实现会漏掉加仓）"
+        assert (buys["reason"] == "buy_add_units").any()
+        assert len(x[x["side"] == "卖"]) == 0, "加仓不该伴随卖出"
+        assert len(_touching(bt, "Y")) == 1, "份数没变的票应完全不动"
+
+    def test_units_decrease_does_not_sell(self):
+        """份数变少 ⇒ 按他的口径**不动**（只加不减）。"""
+        px = {c: [10.0] * len(DATES) for c in ("X",)}
+        rows = [(0, "X", "A", 2), (3, "X", "A", 1)]      # 2 份 → 1 份
+        bt = _run(rows, _panel(px))
+        assert len(_sells_of(bt, "X")) == 0
+
+    def test_avg_hold_days_is_reported(self):
+        """平均持有天数不能是 null（用户 2026-09-16：「为啥会是 null 日？」）。"""
+        px = {c: [10.0] * len(DATES) for c in ("X", "Y")}
+        rows = [(0, "X", "A", 1), (0, "Y", "A", 1), (3, "X", "A", 1)]   # Y 被移出 ⇒ 卖掉
+        bt = _run(rows, _panel(px))
+        st = bt.stats["batch_even"]
+        assert st["closed_trades"] >= 1
+        assert st["avg_hold_days"] is not None and st["avg_hold_days"] > 0
+
 
 class TestLimitsRemainStrict:
-    def test_limit_up_buy_gives_up(self, ):
+    def test_limit_up_buy_gives_up(self):
         """涨停（收盘封板）买不进 ⇒ 放弃该笔，且不动别的批。"""
         px = {c: [10.0] * len(DATES) for c in ("X", "W")}
         lu = {"W": [10.0] * len(DATES)}                     # W 在成交日收盘=涨停价 ⇒ 买不进
@@ -141,3 +176,27 @@ class TestLimitsRemainStrict:
         lu = {"W": [10.0] * len(DATES)}
         bt = _run([(0, "W", "A", 1)], _panel(px, lu=lu), strict_limit=False)
         assert len(_touching(bt, "W")) == 1
+
+
+class TestRejectsInterleave:
+    """被拒明细按方案**轮转**保留 ⇒ 靠后的方案（如 batch_even）不会被前面的方案挤掉。
+
+    用户 2026-09-16：「被拒明细少了分批次分片的结果导出」—— 根因就是拼接后截断。
+    """
+
+    def test_every_mode_is_represented(self):
+        from app.signals.engine import _interleave_rejects
+        by_mode = {"event_even": [{"mode": "event_even", "i": i} for i in range(5)],
+                   "batch_even": [{"mode": "batch_even", "i": i} for i in range(5)]}
+        out = _interleave_rejects(by_mode, cap=4)
+        assert len(out) == 4
+        assert {r["mode"] for r in out} == {"event_even", "batch_even"}   # 两个方案都在
+        assert [r["mode"] for r in out] == ["event_even", "batch_even"] * 2   # 轮转
+
+    def test_small_mode_not_starved(self):
+        """一个大方案 + 一个小方案：cap 足够时小方案应**全部**保留。"""
+        from app.signals.engine import _interleave_rejects
+        by_mode = {"event_even": [{"mode": "event_even", "i": i} for i in range(200)],
+                   "batch_even": [{"mode": "batch_even", "i": 0}]}
+        out = _interleave_rejects(by_mode, cap=100)
+        assert sum(1 for r in out if r["mode"] == "batch_even") == 1

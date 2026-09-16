@@ -125,6 +125,30 @@ def _bucket_signals(signals: pd.DataFrame, prep: dict) -> dict:
             "n_mapped": sum(len(v) for v in buys.values()) + sum(len(v) for v in exits.values())}
 
 
+def _interleave_rejects(by_mode: Dict[str, List[dict]], cap: int) -> List[dict]:
+    """各方案的被拒/顺延明细**轮转**取到 `cap` 条（每方案先各取 1 条、循环）。
+
+    ⚠ 为什么不能简单拼接后截断（用户 2026-09-16 报「导出里没有分批次分片的结果」）：
+      多方案并列时前面的方案会把名额占满（实测 12 年 + 严格口径下 batch_even 自己有 3 万多条），
+      拼接后截断 ⇒ **靠后的方案一条都看不到**。轮转能保证每个方案（含 `batch_even`）都被保留到。
+    每个方案的**真实总数**另在 `stats[mode]["rejects_total"]`（界面据此如实说明"共 X 条"）。
+    """
+    keys = [k for k in by_mode if by_mode.get(k)]
+    out: List[dict] = []
+    idx = {k: 0 for k in keys}
+    while keys and len(out) < cap:
+        for k in list(keys):
+            i = idx[k]
+            if i >= len(by_mode[k]):
+                keys.remove(k)
+                continue
+            out.append(by_mode[k][i])
+            idx[k] = i + 1
+            if len(out) >= cap:
+                break
+    return out
+
+
 def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
     """成交价与"能不能成交"的判定 —— **主引擎与 batch_even 共用同一套口径**（避免分叉）。
 
@@ -212,7 +236,8 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
               "signals_mapped": bk["n_mapped"], "signals_deferred": bk["deferred"],
               "signals_beyond_data": bk["beyond"],
               "limits_from": "inferred" if "_limits_inferred" in panel else "exchange_tag"})
-    all_trades, all_rejects, navs = [], [], {}
+    all_trades, navs = [], {}
+    mode_rejects: Dict[str, List[dict]] = {}      # 方案 → 明细（最后轮转合并，见 _interleave_rejects）
 
     for mode_spec in alloc_modes:
         _base, _band, mode = _split_mode(mode_spec)
@@ -397,7 +422,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 dsz[c] = dsz.get(c, 0) + 1
         navs[mode] = pd.Series(nav_vals, index=pd.DatetimeIndex(nav_dates))
         all_trades += trades
-        all_rejects += rejects
+        mode_rejects[mode] = rejects
         closed = hold_n
         net = navs[mode].pct_change().fillna(0.0).to_numpy()
         perf = _perf(net)
@@ -430,7 +455,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         if len(bres.nav.columns):
             navs["batch_even"] = bres.nav["batch_even"]
             all_trades += bres.trades.to_dict("records")
-            all_rejects += bres.rejects.to_dict("records")
+            mode_rejects["batch_even"] = bres.rejects.to_dict("records")
             if bres.stats.get("batch_even"):
                 out.stats["batch_even"] = bres.stats["batch_even"]
             if bres.diag.get("batch"):
@@ -446,7 +471,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     out.diag["rejects_total"] = int(sum((out.stats.get(k, {}) or {}).get("rejects_total", 0)
                                         for k in out.stats))
     out.trades = pd.DataFrame(all_trades[:20000])
-    out.rejects = pd.DataFrame(all_rejects[:30000])
+    out.rejects = pd.DataFrame(_interleave_rejects(mode_rejects, 30000))
     return out
 
 
@@ -524,6 +549,7 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     cash = {b: float(capital) * share for b in buckets}
     sh: Dict[str, Dict[int, int]] = {b: {} for b in buckets}
     basis: Dict[str, Dict[int, float]] = {b: {} for b in buckets}
+    entry: Dict[Tuple[str, int], int] = {}          # (批, 列号) → 建仓交易日位置（算平均持有）
     sell_q: Dict[Tuple[str, int], Tuple[int, str]] = {}
     trades: List[dict] = []
     rejects: List[dict] = []
@@ -531,10 +557,11 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     fee_sum = 0.0
     wins = losses = 0
     n_refresh = n_defer_sell = 0
+    hold_sum = hold_n = 0                  # 已实现持有的交易日合计 / 笔数（avg_hold_days）
     min_cash = float(capital)
 
     def _log_trade(i, b, c, side, qty, px, reason):
-        nonlocal fee_sum, wins, losses
+        nonlocal fee_sum, wins, losses, hold_sum, hold_n
         amt = qty * px
         fee = amt * half
         fee_sum += fee
@@ -542,6 +569,8 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             cash[b] -= amt + fee
             sh[b][c] = sh[b].get(c, 0) + qty
             basis[b][c] = basis[b].get(c, 0.0) + amt + fee
+            if (b, c) not in entry:              # 加仓不重置建仓日（持有期从首次建仓算）
+                entry[(b, c)] = i
         else:
             cash[b] += amt - fee
             held = sh[b].get(c, 0)
@@ -552,6 +581,10 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     wins += 1
                 else:
                     losses += 1
+            if b0 > 0 and (b, c) in entry:
+                hold_sum += max(0, i - entry[(b, c)])
+                hold_n += 1
+            entry.pop((b, c), None)
             sh[b][c] = held - qty
             basis[b][c] = max(0.0, b0 - avg * qty)
             if sh[b][c] <= 0:
@@ -612,32 +645,43 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 if (b, c) in sell_q:
                     sell_q.pop((b, c), None)
                     n_refresh += 1
-            adds = sorted(new_codes - held)
+            # ③ 新增 / **加仓** ⇒ 买入
+            #   ⚠ 用户 2026-09-16 补的关键口径：「如果有两条重复的，比原来多一条，他就**多买一份**」
+            #     ⇒ 持仓里**份数变多**的票也要补买差额（旧实现只买 `new_codes - held`，把加仓漏了）；
+            #       份数变少或持平 ⇒ **不动**（他的口径：留下的不动）。
+            tot_u = sum(float(lst[c]) for c in new_codes) or 1.0
+            mv = sum(sh[b][k] * (_price(i, k) if np.isfinite(_price(i, k)) else 0.0)
+                     for k in sh[b])
+            equity = cash[b] + mv
+            plans = []                                   # (列号, 本次拟买金额, 现价)
+            for c in sorted(new_codes):
+                px = _price(i, c)
+                if not np.isfinite(px):
+                    _reject(i, b, c, "no_price", dec)
+                    continue
+                want = equity * float(lst[c]) / tot_u    # 按**份数**占比的目标金额
+                cur = sh[b].get(c, 0) * px
+                if c not in sh[b]:
+                    plans.append((c, want, px))          # 新增 ⇒ 买满目标
+                elif want - cur > px * lot:
+                    plans.append((c, want - cur, px))    # 份数变多 ⇒ 补差额（多买一份）
             ok = []
-            for c in adds:
+            for c, amt, px in plans:
                 bad = can_buy(i, c)
                 if bad:
                     _reject(i, b, c, bad, dec)
                     continue
-                if not np.isfinite(_price(i, c)):
-                    _reject(i, b, c, "no_price", dec)
-                    continue
-                ok.append(c)
+                ok.append((c, amt, px))
             if ok:
-                tot_u = sum(float(lst[c]) for c in new_codes) or 1.0
-                mv = sum(sh[b][k] * (_price(i, k) if np.isfinite(_price(i, k)) else 0.0)
-                         for k in sh[b])
-                equity = cash[b] + mv
-                tgt = {c: equity * float(lst[c]) / tot_u for c in ok}
-                need = sum(tgt[c] * (1 + half) for c in ok)
+                need = sum(amt * (1 + half) for _c, amt, _px in ok)
                 scale = 1.0 if need <= cash[b] * 1.0001 else max(0.0, cash[b] / max(need, 1e-9))
-                for c in ok:
-                    px = _price(i, c)
-                    q = int(tgt[c] * scale / px / lot) * lot
+                for c, amt, px in ok:
+                    q = int(amt * scale / (px * (1 + half)) / lot) * lot
                     if q <= 0:
                         _reject(i, b, c, "no_cash", dec)
                         continue
-                    _log_trade(i, b, c, 1, q, px, "buy_list_refresh")
+                    _log_trade(i, b, c, 1, q, px,
+                               "buy_add_units" if c in sh[b] else "buy_list_refresh")
         # 3) 逐日盯市（各批合计）
         eq = sum(cash.values()) + sum(
             sh[b][k] * (_price(i, k) if np.isfinite(_price(i, k)) else 0.0)
@@ -665,8 +709,10 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         "fee_ratio_of_capital": round(fee_sum / max(1.0, capital), 4),
         "hold_refreshes": n_refresh,
         "sell_deferrals": n_defer_sell,
-        "closed_trades": wins + losses,
-        "avg_hold_days": None,          # 清单驱动：持有天数由名单决定，不按固定 N 计
+        "closed_trades": hold_n,
+        # 清单驱动：持有天数由名单决定（不是固定 N）——但仍**如实统计**已实现持有的交易日
+        # （用户 2026-09-16 问「为啥会是 null 日」⇒ 不该是 null ✓）
+        "avg_hold_days": round(hold_sum / hold_n, 1) if hold_n else None,
         "win_rate": round(wins / (wins + losses), 3) if (wins + losses) else None,
         "open_positions_end": sum(len(sh[b]) for b in buckets),
         "rejects_limit_up": sum(1 for r in rejects if r["reason"].startswith("limit_up")),
