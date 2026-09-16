@@ -298,9 +298,17 @@ class TestPasteNormalization:
         assert translate_formula(fw2).expression == translate_formula("OUT:MAX(C,1);").expression
 
     def test_math_symbols(self):
-        """≥ / ≤ 归一化为 >= / <=。"""
+        """≥ / ≤ / ≠ 归一化（NFKC 不管这三个，靠手工映射）。"""
         assert "Ge(" in translate_formula("OUT:C≥1;").expression
         assert "Le(" in translate_formula("OUT:C≤1;").expression
+        assert "Ne(" in translate_formula("OUT:C≠1;").expression
+
+    def test_dash_and_ideographic_comma(self):
+        """破折号 → 减号、顿号 → 逗号（都是中文粘贴手误，NFKC 不管）。"""
+        assert (translate_formula("OUT:H—L;").expression
+                == translate_formula("OUT:H-L;").expression)
+        assert (translate_formula("OUT:MAX(C、1);").expression
+                == translate_formula("OUT:MAX(C,1);").expression)
 
     def test_crlf_and_indent(self):
         """CRLF / 行尾空格 / 缩进空行本来就没事（防回归）。"""
