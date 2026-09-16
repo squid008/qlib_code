@@ -83,6 +83,104 @@ def load_model_artifacts(task_id: str) -> dict:
         raise ArtifactNotFoundError(f"读取交付物失败: {e}")
 
 
+def build_feature_formulas(params: dict, feature_names: list) -> list:
+    """把「训练时用的特征名」映射成「名称 + 公式」二元组（纯函数，便于单测）。
+
+    第二列（`formula`）按来源给**用户要的那一个**：
+      · `A158_x` / `A360_x`（混合模式的前缀名）⇒ 因子目录里该特征对应的 **qlib 表达式**；
+      · 自定义公式（名字 = `translate_formula(原文).name`）⇒ **用户保存的公式原文**
+        （⚠ 用户 2026-09-16 明确要求："如果是用户自定义的公式，第二列是用户前端保存的公式，
+          **不是**转译后的公式"）；转译后的 qlib 表达式另放在 `qlib_expr` 里备查；
+      · 非混合的单一特征集模式（特征名没有前缀）⇒ 先查自定义公式，再查 Alpha158 / Alpha360 目录；
+      · 都查不到 ⇒ `kind="未知"`、`formula=""`（宁可留空，也不瞎猜）。
+    用途：前端「特征列表」出表 + 下载 CSV（`特征名,公式`）。
+    """
+    from ..factors.catalog import get_catalog
+    from ..factors.parser import translate_formula
+
+    def _flat(dataset: str) -> dict:
+        try:
+            return {r["name"]: (r.get("expression") or "")
+                    for r in (get_catalog(dataset).get("flat") or [])}
+        except Exception:                         # 目录不可用 ⇒ 退化为"未知"，不影响其它列
+            return {}
+
+    a158, a360 = _flat("Alpha158"), _flat("Alpha360")
+
+    custom = {}                                   # 翻译后的名字 -> (用户原文, qlib 表达式)
+    for text in (params.get("custom_formulas") or []):
+        try:
+            t = translate_formula(text)
+            custom[t.name] = (text, t.expression)
+        except Exception:
+            continue                              # 翻译失败的历史公式：跳过（不阻塞其它列）
+
+    items = []
+    for name in (feature_names or []):
+        kind, key, formula, qexpr = "未知", name, "", ""
+        if name.startswith("A158_"):
+            key = name[len("A158_"):]
+            if key in a158:
+                kind, formula, qexpr = "Alpha158", a158[key], a158[key]
+        elif name.startswith("A360_"):
+            key = name[len("A360_"):]
+            if key in a360:
+                kind, formula, qexpr = "Alpha360", a360[key], a360[key]
+        if kind == "未知" and name in custom:
+            kind = "自定义公式"
+            formula, qexpr = custom[name][0], custom[name][1]
+        if kind == "未知" and name in a158:
+            kind, formula, qexpr = "Alpha158", a158[name], a158[name]
+        if kind == "未知" and name in a360:
+            kind, formula, qexpr = "Alpha360", a360[name], a360[name]
+        items.append({"name": name, "formula": formula, "kind": kind, "qlib_expr": qexpr})
+    return items
+
+
+def load_feature_formulas(task_id: str) -> dict:
+    """读取某次回测的「特征名 ↔ 公式」对照（供前端特征表展示 + 下载 CSV）。
+
+    特征名取自该次训练的交付物 `model_artifacts.json`（滚动回测取第一段；各段特征完全相同）；
+    公式来源见 `build_feature_formulas`。失败即抛 ArtifactNotFoundError（前端已有兜底）。
+    """
+    base = find_artifact_dir(task_id)
+    if base is None:
+        raise ArtifactNotFoundError(f"任务 {task_id} 没有产物目录")
+    params: dict = {}
+    pfile = os.path.join(base, "params.json")
+    if os.path.exists(pfile):
+        try:
+            with open(pfile, "r", encoding="utf-8") as f:
+                params = json.load(f)
+        except Exception as e:
+            logger.warning("读取 params.json 失败 %s: %s", task_id, e)
+
+    names: list = []
+    candidates = [os.path.join(base, "model_artifacts.json")]
+    candidates += [os.path.join(d, "model_artifacts.json")
+                   for d in sorted(glob.glob(os.path.join(base, "segment_*")))]
+    for af in candidates:
+        if not os.path.exists(af):
+            continue
+        try:
+            with open(af, "r", encoding="utf-8") as f:
+                names = (json.load(f) or {}).get("feature_names") or []
+        except Exception as e:
+            logger.warning("读取交付物失败 %s: %s", af, e)
+        if names:
+            break
+
+    return {
+        "task_id": task_id,
+        "dir_name": os.path.basename(base),
+        "feature": params.get("feature"),
+        "feature_mode": params.get("feature"),
+        "price_adjust": params.get("price_adjust") or "none",
+        "count": len(names),
+        "items": build_feature_formulas(params, names),
+    }
+
+
 def load_snapshot(task_id: str) -> dict:
     """返回该回测任务的产物目录信息（含曲线/参数快照图、参数、meta、段目录）。"""
     base = find_artifact_dir(task_id)

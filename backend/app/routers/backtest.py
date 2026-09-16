@@ -130,6 +130,19 @@ def get_backtest_artifacts(task_id: str):
         raise _map_artifact_error(e)
 
 
+@router.get("/backtest/{task_id}/features", summary="特征名 ↔ 公式对照（特征表展示 / 下载 CSV）")
+def get_backtest_features(task_id: str):
+    """返回该次训练用到的每个特征及其公式，供前端「特征列表」出表与下载 CSV。
+
+    第二列（`formula`）按来源给用户要的那一个：Alpha158/360 ⇒ 因子目录的 qlib 表达式；
+    **自定义公式 ⇒ 用户保存的公式原文**（不是转译后的表达式；转译结果另在 `qlib_expr`）。
+    """
+    try:
+        return artifacts_service.load_feature_formulas(task_id)
+    except artifacts_service.ArtifactNotFoundError as e:
+        raise _map_artifact_error(e)
+
+
 @router.get("/backtest/{task_id}/snapshot", summary="查询任务的产物目录信息（含曲线/参数快照图、参数）")
 def get_backtest_snapshot(task_id: str):
     """返回该回测任务的产物目录信息（曲线/参数快照图、参数、meta、段目录）。"""

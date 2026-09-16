@@ -1401,7 +1401,6 @@ export default function App() {
 
             <p className="mt-2 text-xs text-slate-400">
               提示：成交量限制填 0.25 表示单笔成交不超过当日成交量的 25%；留空表示不限量（理想成交）。
-              涨跌停限制填 0.095 表示涨/跌停无法交易；留空表示不设涨跌停。
             </p>
           </div>
 
@@ -1792,7 +1791,7 @@ export default function App() {
                   无回测记录
                 </div>
               )}
-              {a && <ModelArtifactsPanel artifacts={a} />}
+              {a && <ModelArtifactsPanel artifacts={a} taskId={shownTaskId ?? undefined} />}
               {/* Meta-Gate 因子归因（v1.19.72）：产物 compose.json 有内容才渲染（见组件内部判断） */}
               {shownTaskId && (
                 <GateAttribution taskId={shownTaskId} formulas={customFormulas} live={shownRunning} />

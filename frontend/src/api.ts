@@ -116,6 +116,29 @@ export interface BacktestSnapshot {
   compose?: GateCompose | null
 }
 
+/** 训练特征 ↔ 公式对照（v1.19.75）：第二列按来源给用户要的那一个 ——
+ *  Alpha158/360 ⇒ 因子目录的 qlib 表达式；**自定义公式 ⇒ 用户保存的公式原文**（qlib_expr 为转译结果）。 */
+export interface FeatureFormula {
+  name: string
+  formula: string
+  kind: string // Alpha158 / Alpha360 / 自定义公式 / 未知
+  qlib_expr: string
+}
+
+export interface BacktestFeatures {
+  task_id: string
+  dir_name?: string
+  feature?: string | null
+  price_adjust?: string
+  count: number
+  items: FeatureFormula[]
+}
+
+export async function getBacktestFeatures(taskId: string): Promise<BacktestFeatures> {
+  const { data } = await http.get<BacktestFeatures>(`/backtest/${taskId}/features`)
+  return data
+}
+
 export async function getBacktestSnapshot(taskId: string): Promise<BacktestSnapshot> {
   const { data } = await http.get<BacktestSnapshot>(`/backtest/${taskId}/snapshot`)
   return data

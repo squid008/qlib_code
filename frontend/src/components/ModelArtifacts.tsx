@@ -1,14 +1,29 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { getBacktestFeatures } from '../api'
+import type { FeatureFormula } from '../api'
 import type { ModelArtifacts as ModelArtifactsType } from '../types'
 
 interface Props {
   artifacts: ModelArtifactsType
+  /** 任务 id：用来拉「特征名 ↔ 公式」对照（v1.19.75，特征表展示 + 下载 CSV） */
+  taskId?: string
 }
 
-export default function ModelArtifacts({ artifacts }: Props) {
+export default function ModelArtifacts({ artifacts, taskId }: Props) {
   const [showWeights, setShowWeights] = useState(false)
   const [showFeatures, setShowFeatures] = useState(false)
   const [showModel, setShowModel] = useState(false)
+  // 特征 ↔ 公式对照（懒加载：展开特征列表时才请求）
+  const [featRows, setFeatRows] = useState<FeatureFormula[] | null>(null)
+  const [featErr, setFeatErr] = useState('')
+  const [featQuery, setFeatQuery] = useState('')
+
+  useEffect(() => {
+    if (!showFeatures || !taskId || featRows || featErr) return
+    getBacktestFeatures(taskId)
+      .then((r) => setFeatRows(r.items || []))
+      .catch((e: unknown) => setFeatErr(e instanceof Error ? e.message : String(e)))
+  }, [showFeatures, taskId, featRows, featErr])
 
   // 滚动训练时，artifacts.segments 为每段的交付物数组
   const isMultiSeg = Array.isArray(artifacts.segments) && artifacts.segments.length > 0
@@ -49,18 +64,39 @@ export default function ModelArtifacts({ artifacts }: Props) {
     URL.revokeObjectURL(url)
   }
 
-  const downloadFeatures = () => {
-    if (featureNames.length === 0) return
-    const blob = new Blob([featureNames.join('\n')], { type: 'text/plain;charset=utf-8' })
+  /** CSV 字段转义：公式里常有逗号/引号 ⇒ 必须双引号包裹并把内部引号翻倍 */
+  const csvCell = (v: string) => `"${String(v ?? '').replace(/"/g, '""')}"`
+
+  /** 下载特征表 CSV（v1.19.75）：第一列特征名、第二列公式（自定义公式 = 你保存的原文）。
+   *  ⚠ 加 UTF-8 BOM，否则 Excel 打开中文与长公式会乱码。 */
+  const downloadFeatureCsv = () => {
+    const rows: FeatureFormula[] = featRows && featRows.length > 0
+      ? featRows
+      : featureNames.map((n) => ({ name: n, formula: '', kind: '', qlib_expr: '' }))
+    const lines = ['特征名,公式']
+    for (const r of rows) lines.push([csvCell(r.name), csvCell(r.formula)].join(','))
+    const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${modelName}_features.txt`
+    a.download = `${modelName}_features.csv`
     a.click()
     URL.revokeObjectURL(url)
   }
 
   const params = active.params || {}
+
+  /** 特征表展示行：优先后端给的「名称 + 公式」，没取到就退化成只有名称；支持过滤 */
+  const featShown = useMemo(() => {
+    const rows: FeatureFormula[] = featRows && featRows.length > 0
+      ? featRows
+      : featureNames.map((n) => ({ name: n, formula: '', kind: '', qlib_expr: '' }))
+    const q = featQuery.trim().toLowerCase()
+    if (!q) return rows
+    return rows.filter(
+      (r) => r.name.toLowerCase().includes(q) || (r.formula || '').toLowerCase().includes(q),
+    )
+  }, [featRows, featureNames, featQuery])
 
   return (
     <section className="bg-white dark:bg-slate-800 rounded-xl shadow p-6">
@@ -106,10 +142,11 @@ export default function ModelArtifacts({ artifacts }: Props) {
           )}
           {featureNames.length > 0 && (
             <button
-              onClick={downloadFeatures}
+              onClick={downloadFeatureCsv}
+              title="CSV：第一列特征名、第二列公式（Alpha158/360 给 qlib 表达式；自定义公式给你保存的原文）"
               className="border rounded px-3 py-1 text-sm text-blue-600 hover:bg-blue-50"
             >
-              下载特征列表
+              下载特征表 CSV
             </button>
           )}
         </div>
@@ -247,26 +284,64 @@ export default function ModelArtifacts({ artifacts }: Props) {
           </div>
         )}
 
-        {/* 特征列表 */}
+        {/* 特征列表（v1.19.75：名称 + 公式；自定义公式显示用户保存的原文） */}
         {featureNames.length > 0 && (
           <div className="rounded-lg bg-slate-50 dark:bg-slate-900 p-4">
-            <div className="font-semibold mb-2">特征列表（{featureNames.length} 个）</div>
+            <div className="font-semibold mb-2">
+              特征列表（{featureNames.length} 个）
+              <span className="ml-2 text-xs font-normal text-slate-500">
+                左列特征名 · 右列公式（Alpha158/360 = qlib 表达式；自定义公式 = 你保存的原文）
+              </span>
+            </div>
             <button
               onClick={() => setShowFeatures(!showFeatures)}
               className="text-blue-600 hover:underline"
             >
-              {showFeatures ? '收起' : '查看'}特征
+              {showFeatures ? '收起' : '查看'}特征与公式
             </button>
             {showFeatures && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {featureNames.map((f) => (
-                  <span
-                    key={f}
-                    className="px-2 py-0.5 rounded bg-white dark:bg-slate-800 text-xs border font-mono"
-                  >
-                    {f}
-                  </span>
-                ))}
+              <div className="mt-2">
+                {featErr && (
+                  <p className="mb-2 text-xs text-amber-600">
+                    公式获取失败：{featErr}（当前只显示特征名；下载 CSV 的第二列会是空的）
+                  </p>
+                )}
+                <input
+                  type="text"
+                  value={featQuery}
+                  onChange={(e) => setFeatQuery(e.target.value)}
+                  placeholder="搜索特征名或公式…"
+                  className="w-full mb-2 border rounded px-2 py-1 text-xs bg-white dark:bg-slate-800"
+                />
+                <div className="max-h-72 overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-slate-500 border-b sticky top-0 bg-slate-50 dark:bg-slate-900">
+                        <th className="py-1 pr-3">#</th>
+                        <th className="py-1 pr-3">特征名</th>
+                        <th className="py-1 pr-3">公式</th>
+                        <th className="py-1 pr-3">来源</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {featShown.map((r, i) => (
+                        <tr key={r.name} className="border-b border-slate-100 dark:border-slate-700">
+                          <td className="py-1 pr-3 text-slate-400 align-top">{i + 1}</td>
+                          <td className="py-1 pr-3 font-mono align-top whitespace-nowrap">{r.name}</td>
+                          <td className="py-1 pr-3 font-mono align-top break-all text-slate-600 dark:text-slate-300">
+                            {r.formula || '—'}
+                          </td>
+                          <td className="py-1 pr-3 align-top whitespace-nowrap text-slate-400">
+                            {r.kind || '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-400">
+                  共 {featShown.length} 行（点击上方「下载特征表 CSV」导出「特征名,公式」两列）
+                </p>
               </div>
             )}
           </div>
