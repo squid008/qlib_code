@@ -117,6 +117,20 @@ function allocLabel(mode: string): string {
   return mode
 }
 
+/** 被拒原因码 → 中文（后端已给 `text`，这里只用于筛选下拉与兜底显示）。 */
+const RJ_REASON_LABEL: Record<string, string> = {
+  limit_up: '涨停买不进（放弃）',
+  limit_up_open: '开盘一字涨停买不进（放弃）',
+  limit_down: '跌停卖不出（顺延）',
+  limit_down_open: '开盘一字跌停卖不出（顺延）',
+  suspended: '停牌（买卖都不能做）',
+  no_cash: '资金不足',
+  no_price: '该日无行情',
+}
+function rjReasonLabel(k: string): string {
+  return RJ_REASON_LABEL[k] ?? k
+}
+
 function navLabel(k: string): string {
   return NAV_LABEL[k] ?? allocLabel(k)
 }
@@ -235,6 +249,13 @@ export default function SignalTestPanel() {
   const [navHold, setNavHold] = useState(60)
   const [navBusy, setNavBusy] = useState(false)
   const [navInfo, setNavInfo] = useState('')
+  /** 被拒/顺延明细（v1.19.77）：**分页 + 按原因/方案筛选 + 全量导出 CSV**。
+   *  用户 2026-09-16：「被拒明细只显示 200 条 / 左边正好 800 条不可能这么正好吧？能不能都显示出来？
+   *  浏览器会不会卡住？」—— 200 是前端 slice、800 是接口上限（都是**截断**，不是恰好）⇒ 现在：
+   *  接口放到 3 万条、前端**每页 200 条分页渲染**（一次性塞 3 万行 DOM 才会卡）⇒ 全量看/导出都不卡。 */
+  const [rjPage, setRjPage] = useState(0)
+  const [rjReason, setRjReason] = useState('')
+  const [rjMode, setRjMode] = useState('')
   const [fill, setFill] = useState('t1_open')
   const [cost, setCost] = useState(0.004)
   const [capital, setCapital] = useState(1e9)
@@ -1088,21 +1109,113 @@ export default function SignalTestPanel() {
             ))}
           </div>
 
-          {bt.rejects?.length > 0 && (
-            <details className="text-xs">
-              <summary className="cursor-pointer text-slate-500">
-                被拒/顺延明细（{bt.rejects.length} 条，最多显示 200）
-              </summary>
-              <div className="mt-1 max-h-40 overflow-auto font-mono">
-                {bt.rejects.slice(0, 200).map((r: any, i: number) => (
-                  <div key={i}>
-                    {r.date} {r.code} {r.text}
-                    {r.signal_date ? `（信号日 ${r.signal_date}）` : ''}
-                  </div>
-                ))}
+          {bt.rejects?.length > 0 && (() => {
+            const all: any[] = bt.rejects
+            const RJ_PAGE = 200
+            const total = Number((bt as any).rejects_total ?? all.length)
+            const reasons = Array.from(new Set(all.map((r) => String(r.reason)))).sort()
+            const modes = Array.from(new Set(all.map((r) => String(r.mode ?? '')).filter(Boolean))).sort()
+            const rows = all.filter(
+              (r) => (!rjReason || String(r.reason) === rjReason) && (!rjMode || String(r.mode) === rjMode),
+            )
+            const pages = Math.max(1, Math.ceil(rows.length / RJ_PAGE))
+            const cur = Math.min(rjPage, pages - 1)
+            const pageRows = rows.slice(cur * RJ_PAGE, cur * RJ_PAGE + RJ_PAGE)
+            const cell = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`
+            const downloadCsv = () => {
+              const head = '成交日,代码,原因,原因码,信号日,方案,批次'
+              const body = rows.map((r) => [r.date, r.code, r.text, r.reason, r.signal_date,
+                                            r.mode, r.batch].map(cell).join(','))
+              const blob = new Blob(['\ufeff' + [head, ...body].join('\r\n')],
+                                    { type: 'text/csv;charset=utf-8' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = '被拒顺延明细.csv'
+              a.click()
+              URL.revokeObjectURL(url)
+            }
+            return (
+              <div className="text-xs">
+                <div className="flex flex-wrap items-center gap-2 mb-1">
+                  <span className="text-slate-500">
+                    被拒/顺延明细：共 <b>{total}</b> 条
+                    {all.length < total && `（接口回传前 ${all.length} 条，其余未回传）`}
+                    {rows.length !== all.length && ` · 当前筛选 ${rows.length} 条`}
+                  </span>
+                  <select
+                    className="border rounded px-1 py-0.5 bg-white dark:bg-slate-800"
+                    value={rjReason}
+                    onChange={(e) => { setRjReason(e.target.value); setRjPage(0) }}
+                  >
+                    <option value="">全部原因</option>
+                    {reasons.map((k) => (
+                      <option key={k} value={k}>{rjReasonLabel(k)}</option>
+                    ))}
+                  </select>
+                  <select
+                    className="border rounded px-1 py-0.5 bg-white dark:bg-slate-800"
+                    value={rjMode}
+                    onChange={(e) => { setRjMode(e.target.value); setRjPage(0) }}
+                  >
+                    <option value="">全部方案</option>
+                    {modes.map((k) => (
+                      <option key={k} value={k}>{allocLabel(k)}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={downloadCsv}
+                    className="border rounded px-2 py-0.5 text-blue-600 hover:bg-blue-50"
+                  >
+                    导出全部 CSV（{rows.length} 条）
+                  </button>
+                  <span className="text-slate-400">每页 {RJ_PAGE} 条 · 分页渲染，几万条也不会卡</span>
+                </div>
+                <div className="max-h-72 overflow-auto font-mono">
+                  <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="text-left text-slate-500 border-b sticky top-0 bg-white dark:bg-slate-800">
+                        <th className="py-0.5 pr-2">成交日</th>
+                        <th className="py-0.5 pr-2">代码</th>
+                        <th className="py-0.5 pr-2">原因</th>
+                        <th className="py-0.5 pr-2">信号日</th>
+                        <th className="py-0.5 pr-2">方案</th>
+                        <th className="py-0.5 pr-2">批次</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pageRows.map((r, i) => (
+                        <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
+                          <td className="py-0.5 pr-2">{r.date}</td>
+                          <td className="py-0.5 pr-2">{r.code}</td>
+                          <td className="py-0.5 pr-2">{r.text || rjReasonLabel(String(r.reason))}</td>
+                          <td className="py-0.5 pr-2">{r.signal_date ?? '—'}</td>
+                          <td className="py-0.5 pr-2">{r.mode ?? '—'}</td>
+                          <td className="py-0.5 pr-2">{r.batch || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex items-center gap-2 mt-1">
+                  <button
+                    type="button" disabled={cur === 0} onClick={() => setRjPage(cur - 1)}
+                    className="border rounded px-2 disabled:opacity-40"
+                  >
+                    上一页
+                  </button>
+                  <span>第 {cur + 1} / {pages} 页</span>
+                  <button
+                    type="button" disabled={cur >= pages - 1} onClick={() => setRjPage(cur + 1)}
+                    className="border rounded px-2 disabled:opacity-40"
+                  >
+                    下一页
+                  </button>
+                </div>
               </div>
-            </details>
-          )}
+            )
+          })()}
         </div>
       )}
 

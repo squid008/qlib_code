@@ -420,9 +420,10 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             "rejects_limit_up": sum(1 for r in rejects if r["reason"].startswith("limit_up")),
             "rejects_suspended": sum(1 for r in rejects if r["reason"] == "suspended"),
             "rejects_no_cash": sum(1 for r in rejects if r["reason"] == "no_cash"),
+            "rejects_total": len(rejects),      # 该方案的真实总数（明细列表可能被截断，见下）
             "perf": perf,
-        }
-    # ---- batch_even（按批次分片）---- 单独一套状态机，结果并入同一张净值表
+            }
+            # ---- batch_even（按批次分片）---- 单独一套状态机，结果并入同一张净值表
     if any(_split_mode(s)[0] == "batch_even" for s in alloc_modes):
         bres = run_batch_backtest(signals, panel, fill=fill, cost=cost, capital=capital,
                                   strict_limit=strict_limit, lot=lot)
@@ -440,8 +441,12 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     nav_df = pd.DataFrame(navs)
     nav_df.index.name = "date"
     out.nav = nav_df
-    out.trades = pd.DataFrame(all_trades[:4000])
-    out.rejects = pd.DataFrame(all_rejects[:1500])
+    # 明细上限（v1.19.77：用户要"都显示出来"）：各方案**真实总数**另存 `rejects_total`
+    # ⇒ 就算明细被截断，界面也能如实写"共 X 条、明细含 Y 条"（别再出现"正好 800"这种误读）
+    out.diag["rejects_total"] = int(sum((out.stats.get(k, {}) or {}).get("rejects_total", 0)
+                                        for k in out.stats))
+    out.trades = pd.DataFrame(all_trades[:20000])
+    out.rejects = pd.DataFrame(all_rejects[:30000])
     return out
 
 
@@ -667,6 +672,7 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         "rejects_limit_up": sum(1 for r in rejects if r["reason"].startswith("limit_up")),
         "rejects_suspended": sum(1 for r in rejects if r["reason"] == "suspended"),
         "rejects_no_cash": sum(1 for r in rejects if r["reason"] == "no_cash"),
+        "rejects_total": len(rejects),
         "perf": _perf(net),
     }
     out.diag = {

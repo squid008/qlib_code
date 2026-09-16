@@ -402,7 +402,10 @@ def run(req: SignalTestRequest) -> Dict:
         timings["backtest"] = round(time.perf_counter() - t0, 3)
         resp["backtest"] = {
             "nav": _nav_rows(nav), "stats": bt.stats, "diag": bt.diag,
-            "trades": _records(bt.trades, 3000), "rejects": _records(bt.rejects, 800),
+            # v1.19.77：明细上限放开到 3 万条（用户要"都显示出来"）；真实总数另给 `rejects_total`
+            # ⇒ 前端分页展示 + 可导出 CSV，且能如实说明"共 X 条 / 明细含 Y 条"
+            "trades": _records(bt.trades, 20000), "rejects": _records(bt.rejects, 30000),
+            "rejects_total": int(bt.diag.get("rejects_total") or len(bt.rejects)),
             "nav_columns": [str(c) for c in nav.columns],
             "alloc_default": (req.alloc_default if req.alloc_default in bt.stats
                               else sorted(bt.stats.keys())[0]),
