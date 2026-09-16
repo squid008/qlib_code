@@ -384,6 +384,13 @@ def run(req: SignalTestRequest) -> Dict:
         specs = ["event_even", "cash_even"]
         if abs(float(req.rebal_band) - 0.05) > 1e-9:
             specs.append("event_even@0.05")
+        # v1.19.76：信号里带**批次列**（如同事的 `持仓周期`=W_0..W_4）⇒ 追加「按批次分片」方案：
+        # 每批固定份额、批内按份数等权、只在名单刷新时动该批的票（见 engine.run_batch_backtest）
+        try:
+            if "bucket" in sig.columns and int(sig["bucket"].nunique()) > 1:
+                specs.append("batch_even")
+        except Exception:                          # 批次信息异常不影响其它方案
+            pass
         bt = run_backtest(sig, panel, hold_days=horizon, fill=req.fill, cost=req.cost,
                           capital=req.capital, strict_limit=req.strict_limit,
                           rebal_band=req.rebal_band, alloc_modes=tuple(specs))

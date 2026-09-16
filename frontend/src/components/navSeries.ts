@@ -16,6 +16,8 @@ export const NAV_LABEL: Record<string, string> = {
   nav_official_bench: '官方基准（聚宽）',
   event_even: '事件驱动再平衡（有信号/到期就调平）',
   cash_even: '现金等分（不主动再平衡）',
+  // v1.19.76：按批次分片（同事的 W_0..W_4 口径）——每批固定份额、批内等权、只在名单刷新时动该批
+  batch_even: '按批次分片（每批固定份额·批内等权·只动刷新的票）',
 }
 
 export const NAV_COLOR: Record<string, string> = {
@@ -28,6 +30,7 @@ export const NAV_COLOR: Record<string, string> = {
   nav_official_bench: '#9ca3af',
   event_even: '#7c3aed',
   cash_even: '#0ea5e9',
+  batch_even: '#14b8a6',
 }
 
 /** 方案名 → 中文（`event_even_band5` 这类带死区的自动展开）。 */

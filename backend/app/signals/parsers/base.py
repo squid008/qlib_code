@@ -37,6 +37,10 @@ PRICE_ALIASES: Sequence[str] = ("成交价", "成交均价", "价格", "price", 
 AMOUNT_ALIASES: Sequence[str] = ("成交额", "成交金额", "金额", "amount", "turnover", "成交总值")
 FEE_ALIASES: Sequence[str] = ("手续费", "佣金", "费用", "fee", "commission", "总费用")
 STATUS_ALIASES: Sequence[str] = ("状态", "委托状态", "status", "订单状态")
+# 批次/分片列（v1.19.76）：同事的选股文件用 `持仓周期` 放 W_0..W_4（按批次分 5 份资金）
+BUCKET_ALIASES: Sequence[str] = (
+    "持仓周期", "批次", "分片", "资金分片", "分组", "组", "bucket", "group", "slot", "sleeve",
+)
 
 _BUY_WORDS = ("买", "buy", "b", "证券买入", "融资买入", "申购")
 _SELL_WORDS = ("卖", "sell", "s", "证券卖出", "融券卖出", "赎回")

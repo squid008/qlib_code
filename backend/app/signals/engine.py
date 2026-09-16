@@ -125,29 +125,20 @@ def _bucket_signals(signals: pd.DataFrame, prep: dict) -> dict:
             "n_mapped": sum(len(v) for v in buys.values()) + sum(len(v) for v in exits.values())}
 
 
-def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
-                 hold_days: int = 20, fill: str = "t1_open", cost: float = 0.004,
-                 capital: float = 1e9, strict_limit: bool = True,
-                 alloc_modes: Sequence[str] = ("event_even", "cash_even"),
-                 lot: int = LOT_DEFAULT, rebal_band: float = 0.0) -> BtResult:
-    """跑回测，返回**两种资金方案**的净值 + 成交/被拒明细 + 统计。"""
-    if not len(signals) or "CALENDAR" not in panel or "CLOSE" not in panel:
-        return BtResult(diag={"error": "无可用信号或价格面板"})
-    fill = fill if fill in _FILL_LAG else "t1_open"
-    lag, px_kind = _FILL_LAG[fill], _FILL_PRICE[fill]
-    hold_days = max(1, int(hold_days))
-    half = float(cost) / 2.0
+def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
+    """成交价与"能不能成交"的判定 —— **主引擎与 batch_even 共用同一套口径**（避免分叉）。
 
-    prep = _prepare(signals, panel)
-    cal, codes, col_of = prep["cal"], prep["codes"], prep["col_of"]
-    if not codes:
-        return BtResult(diag={"error": "信号标的不在行情数据里", "missing": prep["missing"][:20]})
+    返回 (price, can_buy, can_sell)：
+      · `price(i, c, kind=None)`：成交价（kind='open' 用开盘，否则收盘；非正/NaN ⇒ NaN）；
+      · `can_buy(i, c)`：None 可买；否则返回拒绝原因码（suspended / limit_up / limit_up_open）；
+      · `can_sell(i, c)`：镜像（limit_down / limit_down_open）。
+    口径与黑名单一致：停牌两边都做不了；涨停（收盘涨停，或 open 成交时开盘一字涨停）买不进；
+    跌停镜像；`strict_limit=False` ⇒ 只按停牌判。
+    """
     C, O, CR, OR, LU, LD = (prep["C"], prep["O"], prep["CR"], prep["OR"],
                             prep["LU"], prep["LD"])
-    bk = _bucket_signals(signals, prep)
-    n_row = len(cal)
 
-    def _price(i: int, c: int, kind: str = None) -> float:
+    def price(i: int, c: int, kind: str = None) -> float:
         arr = O if (kind or px_kind) == "open" else C
         v = arr[i, c]
         return float(v) if np.isfinite(v) and v > 0 else float("nan")
@@ -188,6 +179,32 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             return "limit_down_open"
         return None
 
+    return price, can_buy, can_sell
+
+
+def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
+                 hold_days: int = 20, fill: str = "t1_open", cost: float = 0.004,
+                 capital: float = 1e9, strict_limit: bool = True,
+                 alloc_modes: Sequence[str] = ("event_even", "cash_even"),
+                 lot: int = LOT_DEFAULT, rebal_band: float = 0.0) -> BtResult:
+    """跑回测，返回**两种资金方案**的净值 + 成交/被拒明细 + 统计。"""
+    if not len(signals) or "CALENDAR" not in panel or "CLOSE" not in panel:
+        return BtResult(diag={"error": "无可用信号或价格面板"})
+    fill = fill if fill in _FILL_LAG else "t1_open"
+    lag, px_kind = _FILL_LAG[fill], _FILL_PRICE[fill]
+    hold_days = max(1, int(hold_days))
+    half = float(cost) / 2.0
+
+    prep = _prepare(signals, panel)
+    cal, codes, col_of = prep["cal"], prep["codes"], prep["col_of"]
+    if not codes:
+        return BtResult(diag={"error": "信号标的不在行情数据里", "missing": prep["missing"][:20]})
+    C, O, CR, OR, LU, LD = (prep["C"], prep["O"], prep["CR"], prep["OR"],
+                            prep["LU"], prep["LD"])
+    bk = _bucket_signals(signals, prep)
+    n_row = len(cal)
+    _price, can_buy, can_sell = _limit_ctx(prep, px_kind, strict_limit)
+
     out = BtResult(
         diag={"fill": fill, "cost": cost, "capital": capital, "hold_days": hold_days,
               "strict_limit": bool(strict_limit), "lot": lot,
@@ -199,6 +216,10 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
 
     for mode_spec in alloc_modes:
         _base, _band, mode = _split_mode(mode_spec)
+        if _base == "batch_even":
+            # v1.19.76：`batch_even` 是**另一套状态机**（按批次分片，见 run_batch_backtest）
+            # ⇒ 这里必须跳过，否则会被当成通用方案再跑一遍（重复成交，单测抓到）
+            continue
         band = float(rebal_band) if _band is None else float(_band)
         cash = float(capital)
         sh: Dict[int, int] = {}                       # 列号 → 股数
@@ -401,11 +422,265 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             "rejects_no_cash": sum(1 for r in rejects if r["reason"] == "no_cash"),
             "perf": perf,
         }
+    # ---- batch_even（按批次分片）---- 单独一套状态机，结果并入同一张净值表
+    if any(_split_mode(s)[0] == "batch_even" for s in alloc_modes):
+        bres = run_batch_backtest(signals, panel, fill=fill, cost=cost, capital=capital,
+                                  strict_limit=strict_limit, lot=lot)
+        if len(bres.nav.columns):
+            navs["batch_even"] = bres.nav["batch_even"]
+            all_trades += bres.trades.to_dict("records")
+            all_rejects += bres.rejects.to_dict("records")
+            if bres.stats.get("batch_even"):
+                out.stats["batch_even"] = bres.stats["batch_even"]
+            if bres.diag.get("batch"):
+                out.diag["batch"] = bres.diag["batch"]
+        elif bres.diag.get("error"):
+            out.diag["batch_error"] = bres.diag["error"]
+
     nav_df = pd.DataFrame(navs)
     nav_df.index.name = "date"
     out.nav = nav_df
     out.trades = pd.DataFrame(all_trades[:4000])
     out.rejects = pd.DataFrame(all_rejects[:1500])
+    return out
+
+
+def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
+                       fill: str = "t1_open", cost: float = 0.004, capital: float = 1e9,
+                       strict_limit: bool = True, lot: int = LOT_DEFAULT) -> BtResult:
+    """**`batch_even`：按批次分片**（同事 2026-09-16 的口径，用户确认"加这个方案"）。
+
+    规则（与同事的选股文件一一对应）：
+      · 信号里的 `bucket` 列 = 批次（如 `W_0..W_4`）⇒ **资金按批数平分**（5 批 ⇒ 各 20%）；
+        没有 bucket 列就当作单一批次（= 全部资金）。
+      · **批间资金互不挪用**：每批从自己的 20% 起步、各自复利（他的"把资金分 5 份来买"）。
+      · **只在该批名单刷新日动该批的票**：移出名单 ⇒ 卖；新增 ⇒ 买；**留下的不动**（不调平 ——
+        他的原话"不在新 W_3 的股票卖掉，买新 W_3 多出来的股票"）；再次回到名单 ⇒ 撤销待卖单。
+      · 批内**按份数等权**：信号里的 `weight` 列 = 份数（同一只票重复出现 = **有意加仓** ⇒ 2 份，
+        与他的 `目标资金占比 = 0.2 ÷ 行数` 完全一致）；缺列 ⇒ 每只 1 份。
+      · 每只新增股的目标金额 = **该批当前权益 × 份数占比**（该批卖出回款 + 现金支付；不够则整体缩水
+        并记 `no_cash`）。
+      · 成交/限制口径与主引擎**共用同一套**（`_limit_ctx`）：T+1 开盘成交；**涨停买不进=放弃该笔**；
+        **跌停/停牌卖不出=逐日顺延**；停牌两边都不做；整手 100 股；单边费率 cost/2。
+    """
+    mode = "batch_even"
+    if not len(signals) or "CALENDAR" not in panel or "CLOSE" not in panel:
+        return BtResult(diag={"error": "无可用信号或价格面板"})
+    fill = fill if fill in _FILL_LAG else "t1_open"
+    lag, px_kind = _FILL_LAG[fill], _FILL_PRICE[fill]
+    half = float(cost) / 2.0
+    prep = _prepare(signals, panel)
+    cal, codes, col_of = prep["cal"], prep["codes"], prep["col_of"]
+    if not codes:
+        return BtResult(diag={"error": "信号标的不在行情数据里", "missing": prep["missing"][:20]})
+    _price, can_buy, can_sell = _limit_ctx(prep, px_kind, strict_limit)
+    n_row = len(cal)
+
+    bkt = (signals["bucket"].astype(str).fillna("") if "bucket" in signals.columns
+           else pd.Series([""] * len(signals), index=signals.index))
+    wts = (pd.to_numeric(signals["weight"], errors="coerce").fillna(1.0)
+           if "weight" in signals.columns else pd.Series(1.0, index=signals.index))
+    per: Dict[Tuple[str, int], Dict[int, float]] = {}
+    defer = beyond = 0
+    for dt, code, side, b, ww in zip(signals["date"], signals["code"], signals["side"], bkt, wts):
+        if int(side) <= 0:
+            continue            # 清单驱动：卖出由"移出名单"自动产生，入参里的卖出信号忽略
+        c = col_of.get(code)
+        if c is None:
+            continue
+        d = pd.Timestamp(dt)
+        if n_row == 0 or d < cal[0]:
+            beyond += 1
+            continue
+        p = int(cal.searchsorted(d))
+        if p >= n_row:
+            beyond += 1
+            continue
+        if cal[p] != d:
+            defer += 1
+        lst = per.setdefault((str(b), p), {})
+        lst[c] = lst.get(c, 0.0) + max(1e-9, float(ww))
+    if not per:
+        return BtResult(diag={"error": "batch_even：没有可用的买入信号"})
+
+    buckets = sorted({b for (b, _p) in per})
+    share = 1.0 / max(1, len(buckets))
+    seq: Dict[str, List[Tuple[int, Dict[int, float]]]] = {}
+    for (b, p), lst in per.items():
+        seq.setdefault(b, []).append((p, lst))
+    for b in seq:
+        seq[b].sort(key=lambda x: x[0])
+    execs: Dict[int, List[Tuple[str, Dict[int, float], int]]] = {}
+    for b, items in seq.items():
+        for p, lst in items:
+            execs.setdefault(min(n_row - 1, p + lag), []).append((b, lst, p))
+    i_start = min(execs)
+
+    cash = {b: float(capital) * share for b in buckets}
+    sh: Dict[str, Dict[int, int]] = {b: {} for b in buckets}
+    basis: Dict[str, Dict[int, float]] = {b: {} for b in buckets}
+    sell_q: Dict[Tuple[str, int], Tuple[int, str]] = {}
+    trades: List[dict] = []
+    rejects: List[dict] = []
+    nav_dates, nav_vals = [], []
+    fee_sum = 0.0
+    wins = losses = 0
+    n_refresh = n_defer_sell = 0
+    min_cash = float(capital)
+
+    def _log_trade(i, b, c, side, qty, px, reason):
+        nonlocal fee_sum, wins, losses
+        amt = qty * px
+        fee = amt * half
+        fee_sum += fee
+        if side > 0:
+            cash[b] -= amt + fee
+            sh[b][c] = sh[b].get(c, 0) + qty
+            basis[b][c] = basis[b].get(c, 0.0) + amt + fee
+        else:
+            cash[b] += amt - fee
+            held = sh[b].get(c, 0)
+            b0 = basis[b].get(c, 0.0)
+            avg = (b0 / held) if held > 0 else 0.0
+            if avg > 0:
+                if (amt - fee) - avg * qty > 0:
+                    wins += 1
+                else:
+                    losses += 1
+            sh[b][c] = held - qty
+            basis[b][c] = max(0.0, b0 - avg * qty)
+            if sh[b][c] <= 0:
+                sh[b].pop(c, None)
+                basis[b].pop(c, None)
+        trades.append({"date": str(cal[i].date()), "code": codes[c],
+                       "side": "买" if side > 0 else "卖", "shares": int(qty),
+                       "price": round(px, 4), "amount": round(amt, 2), "fee": round(fee, 2),
+                       "reason": reason, "mode": mode, "batch": b})
+
+    def _reject(i, b, c, reason, dec=None):
+        rejects.append({"date": str(cal[i].date()), "code": codes[c], "reason": reason,
+                        "text": REJECT_TEXT.get(reason, reason),
+                        "signal_date": (str(cal[dec].date()) if dec is not None else None),
+                        "mode": mode, "batch": b})
+
+    for i in range(i_start, n_row):
+        # 1) 先成交顺延的卖单（回款当日可用于本批买入）
+        for key in list(sell_q.keys()):
+            b, c = key
+            dec, reason = sell_q[key]
+            if i < dec + lag or c not in sh[b]:
+                continue
+            bad = can_sell(i, c)
+            if bad:
+                n_defer_sell += 1
+                _reject(i, b, c, bad, dec)
+                continue
+            px = _price(i, c)
+            if not np.isfinite(px):
+                _reject(i, b, c, "no_price", dec)
+                continue
+            _log_trade(i, b, c, -1, sh[b][c], px, reason)
+            sell_q.pop(key, None)
+        # 2) 本批名单刷新
+        for (b, lst, dec) in execs.get(i, []):
+            new_codes = set(lst.keys())
+            held = set(sh[b].keys())
+            # ① 移出 ⇒ **当场卖出**（回款当天可用于本批买入；卖不出才排队逐日顺延）
+            #   ⚠ 不能先排队、次日才成交：那样"卖掉的钱"赶不上同日的买入 ⇒ 新增股会被判 no_cash
+            #     而新增只在刷新日尝试一次 ⇒ 整批新增直接丢掉（单测 test_each_batch... 抓到）。
+            for c in sorted(held - new_codes):
+                if (b, c) in sell_q:
+                    continue
+                bad = can_sell(i, c)
+                px = _price(i, c)
+                if bad:
+                    n_defer_sell += 1
+                    _reject(i, b, c, bad, dec)
+                    sell_q[(b, c)] = (i, "sell_out_of_list")   # 从今日起逐日重试
+                    continue
+                if not np.isfinite(px):
+                    _reject(i, b, c, "no_price", dec)
+                    sell_q[(b, c)] = (i, "sell_out_of_list")
+                    continue
+                _log_trade(i, b, c, -1, sh[b][c], px, "sell_out_of_list")
+            for c in sorted(held & new_codes):         # 又回到名单 ⇒ 撤销待卖（留下的不动）
+                if (b, c) in sell_q:
+                    sell_q.pop((b, c), None)
+                    n_refresh += 1
+            adds = sorted(new_codes - held)
+            ok = []
+            for c in adds:
+                bad = can_buy(i, c)
+                if bad:
+                    _reject(i, b, c, bad, dec)
+                    continue
+                if not np.isfinite(_price(i, c)):
+                    _reject(i, b, c, "no_price", dec)
+                    continue
+                ok.append(c)
+            if ok:
+                tot_u = sum(float(lst[c]) for c in new_codes) or 1.0
+                mv = sum(sh[b][k] * (_price(i, k) if np.isfinite(_price(i, k)) else 0.0)
+                         for k in sh[b])
+                equity = cash[b] + mv
+                tgt = {c: equity * float(lst[c]) / tot_u for c in ok}
+                need = sum(tgt[c] * (1 + half) for c in ok)
+                scale = 1.0 if need <= cash[b] * 1.0001 else max(0.0, cash[b] / max(need, 1e-9))
+                for c in ok:
+                    px = _price(i, c)
+                    q = int(tgt[c] * scale / px / lot) * lot
+                    if q <= 0:
+                        _reject(i, b, c, "no_cash", dec)
+                        continue
+                    _log_trade(i, b, c, 1, q, px, "buy_list_refresh")
+        # 3) 逐日盯市（各批合计）
+        eq = sum(cash.values()) + sum(
+            sh[b][k] * (_price(i, k) if np.isfinite(_price(i, k)) else 0.0)
+            for b in buckets for k in sh[b])
+        if cash and min(cash.values()) < min_cash:
+            min_cash = min(cash.values())
+        nav_dates.append(cal[i])
+        nav_vals.append(eq / capital)
+
+    nav = pd.Series(nav_vals, index=pd.DatetimeIndex(nav_dates))
+    out = BtResult()
+    out.nav = pd.DataFrame({mode: nav})
+    out.nav.index.name = "date"
+    out.trades = pd.DataFrame(trades[:4000])
+    out.rejects = pd.DataFrame(rejects[:1500])
+    net = nav.pct_change().fillna(0.0).to_numpy()
+    out.stats[mode] = {
+        "alloc": mode, "rebal_band": 0.0, "min_cash": round(float(min_cash), 2),
+        "final_nav": round(float(nav.iloc[-1]), 4) if len(nav) else None,
+        "total_return": round(float(nav.iloc[-1] - 1), 4) if len(nav) else None,
+        "trades": len(trades),
+        "buys": sum(1 for t in trades if t["side"] == "买"),
+        "sells": sum(1 for t in trades if t["side"] == "卖"),
+        "fees_paid": round(fee_sum, 2),
+        "fee_ratio_of_capital": round(fee_sum / max(1.0, capital), 4),
+        "hold_refreshes": n_refresh,
+        "sell_deferrals": n_defer_sell,
+        "closed_trades": wins + losses,
+        "avg_hold_days": None,          # 清单驱动：持有天数由名单决定，不按固定 N 计
+        "win_rate": round(wins / (wins + losses), 3) if (wins + losses) else None,
+        "open_positions_end": sum(len(sh[b]) for b in buckets),
+        "rejects_limit_up": sum(1 for r in rejects if r["reason"].startswith("limit_up")),
+        "rejects_suspended": sum(1 for r in rejects if r["reason"] == "suspended"),
+        "rejects_no_cash": sum(1 for r in rejects if r["reason"] == "no_cash"),
+        "perf": _perf(net),
+    }
+    out.diag = {
+        "fill": fill, "cost": cost, "capital": capital, "hold_days": None,
+        "strict_limit": bool(strict_limit), "lot": lot, "n_codes": len(codes),
+        "missing_codes": prep["missing"][:20],
+        "signals_mapped": int(sum(len(l) for l in per.values())),
+        "signals_deferred": defer, "signals_beyond_data": beyond,
+        "limits_from": "inferred" if "_limits_inferred" in panel else "exchange_tag",
+        "batch": {"mode": mode, "n_batches": len(buckets), "share_each": round(share, 4),
+                  "batches": buckets[:12], "refreshes": len(per),
+                  "cash_end": {b: round(float(cash[b]), 2) for b in buckets[:12]},
+                  "holdings_end": {b: len(sh[b]) for b in buckets[:12]}},
+    }
     return out
 
 

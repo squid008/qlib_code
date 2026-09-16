@@ -48,6 +48,8 @@ const FILL_LABEL: Record<string, string> = {
 const ALLOC_LABEL: Record<string, string> = {
   event_even: '事件驱动再平衡（有信号/到期就调平）',
   cash_even: '现金等分（不主动再平衡）',
+  // v1.19.76：按批次分片（有"持仓周期/批次"列时自动出现）——每批固定份额、批内等权、只动刷新的票
+  batch_even: '按批次分片（每批固定份额·批内等权·只动刷新的票）',
 }
 
 const NAV_LABEL: Record<string, string> = {
@@ -71,7 +73,8 @@ const NAV_COLOR: Record<string, string> = {
 
 /** 解析诊断/统计的**中文标签**（用户要求：别把 rows_total 这些键名直接糊在界面上）。 */
 const STAT_LABEL: Record<string, string> = {
-  rows_total: '源表行数', rows_valid: '有效信号', dropped: '丢弃行', dup_dropped: '重复去重',
+  rows_total: '源表行数', rows_valid: '有效信号', dropped: '丢弃行', dup_dropped: '重复行(计为份数)',
+  dup_merged_rows: '重复行(计为份数)', weight_sum: '份数合计', bucket_count: '批次数', buckets: '批次',
   index_rows: '指数行(已忽略)', buy_signals: '买入信号', sell_signals: '卖出信号',
   stocks: '股票数', days: '信号天数', date_min: '起始日', date_max: '结束日',
   max_signals_per_day: '单日最多信号', signals_per_day_avg: '日均信号数',

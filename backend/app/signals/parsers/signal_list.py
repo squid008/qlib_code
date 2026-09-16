@@ -11,16 +11,19 @@
   · 标的取**括号里的代码**，中文名剥离**丢弃**（用户明确：中文名会变，不许参与识别）；
   · 可选第 3 列 `方向/买卖`（同事这版没有）—— 有就解析成 +1/-1，卖出信号在回测里当**强制离场**；
   · 指数行（`SH000300` 这类）不算信号，单独计数并提示；
-  · 重复行（同日同标的）去重并计数。
+  · **重复行 = 有意加仓**（用户 2026-09-16 确认）：同日同标的出现 N 次 ⇒ 合并为一条、`weight=N`
+    （份数），供 `batch_even` 做批内等权；旧方案忽略 weight（等同去重）。
+  · 可选**批次列**（`持仓周期`/`批次`/`bucket`…，如同事的 `W_0..W_4`）⇒ 解析进 `bucket` 列，
+    `batch_even` 据此把资金按批数平分、批间互不挪用。
 """
 from __future__ import annotations
 
 import pandas as pd
 
 from ..codes import normalize_code, parse_date, split_multi_codes
-from .base import (AMOUNT_ALIASES, CODE_ALIASES, DATE_ALIASES, FEE_ALIASES, PRICE_ALIASES,
-                   QTY_ALIASES, STATUS_ALIASES, SIDE_ALIASES, ParseResult, decode_bytes,
-                   pick_col, read_table, side_of, num)
+from .base import (AMOUNT_ALIASES, BUCKET_ALIASES, CODE_ALIASES, DATE_ALIASES, FEE_ALIASES,
+                   PRICE_ALIASES, QTY_ALIASES, STATUS_ALIASES, SIDE_ALIASES, ParseResult,
+                   decode_bytes, pick_col, read_table, side_of, num)
 
 
 def parse_signal_list(raw, filename: str = "") -> ParseResult:
@@ -33,6 +36,7 @@ def parse_signal_list(raw, filename: str = "") -> ParseResult:
     date_col = pick_col(df, DATE_ALIASES)
     code_col = pick_col(df, CODE_ALIASES)
     side_col = pick_col(df, SIDE_ALIASES)
+    bucket_col = pick_col(df, BUCKET_ALIASES)          # 批次（如他的 `持仓周期`=W_0..W_4）
     if date_col is None and len(df.columns) >= 1:       # 无表头：按位置
         date_col = df.columns[0]
     if code_col is None and len(df.columns) >= 2:
@@ -43,7 +47,11 @@ def parse_signal_list(raw, filename: str = "") -> ParseResult:
         res.stats.update(rows_total=int(len(df)), rows_valid=0, dropped=1, stocks=0)
         return res
 
-    rows, issues, seen = [], [], set()
+    rows, issues = [], []
+    # ⚠ 重复行**不再丢掉**（用户 2026-09-16：「重复行是有意加仓」）⇒ 合并成**份数** `weight`：
+    #   同一 (日期, 批次, 标的) 出现 2 次 = 2 份 ⇒ 与同事 `目标资金占比 = 0.2 ÷ 行数` 完全一致；
+    #   主引擎的 event_even/cash_even 忽略 weight（仍按去重后的名单等权），`batch_even` 用它做批内等权。
+    agg: dict = {}
     n_dup = n_drop = n_index = 0
     n_buy = n_sell = 0
     n_multi_cells = 0
@@ -84,20 +92,27 @@ def parse_signal_list(raw, filename: str = "") -> ParseResult:
                 for msg in info.issues:
                     unresolved[msg] = unresolved.get(msg, 0) + 1
                 res.add_issue(i, "%s | %s" % (raw_date, tok), info.issues[0])
-            key = (dt, info.qlib_code, side)
-            if key in seen:
+            b = ""
+            if bucket_col:
+                bv = rec.get(bucket_col)
+                b = "" if str(bv).strip().lower() in ("nan", "none", "") else str(bv).strip()
+            key = (dt, info.qlib_code, side, b)
+            hit = agg.get(key)
+            if hit is not None:
+                hit["weight"] += 1.0                  # 有意加仓 ⇒ 份数 +1（不再丢弃这一行）
                 n_dup += 1
                 continue
-            seen.add(key)
-            # ⚠ 买卖计数放在**去重之后**：否则 `buy_signals + sell_signals != rows_valid`，
+            # ⚠ 买卖计数按**唯一信号**计：否则 `buy_signals + sell_signals != rows_valid`，
             #   界面上会显得"信号数比有效行多"（2026-09-15 单测抓到）。
             if side > 0:
                 n_buy += 1
             else:
                 n_sell += 1
-            rows.append({"date": dt, "code": info.qlib_code, "side": side,
-                         "name": info.name, "raw_date": str(raw_date), "raw_code": str(tok)})
+            agg[key] = {"date": dt, "code": info.qlib_code, "side": side, "name": info.name,
+                        "raw_date": str(raw_date), "raw_code": str(tok), "bucket": b,
+                        "weight": 1.0}
 
+    rows = list(agg.values())
     sig = pd.DataFrame(rows)
     res.signals = sig
     per_day = sig.groupby("date").size() if len(sig) else pd.Series(dtype=int)
@@ -105,7 +120,12 @@ def parse_signal_list(raw, filename: str = "") -> ParseResult:
         "rows_total": int(len(df)),
         "rows_valid": int(len(sig)),
         "dropped": int(n_drop),
+        # 兼容旧键：`dup_dropped` 现在表示"被合并成份数的重复行数"（不再丢弃，见 weight 列）
         "dup_dropped": int(n_dup),
+        "dup_merged_rows": int(n_dup),
+        "weight_sum": float(sig["weight"].sum()) if len(sig) else 0.0,
+        "bucket_count": int(sig["bucket"].nunique()) if len(sig) else 0,
+        "buckets": sorted(set(sig["bucket"]))[:12] if len(sig) else [],
         "index_rows": int(n_index),
         "buy_signals": int(n_buy),
         "sell_signals": int(n_sell),
