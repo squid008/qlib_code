@@ -179,9 +179,102 @@ def _span_features(universe, exprs, span_start, span_end, buffer_days=120):
     return df
 
 
-def train_gate(dataset, model, opts=None, universe=None, span=None):
+# gate 训练超参：train_gate 与归因 ablation 各变体**共用**（可比性前提）
+_GATE_PARAMS = {"objective": "binary", "metric": "auc", "learning_rate": 0.05,
+                "num_leaves": 64, "min_child_samples": 50, "num_threads": 0,
+                "verbosity": -1, "feature_pre_filter": False}
+_GATE_ROUNDS = 300
+# 归因最多做多少个因子（勾很多公式时按 gain 取前 N，避免 ablation 训练时间失控）。
+# 实测（本机，10 特征+3 因子、段1 训练 50 万行）：训 1 个 gate ≈ 2.7s ⇒ 每段 +11s、36 段约 +6 分钟；
+# 若勾 20 个公式则会变成 +57s/段、约 +34 分钟 ⇒ 故设上限。
+_ATTR_MAX_FACTORS = 12
+
+
+def _fit_gate(X, y):
+    """训一个 gate（LightGBM binary），返回 (bst, valid_auc)。
+
+    ⚠ 归因 ablation（v1.19.72）**复用同一个 X 的索引、只换列** ⇒ 训练/验证切分完全一致，
+      各变体的 valid_auc 才可比（否则"因子差异"会被"切分差异"污染）。
+    """
     import lightgbm as lgb
-    o = dict(scope="all", ydef="abs", reject_ratio=0.25, extra_features=[])
+    y = y.reindex(X.index)
+    dates = X.index.get_level_values("datetime").unique()
+    cut = dates[int(len(dates) * 0.8)]
+    tr = X.index.get_level_values("datetime") < cut   # numpy bool 掩码（DatetimeIndex 比较即返回）
+    dtr = lgb.Dataset(X[tr].values, label=y[tr].values, feature_name=list(X.columns))
+    dva = lgb.Dataset(X[~tr].values, label=y[~tr].values, feature_name=list(X.columns),
+                      reference=dtr)
+    bst = lgb.train(dict(_GATE_PARAMS), dtr, num_boost_round=_GATE_ROUNDS, valid_sets=[dva],
+                    callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)])
+    return bst, float(bst.best_score["valid_0"]["auc"])
+
+
+def _gate_attribution(X, y, bst, extra_cols, exprs) -> dict:
+    """gate 因子归因：① gain 重要性 ② **单因子 ablation**（回答"哪个附加因子更好"）。
+
+    背景（用户 2026-09-16）：「我勾了 Meta-Gate 风控，训练产物里没有这块结果？不知道机器最后
+    觉得用哪个风控因子更好？」—— 此前 gate 只被用来产出 z 做拒尾，**importance 算了没提取、
+    gate 模型也没落盘** ⇒ 前端明明写着"机器用 importance 自动挑选"，产物里却查不到挑了谁。
+    本函数补上这个输出（结果随 `compose.json` 落进产物目录 + 前端出表）。
+
+    ⚠ 为什么两个指标都给：**gain 是"树在它上面花了多少分裂增益"**，会被特征个数与共线性影响
+      （两条相似公式互相分走 gain，排名会失真）；**ablation 是"单独把它给 gate 能不能提升
+      valid_auc"** —— 后者才是可比的"哪个因子更好"。基线 = 不含任何附加因子（只有主特征 + 主分）。
+    ⚠ 成本：ablation 要额外训 **k + 1** 个 gate（k=附加因子数）⇒ 由 `attribution` 开关控制。
+    """
+    cols = list(X.columns)
+    gains = pd.Series(bst.feature_importance(importance_type="gain"),
+                      index=cols, dtype=float).fillna(0.0)
+    ex_set = set(extra_cols)
+    base_cols = [c for c in cols if c not in ex_set]
+    g_base, g_ex = float(gains[base_cols].sum()), float(gains[extra_cols].sum())
+    tot = g_base + g_ex
+    out = {
+        "primary_p_gain_share": (float(gains.get("primary_p", 0.0)) / tot) if tot else 0.0,
+        "extras_gain_share": (g_ex / tot) if tot else 0.0,
+        "note": "gain_share=该因子在这批附加因子内分到的 gain 占比；auc/delta_auc=单独把它加进"
+                "基线后 gate 的 valid_auc 及相对基线的提升（更可比，建议看 delta_auc）",
+    }
+    try:
+        _, auc0 = _fit_gate(X[base_cols], y)          # 基线：主特征 + 主分
+    except Exception as e:                            # noqa: BLE001 —— 归因失败不影响 gate 主流程
+        out["error"] = "基线 gate 训练失败：%r" % (e,)
+        return out
+    out["primary_only_auc"] = auc0
+    out["full_auc"] = float(bst.best_score["valid_0"]["auc"])
+    out["full_delta_auc"] = out["full_auc"] - auc0     # 这批因子整体值不值（相对不用它们）
+    rows = []
+    order = sorted(range(len(extra_cols)), key=lambda i: -float(gains[extra_cols[i]]))
+    picked = order[:_ATTR_MAX_FACTORS]
+    out["ablation_factors"] = len(picked)
+    out["ablation_capped"] = len(picked) < len(extra_cols)
+    if out["ablation_capped"]:
+        out["note"] += ("；⚠ 附加因子 %d 个、超过上限 %d ⇒ 只对 gain 最高的前 %d 个做了单因子 ablation"
+                        % (len(extra_cols), _ATTR_MAX_FACTORS, len(picked)))
+    for i in picked:
+        c = extra_cols[i]
+        row = {"i": i, "gain": float(gains[c]),
+               "gain_share": (float(gains[c]) / g_ex) if g_ex else 0.0,
+               "expr": (str(exprs[i])[:300] if i < len(exprs) else ""),
+               "auc": None, "delta_auc": None}
+        try:
+            _, auc1 = _fit_gate(X[base_cols + [c]], y)
+            row["auc"] = auc1
+            row["delta_auc"] = auc1 - auc0
+        except Exception as e:                        # noqa: BLE001
+            row["error"] = repr(e)
+        rows.append(row)
+    out["extras"] = rows
+    return out
+
+
+def train_gate(dataset, model, opts=None, universe=None, span=None):
+    """训练 gate，返回 (bst, info)。
+
+    info = {reject_ratio, n, valid_auc} + 有附加因子时的 `attribution`（gain 占比 + 单因子
+    ablation，见 `_gate_attribution`）；`opts["attribution"]=False` 可关（省 k+1 次 gate 训练）。
+    """
+    o = dict(scope="all", ydef="abs", reject_ratio=0.25, extra_features=[], attribution=True)
     if opts:
         o.update({k: v for k, v in opts.items() if v is not None})
     X = _features(dataset, "train").dropna()
@@ -189,9 +282,11 @@ def train_gate(dataset, model, opts=None, universe=None, span=None):
     p = model.predict(dataset, segment="train").reindex(X.index)
     X = X.join(p.rename("primary_p"), how="inner")
     extra = o.get("extra_features") or []
+    extra_cols = []
     if extra:
-        X = X.join(_extra_cols(dataset, extra, X.index, universe=universe, span=span),
-                   how="left").fillna(0.0)
+        Xe = _extra_cols(dataset, extra, X.index, universe=universe, span=span)
+        extra_cols = list(Xe.columns)
+        X = X.join(Xe, how="left").fillna(0.0)
     L = L.reindex(X.index)
     y = (L > 0).astype(int) if o["ydef"] == "abs" else \
         (L > L.groupby(level="datetime").transform("median")).astype(int)
@@ -200,18 +295,12 @@ def train_gate(dataset, model, opts=None, universe=None, span=None):
         X, y = X[keep], y[keep]
     if len(X) < 5000 or y.nunique() < 2:
         raise ValueError("gate 训练样本不足 %d" % len(X))
-    dates = X.index.get_level_values("datetime").unique()
-    cut = dates[int(len(dates) * 0.8)]
-    tr = X.index.get_level_values("datetime") < cut
-    params = {"objective": "binary", "metric": "auc", "learning_rate": 0.05,
-              "num_leaves": 64, "min_child_samples": 50, "num_threads": 0,
-              "verbosity": -1, "feature_pre_filter": False}
-    dtr = lgb.Dataset(X[tr].values, label=y[tr].values, feature_name=list(X.columns))
-    dva = lgb.Dataset(X[~tr].values, label=y[~tr].values, feature_name=list(X.columns), reference=dtr)
-    bst = lgb.train(params, dtr, num_boost_round=300, valid_sets=[dva],
-                    callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)])
-    return bst, {"reject_ratio": o["reject_ratio"], "n": len(X),
-                 "valid_auc": float(bst.best_score["valid_0"]["auc"])}
+    bst, auc = _fit_gate(X, y)
+    gi = {"reject_ratio": o["reject_ratio"], "n": len(X), "valid_auc": auc,
+          "extras": len(extra_cols)}
+    if extra_cols and o.get("attribution", True):
+        gi["attribution"] = _gate_attribution(X, y, bst, extra_cols, extra)
+    return bst, gi
 
 
 def gate_z(dataset, bst, p_test: pd.Series, opts=None, universe=None, span=None) -> pd.Series:
@@ -346,7 +435,34 @@ def build_target_w(score_final: pd.Series, z_overlay: pd.Series,
     return out.fillna(0.0)
 
 
-def compose_final_signal(dataset, model, req, universe=None, span=None) -> pd.DataFrame:
+def _attr_enabled(setting, seg_label) -> bool:
+    """把 `meta_gate_opts.attribution` 解析成"**本段**是否做单因子 ablation"。
+
+    取值（兼容 bool 与字符串）：
+      · False / 'off' / 'none'        ⇒ 关（只算 gain 占比，不额外训练；免费）
+      · 'seg1'                        ⇒ 只第一段做（`seg_label` 为 None=一次性训练，或 "段1"）
+      · True / 'all' / None（未设置） ⇒ **每段都做**（默认；用户 2026-09-16 选的就是这个）
+
+    ⚠ 代价（**端到端实测**，见开发记录 §9.15）：一个 gate 训练约 **4.5~7.6s**（真实全A、段训 50 万行）
+      ⇒ ablation 要 k+1 个 ⇒ **+20~30s/段** ⇒ 36 段约 **+12~18 分钟**（相对一次滚动回测的总时长是十几个百分点）。
+      ⚠ 我曾被"gate 训练 24~93s"误导：那段时间里还包含 `_extra_cols` 的 `D.features` **额外特征求值**
+      （真公式在 全A 上一次 ~48.5s），并不是 gate 本身 ⇒ **看耗时一定要看它到底包了哪几步**。
+      ⚠ 也别用合成数据估真实训练耗时（早停太快，会低估到 1/3 量级）。
+    """
+    if setting is None:
+        return True                        # 未设置 ⇒ 每段（默认，与用户选择一致）
+    if isinstance(setting, str):
+        s = setting.strip().lower()
+        if s in ("", "off", "false", "none", "0", "no"):
+            return False
+        if s == "seg1":
+            return seg_label in (None, "段1", "seg1", "1")
+        return True                       # all/on/true/1/yes 及其它未知值 ⇒ 每段（显式要就给）
+    return bool(setting)
+
+
+def compose_final_signal(dataset, model, req, universe=None, span=None,
+                        seg_label=None) -> pd.DataFrame:
     """引擎总入口：返回覆盖 pred.pkl 的 DataFrame。
 
     列：
@@ -377,7 +493,9 @@ def compose_final_signal(dataset, model, req, universe=None, span=None) -> pd.Da
     ovl_on = bool(ovl_cfg.get("enabled", False)) if isinstance(ovl_cfg, dict) else False
 
     if gate_on:
-        gopts = getattr(req, "meta_gate_opts", None)
+        gopts = dict(getattr(req, "meta_gate_opts", None) or {})
+        # 归因范围（v1.19.72）：默认只第一段（见 _attr_enabled 的实测说明）
+        gopts["attribution"] = _attr_enabled(gopts.get("attribution"), seg_label)
         bst_g, gi = train_gate(dataset, model, gopts, universe=universe, span=span)
         _mark("gate 训练")
         z = gate_z(dataset, bst_g, p_test, gopts, universe=universe, span=span)

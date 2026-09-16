@@ -8,6 +8,7 @@ import type {
   BacktestResult,
   BacktestPartialResult,
   FactorCatalog,
+  GateCompose,
 } from './types'
 
 // 通过 Vite 代理转发到后端，无需写死后端地址
@@ -111,6 +112,8 @@ export interface BacktestSnapshot {
   meta?: Record<string, string> | null
   images?: Record<string, string>
   segments?: string[]
+  /** 信号合成归因（v1.19.72）：Meta-Gate 的 gain 占比 + 单因子 ablation（前端出「因子归因」表） */
+  compose?: GateCompose | null
 }
 
 export async function getBacktestSnapshot(taskId: string): Promise<BacktestSnapshot> {

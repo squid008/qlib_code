@@ -434,6 +434,39 @@ def _assign_backtest_seq(dir_path: str):
             logger.warning("分配回测序号失败 %s: %s", dir_path, e)
 
 
+def _save_compose_attr(dir_path: str, seg_label, info: dict) -> None:
+    """把信号合成（Meta-Gate / 触发叠加 / 硬规则）的归因结果**按段累积**写入 `compose.json`。
+
+    v1.19.72（用户 2026-09-16 报）：「我勾了 Meta-Gate 风控，训练产物里没有这块结果？不知道机器
+    最后觉得用哪个风控因子更好？」—— 此前 `compose_final_signal` 返回的 info 只被拼进进度消息
+    就丢了（gate 模型也不落盘）⇒ 产物里查不到任何归因（`result.json` 里 gate 出现 0 次）。
+    现在落盘，前端在结果页出「因子归因」表。失败不阻塞回测（与其它旁路记录一致）。
+
+    结构：`{"segments": {"段1": <info>, ...}, "updated_at": "..."}`（滚动回测按段累积写）。
+    """
+    import json
+    import time
+    if not dir_path:
+        return
+    try:
+        os.makedirs(dir_path, exist_ok=True)
+        path = os.path.join(dir_path, "compose.json")
+        data: Dict[str, Any] = {}
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+            except Exception:                     # 旧文件损坏 ⇒ 重建（旁路记录，不值得失败）
+                data = {}
+        segs = dict(data.get("segments") or {})
+        segs[str(seg_label or "段1")] = info
+        data = {"segments": segs, "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(_sanitize_json(data), f, ensure_ascii=False, indent=2, default=str)
+    except Exception as e:
+        logger.warning("保存信号合成归因(compose.json)失败: %s", e)
+
+
 def _save_backtest_params(dir_path: str, req: BacktestRequest):
     """保存回测参数快照（完整可复现参数 + 人工可读 meta）。
 

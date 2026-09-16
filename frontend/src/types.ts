@@ -37,6 +37,9 @@ export interface BacktestRequest {
     ydef?: string
     reject_ratio?: number | null
     extra_features?: string[] | null // qlib 表达式（gate 附加输入特征，如多个 01 触发公式）
+    /** 归因范围（v1.19.72）：'all'（默认，每段都做单因子 ablation）| 'seg1'（只第一段）| 'off'/false（关）。
+     *  ⚠ 端到端实测代价：1 个 gate 训练约 4.5~7.6s ⇒ 每段 ablation（k+1 个）约 +20~30s ⇒ 36 段约 +12~18 分钟。 */
+    attribution?: boolean | string | null
   } | null
   trigger_overlay_opts?: {
     enabled?: boolean
@@ -135,6 +138,47 @@ export interface ModelArtifacts {
   feature_importance?: { feature: string; importance: number }[] | null
   // 滚动训练时返回：每段的模型交付物
   segments?: ModelArtifacts[] | null
+}
+
+// ---- 信号合成归因（v1.19.72，产物 compose.json）----
+// 用户 2026-09-16：「我勾了 Meta-Gate 风控，训练产物里没有这块结果？不知道机器最后觉得用哪个
+// 风控因子更好？」⇒ 后端每段把 gate 的 gain 占比与「单因子 ablation」的 valid_auc 落盘，前端出表。
+export interface GateAttrExtra {
+  i: number // 附加因子序号（= 勾选顺序 ⇒ 可映射回 params.meta_gate_opts.extra_features[i]）
+  gain: number // LightGBM gain（分裂增益累计）
+  gain_share: number // 在这批附加因子内的 gain 占比
+  expr: string // 表达式开头（截断，便于人眼辨认）
+  auc: number | null // 单因子 ablation：基线 + 该因子 的 gate valid_auc
+  delta_auc: number | null // 相对基线（不含任何附加因子）的提升 ⇒ 最可比的"哪个更好"
+  error?: string
+}
+
+export interface GateAttribution {
+  primary_p_gain_share?: number // 主模型分（primary_p）在总 gain 里的占比
+  extras_gain_share?: number // 这批附加因子整体在总 gain 里的占比
+  primary_only_auc?: number // 基线：只有主特征 + 主分
+  full_auc?: number // 全部附加因子都用上
+  full_delta_auc?: number // = full_auc - primary_only_auc ⇒ 这批因子整体值不值
+  extras?: GateAttrExtra[]
+  error?: string
+  note?: string
+}
+
+export interface ComposeSegmentInfo {
+  gate?: {
+    reject_ratio?: number
+    n?: number
+    valid_auc?: number
+    extras?: number
+    attribution?: GateAttribution
+  } | null
+  overlay?: { n?: number; valid_auc?: number } | null
+  hard?: string | null
+}
+
+export interface GateCompose {
+  segments?: Record<string, ComposeSegmentInfo>
+  updated_at?: string
 }
 
 // 因子库目录（特征集）

@@ -73,6 +73,7 @@ from .artifacts import (
     _save_result_json,
     _save_backtest_params,
     _save_train_signature,
+    _save_compose_attr,
 )
 from .charts import (
     _save_curve_snapshot,
@@ -540,12 +541,24 @@ def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str = None,
     _check_cancel()
     from .signal_compose import compose_final_signal
     try:
-        frame, sinfo = compose_final_signal(dataset, model, req, universe=universe, span=span)
+        frame, sinfo = compose_final_signal(dataset, model, req, universe=universe, span=span,
+                                            seg_label=seg_label)
         recorder.save_objects(**{"pred.pkl": frame})
-        _summ = " | ".join(
-            "%s(n=%d auc=%.3f)" % (k, v.get("n", 0), v.get("valid_auc", 0))
-            for k, v in sinfo.items()) or "ok"
+
+        def _fmt(k, v):
+            """进度消息里顺带报出**最强的附加因子**（用户 2026-09-16：不知道机器觉得哪个因子更好）。"""
+            s = "%s(n=%d auc=%.3f)" % (k, v.get("n", 0), v.get("valid_auc", 0))
+            rows = [r for r in ((v.get("attribution") or {}).get("extras") or [])
+                    if r.get("delta_auc") is not None]
+            if rows:
+                top = max(rows, key=lambda r: r["delta_auc"])
+                s += " 最强因子#%d(%+.4f)" % (top["i"], top["delta_auc"])
+            return s
+
+        _summ = " | ".join(_fmt(k, v) for k, v in sinfo.items()) or "ok"
         _report(_p1, "信号合成完成：%s" % _summ)
+        # 归因落盘（v1.19.72）：gain 占比 + 单因子 ablation ⇒ 产物 compose.json（前端出表）
+        _save_compose_attr(_get_artifact_dir(), seg_label, sinfo)
     except Exception as e:  # 失败不阻塞回测：记录并回退主信号（pred.pkl 仍是 sr 保存的主分）
         import logging
         import traceback

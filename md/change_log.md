@@ -3,6 +3,42 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.72] - 2026-09-16
+
+### Added
+- **Meta-Gate 因子归因**（用户 2026-09-16：「我勾了 Meta-Gate 风控，训练产物里没有这块结果？不知道机器最后
+  觉得用哪个风控因子更好？」）——**确实没有，而且不是"没显示"而是"算了没存"**：旧版 `train_gate()` 只返回
+  `{reject_ratio, n, valid_auc}`，LightGBM 内部算了 importance 却**没提取**；`sinfo` 只被拼进进度消息就丢
+  （产物 `result.json` 里 `gate` 出现 **0 次**、gate 模型也不落盘）—— 而前端提示写着"由模型 feature importance
+  自动学习挑选" ⇒ 只实现了"用"，没实现"**告诉你用了哪个**"。
+  - `train_gate()` 新增 **`attribution`**：① 各附加因子的 **gain 占比**（在这批 extras 内归一，另给主分
+    `primary_p` 的占比 ⇒ 顺便看出 gate 靠主分还是靠这些因子）；② **单因子 ablation** —— 基线=只留「主特征+主分」，
+    各自 +1 个因子再训一个 gate 比 `valid_auc` ⇒ 直接给出"哪个因子更好"的排名（**比 gain 更可比**：
+    gain 会被相似公式互相分走，且受特征个数影响）。
+  - **落盘 `compose.json`**（按段累积，`engine/artifacts._save_compose_attr`）⇒ 产物里终于有这块结果；
+    `/backtest/{id}/snapshot` 暴露 `compose`；前端新增「**Meta-Gate 因子归因**」表（ΔAUC 均值排名 + 段胜率 +
+    各段明细 + "稳定有效/不稳定/基本无贡献"结论）；进度消息也顺带报出「最强因子#i(+Δ)」。
+  - 开关 `meta_gate_opts.attribution`：`'all'`（**默认**，每段）/ `'seg1'`（只第一段，省时间）/ `'off'`（只存 gain 占比）；
+    `_ATTR_MAX_FACTORS = 12`（勾很多公式时按 gain 取前 12 个做 ablation，防训练时间失控）。
+  - 配套脚本：`ai_test/measure_gate_ablation.py`（按真实维度估代价）、`ai_test/check_gate_attr_e2e.py`
+    （真实提交一次回测、跑 2 段后停止，验证产物与耗时）。
+- **⚠ 真实代价（端到端实测）**：一个 gate 训练约 **4.5~7.6s**（真实全A、段训 50 万行）⇒ ablation（k+1 个）
+  ≈ **+20~30s/段** ⇒ 36 段约 **+12~18 分钟**（相对一次滚动回测总时长是十几个百分点）⇒ 默认每段都做。
+  ⚠ 纠正我自己排查中的一次误判：日志里"gate 训练 24~93s"**并不只是 gate** —— 那段时间里还包含
+  `_extra_cols` 的 `D.features` **额外特征求值**（那 3 条真公式在 全A 上一次约 48.5s）
+  ⇒ **看耗时必须看它到底包了哪几步**（这条与"别用合成数据估真实训练耗时"一起写进了开发记录）。
+
+### 验证
+- 新增 `backend/tests/test_gate_attribution.py`（10 项）：桩 dataset/model + 合成数据跑**真** LightGBM，
+  含**语义断言**"构造 1 个带信号因子 + 2 个噪声因子 ⇒ 带信号的 ΔAUC 必须排第一且为正" ✓；
+  另覆盖 `attribution=False`（不做 ablation）、上限截断（14 个因子只 ablate 12 个）、
+  `_attr_enabled` 解析（默认只段1）、`compose.json` 按段累积 / 损坏重建 / 空目录不报错 ✓。
+- **端到端** `ai_test/check_gate_attr_e2e.py`（用真实参数提交回测、跑 2 段后停止）：产物出现 `compose.json`
+  且**含 2 段**（段1/段2）✓；`/snapshot` 的 `compose` 字段正常返回 ✓；归因数值自洽（gain 占比合计 **1.0000**、
+  ΔAUC **有正有负**、主分 gain 占比 0.65/0.83 ⇒ 顺带看出"gate 主要靠主分、附加因子贡献很小"）✓。
+  例：段1 基线 0.6036 → 全用上 0.6041（整体 Δ+0.0006），因子#1(量) ΔAUC **+0.0040** > 因子#0(价) **−0.0012** ✓。
+- ruff 0、前端 `tsc` 0 + `build`、单测 **288 passed**。版本 1.19.71 → 1.19.72。
+
 ## [1.19.71] - 2026-09-16
 
 ### Changed

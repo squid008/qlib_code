@@ -96,6 +96,8 @@ def load_snapshot(task_id: str) -> dict:
         "meta": None,
         "images": {},
         "segments": [os.path.basename(d) for d in sorted(glob.glob(os.path.join(base, "segment_*")))],
+        # 信号合成归因（v1.19.72）：Meta-Gate 的 gain 占比 + 单因子 ablation（"哪个风控因子更好"）
+        "compose": None,
     }
     pfile = os.path.join(base, "params.json")
     if os.path.exists(pfile):
@@ -114,6 +116,13 @@ def load_snapshot(task_id: str) -> dict:
     for name in ["nav_curve.png", "params_snapshot.png"]:
         if os.path.exists(os.path.join(base, name)):
             info["images"][name] = name
+    cfile = os.path.join(base, "compose.json")
+    if os.path.exists(cfile):
+        try:
+            with open(cfile, "r", encoding="utf-8") as f:
+                info["compose"] = json.load(f)
+        except Exception as e:
+            logger.warning("读取 compose.json 失败 %s: %s", task_id, e)
     return info
 
 

@@ -28,6 +28,7 @@ import LayerChart from './components/LayerChart'
 import ICChart from './components/ICChart'
 import TradeLog from './components/TradeLog'
 import ModelArtifactsPanel from './components/ModelArtifacts'
+import GateAttribution from './components/GateAttribution'
 import HistoryPanel from './components/HistoryPanel'
 import FormulaPanel from './components/FormulaPanel'
 import FeatureSelectPanel from './components/FeatureSelectPanel'
@@ -66,7 +67,8 @@ export default function App() {
     exclude_stock_kcb: false,
     // 信号后处理（默认关）
     meta_gate: false,
-    meta_gate_opts: { reject_ratio: 0.25 },
+    // attribution: 'all' = 每段都做单因子 ablation（默认，实测 36 段约 +12~18 分钟）；'seg1' 只第 1 段
+    meta_gate_opts: { reject_ratio: 0.25, attribution: 'all' },
     trigger_overlay_opts: null,
     hard_filters: {},
     split_mode: 'single',
@@ -289,6 +291,9 @@ export default function App() {
   // 信号后处理：meta_gate_opts / hard_filters 字段更新（强类型、避免 index signature）
   const setGateRatio = (v: number) =>
     setForm((f) => ({ ...f, meta_gate_opts: { ...(f.meta_gate_opts || {}), reject_ratio: v } }))
+  /** 因子归因范围（v1.19.72）：'seg1'（默认）/ 'all' / 'off' */
+  const setGateAttribution = (v: string) =>
+    setForm((f) => ({ ...f, meta_gate_opts: { ...(f.meta_gate_opts || {}), attribution: v } }))
   const setHard = (k: 'min_mktcap_bn' | 'max_mktcap_bn' | 'min_price', v: number | null) =>
     setForm((f) => {
       const hf = { ...(f.hard_filters || {}) }
@@ -1454,6 +1459,25 @@ export default function App() {
                     />
                   </label>
                 )}
+                {form.meta_gate && (
+                  <label className="block">
+                    <span
+                      className="text-sm text-slate-500"
+                      title="单因子 ablation：把每个附加因子单独加进基线（主特征+主分）再训一个 gate，比较 valid_auc ⇒ 直接回答「哪个风控因子更好」，结果落盘、结果页出「Meta-Gate 因子归因」表。⚠ 端到端实测：一个 gate 训练约 4.5~7.6s（真实全A、段训 50 万行）⇒ 每段 ablation（k+1 个）约 +20~30s ⇒ 36 段约 +12~18 分钟。"
+                    >
+                      因子归因（单因子 ablation）
+                    </span>
+                    <select
+                      className="mt-1 border rounded px-2 py-1 text-sm"
+                      value={String((form.meta_gate_opts as any)?.attribution ?? 'all')}
+                      onChange={(e) => setGateAttribution(e.target.value)}
+                    >
+                      <option value="all">每段都做（默认，36 段约 +12~18 分钟）</option>
+                      <option value="seg1">只做第 1 段（更省时间）</option>
+                      <option value="off">关（只存 gain 占比，不额外训练）</option>
+                    </select>
+                  </label>
+                )}
                 {form.meta_gate && customFormulas.length > 0 && (
                   <div className="mt-2 w-full">
                     <div className="flex items-center justify-between mb-1">
@@ -1761,6 +1785,10 @@ export default function App() {
                 </div>
               )}
               {a && <ModelArtifactsPanel artifacts={a} />}
+              {/* Meta-Gate 因子归因（v1.19.72）：产物 compose.json 有内容才渲染（见组件内部判断） */}
+              {partialTaskId && (
+                <GateAttribution taskId={partialTaskId} formulas={customFormulas} live={partialRunning} />
+              )}
               {/* 历史回测（复现模式）放在训练产物与调仓记录之间；运行中 partial 时走下方独立块，避免重复。
                   查看"未完成但已跑段"的历史任务时也显示历史表格，便于继续续测/查看其他任务 */}
               {(!partial || viewResult?.partial_result) && (
