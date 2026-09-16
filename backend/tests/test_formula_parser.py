@@ -272,3 +272,48 @@ class TestSyntax:
         """非法字符报 LexerError。"""
         with pytest.raises(LexerError):
             translate_formula("OUT:@#$;")
+
+
+class TestPasteNormalization:
+    """粘贴文本归一化（2026-09-16 用户贴「二浪加强」报"语法错误"，查实是看不见/全角的字符）。
+
+    实测那几种变体的原始报错：BOM ⇒「引用了未定义的变量：TRX」（指向错误的地方）；
+    全角逗号 ⇒「不支持的函数：L，MAX」；全角冒号 ⇒「赋值需用 := 或 =」。
+    现在都应在**入口**被归一化掉 ⇒ 与 ASCII 版编译结果完全一致。
+    """
+
+    ASCII = "A:=MA(C,5);B:=A+1;OUT:B;"
+
+    def test_bom_and_zero_width(self):
+        r = translate_formula("\ufeff" + self.ASCII + "\u200b\u200d")
+        ref = translate_formula(self.ASCII)
+        assert r.name == ref.name and r.expression == ref.expression
+        assert "\ufeff" not in r.source_formula          # 存的是归一化后的文本
+
+    def test_fullwidth_punctuation(self):
+        """全角逗号/分号/冒号/括号 ⇒ 与 ASCII 版一致。"""
+        fw = "A:=MA(C，5)；B:=A+1；OUT：B；"
+        assert translate_formula(fw).expression == translate_formula(self.ASCII).expression
+        fw2 = "OUT:MAX（C,1）;"
+        assert translate_formula(fw2).expression == translate_formula("OUT:MAX(C,1);").expression
+
+    def test_math_symbols(self):
+        """≥ / ≤ 归一化为 >= / <=。"""
+        assert "Ge(" in translate_formula("OUT:C≥1;").expression
+        assert "Le(" in translate_formula("OUT:C≤1;").expression
+
+    def test_crlf_and_indent(self):
+        """CRLF / 行尾空格 / 缩进空行本来就没事（防回归）。"""
+        messy = "  A:=MA(C,5);  \r\n\r\n   B:=A+1;\r\nOUT:B;\r\n"
+        assert translate_formula(messy).expression == translate_formula(self.ASCII).expression
+
+    def test_missing_semicolon_reports_line_text(self):
+        """真·语法错误要把「第几行 + 那行内容」报出来（原来只有一个字符位置）。
+
+        ⚠ 缺分号是在**下一行行首**被发现的（位置 19 落在第 3 行），所以提示必须指向**上一行**，
+          否则用户会被指到正确代码的那一行去改（单测就是抓这个）。
+        """
+        with pytest.raises(ParseError) as ei:
+            translate_formula("A:=MA(C,5);\nB:=A+1\nOUT:B;")
+        msg = str(ei.value)
+        assert "上一行缺分号" in msg and "B:=A+1" in msg and "第 2 行" in msg
