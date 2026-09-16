@@ -39,8 +39,9 @@ const fmt = (v: number | null | undefined, digits = 4) =>
  */
 export default function GateAttribution({ taskId, formulas = [], live = false }: Props) {
   const [compose, setCompose] = useState<GateCompose | null>(null)
-  // 提交时的附加因子顺序（产物里的 extra_feature_i 与它一一对应）⇒ 用来精确映射回公式
-  const [submitted, setSubmitted] = useState<string[]>([])
+  // 该次回测的完整参数：拿提交时的附加因子顺序（与产物里的 extra_feature_i 一一对应）精确映射回公式，
+  // 也用来判断"有没有开 Meta-Gate / 有没有归因数据"（没数据时必须说清原因，别静默不显示）
+  const [params, setParams] = useState<BacktestRequest | null>(null)
   const [err, setErr] = useState('')
   const [showSegs, setShowSegs] = useState(false)
 
@@ -48,7 +49,7 @@ export default function GateAttribution({ taskId, formulas = [], live = false }:
     let alive = true
     let timer: number | undefined
     setCompose(null)
-    setSubmitted([])
+    setParams(null)
     setErr('')
     const load = () => {
       getBacktestSnapshot(taskId)
@@ -56,7 +57,7 @@ export default function GateAttribution({ taskId, formulas = [], live = false }:
           if (!alive) return
           const c = (snap.compose as GateCompose | null) ?? null
           setCompose(c)
-          setSubmitted(((snap.params as BacktestRequest | null)?.meta_gate_opts?.extra_features) || [])
+          setParams((snap.params as BacktestRequest | null) ?? null)
           // 运行中且还没归因 ⇒ 继续等（每段才写一条，跑完才完整）
           if (live && !c) timer = window.setTimeout(load, 20000)
         })
@@ -72,6 +73,11 @@ export default function GateAttribution({ taskId, formulas = [], live = false }:
   }, [taskId, live])
 
   const segNames = useMemo(() => Object.keys(compose?.segments || {}), [compose])
+  /** 提交时的附加因子表达式（顺序 = 产物里的 extra_feature_i） */
+  const submitted: string[] = useMemo(
+    () => params?.meta_gate_opts?.extra_features || [],
+    [params],
+  )
 
   const agg = useMemo<Agg[]>(() => {
     const byIdx = new Map<number, Agg>()
@@ -133,8 +139,37 @@ export default function GateAttribution({ taskId, formulas = [], live = false }:
   const textOf = (i: number, expr: string) => formulaOf(i, expr)?.text || ''
 
   if (err) return null
-  // 只在"真的有 gate 归因"时才渲染（compose.json 也可能只含叠加/硬规则）
-  if (!compose || segNames.length === 0 || agg.length === 0) return null
+
+  // ---- 没有归因数据时**必须说清原因**（用户 2026-09-16 被"静默不显示"坑到：他以为表里那两行是他的因子）----
+  const gateOn = !!params?.meta_gate
+  if (!gateOn || submitted.length === 0) return null   // 这次回测根本没开 Meta-Gate ⇒ 与归因无关，不占版面
+  if (!compose || segNames.length === 0) {
+    return (
+      <section className="bg-white dark:bg-slate-800 rounded-xl shadow p-6 text-sm">
+        <h2 className="text-lg font-semibold mb-2">Meta-Gate 因子归因</h2>
+        <p className="text-amber-600">
+          {live
+            ? '这次回测还在跑：归因是每段算完之后写入的，跑完第 1 段后这里就会出表（无需刷新）。'
+            : '这次回测没有归因数据：它早于 v1.19.72（归因功能上线），产物里没有 compose.json ⇒ 重跑一次就有。'}
+        </p>
+        <p className="mt-1 text-xs text-slate-400">
+          这次提交时勾了 {submitted.length} 条附加因子；归因会给出每条因子「逐个单独试」的 AUC 提升排名。
+          {!live && '（归因不会追补历史产物 —— 因为 gate 模型当时没有落盘。）'}
+        </p>
+      </section>
+    )
+  }
+  if (agg.length === 0) {
+    return (
+      <section className="bg-white dark:bg-slate-800 rounded-xl shadow p-6 text-sm">
+        <h2 className="text-lg font-semibold mb-2">Meta-Gate 因子归因</h2>
+        <p className="text-slate-500">
+          这次回测没有做归因（提交时把「因子归因」选成了「关」）⇒ 只记录了各因子的分裂增益占比，
+          没有"逐个单独试"的 AUC 提升。想看到排名，下次提交时把「因子归因」保持「每段都做」即可。
+        </p>
+      </section>
+    )
+  }
 
   const fullAucs = segNames
     .map((n) => ((compose.segments || {})[n] as ComposeSegmentInfo)?.gate?.attribution?.full_auc)
@@ -160,7 +195,8 @@ export default function GateAttribution({ taskId, formulas = [], live = false }:
         <h2 className="text-lg font-semibold">
           Meta-Gate 因子归因
           <span className="ml-2 text-sm font-normal text-slate-500">
-            我勾的几个风控因子，机器觉得哪个更有用 · 共 {segNames.length} 段
+            我勾的几个风控因子，机器觉得哪个更有用 · 共 {segNames.length} 段 · 数据来自本次提交的{' '}
+            {submitted.length} 条附加因子
           </span>
         </h2>
         <button
@@ -252,7 +288,7 @@ export default function GateAttribution({ taskId, formulas = [], live = false }:
                         className="mt-0.5 text-[10px] text-slate-400"
                         title={`提交时的表达式（qlib 编译后）：${(submitted[r.i] || r.expr || '').slice(0, 400)}`}
                       >
-                        这条公式不在已保存的公式库里（可能是临时公式）⇒ 显示不出名字与原文
+                        这条公式不在你当前保存的公式库里（可能已删除，或是临时公式）⇒ 显示不出名字与原文
                       </div>
                     )}
                   </td>

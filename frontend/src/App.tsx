@@ -1737,6 +1737,14 @@ export default function App() {
           const partialTaskId = viewResult?.task_id ?? task?.task_id ?? null
           const livePartialTask = tasks.find((t) => t.task_id === partialTaskId) ?? null
           const partialStatus = livePartialTask?.status ?? 'cancelled'
+          // 归因表要跟"正在显示结果的那个任务"对齐（v1.19.74）：上面 partialTaskId 是 viewResult 优先，
+          // 而结果/产物是"实时成功任务优先"⇒ 两者不一致时表格会来自另一个任务（用户 2026-09-16 就因此
+          // 看到"未在公式库中找到的因子"—— 那其实是我验证用的临时公式那次）。
+          const shownTaskId = task?.status === 'success'
+            ? task.task_id
+            : (viewResult?.task_id ?? task?.task_id ?? null)
+          const shownStatus = tasks.find((t) => t.task_id === shownTaskId)?.status
+          const shownRunning = shownStatus === 'running' || shownStatus === 'pending'
           const partialRunning = partialStatus === 'running' || partialStatus === 'pending'
           const r = (task?.status === 'success' ? task.result : viewResult?.result) || null
           const a = (task?.status === 'success' ? artifacts : viewArtifacts) || null
@@ -1786,8 +1794,8 @@ export default function App() {
               )}
               {a && <ModelArtifactsPanel artifacts={a} />}
               {/* Meta-Gate 因子归因（v1.19.72）：产物 compose.json 有内容才渲染（见组件内部判断） */}
-              {partialTaskId && (
-                <GateAttribution taskId={partialTaskId} formulas={customFormulas} live={partialRunning} />
+              {shownTaskId && (
+                <GateAttribution taskId={shownTaskId} formulas={customFormulas} live={shownRunning} />
               )}
               {/* 历史回测（复现模式）放在训练产物与调仓记录之间；运行中 partial 时走下方独立块，避免重复。
                   查看"未完成但已跑段"的历史任务时也显示历史表格，便于继续续测/查看其他任务 */}
