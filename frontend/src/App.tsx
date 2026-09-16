@@ -1463,9 +1463,9 @@ export default function App() {
                   <label className="block">
                     <span
                       className="text-sm text-slate-500"
-                      title="单因子 ablation：把每个附加因子单独加进基线（主特征+主分）再训一个 gate，比较 valid_auc ⇒ 直接回答「哪个风控因子更好」，结果落盘、结果页出「Meta-Gate 因子归因」表。⚠ 端到端实测：一个 gate 训练约 4.5~7.6s（真实全A、段训 50 万行）⇒ 每段 ablation（k+1 个）约 +20~30s ⇒ 36 段约 +12~18 分钟。"
+                      title="逐个单独试：把每条勾选的公式单独加进基线（主特征 + 主模型打分）重新训一个门控模型，比较验证集 AUC 提升 ⇒ 直接回答「哪个风控因子更有用」。结果写进产物，结果页出「Meta-Gate 因子归因」表；勾选越多越慢（每条公式多训一个模型）。⚠ 端到端实测：一个门控模型训练约 4.5~7.6s ⇒ 每段约 +20~30s ⇒ 36 段约 +12~18 分钟。"
                     >
-                      因子归因（单因子 ablation）
+                      因子归因（逐个公式单独试）
                     </span>
                     <select
                       className="mt-1 border rounded px-2 py-1 text-sm"
@@ -1474,7 +1474,7 @@ export default function App() {
                     >
                       <option value="all">每段都做（默认，36 段约 +12~18 分钟）</option>
                       <option value="seg1">只做第 1 段（更省时间）</option>
-                      <option value="off">关（只存 gain 占比，不额外训练）</option>
+                      <option value="off">关（只记分裂增益占比，不额外训练）</option>
                     </select>
                   </label>
                 )}

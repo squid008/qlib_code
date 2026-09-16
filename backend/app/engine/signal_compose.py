@@ -232,8 +232,9 @@ def _gate_attribution(X, y, bst, extra_cols, exprs) -> dict:
     out = {
         "primary_p_gain_share": (float(gains.get("primary_p", 0.0)) / tot) if tot else 0.0,
         "extras_gain_share": (g_ex / tot) if tot else 0.0,
-        "note": "gain_share=该因子在这批附加因子内分到的 gain 占比；auc/delta_auc=单独把它加进"
-                "基线后 gate 的 valid_auc 及相对基线的提升（更可比，建议看 delta_auc）",
+        "note": "分裂增益占比(gain_share)=门控模型在该公式上累计用掉的增益（在这批附加因子内归一，"
+                "会被内容相近的公式互相分走）；单独试的 AUC 提升(delta_auc)=只把它一个加进基线后"
+                "验证集 AUC 的提升（更硬更可比，建议看它）",
     }
     try:
         _, auc0 = _fit_gate(X[base_cols], y)          # 基线：主特征 + 主分
