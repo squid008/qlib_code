@@ -141,6 +141,8 @@ export default function EventStudyModal({
     setNavK(defaultK ?? last ?? 20)
     setNavRes(null)
     setNavErr('')
+    // ⚠ v1.19.84：换结果/换周期入口也要清 spinner（否则上一轮的 "计算中…" 会跟着新结果一起挂着）
+    setNavBusy(false)
   }, [result, defaultK])
 
   useEffect(() => {
@@ -148,17 +150,23 @@ export default function EventStudyModal({
     const tid = sourceTaskId || taskRef.current
     // ⚠ 没有任务 id 也可以试：后端会按**因子表达式**在最近的任务里找回触发事件
     //   （v1.19.61）；只有连表达式都没有时才真的没法算。
-    const expr = (req?.factor as { expression?: string } | undefined)?.expression
+    // ⚠ v1.19.84：改用 `reqRef` 而不是依赖 `req` 对象 —— 父组件每次渲染都可能重建 req，
+    //   把它放进依赖数组会让本 effect 反复重跑（spinner 抖动/无谓重算）。reqRef.current 已在渲染期同步。
+    const expr = (reqRef.current?.factor as { expression?: string } | undefined)?.expression
     if (!tid && !expr) {
       setNavErr('这次结果没有关联到测试任务，也没有因子表达式 ⇒ 无法复用触发明细；' +
         '点上方「重新计算」重跑一次即可看到净值曲线')
+      setNavBusy(false)              // v1.19.84：提前返回也必须收尾，否则 spinner 永挂
       return
     }
     const key = `${navK}|${navCost}|${tid ?? ''}`
     const hit = navCacheRef.current.get(key)
     if (hit) {
+      // ★ 用户 2026-09-17 报的 bug 就在这里：命中缓存 ⇒ 曲线**立刻**出来，但此前没复位 busy
+      //   ⇒ 界面上「曲线已算好、却一直显示计算中…」。缓存命中本就是"秒出"，必须 busy=false。
       setNavRes(hit)
       setNavErr('')
+      setNavBusy(false)
       return
     }
     setNavBusy(true)
@@ -208,8 +216,12 @@ export default function EventStudyModal({
     return () => {
       cancelled = true
       window.clearTimeout(timer)
+      // ⚠ v1.19.84：上一轮请求被取消时，`.then` 里 `if (cancelled) return` 会直接退出
+      //   ⇒ 永远不会 setNavBusy(false) ⇒ spinner 永挂。cleanup 里显式收尾
+      //   （紧接着的新一轮若确实要算，会再 setNavBusy(true)，顺序安全）。
+      setNavBusy(false)
     }
-  }, [result, navK, navCost, sourceTaskId, req])
+  }, [result, navK, navCost, sourceTaskId])
 
   const taskRef = useRef<string | null>(null)
   const timerRef = useRef<number | null>(null)

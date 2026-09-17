@@ -3,6 +3,24 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.84] - 2026-09-17
+
+### Fixed（事件研究弹窗：曲线已经出来了，却一直显示「计算中…」）
+- 用户报：「事件研究里改了周期，它曲线已经算好了，但还是显示计算中...这是不是小 BUG？还是同事有这个问题？」
+  ⇒ 是**我们自己的小 BUG**（与同事无关），而且**必然复现**：把「持仓周期」改回算过的值即可。
+- 根因（`components/EventStudyModal.tsx` 净值曲线段的 spinner 状态机）：`navBusy` 一旦置 `true`，
+  有**三条提前返回路径没复位** ✗：
+  ① **命中 (k, cost) 缓存** ⇒ `setNavRes(hit)` 后直接 `return` ⇒ **曲线秒出、spinner 永挂** ★（用户遇到的正是这条）；
+  ② 缺 `tid/expr` 的提前返回；
+  ③ 上一轮请求被 effect cleanup 取消（`.then` 里 `if (cancelled) return` 提前退出 ⇒ 永远不会 `setNavBusy(false)`）。
+- 修法：**所有返回路径 + cleanup 都显式 `setNavBusy(false)`**；换结果/换周期的入口也清一次
+  （紧接着的新一轮若确实要算，会再置 true，顺序安全）。
+- 顺手去掉一个隐患：把 effect 依赖里的 `req` 换成已有的 `reqRef` —— 父组件每次渲染都可能重建 `req`
+  对象，放在依赖数组里会让 effect 反复重跑（spinner 抖动 + 无谓重算）。
+
+### 验证
+- 前端 `tsc` 0 + `build` 7.74s（本次仅前端）。
+
 ## [1.19.83] - 2026-09-17
 
 ### Added（**COST / WINNER**：通达信/益盟的筹码分布函数，可在自定义公式里用了）
