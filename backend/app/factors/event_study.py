@@ -8,9 +8,11 @@
   事件研究改以**每个触发事件**为样本单位，能回答真正关心的问题：
 
     - 赔率：各持有期的均值 / 中位数 / 分位数（p10/p25/p75/p90）
-    - 概率：收益 >0 / >10% / >20% / >50% / >100% 的事件占比
+    - 概率：收益 >0 / >10% / >20% / >50% / >100% 的事件占比，**并给出亏损侧镜像**
+      <0 / <-10% / <-20% / <-50% / <-100%（同一套档位 ⇒ 两张表并排就能看出
+      "赚大亏小"还是"纯波动"，v1.19.80，用户 2026-09-17）
     - 上限：T+1 买入后 max_k 日内的最大收益（"最高点卖出"的理想口径）
-    - 明细：贡献最大 / 最差的事件（用于逐个人工复核）
+    - 明细：贡献最大 / **亏损最大**的事件（逐 k，各含"期内最高 / 期内最低"）
 
 口径与单因子测试（`single_test._test_one`）完全一致：
   - 触发 = 因子值 > 0.5（仅支持 0/1 二值信号；连续因子请用 IC/分位）
@@ -181,6 +183,17 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
             "gt20": _r(float((x > 0.20).mean())),
             "gt50": _r(float((x > 0.50).mean())),
             "gt100": _r(float((x > 1.00).mean())),
+            # ── 亏损侧镜像（用户 2026-09-17）──
+            # 「下面对应的概率：触发后拿到目标亏损的事件占比 <0 / <-10% / <-20% / <-50% / <-100%」
+            # ⇒ 与收益侧**同一套档位**，前端并排两表 ⇒ 一眼看出赔率是否对称
+            #   （收益侧右尾长、亏损侧左尾短 ⇒ "赚大亏小"才是好信号；两边差不多 ⇒ 是纯波动）。
+            # ⚠ `lt100`（<-100%）在 A 股个股上**结构性恒为 0**（价格非负 ⇒ 多头最多亏 100%），
+            #   保留只为与收益侧 `gt100` 对称；要看更细的尾部可另加 `<-30%` 之类档位。
+            "lt0": _r(float((x < 0).mean())),
+            "lt10": _r(float((x < -0.10).mean())),
+            "lt20": _r(float((x < -0.20).mean())),
+            "lt50": _r(float((x < -0.50).mean())),
+            "lt100": _r(float((x < -1.00).mean())),
         })
 
     mr = max_ret[np.isfinite(max_ret)]
@@ -209,6 +222,7 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
     codes_str = [str(c) for c in code_arr]
     dts_str = [str(pd.Timestamp(d).date()) for d in dt_arr]
     lead = np.fmax.accumulate(mat, axis=1)      # 期内最高（到 j 期为止的最大值，忽略 NaN）
+    lag = np.fmin.accumulate(mat, axis=1)       # 期内最低（同上；亏损榜的"期内最低"= Top 榜"期内最高"的镜像）
     top_by_k: dict = {}
     worst_by_k: dict = {}
     for j, k in enumerate(ks):
@@ -228,7 +242,8 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
             "code": codes_str[i],
             "dt": dts_str[i],
             "ret": _r(x[i]),
-        } for i in o2[:10]]
+            "min_ret": _r(lag[i, j]),      # 期内最低（亏损榜与 Top 榜"期内最高"对称）
+        } for i in o2[:20]]
 
     last = mat[:, -1]
     order = np.argsort(-np.nan_to_num(last, nan=-9e9))
@@ -250,6 +265,7 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
             "code": codes_str[idx],
             "dt": dts_str[idx],
             "ret": _r(last[idx]),
+            "min_ret": _r(min_ret[idx]),
         })
 
     # ---- 数据不足的事件清单（避免"静默丢弃"）----

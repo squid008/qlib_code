@@ -536,6 +536,14 @@ export interface EventStudyProbPoint {
   gt20: number | null
   gt50: number | null
   gt100: number | null
+  // 亏损侧镜像（v1.19.80）：触发后拿到目标亏损的事件占比，档位与收益侧一一对应
+  // ⇒ 两表并排 = "赚大亏小"还是"纯波动"一眼可见
+  lt0: number | null // 收益 <0 的事件占比
+  lt10: number | null
+  lt20: number | null
+  lt50: number | null
+  /** <-100%：A 股个股结构性恒为 0（价格非负 ⇒ 多头最多亏 100%），保留只为与 gt100 对称 */
+  lt100: number | null
 }
 export interface EventStudyUpside {
   mean: number | null // T+1 买入后 max_k 日内"最高点卖出"的收益分布
@@ -555,7 +563,10 @@ export interface EventStudyEvent {
   code: string
   dt: string
   ret: number | null
+  /** 期内最高（Top 榜用；= 到当前 k 期为止的最大值） */
   max_ret?: number | null
+  /** 期内最低（亏损榜用，v1.19.80；与 max_ret 对称 ⇒ 也回答"最惨浮亏到哪"） */
+  min_ret?: number | null
 }
 export interface EventStudyBaseline {
   ks: number[]

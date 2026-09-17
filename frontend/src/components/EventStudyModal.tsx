@@ -977,8 +977,13 @@ export default function EventStudyModal({
               )}
             </div>
 
+            {/* ★ 2×2 对照（v1.19.80，用户 2026-09-17）：
+                上排 = 两张**概率表**（收益侧 ↔ 亏损侧，同一批样本、同一套档位）；
+                下排 = 两张**明细表**（贡献最大 ↔ 亏损最大，各含"期内最高 / 期内最低"）。
+                动机：只看收益侧会把"两边尾巴一样长的纯波动"误读成"赔率高"——
+                并排看才能一眼分辨「赚大亏小」与「纯波动」。 */}
             <div className="grid grid-cols-2 gap-3">
-              {/* 概率表 */}
+              {/* 概率表（收益侧） */}
               <div className="border border-slate-200 dark:border-slate-700 rounded p-2">
                 <div className="text-slate-500 mb-1">概率：触发后拿到目标收益的事件占比</div>
                 <table className="w-full">
@@ -1016,6 +1021,52 @@ export default function EventStudyModal({
                 </div>
               </div>
 
+              {/* 概率表（亏损侧镜像） */}
+              <div className="border border-slate-200 dark:border-slate-700 rounded p-2">
+                <div className="text-slate-500 mb-1">概率：触发后拿到目标亏损的事件占比</div>
+                <table className="w-full">
+                  <thead>
+                    <tr className="text-slate-400">
+                      <th className="text-right font-normal">k</th>
+                      <th className="text-right font-normal">&lt;0</th>
+                      <th className="text-right font-normal">&lt;-10%</th>
+                      <th className="text-right font-normal">&lt;-20%</th>
+                      <th className="text-right font-normal">&lt;-50%</th>
+                      <th
+                        className="text-right font-normal"
+                        title="A 股个股持有期内跌到 -100% 结构性不可能（价格非负 ⇒ 多头最多亏 100%）⇒ 这列实操上恒为 0，只为与收益表对称"
+                      >
+                        &lt;-100%
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {probRows.map((p) => (
+                      <tr key={p.k} className="border-t border-slate-100 dark:border-slate-700">
+                        <td className="text-right">{p.k}</td>
+                        <td className="text-right">{num(p.lt0, 1)}</td>
+                        <td className="text-right">{num(p.lt10, 1)}</td>
+                        <td className="text-right">{num(p.lt20, 1)}</td>
+                        <td className="text-right">{num(p.lt50, 1)}</td>
+                        <td className="text-right">{num(p.lt100, 1)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="text-slate-400 mt-1">
+                  （与左表**同一批样本、同一套档位**；对照看：两边尾巴一样长 = 纯波动，
+                  收益侧右尾更长才是"赚大亏小"。`&lt;-100%` 一列在 A 股结构性恒为 0）
+                  {probRows.length > 0 && probRows.every((p) => p.lt0 == null) && (
+                    <span className="text-amber-600 dark:text-amber-400">
+                      {' '}
+                      该结果由旧版本生成（无亏损侧数据），点「重新计算」即可补上
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mt-3">
               {/* Top 事件 */}
               <div className="border border-slate-200 dark:border-slate-700 rounded p-2">
                 <div className="text-slate-500 mb-1">贡献最大的事件（持有 {lastPoint?.k ?? '-'} 日收益）</div>
@@ -1040,18 +1091,35 @@ export default function EventStudyModal({
                   </tbody>
                 </table>
               </div>
-            </div>
 
-            {/* 最差事件 */}
-            <div className="mt-3 border border-slate-200 dark:border-slate-700 rounded p-2">
-              <div className="text-slate-500 mb-1">最差的事件（持有 {lastPoint?.k ?? '-'} 日收益）</div>
-              <div className="flex flex-wrap gap-x-4 gap-y-1">
-                {worstEvents.map((e, i) => (
-                  <span key={`${e.code}:${e.dt}:${i}`} className="text-slate-500">
-                    {e.code} <span className="text-slate-400">{e.dt}</span>{' '}
-                    <span className="text-red-500">{pct(e.ret, 2)}</span>
-                  </span>
-                ))}
+              {/* 亏损最大事件（与 Top 榜对称：也同样按当前 k 取逐 k 榜单） */}
+              <div className="border border-slate-200 dark:border-slate-700 rounded p-2">
+                <div className="text-slate-500 mb-1">亏损最大的事件（持有 {lastPoint?.k ?? '-'} 日收益）</div>
+                <table className="w-full">
+                  <thead>
+                    <tr className="text-slate-400">
+                      <th className="text-left font-normal">代码</th>
+                      <th className="text-left font-normal">信号日</th>
+                      <th className="text-right font-normal">{lastPoint?.k ?? '-'}日</th>
+                      <th
+                        className="text-right font-normal"
+                        title="期内最低（到当前 k 期为止的最大浮亏）—— 与左表「期内最高」对称"
+                      >
+                        期内最低
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {worstEvents.slice(0, 8).map((e, i) => (
+                      <tr key={`${e.code}:${e.dt}:${i}`} className="border-t border-slate-100 dark:border-slate-700">
+                        <td>{e.code}</td>
+                        <td>{e.dt}</td>
+                        <td className="text-right text-red-500 dark:text-red-400">{pct(e.ret, 2)}</td>
+                        <td className="text-right">{pct(e.min_ret, 2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
 
