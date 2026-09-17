@@ -522,12 +522,19 @@ export interface EventStudyCurvePoint {
   mean: number | null // 平均收益（原始小数）
   median: number | null
   win: number | null // 胜率（>0 占比）
+  p01?: number | null // 深左尾（v1.19.81：分布图要标尾部）
+  p05?: number | null
   p10: number | null
   p25: number | null
   p75: number | null
   p90: number | null
+  p95?: number | null
+  p99?: number | null // 深右尾
   max: number | null
   min: number | null
+  /** 该 k 的**直方图计数**（长度 = `EventStudyResult.dist_edges` 长度 - 1）——
+   *  分布图用它画形状（v1.19.81）；旧结果无此字段。 */
+  counts?: number[]
 }
 export interface EventStudyProbPoint {
   k: number
@@ -608,6 +615,8 @@ export interface EventStudyResult {
   // 逐 k 榜单（键为字符串化的 k）：前端按当前「最长持有」取对应那份，
   // 保证「表头写持有 k 日」与「数值确实是 k 期收益」口径一致；
   // 同时让「未持满 max_k 期、但在更短的 k 上有效」的事件也能出现在榜单里。
+  /** 直方图分箱边界（全部 k 共用，v1.19.81）：中间 2% 一档、两侧渐稀、端桶夹住极值 */
+  dist_edges?: number[]
   top_by_k?: Record<string, EventStudyEvent[]>
   worst_by_k?: Record<string, EventStudyEvent[]>
   // 数据不足的事件统计（避免"静默丢弃"）：

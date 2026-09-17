@@ -16,6 +16,7 @@ import type { EventNavResult, EventStudyRequest, EventStudyResult } from '../api
 import { excessThresholdOf, isValidAt, isReverseValidAt, pairStabilityOf } from './verdictRules'
 import { navColor, navDash, navLabel } from './navSeries'
 import ZoomableLineChart from './ZoomableLineChart'
+import EventDistChart from './EventDistChart'
 
 interface Props {
   open: boolean
@@ -428,13 +429,9 @@ export default function EventStudyModal({
     return i >= 0 ? (bl.excess_median?.[i] ?? null) : null
   }, [result, viewCurve])
 
-  // 抽查若干持有期用于概率表（同样按 maxK 截断，随「最长持有」联动）
-  const probRows = useMemo(() => {
-    const want = [1, 3, 5, 10, 20, 40, 60]
-    return (result?.prob ?? [])
-      .filter((p) => p.k <= maxK && want.includes(p.k))
-      .slice(0, 7)
-  }, [result, maxK])
+  // v1.19.81：原来这里从 `result.prob` 抽几档 k 给"概率分档表"用；现在界面已改为**分布图**
+  // （`EventDistChart`，随「最长持有」联动），故整段下线 —— 后端 `prob[]` 仍保留，
+  // 需要精确档位数字时（或旧结果）可随时再取用。
 
   const lastPoint = viewCurve.length > 0 ? viewCurve[viewCurve.length - 1] : null
 
@@ -977,93 +974,32 @@ export default function EventStudyModal({
               )}
             </div>
 
-            {/* ★ 2×2 对照（v1.19.80，用户 2026-09-17）：
-                上排 = 两张**概率表**（收益侧 ↔ 亏损侧，同一批样本、同一套档位）；
-                下排 = 两张**明细表**（贡献最大 ↔ 亏损最大，各含"期内最高 / 期内最低"）。
-                动机：只看收益侧会把"两边尾巴一样长的纯波动"误读成"赔率高"——
-                并排看才能一眼分辨「赚大亏小」与「纯波动」。 */}
-            <div className="grid grid-cols-2 gap-3">
-              {/* 概率表（收益侧） */}
-              <div className="border border-slate-200 dark:border-slate-700 rounded p-2">
-                <div className="text-slate-500 mb-1">概率：触发后拿到目标收益的事件占比</div>
-                <table className="w-full">
-                  <thead>
-                    <tr className="text-slate-400">
-                      <th className="text-right font-normal">k</th>
-                      <th className="text-right font-normal">&gt;0</th>
-                      <th className="text-right font-normal">&gt;10%</th>
-                      <th className="text-right font-normal">&gt;20%</th>
-                      <th className="text-right font-normal">&gt;50%</th>
-                      <th className="text-right font-normal">&gt;100%</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {probRows.map((p) => (
-                      <tr key={p.k} className="border-t border-slate-100 dark:border-slate-700">
-                        <td className="text-right">{p.k}</td>
-                        <td className="text-right">{num(p.gt0, 1)}</td>
-                        <td className="text-right">{num(p.gt10, 1)}</td>
-                        <td className="text-right">{num(p.gt20, 1)}</td>
-                        <td className="text-right">{num(p.gt50, 1)}</td>
-                        <td className="text-right">{num(p.gt100, 1)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div className="text-slate-400 mt-1">
-                  （T+1 收盘买入、持有 k 日；已剔除 T 涨停 / T+1 涨停 / T+1 停牌样本）
-                  {result.n_short != null && result.n_short > 0 && (
-                    <span className="text-amber-600 dark:text-amber-400">
-                      {' '}
-                      另有 {result.n_short} 个触发在 {result.max_k ?? computedMaxK} 期上尚未平仓（数据不足），未计入对应 k
-                    </span>
-                  )}
-                </div>
+            {/* ★ 分布图（v1.19.81，用户 2026-09-17）：「干脆两个概率表都改成分布图吧，这不是很直观嘛，
+                中位数、均值、后尾啥的直接都能看到了，省得自己划分档位对吧？」
+                同意 —— 分档是**有损压缩**：5 个数丢掉整个形状，而且得先决定档位才知道看什么。
+                直方图 + 均值/中位数/尾部标注一次给全（形状 + 位置 + 两侧尾巴），并随上面的
+                「最长持有」滑动联动（换 k 就换一张分布）。
+                ⚠ 后端 `prob[]`（收益/亏损两侧分档）**保留**：旧结果兼容，且需要精确档位数字时仍可用。 */}
+            <div className="border border-slate-200 dark:border-slate-700 rounded p-2">
+              <div className="text-slate-500 mb-1">
+                持有 {lastPoint?.k ?? '-'} 日收益分布（每次触发一个样本；纵轴 = 该区间事件占比）
+                <span className="text-slate-400 ml-2">n={lastPoint?.n ?? '-'}</span>
+                <span className="text-slate-400 ml-2">
+                  （T+1 收盘买入；已剔除 T 涨停 / T+1 涨停 / T+1 停牌样本）
+                </span>
+                {result.n_short != null && result.n_short > 0 && (
+                  <span className="text-amber-600 dark:text-amber-400">
+                    {' '}
+                    另有 {result.n_short} 个触发在 {result.max_k ?? computedMaxK} 期上尚未平仓（数据不足），未计入
+                  </span>
+                )}
               </div>
-
-              {/* 概率表（亏损侧镜像） */}
-              <div className="border border-slate-200 dark:border-slate-700 rounded p-2">
-                <div className="text-slate-500 mb-1">概率：触发后拿到目标亏损的事件占比</div>
-                <table className="w-full">
-                  <thead>
-                    <tr className="text-slate-400">
-                      <th className="text-right font-normal">k</th>
-                      <th className="text-right font-normal">&lt;0</th>
-                      <th className="text-right font-normal">&lt;-10%</th>
-                      <th className="text-right font-normal">&lt;-20%</th>
-                      <th className="text-right font-normal">&lt;-50%</th>
-                      <th
-                        className="text-right font-normal"
-                        title="A 股个股持有期内跌到 -100% 结构性不可能（价格非负 ⇒ 多头最多亏 100%）⇒ 这列实操上恒为 0，只为与收益表对称"
-                      >
-                        &lt;-100%
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {probRows.map((p) => (
-                      <tr key={p.k} className="border-t border-slate-100 dark:border-slate-700">
-                        <td className="text-right">{p.k}</td>
-                        <td className="text-right">{num(p.lt0, 1)}</td>
-                        <td className="text-right">{num(p.lt10, 1)}</td>
-                        <td className="text-right">{num(p.lt20, 1)}</td>
-                        <td className="text-right">{num(p.lt50, 1)}</td>
-                        <td className="text-right">{num(p.lt100, 1)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div className="text-slate-400 mt-1">
-                  （与左表**同一批样本、同一套档位**；对照看：两边尾巴一样长 = 纯波动，
-                  收益侧右尾更长才是"赚大亏小"。`&lt;-100%` 一列在 A 股结构性恒为 0）
-                  {probRows.length > 0 && probRows.every((p) => p.lt0 == null) && (
-                    <span className="text-amber-600 dark:text-amber-400">
-                      {' '}
-                      该结果由旧版本生成（无亏损侧数据），点「重新计算」即可补上
-                    </span>
-                  )}
-                </div>
-              </div>
+              <EventDistChart
+                edges={result.dist_edges}
+                counts={lastPoint?.counts}
+                k={lastPoint?.k ?? null}
+                stat={lastPoint}
+              />
             </div>
 
             <div className="grid grid-cols-2 gap-3 mt-3">

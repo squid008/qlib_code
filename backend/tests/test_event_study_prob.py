@@ -81,3 +81,23 @@ def test_top_and_worst_lists_have_same_length():
     moves = {"SH600%03d" % i: [0.0, 0.01 * (i - 5), 0.0] for i in range(30)}
     st = build_event_stats(_px(moves), _events(sorted(moves)), max_k=2)
     assert len(st["top_by_k"]["2"]) == len(st["worst_by_k"]["2"]) == 20
+
+
+def test_dist_histogram_for_chart():
+    """分布图数据（v1.19.81）：边界升序、各桶计数之和 = 样本数（端桶夹住极值 ⇒ 不丢样本）、
+    且"一半 +12% / 一半 -12%"的合成数据应恰好落在两根柱子上。"""
+    moves = {}
+    for i in range(50):
+        moves["SH600%03d" % i] = [0.0, 0.12 if i % 2 == 0 else -0.12]
+    st = build_event_stats(_px(moves), _events(sorted(moves)), max_k=1)
+    edges = st["dist_edges"]
+    assert edges == sorted(edges) and len(edges) >= 10
+    row = st["curve"][0]
+    counts = row["counts"]
+    assert len(counts) == len(edges) - 1      # 桶数 = 边界数 - 1
+    assert sum(counts) == row["n"] == 50      # 夹住极值 ⇒ 计数之和 = 样本数
+    hot = [c for c in counts if c > 0]
+    assert len(hot) == 2 and all(c == 25 for c in hot), "±12% 应各占一根柱子"
+    # 分布图要标的尾部（更细的分位）
+    assert row["p05"] is not None and row["p95"] is not None
+    assert row["p05"] <= row["median"] <= row["p95"]

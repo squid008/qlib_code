@@ -139,6 +139,17 @@ def _align_returns(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
     return mat, max_ret, min_ret
 
 
+# 事件收益直方图分箱（v1.19.81，用户 2026-09-17：「干脆两个概率表都改成分布图吧……中位数、均值、
+# 后尾啥的直接都能看到了，省得自己划分档位」）。
+# 设计：**中间稠密、两侧稀疏** —— 事件收益的绝大部分落在 ±30% 内，均匀线性分箱（比如 ±300% 均分）
+#   会让直方图退化成一个尖峰、形状全看不出；同时把 ±100%/+300% 之外的极端值**夹到端桶**
+#   （long-only 个股收益 ≥ -100% ⇒ 左端桶天然就是"接近亏光"）。
+# 分档表**保留**（`prob[]`，向后兼容 + 前端 tooltip 可用），但界面改以直方图为主。
+_DIST_EDGES = ([-1.0, -0.7, -0.5, -0.4, -0.3]
+               + [round(-0.30 + 0.02 * i, 4) for i in range(1, 31)]     # -0.28 → +0.30（2% 一档）
+               + [0.4, 0.5, 0.7, 1.0, 2.0, 3.0])
+
+
 def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
                       n_raw: int = 0, cancel_check=None) -> dict:
     """由「价格宽表 + 事件表」计算事件研究结果。
@@ -160,14 +171,21 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
         x = x[np.isfinite(x)]
         if x.size == 0:
             continue
+        # 直方图（**计数**，前端按该 k 的 n 折成占比展示）：分箱见 `_DIST_EDGES`；
+        # np.clip 把超出端点的极端值并入端桶 ⇒ 各桶计数之和恒 = 样本数（不会丢样本）
+        counts, _ = np.histogram(np.clip(x, _DIST_EDGES[0], _DIST_EDGES[-1]),
+                                 bins=_DIST_EDGES)
         curve.append({
             "k": k,
             "n": int(x.size),
             "mean": _r(x.mean()), "median": _r(np.median(x)),
             "win": _r(float((x > 0).mean())),
+            "p01": _r(_q(x, 1)), "p05": _r(_q(x, 5)),
             "p10": _r(_q(x, 10)), "p25": _r(_q(x, 25)),
             "p75": _r(_q(x, 75)), "p90": _r(_q(x, 90)),
+            "p95": _r(_q(x, 95)), "p99": _r(_q(x, 99)),
             "max": _r(x.max()), "min": _r(x.min()),
+            "counts": [int(c) for c in counts],      # 长度 = len(dist_edges) - 1
         })
 
     prob = []
@@ -297,6 +315,8 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
         "short_events": short_events,
         "ks": ks,
         "curve": curve,
+        # 直方图分箱（全部 k 共用同一套边界；每个 curve 行带各自的 counts）
+        "dist_edges": [float(e) for e in _DIST_EDGES],
         "prob": prob,
         "upside": upside,
         # 逐 k 榜单（前端按当前「最长持有」取对应那份，键为字符串化的 k）
