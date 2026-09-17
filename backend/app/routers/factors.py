@@ -858,6 +858,46 @@ class EventNavRequest(BaseModel):
     factor_id: Optional[str] = None
 
 
+# ---------------------------------------------------------------------------
+# 净值曲线的「价格面板 + 涨跌停标注」缓存（v1.19.93）
+#
+# 为什么（用户 2026-09-17：过顶**触发 14.88 万次** ⇒ 净值曲线长挂"计算中"✗）：
+#   `/event-study/nav` 每次请求都要 `load_price_panel(事件涉及的所有股票, 起止)` +
+#   `fill_limits(...)` —— 对"事件覆盖几千只股票 × 十几年"的公式，这两步**与 k 完全无关**
+#   （只有回测那部分随 k 变 ✓），却每改一次 k 就重算一遍 ✗ ⇒ 拖动持仓周期像卡死 ✗。
+#   ⇒ 按 (codes, start, end, strict) **单条缓存**（只留最近 1 条：一块 5000 列 × 4000 行的
+#     面板已是数百 MB 量级，多留会吃内存 ✗）。
+#   ⚠ 这是"治本（C）"的第 1 步；第 2 步（把每日估值/持仓市值向量化）改动在
+#     `signals/engine.run_backtest` 内，必须带**新旧对拍**（成交/被拒/净值逐位一致）才敢上 ✓。
+# ---------------------------------------------------------------------------
+_NAV_PANEL_CACHE: dict = {}
+_NAV_PANEL_LOCK = threading.Lock()
+
+
+def _nav_cache_key(codes, start, end, strict: bool = True):
+    return (len(codes), hash(tuple(codes)), str(start), str(end), bool(strict))
+
+
+def _nav_panel_cached(codes, start, end, *, strict: bool = True):
+    """取「价格面板 + 涨跌停标注」，按 (codes, 区间, strict) 缓存（见上方说明，v1.19.93）。"""
+    from ..signals.pricing import fill_limits, load_price_panel
+
+    key = _nav_cache_key(codes, start, end, strict)
+    with _NAV_PANEL_LOCK:
+        hit = _NAV_PANEL_CACHE.get(key)
+    if hit is not None:
+        return hit, True
+    # ⚠ 必须与端点原调用一致：`need_open=True`（回测要开盘价 ✓）
+    panel = load_price_panel(codes, start, end, need_open=True)
+    if panel is None or "CLOSE" not in panel:
+        return panel, False
+    panel = fill_limits(panel, strict=strict)
+    with _NAV_PANEL_LOCK:
+        _NAV_PANEL_CACHE.clear()          # 只留最近 1 条（大对象，别攒 ✗）
+        _NAV_PANEL_CACHE[key] = panel
+    return panel, False
+
+
 @router.post("/event-study/nav", summary="事件研究的净值曲线（两种资金方案 + 基准）")
 def event_study_nav(req: EventNavRequest):
     """复用事件研究任务里**已经算好的触发事件**与磁盘缓存的价格面板，只花"一次回测"的钱。
@@ -901,16 +941,18 @@ def event_study_nav(req: EventNavRequest):
     codes = sorted(ev["code"].astype(str).unique().tolist())
     # 单向依赖：factors → signals（signals 侧不反向依赖 factors，无环）
     from ..signals.engine import attach_benchmark, nav_rows, run_backtest
-    from ..signals.pricing import fill_limits, load_bench_wide, load_price_panel
+    from ..signals.pricing import load_bench_wide
 
     timings: dict = {}
     try:
         t0 = time.perf_counter()
-        panel = load_price_panel(codes, start, end, need_open=True)
+        # ★ v1.19.93：取价面板 + 涨跌停标注**与 k 无关** ⇒ 走进程内缓存
+        #   （过顶触发 14.88 万次、事件覆盖几千只股票时，这一步原来每改一次 k 就重算一遍 ✗）
+        panel, _hit = _nav_panel_cached(codes, start, end, strict=True)
         timings["prices"] = round(time.perf_counter() - t0, 3)
-        if "CLOSE" not in panel:
+        timings["prices_cached"] = bool(_hit)
+        if panel is None or "CLOSE" not in panel:
             raise HTTPException(status_code=400, detail="取不到触发标的的行情数据")
-        panel = fill_limits(panel, strict=True)
         t0 = time.perf_counter()
         events = pd.DataFrame({"date": pd.to_datetime(ev["dt"]),
                                "code": ev["code"].astype(str), "side": 1})
