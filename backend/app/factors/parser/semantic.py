@@ -21,6 +21,8 @@ BUILTIN_FUNCS = {
     # 自定义外挂算子（app/factors/ops_ext.py），需同时在 codegen 中映射
     "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM", "EMA_TDX", "SGN", "SIGN", "INT", "BETWEEN",
     "CROSS", "IF", "IFS", "RANGE", "LONGCROSS",
+    # 筹码分布（v1.19.83）：通达信/益盟的 WINNER(P)/COST(q)，由面板级派生字段承载
+    "COST", "WINNER",
     "DELTA", "MEAN", "MED",
     "ABS", "SQRT", "LOG", "LN", "EXP", "POW", "POWER", "MAX", "MIN", "MOD",
     "CEILING", "FLOOR",
@@ -95,7 +97,11 @@ def inline_variables(formula: Formula) -> Expr:
         if isinstance(expr, Var):
             name = expr.name.upper()
             if name not in assign_map:
-                return expr  # 保留（可能是输出名自引用，后面 codegen 会处理）
+                # ⚠ 这里会**保留**未定义引用，指望"输出名自引用"能落到后面处理 —— 但
+                # `codegen._g()` 对 Var 是直接 `raise CodeGenError("未展开的变量引用")`
+                # ⇒ **自引用递归（LLT 那类）目前并不支持**，报错就发生在那一步
+                #（2026-09-17 核实；原注释"后面 codegen 会处理"是**过时的**，勿被误导）。
+                return expr
             if name in stack:
                 raise SemanticError(f"中间变量存在循环引用：{' -> '.join(stack + [name])}")
             return expand(assign_map[name], stack + [name])

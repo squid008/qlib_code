@@ -400,6 +400,29 @@ class CodeGen:
         elif name == "EMA_TDX":
             if len(e.args) != 2:
                 raise CodeGenError("EMA_TDX 需要 2 个参数：EMA_TDX(X,N)，通达信递归语义的指数移动平均")
+        # 筹码分布（v1.19.83）：COST(q) / WINNER(P) → **派生字段** `$chip_cost_*` / `$chip_win_*`
+        # ⚠ 为什么映射成字段而不是算子：两条求值路径（qlib ops / panel_expr）的算子都是**逐股调用**的
+        #   ⇒ 筹码递推若逐股跑，全 A 约 4~8 分钟/每个分位 ✗✗；而字段可让面板级求值器
+        #   一次拿到整块面板、按「日期 × 股票」矩阵向量化递推（`panel_expr._chip_field`）⇒ 几秒 ✓。
+        if name == "COST":
+            if len(e.args) != 1 or not isinstance(e.args[0], Num):
+                raise CodeGenError("COST 需要 1 个**常量**参数：COST(q)，q 为成本分位（百分数），如 COST(95)")
+            q = float(e.args[0].value)
+            if not (0.0 < q < 100.0):
+                raise CodeGenError("COST 的参数需在 (0,100) 之间，例如 COST(95)")
+            return "$chip_cost_%g" % q
+        if name == "WINNER":
+            if len(e.args) != 1:
+                raise CodeGenError("WINNER 需要 1 个参数：WINNER(P)，P 用现价/最高价/最低价（如 WINNER(C)）")
+            a = e.args[0]
+            nm = None
+            if isinstance(a, Field):
+                nm = {"CLOSE": "close", "C": "close", "HIGH": "high", "H": "high",
+                      "LOW": "low", "L": "low"}.get(a.name.upper())
+            if nm is None:
+                raise CodeGenError("WINNER(P)：目前只支持 P = C/H/L（现价/最高价/最低价）；"
+                                   "其它价（开盘价、均价等）暂不支持")
+            return "$chip_win_%s" % nm
         # 直接映射
         if name in FUNC_QLIB:
             q = _ema_op_name() if name == "EMA" else FUNC_QLIB[name]

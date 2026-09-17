@@ -927,6 +927,10 @@ class PanelEvaluator:
         # 表达式里叶子是 $close 形态，bin 文件名是 close（去 $ 前缀）
         key = name.lstrip("$")
         s = self._field_cache.get(key)
+        if s is None and key.startswith("chip_"):
+            s = self._chip_field(key)          # 筹码分布派生字段（v1.19.83，见下）
+            self._field_cache[key] = s
+            return s
         if s is None:
             # v1.18.31：直接按位铺到 _full（等价于原 `load_field_series(...).reindex(_full)`，
             # 见 _load_field_on）。所有字段仍统一对齐到全池全日历基准（缺失股/缺失行补 NaN），
@@ -936,6 +940,79 @@ class PanelEvaluator:
             s = pd.Series(vals, index=self._full)
             self._field_cache[key] = s
         return s
+
+    def _chip_field(self, key: str) -> pd.Series:
+        """筹码分布**派生字段**（v1.19.83）：`chip_cost_<q>`（= `COST(q)`）/ `chip_win_<close|high|low>`
+        （= `WINNER(现价/最高/最低)`）。
+
+        **为什么做成派生字段、而不是普通算子（设计约束，勿轻易改）**：
+          `panel_expr` 与 qlib 的算子都按**逐股**调用（`_by_group` / qlib 的 per-instrument 求值）
+          ⇒ 把筹码递推挂成算子就等于逐股 Python 递推 ⇒ 全 A 实测约 **4~8 分钟 / 每个分位** ✗✗
+          （单股 2500 天 × 128 箱，纯 Python 循环）；而 `field()` 能拿到**整块面板** ⇒
+          在这里按「日期 × 股票」矩阵一次递推（`chip_dist.chip_run`）= **几秒** ✓✓，
+          且按字段名缓存 ⇒ 公式里出现多次也只算一次。
+
+        名称约定（codegen 生成，两者必须一致）：`$chip_cost_95`、`$chip_win_close`。
+        口径见 `chip_dist` 模块文档：后复权价 + `$turn`（单位自适应）+ 三角分布注入。
+        """
+        from .chip_dist import chip_run
+
+        body = key[len("chip_"):]
+        head, _, tail = body.partition("_")
+        c = self.field("$close")
+        h = self.field("$high")
+        l = self.field("$low")
+        # ---- 换手率 ----
+        # ⚠ 本仓行情数据里**没有换手率字段**（`data/cn_data/features/*/` 无 `turn.day.bin`，
+        #   只有 volume/amount/market_cap…，2026-09-17 核实）⇒ 用等价式反推：
+        #       换手率 = 成交量 / 流通股本 ≈ (成交量 × 真实价) / 市值 = 成交额 / 市值
+        #   量纲自洽（元/元）。⚠ 若 `market_cap` 是**总市值**（非流通市值），对流通比例低的个股
+        #   会**低估**换手率 ⇒ 筹码衰减偏慢（属已知口径近似，不改变信号的相对形态）。
+        _vol = self.field("$volume")
+        _mc = self.field("$market_cap")
+        _px_raw = c / self.field("$factor")          # 真实价（不复权），与市值同口径
+        # ⚠ 成交量单位**自校准**（2026-09-17 实测）：本仓 volume 疑为"手"（100 股）——
+        #   直接按"股"算，换手率会小 ~100 倍（实测中位数 7.6e-5，应为 ~1%）。
+        #   判据：成交额/成交量 = 均价 ⇒ 再除以真实价 ≈1 说明是"股"、≈0.01 说明是"手"（比例判据，
+        #   与具体币种单位无关）；取面板中位数（一次标量，成本可忽略）。
+        _vol_sh = _vol
+        try:
+            _amt = self.field("$amount")
+            _r = float(np.nanmedian((_amt / _vol)._values / _px_raw._values))
+            if np.isfinite(_r) and _r < 0.1:
+                _vol_sh = _vol * 100.0               # 手 → 股
+        except Exception:                            # noqa: BLE001 —— 无 amount 就按"股"处理
+            pass
+        t = (_vol_sh * _px_raw / _mc).where(_mc > 0)
+        names = list(c.index.names)
+        li = names.index("instrument") if "instrument" in names else 0
+        ld = 1 - li
+        # 面板 → (日期 × 股票) 矩阵：筹码递推必须按日推进，且一次算全池（向量化）
+        try:
+            C = c.unstack(level=li)
+            H = h.unstack(level=li)
+            L = l.unstack(level=li)
+            T = t.unstack(level=li)
+        except Exception as e:                        # noqa: BLE001
+            raise ValueError("筹码分布字段要求面板 index 为 (instrument, datetime) 两级：%r" % (e,))
+        cn, hn, ln, tn = (x.to_numpy(dtype=float) for x in (C, H, L, T))
+        if head == "cost":
+            try:
+                q = float(tail)
+            except ValueError:
+                raise ValueError("无法解析筹码成本分位：%s（应为 $chip_cost_95 形态）" % key) from None
+            vals = chip_run(cn, hn, ln, tn, qs=(q,))["cost_%g" % q]
+        elif head == "win":
+            if tail not in ("close", "high", "low"):
+                raise ValueError("WINNER 只支持 现价/最高价/最低价，收到：%s" % key)
+            px = {"close": cn, "high": hn, "low": ln}[tail]
+            vals = chip_run(cn, hn, ln, tn, prices=px)["winner"]
+        else:
+            raise ValueError("未知的筹码派生字段：%s" % key)
+        wide = pd.DataFrame(vals, index=C.index, columns=C.columns)
+        st = wide.stack()                              # (日期, 股票) → 标签对齐回面板顺序
+        st.index = st.index.set_names([names[ld], names[li]])
+        return st.reorder_levels(names).reindex(c.index)
 
     # ---- 节点 ----
     def eval(self, node: Node, sr: bool = False) -> pd.Series:
@@ -2053,13 +2130,30 @@ def _cast_output_f32(df: pd.DataFrame) -> pd.DataFrame:
     return df.astype(np.float32)
 
 
+# 筹码派生字段（`$chip_cost_*` / `$chip_win_*`）依赖的基础字段（v1.19.83）：
+#   close/high/low  → 当日价格区间（筹码注入的范围）
+#   volume/factor/market_cap → **换手率**（⚠ 数据里**没有** turn.day.bin，必须用
+#                              成交量 × 真实价 / 市值 反推，见 `PanelEvaluator._chip_field`）
+_CHIP_BASE_FIELDS = ("close", "high", "low", "volume", "amount", "factor", "market_cap")
+
+
 def _collect_field_names(fields) -> tuple:
-    """从 (expr, name) 列表收集全部 $field 引用（供 union index 对齐 qlib 行集）。"""
+    """从 (expr, name) 列表收集全部 $field 引用（供 union index 对齐 qlib 行集）。
+
+    ⚠ 筹码字段是**计算字段**（不在数据里）⇒ 必须把它依赖的基础字段一并纳入 union，
+      否则这些字段的行集/覆盖区间不对齐，会算出莫名 NaN（只在"该股有行情但字段没被 union 覆盖"时暴露）。
+    """
     out = []
     seen = set()
     for expr, _ in fields:
         for m in re.finditer(r"\$([A-Za-z_][A-Za-z0-9_]*)", str(expr)):
             f = m.group(1)
+            if f.startswith("chip_"):
+                for b in _CHIP_BASE_FIELDS:
+                    if b not in seen:
+                        seen.add(b)
+                        out.append(b)
+                continue                      # 计算字段本身不是 bin 文件，不进 union
             if f not in seen:
                 seen.add(f)
                 out.append(f)
