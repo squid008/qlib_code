@@ -96,7 +96,7 @@ export default function FormulaPanel({
           />
           <p className="text-slate-400 mt-0.5 mb-1 text-[10px]">
             行号在左侧；`{'{注释}'}` 整段灰掉不参与编译；Ctrl+F 查找、Esc 关闭；
-            **公式可互相调用**（如保存了 `CPX` 后可写 `基础:CPX&gt;0 AND C&gt;MA(C,5)`，
+            公式可互相调用（如保存了 `CPX` 后可写 `基础:CPX&gt;0 AND C&gt;MA(C,5)`，
             被调公式可用 `参数 K=1;` 声明默认值、调用处 `CPX(2)` 按位置传参）。
           </p>
           <div className="flex items-center gap-2 mt-1.5">

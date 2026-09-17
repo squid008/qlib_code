@@ -30,8 +30,8 @@ const RAW_HANDBOOK: HandbookEntry[] = [
   // ---------------- 筹码分布（后端 v1.19.83 已支持；2026-09-17 补进手册） ----------------
   // ⚠ 以前这两个**只在后端**、手册里没有 ⇒ 用户搜不到也不知道怎么用 ✗
   //   （现在有 `tests/test_formula_handbook_sync.py` 守着："后端加了、手册忘写"会被测出来 ✓）
-  { name: 'COST', abbr: '成本分位价', kind: 'func', desc: '成本分布：求"多少比例的筹码成本低于该价"。\n用法:\n COST(q)\n q 为百分数、必须是**常量**且在 (0,100) 之间，如 COST(95)。\n例:\n COST(95) > CLOSE   95% 的筹码成本都低于现价（上方套牢盘少）\n注意:q 目前只物化了 5 / 30 / 75 / 95 四档，其它分位会报"字段不存在"。' },
-  { name: 'WINNER', abbr: '获利盘比例', kind: 'func', desc: '获利盘比例：价格 P 下方的持仓占比(0~100)。\n用法:\n WINNER(P)\n P 只能是 C / H / L（现价/最高价/最低价），如 WINNER(C)。\n例:\n WINNER(C) > 80   八成以上筹码处于获利状态\n注意:与 COST(q) **互为反向**（COST 由分位求价格、WINNER 由价格求分位）；两者都由"换手率衰减"的筹码分布算出。' },
+  { name: 'COST', abbr: '成本分位价', kind: 'func', desc: '成本分布：求"多少比例的筹码成本低于该价"。\n用法:\n COST(q)\n q 为百分数、必须是常量且在 (0,100) 之间，如 COST(95)。\n例:\n COST(95) > CLOSE   95% 的筹码成本都低于现价（上方套牢盘少）\n注意:q 目前只物化了 5 / 30 / 75 / 95 四档，其它分位会报"字段不存在"。' },
+  { name: 'WINNER', abbr: '获利盘比例', kind: 'func', desc: '获利盘比例：价格 P 下方的持仓占比(0~100)。\n用法:\n WINNER(P)\n P 只能是 C / H / L（现价/最高价/最低价），如 WINNER(C)。\n例:\n WINNER(C) > 80   八成以上筹码处于获利状态\n注意:与 COST(q) 互为反向（COST 由分位求价格、WINNER 由价格求分位）；两者都由"换手率衰减"的筹码分布算出。' },
 
   // ---------------- 常用算术/统计函数 ----------------
   { name: 'MA', abbr: '简单移动平均', kind: 'func', desc: '简单移动平均。\n用法:\n MA(X,N)\n 返回 X 在 N 周期的简单平均\n 窗口不足按已有数据算(min_periods=1)。\n例:\n MA(CLOSE,5)' },
@@ -68,7 +68,7 @@ const RAW_HANDBOOK: HandbookEntry[] = [
   // ---------------- 动态窗口算子（窗口大小 N 可以是"变量"） ----------------
   // 说明:LLV/HHV/COUNT/REF/SUM/HHVBARS/LLVBARS 的 N 写成**变量/表达式**时，内部会自动改用这些
   // DYN_* 算子（常量窗口仍走标准算子，性能更好）；也可以直接写 DYN_* 显式指定。
-  { name: 'DYN_MIN', abbr: '动态窗口最低', kind: 'func', desc: '动态窗口最小值:**每个位置用该位置的 N** 作窗口大小。\n用法:\n DYN_MIN(X,N)\n对比:\n LLV(X,N) 的 N 是常量。\n例:\n DYN_MIN(LOW, AT+1)' },
+  { name: 'DYN_MIN', abbr: '动态窗口最低', kind: 'func', desc: '动态窗口最小值:每个位置用该位置的 N 作窗口大小。\n用法:\n DYN_MIN(X,N)\n对比:\n LLV(X,N) 的 N 是常量。\n例:\n DYN_MIN(LOW, AT+1)' },
   { name: 'DYN_MAX', abbr: '动态窗口最高', kind: 'func', desc: '动态窗口最大值（每个位置用该位置的 N）。\n用法:\n DYN_MAX(X,N)\n对比:\n HHV(X,N) 的 N 是常量。' },
   { name: 'DYN_COUNT', abbr: '动态窗口计数', kind: 'func', desc: '动态窗口内条件成立次数（每个位置用该位置的 N）。\n用法:\n DYN_COUNT(条件,N)\n对比:\n COUNT(条件,N) 的 N 是常量。' },
   { name: 'DYN_REF', abbr: '动态窗口前值', kind: 'func', desc: '向前引用 N 个周期（每个位置用该位置的 N）。\n用法:\n DYN_REF(X,N)\n对比:\n REF(X,N) 的 N 是常量。' },

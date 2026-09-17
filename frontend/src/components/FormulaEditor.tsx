@@ -212,6 +212,24 @@ export default function FormulaEditor({
     requestAnimationFrame(() => findInputRef.current?.focus())
   }
 
+  /** 关闭查找面板：**必须把选中态取消**（用户 2026-09-17：「取消搜索（Esc 或点关闭按钮）后
+   *  为啥那些关键字还是选中状态？」）—— 之前只 `setFindOpen(false)`，而 `jumpTo` 留下的
+   *  `setSelectionRange` 还在 ⇒ 面板一关、焦点回到编辑框，那段选区就显形了 ✗。
+   *  处理：把光标**收到当前命中的末尾**（不改内容、不留选区）+ 清掉高亮底色 ✓。 */
+  const closeFind = (focusEditor = true) => {
+    setFindOpen(false)
+    const a = inner.current
+    if (a) {
+      if (hits.length > 0) {
+        const start = hits[Math.min(hitIdx, hits.length - 1)]
+        const end = start + query.length
+        a.setSelectionRange(end, end)
+        setCaret(end)
+      }
+      if (focusEditor) a.focus()
+    }
+  }
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const mod = e.ctrlKey || e.metaKey
     if (mod && (e.key === 'f' || e.key === 'F')) {
@@ -225,7 +243,8 @@ export default function FormulaEditor({
       return
     }
     if (e.key === 'Escape' && findOpen) {
-      setFindOpen(false)
+      e.preventDefault()
+      closeFind(false)          // 焦点本来就在编辑框里 ⇒ 不夺回焦点，但**要取消选中** ✓
       return
     }
     if (mod && (e.key === 'g' || e.key === 'G')) {
@@ -289,7 +308,8 @@ export default function FormulaEditor({
             className="absolute inset-0 overflow-hidden pointer-events-none text-slate-800 dark:text-slate-100"
             style={metricsStyle}
           >
-            {renderText(value, toks, hits, hitIdx, query.length)}
+            {/* 面板关掉后不再画高亮底色（`hits` 只为"计数"继续算着，不渲染 ✓） */}
+            {renderText(value, toks, findOpen ? hits : [], hitIdx, query.length)}
             {'\n'}
           </pre>
           <textarea
@@ -337,8 +357,7 @@ export default function FormulaEditor({
                 jumpTo(hitIdx + (e.shiftKey ? -1 : 1))
               } else if (e.key === 'Escape') {
                 e.preventDefault()
-                setFindOpen(false)
-                inner.current?.focus()
+                closeFind()      // 关面板 + 取消选中 + 焦点回编辑框 ✓
               }
             }}
             placeholder="查找（Ctrl+F，Enter 下一个 / Shift+Enter 上一个）"
@@ -371,10 +390,7 @@ export default function FormulaEditor({
           </button>
           <button
             type="button"
-            onClick={() => {
-              setFindOpen(false)
-              inner.current?.focus()
-            }}
+            onClick={() => closeFind()}
             title="关闭 (Esc)"
             className="px-1.5 rounded border text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
           >
