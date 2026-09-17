@@ -85,6 +85,10 @@ class Lexer:
             start = self.pos
             c = self.peek()
 
+            if c == "{":                    # { ... } 注释：整段跳过、不产生 token
+                self._skip_comment()
+                continue
+
             if c.isdigit() or (c == "." and self.peek(1).isdigit()):
                 # 数字开头：若数字后紧跟字母/下划线/中文 → 整体作为标识符（如 30均线涨，益盟命名习惯）
                 if self._is_digit_ident_continuation():
@@ -145,6 +149,26 @@ class Lexer:
 
         tokens.append(Token(TT_EOF, "", "", self.n))
         return tokens
+
+    def _skip_comment(self) -> None:
+        """跳过 `{ ... }` 注释（可跨行，与通达信/益盟一致；**不支持嵌套**）。
+
+        ⚠ 用户 2026-09-17：「给公式编辑区加上注释符号 `{}` 识别功能吧，`{}` 里的都是注释，
+          比如 `{的点点滴滴}` 这样」—— 以前这里会直接顶回
+          「无法识别的字符 '{'」✗（注释明明是公式里最正常的东西）。
+        设计：注释**不产生任何 token**（等价于空白），但**位置信息照旧**由 `self.pos` 记账
+        ⇒ 后续报错的「第 N 行第 M 列」仍然准确 ✓。整行/行尾/跨行注释都支持 ✓。
+        全角 `｛｝` 会被 `normalize_source` 的 NFKC 折成半角，无需特殊处理 ✓。
+        """
+        start = self.pos
+        self.pos += 1                          # 跳过 "{"
+        while self.pos < self.n and self.text[self.pos] != "}":
+            self.pos += 1
+        if self.pos >= self.n:
+            # 与 LexerError 的既有约定一致：消息以「(位置 N)」结尾
+            # ⇒ 上层 `_with_location` 才能补出「第 N 行第 M 列：内容」✓
+            raise LexerError("注释未闭合：缺少配对的 `}` (位置 %d)" % start)
+        self.pos += 1                          # 跳过 "}"
 
     def _is_digit_ident_continuation(self) -> bool:
         """数字开头但后面紧跟字母/下划线/中文 → 整体应作为标识符（如 30均线涨）。"""

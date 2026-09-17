@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import type { CustomFormula } from '../api'
 import FormulaHandbookModal from './FormulaHandbookModal'
+import FormulaEditor from './FormulaEditor'
 
 interface FormulaPanelProps {
   customFormulas: CustomFormula[]
@@ -69,9 +70,10 @@ export default function FormulaPanel({
 
   return (
     <div className="mt-2 border rounded p-3 bg-slate-50 dark:bg-slate-900 text-xs">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* 左侧：编辑区（占 1/3） */}
-        <div>
+      {/* 用户 2026-09-17：编辑区加宽、公式列表相应变窄 ⇒ **四六开**（2/5 : 3/5） */}
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+        {/* 左侧：编辑区（占 2/5 = 40%） */}
+        <div className="md:col-span-2">
           <p className="text-slate-500 mb-1">
             粘贴益盟/通达信公式（每条 1 个输出，可含 <code className="text-slate-600">A:=...</code> 中间变量），
             编译后保存为自定义因子（刷新不丢失），勾选后才参与回测。示例：
@@ -79,17 +81,22 @@ export default function FormulaPanel({
           <p className="text-slate-400 mb-2 leading-relaxed break-all">
             <code className="text-[10px]">A:=MA(CLOSE,5); 长期线:A+100;</code>
           </p>
-          <textarea
-            ref={newAreaRef}
+          {/* 编辑器带**行号**、`{注释}` 灰色着色、Ctrl+F 查找（v1.19.86） */}
+          <FormulaEditor
             value={formulaInput}
-            onChange={(e) => onInputChange(e.target.value)}
+            onChange={onInputChange}
             onFocus={() => {
               lastFocusRef.current = 'new'
             }}
-            rows={5}
-            placeholder="如：A:=MA(CLOSE,5); 长期线:A+100;"
-            className="w-full border rounded px-2 py-1 font-mono text-[11px] bg-white dark:bg-slate-800"
+            rows={8}
+            innerRef={(el) => {
+              newAreaRef.current = el
+            }}
+            placeholder="如：A:=MA(CLOSE,5); 长期线:A+100;   {这段是注释}"
           />
+          <p className="text-slate-400 mt-0.5 mb-1 text-[10px]">
+            行号在左侧；`{'{注释}'}` 整段灰掉不参与编译；Ctrl+F 查找、Esc 关闭。
+          </p>
           <div className="flex items-center gap-2 mt-1.5">
             <button
               type="button"
@@ -112,8 +119,8 @@ export default function FormulaPanel({
             <p className="mt-1 text-red-500 text-[11px] break-all">{formulaError}</p>
           )}
         </div>
-        {/* 右侧：公式列表（占 2/3） */}
-        <div className="md:col-span-2">
+        {/* 右侧：公式列表（占 3/5 = 60%） */}
+        <div className="md:col-span-3">
           {customFormulas.length > 0 ? (
             <>
               <div className="flex items-center justify-between mb-1">
@@ -150,15 +157,16 @@ export default function FormulaPanel({
                     <li key={f.id} className="border rounded px-2 py-1 bg-white dark:bg-slate-800">
                     {editingId === f.id ? (
                       <div>
-                        <textarea
-                          ref={editAreaRef}
+                        <FormulaEditor
                           value={editingText}
-                          onChange={(e) => onEditingTextChange(e.target.value)}
+                          onChange={onEditingTextChange}
                           onFocus={() => {
                             lastFocusRef.current = 'edit'
                           }}
-                          rows={5}
-                          className="w-full border rounded px-2 py-1 font-mono text-[11px] bg-white dark:bg-slate-800"
+                          rows={8}
+                          innerRef={(el) => {
+                            editAreaRef.current = el
+                          }}
                         />
                         <div className="flex items-center gap-2 mt-1">
                           <button
