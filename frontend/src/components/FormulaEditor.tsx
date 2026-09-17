@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
 /**
@@ -22,40 +22,79 @@ const M = {
   tabSize: 4,
 } as const
 
+/** 给**水平滚动条**留的高度（px）：两层都是 `overflow:auto`，横向滚动条会盖住最后一行 ✗
+ *  （用户 2026-09-17：「公式编辑区最后一行被 X 轴滚动条挡住啦」）
+ *  ⇒ `<pre>` 与 textarea **两层都**在底部留出同样高度，并把它算进默认高度 ✓。 */
+const SCROLLBAR = 16
+
 // 着色：① `{…}` 注释 ② 数字 ③ 函数名（标识符紧跟 `(`）
 const TOKEN_RE = /(\{[^}]*\})|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][A-Za-z0-9_]*(?=\s*\())/g
 
-function highlight(text: string): ReactNode[] {
-  const out: ReactNode[] = []
-  let last = 0
+/** 每个字符的"着色类"（注释/数字/函数名）。逐字符标记是为了能和**查找高亮**叠加 ——
+ *  命中有可能落在注释/数字/函数名内部（比如搜 `MA`），两层必须能在同一段文字上共存 ✓。 */
+function tokenClasses(text: string): string[] {
+  const tok = new Array<string>(text.length).fill('')
   let m: RegExpExecArray | null
   TOKEN_RE.lastIndex = 0
   while ((m = TOKEN_RE.exec(text)) !== null) {
-    if (m.index > last) out.push(text.slice(last, m.index))
-    const key = `${m.index}:${m[0]}`
-    if (m[1] !== undefined) {
-      // 注释（含大括号本身）：整段灰掉 —— 一眼看出"这段不参与计算"
-      out.push(
-        <span key={key} className="text-slate-400 dark:text-slate-500 italic">
-          {m[0]}
-        </span>,
-      )
-    } else if (m[2] !== undefined) {
-      out.push(
-        <span key={key} className="text-amber-600 dark:text-amber-400">
-          {m[0]}
-        </span>,
-      )
-    } else {
-      out.push(
-        <span key={key} className="text-blue-600 dark:text-blue-400">
-          {m[0]}
-        </span>,
-      )
-    }
-    last = m.index + m[0].length
+    const cls =
+      m[1] !== undefined
+        ? 'text-slate-400 dark:text-slate-500 italic'   // {注释}：整段灰掉
+        : m[2] !== undefined
+          ? 'text-amber-600 dark:text-amber-400'        // 数字
+          : 'text-blue-600 dark:text-blue-400'          // 函数名
+    tok.fill(cls, m.index, m.index + m[0].length)
   }
-  if (last < text.length) out.push(text.slice(last))
+  return tok
+}
+
+/** 查找命中的起点（大小写不敏感、不重叠）。 */
+function matchRanges(text: string, query: string): number[] {
+  if (!query) return []
+  const hay = text.toLowerCase()
+  const needle = query.toLowerCase()
+  const out: number[] = []
+  let i = hay.indexOf(needle)
+  while (i >= 0) {
+    out.push(i)
+    i = hay.indexOf(needle, i + Math.max(1, needle.length))
+  }
+  return out
+}
+
+/** 按"连续同（着色类 + 高亮档）"合并成 span（公式就几百字符 ⇒ 逐字符合并开销可忽略 ✓）。 */
+function renderText(
+  text: string,
+  toks: string[],
+  hits: number[],
+  hitIdx: number,
+  qlen: number,
+): ReactNode[] {
+  const n = text.length
+  if (n === 0) return []
+  const tint = new Uint8Array(n)                 // 0 无 / 1 其它命中 / 2 当前命中
+  hits.forEach((s, i) => tint.fill(i === hitIdx ? 2 : 1, s, Math.min(n, s + qlen)))
+  const out: ReactNode[] = []
+  let i = 0
+  while (i < n) {
+    const t = tint[i]
+    const c = toks[i]
+    let j = i + 1
+    while (j < n && tint[j] === t && toks[j] === c) j++
+    const cls = [
+      c,
+      t === 2
+        ? 'bg-amber-400/70 dark:bg-amber-500/50 rounded-sm'
+        : t === 1
+          ? 'bg-yellow-200/60 dark:bg-yellow-600/25'
+          : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+    const s = text.slice(i, j)
+    out.push(cls ? <span key={`${i}-${j}`} className={cls}>{s}</span> : s)
+    i = j
+  }
   return out
 }
 
@@ -92,20 +131,9 @@ export default function FormulaEditor({
     [value, caret],
   )
 
-  // 匹配位置（大小写不敏感，逐个不重叠）
-  const hits = useMemo(() => {
-    const q = query
-    if (!q) return [] as number[]
-    const hay = value.toLowerCase()
-    const needle = q.toLowerCase()
-    const out: number[] = []
-    let i = hay.indexOf(needle)
-    while (i >= 0) {
-      out.push(i)
-      i = hay.indexOf(needle, i + Math.max(1, needle.length))
-    }
-    return out
-  }, [value, query])
+  // 查找命中 + 着色层
+  const hits = useMemo(() => matchRanges(value, query), [value, query])
+  const toks = useMemo(() => tokenClasses(value), [value])
 
   const syncScroll = () => {
     const a = inner.current
@@ -117,16 +145,61 @@ export default function FormulaEditor({
     }
   }
 
+  // 等宽字符宽度（canvas 实测 ⇒ 横向定位准；用于把命中滚到可见区中间）
+  const cwRef = useRef(0)
+  const charWidth = () => {
+    if (cwRef.current > 0) return cwRef.current
+    try {
+      const c = document.createElement('canvas').getContext('2d')
+      if (c) {
+        c.font = `${M.fontSize}px ${M.fontFamily}`
+        cwRef.current = c.measureText('MMMMMMMMMM').width / 10
+      }
+    } catch {
+      cwRef.current = 0
+    }
+    if (!cwRef.current) cwRef.current = M.fontSize * 0.6
+    return cwRef.current
+  }
+
+  /** 把第 `start` 个字符处的命中滚到**可视区中间**（用户 2026-09-17：「按 Ctrl+F 查找要能
+   *  配合滚动条自动滚到那个位置，鼠标按那两个上下箭头也要能自动滚动定位到那里」）。
+   *  ⚠ 只靠 `setSelectionRange` **不保证**滚动（未聚焦时尤其不动）⇒ 这里显式算出行/列并设置
+   *    `scrollTop` / `scrollLeft`，再 `syncScroll()` 让高亮层与行号槽跟上 ✓。 */
+  const scrollToMatch = (start: number, len: number) => {
+    const a = inner.current
+    if (!a) return
+    const line = value.slice(0, start).split('\n').length - 1
+    const col = start - (value.lastIndexOf('\n', start - 1) + 1)
+    const lh = M.lineHeight
+    const top = line * lh - (a.clientHeight - lh) / 2
+    a.scrollTop = Math.max(0, Math.min(top, a.scrollHeight - a.clientHeight))
+    const cw = charWidth()
+    const left = col * cw - (a.clientWidth - len * cw) / 2
+    a.scrollLeft = Math.max(0, Math.min(left, a.scrollWidth - a.clientWidth))
+    syncScroll()                     // 程序化滚动不会自动触发 sync ⇒ 手动来一次（保险）
+  }
+
   const jumpTo = (idx: number) => {
     const a = inner.current
     if (!a || hits.length === 0) return
     const n = ((idx % hits.length) + hits.length) % hits.length
     setHitIdx(n)
     const start = hits[n]
-    a.focus()
-    a.setSelectionRange(start, start + query.length)
+    const len = query.length
+    // 查找条**开着**时焦点留在输入框里（否则没法连续打字/回车 ✗）—— 命中位置由高亮层的
+    // 底色标出（当前命中=琥珀、其它命中=淡黄）；关着时（F3 / Ctrl+G 触发）才把焦点给编辑框 ✓
+    if (!findOpen) a.focus()
+    a.setSelectionRange(start, start + len)
     setCaret(start)
+    scrollToMatch(start, len)
   }
+
+  // 搜索词一变就**跳到第一个命中并滚过去**（"边打边找"的手感 ✓）
+  useEffect(() => {
+    if (findOpen && hits.length > 0) jumpTo(Math.min(hitIdx, hits.length - 1))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hits])
 
   const openFind = () => {
     const a = inner.current
@@ -166,12 +239,15 @@ export default function FormulaEditor({
     fontSize: M.fontSize,
     lineHeight: `${M.lineHeight}px`,
     padding: M.padding,
+    // ⚠ 底部再留出**水平滚动条**的高度：否则最后一行会被 X 轴滚动条盖住 ✗
+    //   （两层都要留同样高度、且 `bodyHeight` 里也把它算进去 ⇒ 默认高度仍显示 `rows` 行 ✓）
+    paddingBottom: SCROLLBAR,
     tabSize: M.tabSize,
     whiteSpace: 'pre' as const,
     margin: 0,
     border: 0,
   }
-  const bodyHeight = rows * M.lineHeight + 12
+  const bodyHeight = rows * M.lineHeight + 12 + SCROLLBAR
 
   return (
     // ⚠ **可纵向拖动拉长**（用户 2026-09-17：「之前那个可以拖动拉长的给我加回来」——
@@ -213,7 +289,7 @@ export default function FormulaEditor({
             className="absolute inset-0 overflow-hidden pointer-events-none text-slate-800 dark:text-slate-100"
             style={metricsStyle}
           >
-            {highlight(value)}
+            {renderText(value, toks, hits, hitIdx, query.length)}
             {'\n'}
           </pre>
           <textarea
@@ -273,7 +349,10 @@ export default function FormulaEditor({
           </span>
           <button
             type="button"
-            onClick={() => jumpTo(hitIdx - 1)}
+            onClick={() => {
+              jumpTo(hitIdx - 1)
+              findInputRef.current?.focus()   // 切完继续留在查找框（能接着打字/回车）
+            }}
             title="上一个 (Shift+Enter)"
             className="px-1.5 rounded border text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
           >
@@ -281,7 +360,10 @@ export default function FormulaEditor({
           </button>
           <button
             type="button"
-            onClick={() => jumpTo(hitIdx + 1)}
+            onClick={() => {
+              jumpTo(hitIdx + 1)
+              findInputRef.current?.focus()
+            }}
             title="下一个 (Enter / F3)"
             className="px-1.5 rounded border text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
           >
