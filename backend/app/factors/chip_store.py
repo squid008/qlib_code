@@ -96,23 +96,12 @@ def materialize(codes: Sequence[str], start_time: str, end_time: str,
                 res[key], index=c.index, columns=c.columns).stack()
 
     for name in want:
-        if overwrite:
-            # ★ v1.19.92：全量重写前**先清掉同名旧文件** —— 否则"这次算不出的股票"会留着
-            #   **旧口径/旧日期轴**的文件 ⇒ 一份数据目录里混着多种日期轴 ✗
-            #   （2026-09-17 实测：sz000001 的 chip_cost_95 = first=5332/484 行的旧文件，
-            #     而它的 close = first=0/6455 ✗ ⇒ 多股票加载必崩）。
-            import os as _os
-            _removed = 0
-            for _d in _os.listdir(fdir):
-                _p = "%s/%s/%s.day.bin" % (fdir, _d, name)
-                if _os.path.exists(_p):
-                    try:
-                        _os.remove(_p)
-                        _removed += 1
-                    except OSError:
-                        pass
-            if progress_cb and _removed:
-                progress_cb("清理旧 %s：%d 个" % (name, _removed))
+        # ⚠⚠ v1.19.92 **不要在这里批量删旧文件**：本机有 bulk-delete 安全闸 ——
+        #   单次删除 ≥500 个会被拦下并**直接中断整个进程**（实测 2026-09-17 22:08 那次就死在这 ✗，
+        #   stderr 里只有一行 `[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {"count":500,…}`，
+        #   而 stdout 停在启动三行 ⇒ 看起来"无声消失"，极易误判成被重启脚本杀了 ✗）。
+        #   ⇒ 改为**"每只股票都写字（含全 NaN）"**：旧文件被自然覆盖 ✓，且全市场都有该字段、
+        #     日期轴与 `$close` 一致 ⇒ 多股票加载不再缺字段 ✓✓（见下方 `if not len(sub)` 的注释）。
         st = series_map.get(name)
         if st is None:
             out[name] = 0
@@ -130,8 +119,11 @@ def materialize(codes: Sequence[str], start_time: str, end_time: str,
                 sub = series.xs(inst, level="instrument")
             except KeyError:
                 continue
-            if not len(sub) or not np.isfinite(sub.to_numpy(dtype=float)).any():
+            if not len(sub):
                 continue
+            # ★ v1.19.92：**不再跳过"全 NaN"的股票** —— 跳过会让它留着**旧文件**（旧日期轴 ✗），
+            #   以及"这只股票没有该字段"⇒ 多股票一起加载时崩（`identically-labeled` ✗）。
+            #   这里一律写出（全 NaN 也写 ✓），日期轴与 `$close` 完全一致 ⇒ qlib 侧永远能对齐 ✓。
             path = "%s/%s/%s.day.bin" % (fdir, inst.lower(), name)
             import os
             if os.path.exists(path) and not overwrite:
