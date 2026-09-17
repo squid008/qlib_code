@@ -675,10 +675,34 @@ class SR(ExpressionOps):
     LOOKBACK_DAYS = 250
 
     def __init__(self, feature, mask=None, lookback=None):
+        # ⚠ v1.19.86：**按类型**区分第二个位置参数（修用户 2026-09-17 实测的
+        #   `AttributeError: 'int' object has no attribute 'load'`）。
+        #   缘由：`__str__` 在**无掩码**时输出 `SR(feature, lookback)`（如 `SR($close,250)`）——
+        #   qlib 有些路径会**先把表达式 str、再 parse**（缓存 key / 错误信息文本 / 部分 driver），
+        #   重新解析时那个 `250` 就落到了 `mask` 位置上 ⇒ `250.load(...)` ⇒ 崩
+        #   （任何含 SR 的表达式都可能中招，与字段无关；这正是同事那条
+        #   `Gt(SR($close,250),$chip_cost_95)` 算不出来的原因）。
+        #   ⇒ 数值/数值字面量 ⇒ 它是 **lookback**；表达式（有 load）⇒ 才当掩码。
+        #   这样 `str(SR(...))` **可 round-trip**（解析回来的对象与原对象等价、字符串稳定），
+        #   同时缓存 key 里仍带着 lookback（语义需要，见 `__str__`）。
+        if mask is not None and not hasattr(mask, "load"):
+            lb = self._as_lookback(getattr(mask, "value", mask))
+            if lb is not None:
+                mask, lookback = None, (lookback if lookback is not None else lb)
         self.feature = feature
         self._mask = mask
         self._lookback = int(lookback) if lookback is not None else self.LOOKBACK_DAYS
         super().__init__()
+
+    @staticmethod
+    def _as_lookback(x):
+        """数值字面量 ⇒ int（含 `"250"` 这种字符串形式）；不是数值 ⇒ None（保持原语义）。"""
+        if isinstance(x, bool) or x is None:
+            return None
+        try:
+            return int(x)
+        except (TypeError, ValueError):
+            return None
 
     def _load_internal(self, instrument, start_index, end_index, *args):
         series = self.feature.load(instrument, start_index, end_index, *args)
@@ -693,7 +717,9 @@ class SR(ExpressionOps):
         return series.dropna()
 
     def __str__(self):
-        # 缓存 key 必须带子表达式/掩码/扩展窗口（同 BARSLAST 的说明）
+        # 缓存 key 必须带子表达式/掩码/扩展窗口（同 BARSLAST 的说明）；
+        # ⚠ 且必须**可被重新解析**（round-trip）—— 见 `__init__` 的说明：
+        #   无掩码时第 2 个参数是 lookback（数值），`__init__` 按类型认回来 ✓。
         if self._mask is not None:
             return "SR({},{},{})".format(self.feature, self._mask, self._lookback)
         return "SR({},{})".format(self.feature, self._lookback)

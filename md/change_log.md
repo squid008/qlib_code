@@ -3,6 +3,27 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.85] - 2026-09-17
+
+### Fixed（`SR` 算子字符串**不可重新解析** ⇒ 含 SR 的表达式在 qlib 路径上必崩）
+- 用户 2026-09-17 实测：含筹码字段的表达式 `Gt(SR($close,250),$chip_cost_95)` 怎么算都失败，
+  报 `AttributeError: 'int' object has no attribute 'load'`。
+- **根因是我们自己的** `ops_ext.SR.__str__`：无掩码时输出 `"SR({},{})".format(feature, self._lookback)`
+  ⇒ 即 `SR($close,250)`，其中 `250` 是**内部 lookback**（不是掩码 ✗）。qlib 有些路径会
+  **先把表达式 str、再 parse**（缓存 key / 错误信息文本 / 部分 driver）⇒ 重新解析时 `250` 落到
+  `mask` 位置 ⇒ `250.load(...)` ⇒ 崩。**与筹码无关**，任何含 `SR` 的表达式都可能中招。
+- **修法**：`SR.__init__` **按类型**区分第 2 个位置参数 —— 数值 / 数值字面量（含 `"250"`）⇒ 视为
+  **lookback**；有 `load` 的对象（字段/表达式）⇒ 才当**掩码**。⇒ `str(SR(...))` 从此**可 round-trip**
+  （解析回来的对象与原对象等价、字符串稳定 ⇒ 缓存 key 不漂），缓存 key 里仍带 lookback。
+- 新增单测 `tests/test_golden_regression.py::TestSRStrRoundTrip`（5 项）：裸 lookback 串回解析成 lookback、
+  掩码 3 参形式稳定、数字字符串也算、真掩码不被误认、默认 lookback 不变。
+- ⚠ 教训：**"表达式能算" ≠ "它的字符串形式能被重新解析"** —— 自定义算子的 `__str__` 必须
+  **可 round-trip**（qlib 会拿 `str(op)` 当缓存 key / 错误信息，某些路径还会**重新解析**）。
+
+### 验证
+- 单测 **335 passed**、ruff 0；qlib 真路径：`D.features(SH600000, ['SR($close,250)'])` ⇒ **388 行 / 非空 388** ✓
+  （修复前该行直接 `AttributeError`）；`$chip_cost_95` / `Gt($close,$chip_cost_95)` / `Greater(...)` 均 388 行 ✓。
+
 ## [1.19.84] - 2026-09-17
 
 ### Fixed（事件研究弹窗：曲线已经出来了，却一直显示「计算中…」）

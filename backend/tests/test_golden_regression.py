@@ -56,6 +56,69 @@ class _FakeField:
         return self._s.copy()
 
 
+class TestSRStrRoundTrip:
+    """★ v1.19.86：`str(SR(...))` 必须**可被重新解析**成等价对象（round-trip）。
+
+    背景（用户 2026-09-17 实测）：`SR.__str__` 在无掩码时输出 `SR($close,250)`，其中的 `250`
+    是**内部 lookback**、不是掩码；而 qlib 有些路径会**先把表达式 str、再 parse**
+    （缓存 key / 错误信息文本 / 部分 driver）⇒ 重新解析时 `250` 落到 `mask` 位置 ⇒
+    `AttributeError: 'int' object has no attribute 'load'`（任何含 SR 的表达式都可能中招）。
+    """
+
+    class _F:
+        """带 `__str__` 的假字段（模拟 qlib Feature，便于断言字符串形态）。"""
+
+        def __init__(self, name):
+            self.name = name
+
+        def load(self, *a, **k):
+            return pd.Series([1.0, 2.0])
+
+        def __str__(self):
+            return self.name
+
+    def test_bare_lookback_string_parses_back_as_lookback(self):
+        from app.factors.ops_ext import SR
+
+        a = SR(self._F("$close"), lookback=250)
+        assert str(a) == "SR($close,250)"
+        # 重新解析：第 2 个位置参数（250）必须还原成 lookback，而不是被当成掩码
+        b = SR(self._F("$close"), 250)
+        assert b._mask is None
+        assert b._lookback == 250
+        assert str(b) == str(a)                    # 字符串稳定（缓存 key 不会漂）
+
+    def test_masked_form_round_trips(self):
+        from app.factors.ops_ext import SR
+
+        a = SR(self._F("$factor"), self._F("$close"), 250)
+        assert str(a) == "SR($factor,$close,250)"
+        b = SR(self._F("$factor"), self._F("$close"), 250)
+        assert b._mask is not None and b._lookback == 250
+
+    def test_numeric_string_lookback(self):
+        """解析路径把数字给成字符串时也要认。"""
+        from app.factors.ops_ext import SR
+
+        b = SR(self._F("$close"), "250")
+        assert b._mask is None and b._lookback == 250
+
+    def test_expression_mask_still_works(self):
+        """真掩码（有 load）不能被误认成 lookback。"""
+        from app.factors.ops_ext import SR
+
+        m = self._F("$close")
+        b = SR(self._F("$factor"), m)
+        assert b._mask is m
+        assert b._lookback == SR.LOOKBACK_DAYS
+
+    def test_default_lookback_unchanged(self):
+        from app.factors.ops_ext import SR
+
+        b = SR(self._F("$close"))
+        assert b._mask is None and b._lookback == SR.LOOKBACK_DAYS
+
+
 class TestSROperator:
     def test_dropna_self_mode(self):
         from app.factors.ops_ext import SR
