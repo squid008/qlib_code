@@ -78,10 +78,15 @@ def test_too_many_args_has_clear_message():
 
 
 def test_local_variable_shadows_library_name():
-    """本公式里的局部变量**优先**（同名不展开），避免"遮蔽"被吃掉。"""
+    """本公式里的局部变量**优先**（同名不展开），避免"遮蔽"被吃掉。
+
+    ⚠ 这里必须夹一个行情字段（`K+CLOSE`）：纯常量的公式在 v1.19.90 之后会被明确拦下
+      （"公式不含任何行情字段"，qlib 加载纯常量列会崩）⇒ 只用 `K+1` 测不出遮蔽 ✗。
+    """
     lib = build_library(["K:MA(CLOSE,5);"])
-    t = translate_formula("K:=99;\n用:K+1;", library=lib)
-    assert "Mean" not in t.expression
+    t = translate_formula("K:=99;\n用:K+CLOSE;", library=lib)
+    assert "Mean" not in t.expression        # 没把库里的 K=MA(CLOSE,5) 展开进来 ✓
+    assert "$close" in t.expression
 
 
 def test_unknown_name_still_reports_undefined():

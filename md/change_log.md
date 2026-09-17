@@ -3,6 +3,43 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.90] - 2026-09-17
+
+### Fixed（★ 特征计算失败：`'numpy.int64' object has no attribute 'name'`）
+- 用户报 **LLT / 黏合强突破 / 过顶0 / 过顶 / 蹦极新生**「特征计算失败」⇒ 查实**既不是公式问题、
+  也不是公式间调用的问题**，而是 **qlib 加载"没有任何 `$字段` 的子树"会崩**：
+  逐条探针定位（`ai_test/dbg_llt.py`）——
+  `Add(2,3)` ❌、`Div(2,Add(30,1))` ❌ ／ `Add($close,1)` ✅、`Mul(2,$close)` ✅
+  ⇒ 只要某棵子表达式**纯常量**，qlib 内部就会对常量取 `.name` ⇒ 崩 ✗。
+  LLT 正好含这类子树：`Div(2,Add(30,1))`（`A1=2/(D+1)`）、`Mul(3,…)`、`Mul(Sub(1,…),Sub(1,…))`（`W0`）。
+- **修法**：`codegen` 增加**常量折叠** —— 纯常量子树在生成前折成**单个数字字面量**
+  （`_const_fold(*, allow_div=True)`）；顺带表达式变短（LLT **262 → 142 字符**）。
+  并为"整条公式不含任何字段"的情况给出**清晰中文报错**（不再让用户看 qlib 的天书 ✗）。
+- ⚠ 排查中我自己的一个 bug（记一笔）：`_const_fold` 递归时**忘了把 `allow_div` 传下去**
+  ⇒ 只有最内层 `Div` 折得动、含除法的父节点全折不动（表现成"只折了一半"）；
+  用 `ai_test/dbg_fold.py` 打表定位后修正 ✓。
+- **已保存公式需要重编**（单因子测试的列名取自存下来的 `expression`，不是每次重译）⇒
+  新增 `ai_test/recompile_saved_formulas.py`（自动备份 `custom_formulas.json.bak`、只改 `expression`、
+  编译失败则跳过并报告）；实测 **28 条 → 重编 4**（LLT / 黏合强突破 / 过顶0 / 过顶）、未变 24、失败 0 ✓。
+- 新增单测 `tests/test_formula_const_fold.py`（5 项）：纯常量子树被折叠、LLT 无纯常数子树、
+  纯常量公式报清晰错、除零检测仍生效、含字段表达式不受影响。
+
+### 验证
+- 后端单测 **359 passed**、ruff 0；qlib 真路径复现脚本：LLT 单列 `OK shape=(45,1)`、
+  LLT+`$close` 两列 `OK shape=(45,2)`（修复前两列直接 AttributeError ✗）。
+
+### 仍未解决（下一步，已定位到具体原因）
+- 逐条实测用户报的 5 条（`ai_test/check_5_formulas.py`，**用存下来的 expression**＝单因子测试同口径）：
+  | 公式 | 现状 |
+  |---|---|
+  | **LLT** | ✅ OK |
+  | **蹦极新生** | ✅ OK（它内部调用了 `CPX`，宏展开也正常 ✓） |
+  | 黏合强突破 / 过顶0 / 过顶 | ❌ **换成另一个错**：`ValueError: Can only compare identically-labeled Series objects. Loading SH600000: Gt($close,$chip_cost_95)` |
+- 该错**与本次修复无关、也非今天引入**：**筹码字段的日期跨度问题** ——
+  单只股票加载 OK（上次只验了单只 ✓），**多只一起加载**时 qlib 会按"多股票联合日历"对齐
+  ⇒ 跨度较短的 `$chip_*` 与 `$close` 标签不一致 ⇒ `np.greater` 直接报错 ✗。
+  ⇒ 下一步：把筹码字段**按价格字段的完整跨度**物化（而不是按换手率字段的跨度），缺失段填 NaN，然后重物化。
+
 ## [1.19.89] - 2026-09-17
 
 ### Fixed（用户 2026-09-17 三条反馈）

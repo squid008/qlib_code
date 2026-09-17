@@ -112,21 +112,26 @@ BINOP_MAP = {
 UNARY_MAP = {"NEG": "Neg"}
 
 
-def _const_fold(e: Expr):
+def _const_fold(e: Expr, allow_div: bool = False):
     """对纯常量子树做常量折叠求值；子树含行情字段/变量/函数时返回 None。
 
-    用于在编译期检测恒等于 0 的除数（如 OUT:CLOSE/0 或 OUT:CLOSE/(5-5)）。
+    两个用途：
+    - 默认（`allow_div=False`）：编译期检测**恒等于 0 的除数**（`OUT:CLOSE/0`、`OUT:CLOSE/(5-5)`）✓；
+    - `allow_div=True`：**把纯常量子树折叠成一个字面量**（v1.19.90）—— 见 `_g` 里的详细说明：
+      qlib 遇到"没有任何 `$字段` 的子树"会崩（`'numpy.int64' object has no attribute 'name'`）✗。
     """
     if isinstance(e, Num):
         return float(e.value)
     if isinstance(e, UnaryOp):
-        v = _const_fold(e.operand)
+        # ⚠ 递归必须把 `allow_div` **传下去**（v1.19.90 踩坑）：否则"含除法"的父节点永远折不动 ✗
+        #   ⇒ 表现成"只有最内层 `Div` 折了、外层原样输出"（LLT 的 W0 整块就是被这个卡住的）。
+        v = _const_fold(e.operand, allow_div)
         if v is None:
             return None
         return -v if e.op == "NEG" else None
     if isinstance(e, BinOp):
-        lv = _const_fold(e.left)
-        rv = _const_fold(e.right)
+        lv = _const_fold(e.left, allow_div)
+        rv = _const_fold(e.right, allow_div)
         if lv is None or rv is None:
             return None
         if e.op == "ADD":
@@ -136,8 +141,10 @@ def _const_fold(e: Expr):
         if e.op == "MUL":
             return lv * rv
         if e.op == "DIV":
-            # 除法结果继续折叠会传播 inf/nan，这里直接返回 None 交给外层除零检测
-            return None
+            if not allow_div:
+                # 除法结果继续折叠会传播 inf/nan，这里直接返回 None 交给外层除零检测
+                return None
+            return None if rv == 0 else lv / rv      # 除零 ⇒ None（外层会报「除数为 0」）
         return None
     return None
 
@@ -270,6 +277,18 @@ class CodeGen:
             return FIELD_MAP[e.name]
         if isinstance(e, Var):
             raise CodeGenError(f"未展开的变量引用：{e.name}")
+        # ★ 常量折叠（v1.19.90）：**只含常量的子树**必须先折成一个字面量再输出。
+        #   为什么（用户 2026-09-17 报：LLT / 黏合强突破 / 过顶0 / 过顶 / 蹦极新生
+        #   「特征计算失败: 'numpy.int64' object has no attribute 'name'」）：
+        #   qlib 加载表达式时，遇到**没有任何 `$字段` 的子树**会在内部对常量取 `.name` ⇒ 直接崩 ✗。
+        #   实测（`ai_test/dbg_llt.py`）：
+        #     `Add(2,3)` / `Div(2,Add(30,1))` ❌      而 `Add($close,1)` / `Mul(2,$close)` ✅
+        #   LLT 正好含 `Div(2,Add(30,1))`、`Mul(3,…)`、`Mul(Sub(1,…),Sub(1,…))` 这类纯常数子树 ⇒ 中招。
+        #   ⇒ 折叠后统一是**单个数字字面量**，作为算子操作数完全没问题 ✓（顺带表达式更短 ✓）。
+        if isinstance(e, (BinOp, UnaryOp)):
+            v = _const_fold(e, allow_div=True)
+            if v is not None:
+                return str(int(v)) if float(v).is_integer() else repr(v)
         if isinstance(e, UnaryOp):
             op = UNARY_MAP.get(e.op)
             if op is None:
@@ -436,4 +455,10 @@ class CodeGen:
 
 def generate(expr: Expr, patchable: bool = False) -> str:
     """把内联后的表达式树生成 qlib 表达式字符串。"""
+    # 整条公式**不含任何行情字段**（纯常量）⇒ 明确报错：qlib 加载这种列会崩，
+    # 而且它作为因子毫无意义（v1.19.90，避免用户看到 `'numpy.int64' … 'name'` 那种天书 ✗）。
+    if _const_fold(expr, allow_div=True) is not None:
+        raise CodeGenError(
+            "公式不含任何行情字段（计算结果恒为常量），无法作为因子；"
+            "请检查是否漏写 CLOSE / HIGH / VOL 等字段")
     return CodeGen(patchable=patchable).gen(expr)
