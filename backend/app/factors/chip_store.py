@@ -28,7 +28,7 @@ from typing import Dict, Iterable, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from .panel_expr import _CHIP_BASE_FIELDS, PanelEvaluator, _calendar
+from .panel_expr import _CHIP_BASE_FIELDS, PanelEvaluator, _calendar, chip_turn_of
 
 # 默认物化清单（覆盖用户公式用到的档位；要更多档位加进这个元组即可）
 DEFAULT_FIELDS = ("chip_cost_5", "chip_cost_30", "chip_cost_75", "chip_cost_95",
@@ -75,12 +75,7 @@ def materialize(codes: Sequence[str], start_time: str, end_time: str,
     c = _panel_close.unstack(level=0)
     h = ev.field("$high").unstack(level=0)
     l = ev.field("$low").unstack(level=0)
-    t = ev.field("$turn")
-    if not bool(t.notna().any()):
-        raise ValueError(
-            "筹码物化需要 `$turn`（换手率）字段：请先跑 `ai_test/build_turn_field.py` 生成它；"
-            "（面板按需计算 `$chip_*` 时仍可退回「成交量×真实价÷市值」反推，但物化必须用真 turn）")
-    t = t.unstack(level=0)
+    t = chip_turn_of(ev).unstack(level=0)        # ★ v1.19.92：与面板**同一口径**（见下）
     from .chip_dist import chip_run
     qs = [float(n[len("chip_cost_"):]) for n in want if n.startswith("chip_cost_")]
     wins = [n[len("chip_win_"):] for n in want if n.startswith("chip_win_")]
@@ -101,6 +96,23 @@ def materialize(codes: Sequence[str], start_time: str, end_time: str,
                 res[key], index=c.index, columns=c.columns).stack()
 
     for name in want:
+        if overwrite:
+            # ★ v1.19.92：全量重写前**先清掉同名旧文件** —— 否则"这次算不出的股票"会留着
+            #   **旧口径/旧日期轴**的文件 ⇒ 一份数据目录里混着多种日期轴 ✗
+            #   （2026-09-17 实测：sz000001 的 chip_cost_95 = first=5332/484 行的旧文件，
+            #     而它的 close = first=0/6455 ✗ ⇒ 多股票加载必崩）。
+            import os as _os
+            _removed = 0
+            for _d in _os.listdir(fdir):
+                _p = "%s/%s/%s.day.bin" % (fdir, _d, name)
+                if _os.path.exists(_p):
+                    try:
+                        _os.remove(_p)
+                        _removed += 1
+                    except OSError:
+                        pass
+            if progress_cb and _removed:
+                progress_cb("清理旧 %s：%d 个" % (name, _removed))
         st = series_map.get(name)
         if st is None:
             out[name] = 0

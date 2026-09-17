@@ -864,6 +864,49 @@ def _align(a: pd.Series, b: pd.Series):
     return a.reindex(idx), b.reindex(idx)
 
 
+def chip_turn_of(ev) -> "pd.Series":
+    """筹码递推用的**换手率**（真 `$turn` 优先；否则按「成交额 ÷ 市值」反推 + 手/股自校准）。
+
+    v1.19.92：从 `PanelEvaluator._chip_field` 里抽成**公共函数** ——
+    **物化（`chip_store.materialize`）必须与面板同一口径**，否则会出现
+    "面板算得出、物化算不出 ⇒ 整只股票被跳过"✗（2026-09-17 实测：只物化出 2425/6075 只，
+    被跳过的股票还留着**旧日期轴**的文件 ⇒ 多股票加载时 `Gt($close,$chip_cost_95)` 崩 ✗）。
+
+    口径与量纲说明（沿用原文，勿随手改）：
+    - 本仓行情数据里**没有换手率字段**（`features/*/` 无 `turn.day.bin`，2026-09-17 核实）
+      ⇒ 用等价式反推：换手率 = 成交量 / 流通股本 ≈ (成交量 × 真实价) / 市值 = 成交额 / 市值
+      （量纲自洽 元/元）。⚠ 若 `market_cap` 是**总市值**（非流通市值），对流通比例低的个股
+      会**低估**换手率 ⇒ 筹码衰减偏慢（已知口径近似，不改变信号的相对形态）。
+    - v1.19.85：**优先用真换手率字段**（`features/<inst>/turn.day.bin`，`build_turn_field.py`
+      物化）；只有该字段缺失/全空时才退回反推（含手/股自校准）。
+    - ⚠ 成交量单位**自校准**（2026-09-17 实测）：本仓 volume 疑为"手"（100 股）——判据：
+      成交额/成交量 = 均价 ⇒ 再除以真实价 ≈1 说明是"股"、≈0.01 说明是"手"；取面板中位数
+      （一次标量，成本可忽略）。
+    """
+    c = ev.field("$close")
+    _px_raw = c / ev.field("$factor")            # 真实价（不复权），与市值同口径
+    _vol = ev.field("$volume")
+    _mc = ev.field("$market_cap")
+    _turn_field = None
+    try:
+        _t = ev.field("$turn")
+        if bool(_t.notna().any()):
+            _turn_field = _t
+    except Exception:                             # noqa: BLE001
+        _turn_field = None
+    if _turn_field is not None:
+        return _turn_field.where(_turn_field > 0)
+    _vol_sh = _vol
+    try:
+        _amt = ev.field("$amount")
+        _r = float(np.nanmedian((_amt / _vol)._values / _px_raw._values))
+        if np.isfinite(_r) and _r < 0.1:
+            _vol_sh = _vol * 100.0                # 手 → 股
+    except Exception:                             # noqa: BLE001 —— 无 amount 就按"股"处理
+        pass
+    return (_vol_sh * _px_raw / _mc).where(_mc > 0)
+
+
 class PanelEvaluator:
     """在一整块面板上求值；节点缓存消除公共子式重复计算。
 
@@ -962,28 +1005,9 @@ class PanelEvaluator:
         c = self.field("$close")
         h = self.field("$high")
         l = self.field("$low")
-        # ---- 换手率 ----
-        # ⚠ 本仓行情数据里**没有换手率字段**（`data/cn_data/features/*/` 无 `turn.day.bin`，
-        #   只有 volume/amount/market_cap…，2026-09-17 核实）⇒ 用等价式反推：
-        #       换手率 = 成交量 / 流通股本 ≈ (成交量 × 真实价) / 市值 = 成交额 / 市值
-        #   量纲自洽（元/元）。⚠ 若 `market_cap` 是**总市值**（非流通市值），对流通比例低的个股
-        #   会**低估**换手率 ⇒ 筹码衰减偏慢（属已知口径近似，不改变信号的相对形态）。
-        _vol = self.field("$volume")
-        _mc = self.field("$market_cap")
-        _px_raw = c / self.field("$factor")          # 真实价（不复权），与市值同口径
-        # ⚠ 成交量单位**自校准**（2026-09-17 实测）：本仓 volume 疑为"手"（100 股）——
-        #   直接按"股"算，换手率会小 ~100 倍（实测中位数 7.6e-5，应为 ~1%）。
-        #   判据：成交额/成交量 = 均价 ⇒ 再除以真实价 ≈1 说明是"股"、≈0.01 说明是"手"（比例判据，
-        #   与具体币种单位无关）；取面板中位数（一次标量，成本可忽略）。
-        _vol_sh = _vol
-        try:
-            _amt = self.field("$amount")
-            _r = float(np.nanmedian((_amt / _vol)._values / _px_raw._values))
-            if np.isfinite(_r) and _r < 0.1:
-                _vol_sh = _vol * 100.0               # 手 → 股
-        except Exception:                            # noqa: BLE001 —— 无 amount 就按"股"处理
-            pass
-        t = (_vol_sh * _px_raw / _mc).where(_mc > 0)
+        # ---- 换手率（v1.19.92：抽成公共函数 `chip_turn_of`，**物化侧复用同一口径** ✓）----
+        #   量纲/自校准/真 turn 优先的说明随函数一起搬走，见 `chip_turn_of` 的 docstring ✓
+        t = chip_turn_of(self)
         names = list(c.index.names)
         li = names.index("instrument") if "instrument" in names else 0
         ld = 1 - li
