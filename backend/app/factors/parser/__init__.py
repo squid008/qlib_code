@@ -18,6 +18,7 @@ from .parser import parse_formula, ParseError
 from .lexer import LexerError
 from .semantic import resolve, SemanticError
 from .codegen import generate, CodeGenError
+from .macros import expand_calls, build_library, extract_params
 
 # ---------------------------------------------------------------------------
 # 粘贴文本归一化（2026-09-16：用户贴「二浪加强」报"语法错误"，查实是**看不见/全角的字符**）
@@ -108,13 +109,18 @@ class TranslatedFactor:
     source_formula: str = ""                   # 原始公式
 
 
-def translate_formula(text: str, patchable: bool = False) -> TranslatedFactor:
+def translate_formula(text: str, patchable: bool = False,
+                      library: Optional[dict] = None) -> TranslatedFactor:
     """把一段益盟/通达信公式翻译成单个输出因子。
 
     Args:
         text: 公式文本（可能含多个 `:=` 中间变量，但只允许 1 条 `:` 输出线）。
               会自动归一化：去 BOM/零宽字符、全角标点→半角（见 `normalize_source`）。
         patchable: 是否允许生成"待接入外挂算子"占位（PATCH:XXX）。默认 False 会对外挂算子报错。
+        library: **公式库**（`{公式名(大写): 原文}`，见 `macros.build_library`）——给了就支持
+              **公式间调用**（`基础:CPX>0 AND …`；`CPX(2)` 按位置传参、被调公式用
+              `参数 K=1;` 声明默认值）。展开在**编译期**完成 ⇒ 运行期零额外开销；
+              循环引用会报 `SemanticError`。默认 None ⇒ 行为与以前完全一致 ✓。
 
     Returns:
         TranslatedFactor（name + expression + 依赖字段）。
@@ -125,7 +131,12 @@ def translate_formula(text: str, patchable: bool = False) -> TranslatedFactor:
     """
     src = normalize_source(text)
     try:
-        formula = parse_formula(src)
+        # 公式间调用（v1.19.87）：先摘掉 `参数 K=1;` 声明行（它不是合法语句，必须在解析前剥离），
+        # 再把"命中已保存公式名"的 Var/FuncCall 换成被调公式的输出树（见 parser/macros.py）。
+        body, _params = extract_params(src)
+        formula = parse_formula(body)
+        if library:
+            formula = expand_calls(formula, library)
         expr = resolve(formula)          # 校验单输出 + 变量内联
         qlib_expr = generate(expr, patchable=patchable)
     except (LexerError, ParseError) as e:
@@ -160,6 +171,6 @@ def _extract_fields(expr: str) -> List[str]:
 
 
 __all__ = [
-    "translate_formula", "TranslatedFactor",
+    "translate_formula", "TranslatedFactor", "build_library", "extract_params",
     "ParseError", "LexerError", "SemanticError", "CodeGenError",
 ]

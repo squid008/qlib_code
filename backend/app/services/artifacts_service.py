@@ -96,7 +96,7 @@ def build_feature_formulas(params: dict, feature_names: list) -> list:
     用途：前端「特征列表」出表 + 下载 CSV（`特征名,公式`）。
     """
     from ..factors.catalog import get_catalog
-    from ..factors.parser import translate_formula
+    from ..factors.parser import translate_formula, build_library
 
     def _flat(dataset: str) -> dict:
         try:
@@ -108,9 +108,11 @@ def build_feature_formulas(params: dict, feature_names: list) -> list:
     a158, a360 = _flat("Alpha158"), _flat("Alpha360")
 
     custom = {}                                   # 翻译后的名字 -> (用户原文, qlib 表达式)
-    for text in (params.get("custom_formulas") or []):
+    _texts = params.get("custom_formulas") or []
+    _lib = build_library(_texts)                  # 公式间调用（v1.19.87）：名字映射要与回测一致
+    for text in _texts:
         try:
-            t = translate_formula(text)
+            t = translate_formula(text, library=_lib)
             custom[t.name] = (text, t.expression)
         except Exception:
             continue                              # 翻译失败的历史公式：跳过（不阻塞其它列）

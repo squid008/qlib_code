@@ -174,8 +174,17 @@ export default function FormulaEditor({
   const bodyHeight = rows * M.lineHeight + 12
 
   return (
-    <div className="border rounded bg-white dark:bg-slate-800 overflow-hidden">
-      <div className="flex" style={{ height: bodyHeight }}>
+    // ⚠ **可纵向拖动拉长**（用户 2026-09-17：「之前那个可以拖动拉长的给我加回来」——
+    //   旧版是原生 `<textarea>`，Tailwind preflight 给它 `resize: vertical`，换成双层编辑框后
+    //   我写死了高度 ⇒ 拖拽把手没了 ✗）。
+    //   实现：拖动改的是**外层的内联 `height`**（浏览器直接写 style），而 `bodyHeight` 在 React 里
+    //   是**常量**、不参与 diff ⇒ 之后的重渲染**不会**把用户拖出来的高度冲掉 ✓。
+    //   ✗ 千万别把 height 改成随 state 变化的动态值（那样每次渲染都会弹回默认高度）。
+    <div
+      className="flex flex-col border rounded bg-white dark:bg-slate-800 overflow-hidden resize-y"
+      style={{ height: bodyHeight, minHeight: M.lineHeight * 3 + 12 }}
+    >
+      <div className="flex flex-1 min-h-0">
         {/* 行号槽：与输入层同步滚动（overflow:hidden + 程序化 scrollTop） */}
         <div
           ref={gutterRef}
@@ -238,7 +247,7 @@ export default function FormulaEditor({
       </div>
       {/* Ctrl+F 查找条（textarea 只能高亮一处 ⇒ 用选区跳转 + 计数提示） */}
       {findOpen && (
-        <div className="flex items-center gap-1 px-2 py-1 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-[11px]">
+        <div className="shrink-0 flex items-center gap-1 px-2 py-1 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-[11px]">
           <input
             ref={findInputRef}
             value={query}

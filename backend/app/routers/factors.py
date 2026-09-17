@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from ..factors.catalog import get_catalog, FACTOR_PROVIDERS
 from ..factors.parser import (
-    translate_formula, LexerError, ParseError, SemanticError, CodeGenError,
+    translate_formula, build_library, LexerError, ParseError, SemanticError, CodeGenError,
 )
 from ..services.custom_formulas import (
     list_custom_formulas as _list_custom_formulas,
@@ -42,12 +42,22 @@ class CustomFormulaBody(BaseModel):
     patchable: bool = False
 
 
-def _compile_formula_or_400(formula: str, patchable: bool = False):
+def _formula_library(exclude_id: str = None) -> dict:
+    """公式库（供「公式间调用」，v1.19.87）：已保存公式的 `名 → 原文`。
+
+    ⚠ 编辑某条公式时要**把自己排除**（`exclude_id`）—— 否则它引用同名公式会立刻变成
+      "循环引用"（用户只是想改自己的正文）✓。
+    """
+    items = _list_custom_formulas()
+    return build_library([i.get("text", "") for i in items if i.get("id") != exclude_id])
+
+
+def _compile_formula_or_400(formula: str, patchable: bool = False, exclude_id: str = None):
     """编译公式；成功返回 TranslatedFactor，失败抛 HTTPException(400)。"""
     if not formula or not formula.strip():
         raise HTTPException(status_code=400, detail="公式不能为空")
     try:
-        return translate_formula(formula, patchable=patchable)
+        return translate_formula(formula, patchable=patchable, library=_formula_library(exclude_id))
     except (LexerError, ParseError, SemanticError, CodeGenError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -62,7 +72,7 @@ def translate(req: TranslateRequest):
     if not req.formula or not req.formula.strip():
         raise HTTPException(status_code=400, detail="公式不能为空")
     try:
-        t = translate_formula(req.formula, patchable=req.patchable)
+        t = translate_formula(req.formula, patchable=req.patchable, library=_formula_library())
         return {
             "name": t.name,
             "expression": t.expression,
@@ -92,7 +102,7 @@ def create_saved_formula(req: CustomFormulaBody):
 @router.put("/custom-formulas/{formula_id}", summary="编辑自定义公式（重新编译并保存）")
 def update_saved_formula(formula_id: str, req: CustomFormulaBody):
     """按 id 修改公式：重新编译后覆盖 text/name/expression。"""
-    t = _compile_formula_or_400(req.formula, req.patchable)
+    t = _compile_formula_or_400(req.formula, req.patchable, exclude_id=formula_id)
     item = _update_custom_formula(formula_id, t.name, req.formula.strip(), t.expression)
     if item is None:
         raise HTTPException(status_code=404, detail="公式不存在")

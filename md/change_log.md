@@ -3,6 +3,38 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.87] - 2026-09-17
+
+### Added（**公式间调用** —— 用户 2026-09-17 的 ⑤ 落地）
+- 新增 `factors/parser/macros.py`：**编译期宏展开**。调用方写 `基础:CPX>0 AND C>=REF(C,1) AND C>MA(C,5);`
+  时，把命中"已保存公式名"的 `Var` / `FuncCall` 节点替换成**被调公式的输出表达式树**
+  ⇒ **运行期零额外开销**（纯 AST 替换、每条因子仍只占一列）。
+  参数声明：被调公式写一行 `参数 K=1, N=20;`；调用处 `CPX`（用默认值）/ `CPX(2)` / `CPX(2,10)`（按位置传参）。
+  安全：**循环引用**（`A→B→A`）报 `SemanticError`；嵌套深度上限 16；本公式**局部变量/输出名优先**
+  （同名不展开，避免"遮蔽"被吃掉）；`build_library` 只登记**恰好 1 条输出线**的公式。
+- 接线（4 处编译入口全部带上公式库，保证"保存时能编过、回测时也一样"）：
+  `routers/factors.py`（`/translate` + 保存/编辑，编辑时 `exclude_id` 排除自己）、
+  `factors/handler.py`（两条特征翻译路径）、`services/artifacts_service.py`（特征名映射）。
+- 前端提示补充：编辑区下方说明「公式可互相调用」+ 参数写法。
+- 单测 `tests/test_formula_calls.py`（10 项）：用户原例、参数默认值/位置传参、嵌套调用、循环引用、
+  传参过多报错、局部变量遮蔽、未知名字仍报"未定义"、无库时行为不变、参数行解析、库按输出名索引。
+
+### Fixed / Changed
+- **公式编辑框恢复"拖动拉长"**（用户：「之前那个可以拖动拉长的给我加回来」）：换成双层编辑框时我写死了高度 ✗
+  ⇒ 现外层 `resize-y`（纵向拖拽），`bodyHeight` 是常量、React 不参与 diff ⇒ 重渲染不会把拖出的高度冲掉 ✓。
+- **公式手册补登记**（用户：「插入函数-公式手册里是不是要把新增的函数加进去，比如 COST/WINNER」）：
+  查实 `COST` / `WINNER`（v1.19.83 的筹码函数）**只在后端**、手册里没有 ✗ ⇒ 已补条目
+  （含用法/注意：`COST(q)` 只物化 5/30/75/95 四档；`WINNER(P)` 只支持 C/H/L）；
+  另按守卫测试补了 `MOD` + `DYN_MIN/MAX/COUNT/REF/SUM`。
+- ⚠ **守卫测试立了一个新发现**：新增 `tests/test_formula_handbook_sync.py` 后发现 **12 个函数
+  "白名单里有名字、codegen 根本没映射"** ⇒ 现在写进公式只会报「不支持的函数」：
+  `AVEDEV / DEVSQ / STDP / VARP / MEMA / DMA / FORCAST / HHVALL / LLVALL / FLOOR / CEILING / EXP`。
+  手册**故意不写**它们（写了等于骗用户），据实登记在测试的 `KNOWN_GAP` 里（理由写在注释）。
+  ⇒ 要不要实现这 12 个，等用户定（见 `md/开发记录.md` §9.27）。
+
+### 验证
+- 单测 **356 passed**（新增 10 + 手册守卫 4）、ruff 0、前端 `tsc` 0 + `build` 5.39s。
+
 ## [1.19.86] - 2026-09-17
 
 ### Added（公式编辑区：`{}` 注释 / 行号 / Ctrl+F / 四六开布局）

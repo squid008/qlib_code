@@ -12,7 +12,7 @@ import numpy as np
 from qlib.contrib.data.handler import Alpha158, Alpha360, Alpha158DL, Alpha360DL
 from qlib.data.dataset.handler import DataHandlerLP
 
-from .parser import translate_formula, CodeGenError
+from .parser import translate_formula, build_library, CodeGenError
 from .ops_ext import ensure_ops_registered
 from ..engine.adjust import adjust_expr, normalize_mode
 
@@ -305,8 +305,11 @@ class FormulaHandler(DataHandlerLP):
     def _translate_all(self, formulas: List[str]):
         """翻译所有公式，返回 (expressions, names)。"""
         expressions, names = [], []
+        # 公式间调用（v1.19.87）：先按本批公式原文建"名 → 原文"库，再把库传给翻译器
+        #   ⇒ `基础:CPX>0 …` 这类引用会被**编译期内联**（运行期零开销，见 parser/macros.py）。
+        library = build_library(formulas)
         for text in formulas:
-            t = translate_formula(text)
+            t = translate_formula(text, library=library)
             if t.has_patch:
                 raise CodeGenError(
                     f"公式[{t.name}]含尚未实现的有状态算子（{t.expression}），"
@@ -433,8 +436,9 @@ class MixedHandler(DataHandlerLP):
 
     def _translate_formulas(self) -> tuple:
         expressions, names = [], []
+        library = build_library(self._formulas)      # 公式间调用（v1.19.87）
         for text in self._formulas:
-            t = translate_formula(text)
+            t = translate_formula(text, library=library)
             if t.has_patch:
                 raise CodeGenError(
                     f"公式[{t.name}]含尚未实现的有状态算子（{t.expression}），"
