@@ -3,6 +3,27 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.25] - 2026-09-19
+
+### Added（**物化字段缺失 ⇒ 显式警告** —— 用户要求"要加"）
+
+- **背景**（`md/deploy.md`「物化字段」一节）：`pre*`（前复权）与 `chip_*` 是本项目**自造**的派生
+  字段，`data/` 被 .gitignore 排除 ⇒ 既不在数据包、也不在 git 里，**每台机器必须各生成一次** ✓。
+  ⚠ **缺了不报错** ✗ ⇒ `field()` 拿到**整列全 NaN** ⇒ **公式静默失效** ✗：
+  · `chip_*` 缺 ⇒ `COST()/WINNER()` 静默全 NaN（过顶 / 黏合强突破 / 蹦极新生 …）；
+  · `pre*` 缺 ⇒ `forward`（前复权）静默失效 ⇒ 价格量纲因子被**按后复权价排序** ✗
+    （实测 LLT K=20 年化 +9.03% ↔ 米筐 −5.24% ✓）。
+- **实现**（`panel_expr.py`）：新增 `_warn_if_materialized_missing(key, s)` ✓ ——
+  **判据**：字段名以 `chip_` / `pre`（含 `prevwap`）开头 **且**整列 `isfinite` **全为假**
+  （正常数据不会"所有股票 × 所有日期"全军覆没 ✓）⇒ `logger.warning` 打**一次**（同字段只警告
+  一次 ✓ 面板里会被取上千次，不能刷屏 ✗），消息内含**影响说明 + 三条修复命令**
+  （`materialize_chip.py 400` / `build_preclose.py` / `verify_materialized.py` ✓）。
+  **接入点**：`field()` 的两条返回路径 —— `chip_*`（`_chip_or_bin` 之后 ✓）与**通用路径**
+  （`pre*` 走这里 ✓）。⚠ 刻意**不抛异常**：正常回测/测试不应因缺物化而中断 ✓。
+- **测试**：新增 `tests/test_materialized_missing_warn.py`（**8 条** ✓：4 个字段各警告一次且带修复
+  命令 / 同字段只警告一次 / 非物化字段（`$close`）不误报 / 部分有值不告警 / 空序列不告警 ✓）；
+  全量 **406 passed** ✓；ruff 全过 ✓。
+
 ## [1.20.24] - 2026-09-19
 
 ### Fixed

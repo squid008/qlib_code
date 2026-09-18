@@ -23,6 +23,7 @@ CWH + label/base/tag 实际用到的全部算子。
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import sys
@@ -381,6 +382,54 @@ _DIR_META_MAX = 512
 # 超时才用目录 mtime 校验；数据重 dump 亦可通过 clear_bin_cache() 立即失效。
 # QLIB_PANEL_DIR_META_TTL=0 表示每次都校验（保守模式）。
 _DIR_META_TTL_S = float(os.environ.get("QLIB_PANEL_DIR_META_TTL", "60"))
+
+
+# ---------------------------------------------------------------------------
+# v1.20.25：**物化字段缺失 ⇒ 显式警告**（用户 2026-09-19 要求，见 `md/deploy.md`）
+#
+# 背景（最坑的一点，`deploy.md`「物化字段」一节）：`data/` 被 .gitignore 排除 ⇒
+# `preclose/preopen/prehigh/prelow/prevwap`（前复权）与 `chip_cost_*` / `chip_win_*`
+# 既不在数据包、也不在 git 里，**每台机器必须各生成一次** ✓。缺了**不报错** ✗：
+#   · `chip_*` 缺 ⇒ 用 `COST()/WINNER()` 的公式**静默返回全 NaN** ✗（因子静默失效）；
+#   · `pre*` 缺 ⇒ `forward`（前复权）静默失效 ⇒ 价格量纲因子被按后复权价排序 ✗
+#     （实测 LLT K=20 年化 +9.03% ↔ 米筐 −5.24% ✓）。
+# ⇒ 这里做**最低成本的防护**：这两类派生字段若**整列全 NaN**（所有股票 × 所有日期 ✓），
+#   几乎必然是"文件缺失"（正常数据不会全军覆没 ✓）⇒ 打一次 WARNING（同字段只警告一次 ✓
+#   不刷屏 ✓），并把**修复命令**直接写进消息 ✓。
+# ⚠ 刻意**不抛异常**：正常回测/测试不应因缺物化而中断 ✓（且部分场景确实只需别字段 ✓）。
+# ---------------------------------------------------------------------------
+_LOGGER = logging.getLogger(__name__)
+_MATERIALIZED_PREFIXES = ("chip_", "pre", "prevwap")
+_MISSING_WARNED: set = set()
+
+
+def _warn_if_materialized_missing(key: str, s: "pd.Series") -> None:
+    """派生/物化字段整列全 NaN ⇒ 提示"物化文件缺失 + 修复命令"（每字段仅一次 ✓）。"""
+    if key in _MISSING_WARNED or not key.startswith(_MATERIALIZED_PREFIXES):
+        return
+    try:
+        arr = np.asarray(s.to_numpy(dtype=float, copy=False), dtype=float)
+        if arr.size == 0 or np.isfinite(arr).any():
+            return                                            # 有值 ⇒ 正常 ✓
+    except Exception:                                         # noqa: BLE001
+        return
+    _MISSING_WARNED.add(key)
+    _msg = (
+        "物化字段 `$%s` **整列全为 NaN** —— 极可能是【物化文件缺失】✗（缺了不报错、会静默失效 ✓）。\n"
+        "  ⇒ 影响：%s\n"
+        "  ⇒ 修复（每台机器各做一次，详见 md/deploy.md「物化字段」一节）：\n"
+        "       python backend/tools/materialize_chip.py 400   # chip_*（分批）\n"
+        "       python backend/tools/build_preclose.py         # pre*（前复权）\n"
+        "       python backend/tools/verify_materialized.py    # 核对，退出码 0 才算好"
+        % (key,
+           "`COST()/WINNER()` 等公式静默失效（结果全 NaN）"
+           if key.startswith("chip_") else
+           "`forward`（前复权）静默失效 ⇒ 价格量纲因子会被按**后复权价**排序"))
+    if _LOGGER is not None:
+        _LOGGER.warning(_msg)
+    else:                                                     # pragma: no cover
+        import warnings as _w
+        _w.warn(_msg, stacklevel=2)
 
 
 def _dir_meta(inst: str):
@@ -974,6 +1023,8 @@ class PanelEvaluator:
             # ★ v1.20.17：**物化 bin 优先**（用户要求「COST(36) 这种没物化的就走计算」✓）
             s = self._chip_or_bin(key)
             self._field_cache[key] = s
+            # ⚠ v1.20.25：缺物化文件时**不报错、静默全 NaN** ✗ ⇒ 主动警告一次 ✓
+            _warn_if_materialized_missing(key, s)
             return s
         if s is None:
             # v1.18.31：直接按位铺到 _full（等价于原 `load_field_series(...).reindex(_full)`，
@@ -983,6 +1034,8 @@ class PanelEvaluator:
                                   self._req_lo, self._req_hi, key)
             s = pd.Series(vals, index=self._full)
             self._field_cache[key] = s
+            # ⚠ v1.20.25：`pre*`（前复权）缺物化时同样**静默失效** ⇒ 一并警告 ✓
+            _warn_if_materialized_missing(key, s)
         return s
 
     def _chip_or_bin(self, key: str) -> pd.Series:
