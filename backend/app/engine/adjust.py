@@ -47,6 +47,13 @@ def normalize_mode(mode: str) -> str:
     return m if m in VALID_MODES else "none"
 
 
+# v1.19.97：前复权**已物化**的价格字段 → 对应物化字段名（`ai_test/build_preclose.py` 生成 ✓，
+# 公式 = `后复权 ÷ factor_last` ✓，四个字段共用同一个 factor_last ⇒ **同尺度** ✓，
+# 各字段用自己 bin 的 `first_idx` ⇒ 与原字段**逐位同轴** ✓）。
+# ⚠ 未列入的字段（如 `$vwap`）在 forward 下**落回真实价** ✓（不会拼出空字段名 ✗）。
+_PRE_OF = {"$close": "preclose", "$open": "preopen", "$high": "prehigh", "$low": "prelow"}
+
+
 def adjust_expr(expr: str, mode: str, round_prices: bool = False) -> str:
     """把表达式中的价格字段替换为指定口径的价格表达式。
 
@@ -83,7 +90,7 @@ def adjust_expr(expr: str, mode: str, round_prices: bool = False) -> str:
     for f in PRICE_FIELDS:
         # 只匹配独立字段 token（前/后都不是字母数字下划线），避免误伤 Ref/Mean 等算子名
         pat = re.compile(r"(?<![0-9A-Za-z_])" + re.escape(f) + r"(?![0-9A-Za-z_])")
-        if m == "forward" and f == "$close":
+        if m == "forward" and f in _PRE_OF:
             # ✅ v1.19.97：**真前复权** —— 直接引用**物化字段** `$preclose`
             #   （= `$close / factor_last` ✓，由 `ai_test/build_preclose.py` 生成、qlib 按
             #   "字段名 → `xxx.day.bin`" 自动映射 ✓，实测 `D.features(..., "$preclose")` 可读 ✓）。
@@ -96,7 +103,7 @@ def adjust_expr(expr: str, mode: str, round_prices: bool = False) -> str:
             #   裸字段名会被 qlib/面板层规范化 ⇒ 与 `all_cols` 的**位置对齐**错位 ⇒ 因子列拿到
             #   价格列 ⇒ 数值爆炸（实测 nav 1.86e32、年化 172 万倍 ✗）；包一层后列名唯一 ✓，
             #   实测正常（K=20 年化 −0.22%、回撤 −77.7%、decile Q1 +14.69% ✓ 零报错 ✓）。
-            out = pat.sub("Add($preclose,0)", out)
+            out = pat.sub("Add($%s,0)" % _PRE_OF[f], out)
         elif round_prices and m != "forward":
             out = pat.sub("ROUND((%s/$factor),2)" % f, out)
         else:

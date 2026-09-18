@@ -30,10 +30,17 @@ def test_forward_is_true_pre_adjust_and_wrapped():
     assert adjust_expr("Mean($close, 20)", "forward") == "Mean(Add($preclose,0), 20)"
 
 
-def test_forward_other_price_fields_still_real_price():
-    """`$open/$high/$low` 暂无物化前复权字段 ⇒ 仍走真实价 ✓（待按同法补物化 ✓）。"""
-    for f in ("$open", "$high", "$low"):
-        assert adjust_expr(f, "forward") == "(%s/$factor)" % f, f
+def test_forward_covers_open_high_low():
+    """v1.19.97：`$open/$high/$low` 的前复权也物化了 ⇒ 同样走 `Add($pre*,0)` ✓
+    （此前它们落回真实价 ⇒ 用到 HIGH/LOW 的因子在前复权下是**混合口径** ✗）。"""
+    assert adjust_expr("$open", "forward") == "Add($preopen,0)"
+    assert adjust_expr("$high", "forward") == "Add($prehigh,0)"
+    assert adjust_expr("$low", "forward") == "Add($prelow,0)"
+
+
+def test_forward_unmapped_price_field_falls_back():
+    """没有物化前复权版的字段（如 `$vwap`）⇒ 落回真实价 ✓（不会拼出空字段名 ✗）。"""
+    assert adjust_expr("$vwap", "forward") == "($vwap/$factor)"
 
 
 def test_invalid_mode_falls_back_none():
