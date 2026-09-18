@@ -83,7 +83,7 @@ def adjust_expr(expr: str, mode: str, round_prices: bool = False) -> str:
     for f in PRICE_FIELDS:
         # 只匹配独立字段 token（前/后都不是字母数字下划线），避免误伤 Ref/Mean 等算子名
         pat = re.compile(r"(?<![0-9A-Za-z_])" + re.escape(f) + r"(?![0-9A-Za-z_])")
-        if False and m == "forward" and f == "$close":      # ⚠ 已禁用（见下）✓
+        if m == "forward" and f == "$close":
             # ✅ v1.19.97：**真前复权** —— 直接引用**物化字段** `$preclose`
             #   （= `$close / factor_last` ✓，由 `ai_test/build_preclose.py` 生成、qlib 按
             #   "字段名 → `xxx.day.bin`" 自动映射 ✓，实测 `D.features(..., "$preclose")` 可读 ✓）。
