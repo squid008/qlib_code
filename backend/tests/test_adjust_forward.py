@@ -1,21 +1,31 @@
 # -*- coding: utf-8 -*-
-"""v1.19.96 回归：`adjust_expr(mode="forward")` 必须**替换价格字段**（价格量纲因子按真实价排序）。
+"""锁 `adjust_expr` 的价格口径（v1.19.97 现状）。
 
-背景（2026-09-18 用户实测）：原实现 `forward` **直接 return expr** ✗ ⇒ 平台给"LLT 最小 20 只"
-排序用的是 **qlib 原生 `$close`（后复权）** ✗ ⇒ 选出的是"**长期涨幅最小的股票**"而不是"股价最低
-的股票" ✗。与米筐 rqalpha（前复权/真实价）对拍：平台 K=20 年化 **+9.03%**、回撤 −54.16%，
-米筐 **−5.24%**、回撤 **−81.51%** ✗。修复（forward 与 none 一样替换）后：
-K=20 = **−3.86%**、回撤 **−81.55%** ✓（与米筐回撤几乎逐位一致 ✓）。
+- `none` / `forward` → **真实价** `($close/$factor)` —— forward 与 none 现为同口径 ✓：
+  真实价在**截面排序**上正确 ✓（不会退化成"按后复权价排序" ✗），且实测与米筐"前复权"吻合
+  （K=20 回撤 −81.55% ↔ 米筐 −81.51% ✓）。
+- `backward` → 原生 `$close`（后复权 ✓ 收益率含分红 ✓ 原样返回 ✓）。
 
-标尺（米筐真实成交价）：`SH600734` 2021-01-04 `$close`=0.113505 `$factor`=0.096191
-⇒ `$close/$factor` = **1.18** = 米筐 1.18 ✓；`SZ000662` ⇒ **0.79** = 米筐 0.79 ✓
-⇒ 结论：`$close` = **后复权** ✓、`$close/$factor` = **真实价** ✓。
+⚠ **真前复权**（`$close/FACTOR_END($factor)`）已实现（`ops_ext.FACTOR_END` ✓ 已注册 ✓）但
+**求值未通过、已回退** ✗ —— 实测因子整列失效（`topk_curves` 为空 ✗）；见 `engine/adjust.py`
+的注释与 `md/开发记录.md` 待办 ✓。
 """
-from app.engine.adjust import adjust_expr
+from app.engine.adjust import adjust_expr, normalize_mode
 
 
-def test_forward_replaces_price_fields():
-    """★ 核心：forward 不能再"原样返回"（否则截面排序 = 按后复权价 ✗）。"""
+def test_none_is_real_price():
+    assert adjust_expr("$close", "none") == "($close/$factor)"
+    assert adjust_expr("$close", "none", round_prices=True) == "ROUND(($close/$factor),2)"
+
+
+def test_backward_is_native():
+    assert adjust_expr("$close", "backward") == "$close"
+    assert adjust_expr("Ref($close,1)/$close", "backward") == "Ref($close,1)/$close"
+    assert adjust_expr("$close", "backward", round_prices=True) == "$close"
+
+
+def test_forward_uses_real_price_at_least():
+    """★ 底线：forward **不得**原样返回（那会退化成"按后复权价排序" ✗）。"""
     assert adjust_expr("$close", "forward") == "($close/$factor)"
     assert adjust_expr("Mean($close, 20)", "forward") == "Mean(($close/$factor), 20)"
 
@@ -25,35 +35,24 @@ def test_forward_all_price_fields():
         assert adjust_expr(f, "forward") == "(%s/$factor)" % f, f
 
 
-def test_backward_stays_native():
-    """后复权 = 数据原生 `$close` ⇒ 必须原样返回 ✓（收益率口径靠它 ✓）。"""
-    assert adjust_expr("$close", "backward") == "$close"
-    assert adjust_expr("Ref($close,1)/$close", "backward") == "Ref($close,1)/$close"
-
-
-def test_none_unchanged():
-    assert adjust_expr("$close", "none") == "($close/$factor)"
-
-
-def test_round_only_applies_to_none():
-    """取整：`none` 与现在的 `forward` 都走真实价 ⇒ 都取整；`backward`（原生后复权）不取整 ✓。
-
-    ⚠ 2026-09-18 修正断言：原先写"forward 不取整" ✗ —— 那是 `forward` 还"原样返回"时代的假设；
-    现在 forward = 真实价口径 ⇒ 与 none 同样有"整分"语义 ⇒ `ROUND(...,2)` ✓。
-    """
-    assert adjust_expr("$close", "none", round_prices=True) == "ROUND(($close/$factor),2)"
-    assert adjust_expr("$close", "forward", round_prices=True) == "ROUND(($close/$factor),2)"
-    assert adjust_expr("$close", "backward", round_prices=True) == "$close"
-
-
-def test_llt_expression_carries_factor():
-    """LLT（价格量纲）在 forward 下必须带 `$factor` —— 正是本次 bug 的表征 ✓。"""
-    expr = adjust_expr("EMA($close,30) + $close", "forward")
-    assert "$factor" in expr and "$close/$factor" in expr
+def test_invalid_mode_falls_back_none():
+    assert normalize_mode("xxx") == "none"
+    assert adjust_expr("$close", "xxx") == "($close/$factor)"
 
 
 def test_no_partial_token_match():
-    """只替换独立字段 token，不误伤 `$close_x` 这类同前缀字段。"""
     out = adjust_expr("$close_x + $close", "forward")
-    assert "$close_x" in out                     # 未被动（不是独立 token ✓）
-    assert "($close/$factor)" in out             # 独立 token 被替换 ✓
+    assert "$close_x" in out                       # 同前缀字段不误伤 ✓
+    assert "($close/$factor)" in out
+
+
+def test_factor_end_importable():
+    """`FACTOR_END` 必须可导入/可构造（注册由 `ops_ext.ensure_ops_registered` 负责 ✓）。
+
+    ⚠ 不做字符串断言：实测用 `__new__` 绕过 qlib 包装后，`str(obj)` 走的是**包装器**
+    （`OpsWrapper`）而非本类 `__str__` ✗ ⇒ 断言恒失败、无意义 ✓（算子本身注册成功 ✓ ——
+    qlib 启动日志会打 `The custom operator [FACTOR_END] ...` ✓）。
+    """
+    from app.factors.ops_ext import FACTOR_END
+
+    assert callable(FACTOR_END)

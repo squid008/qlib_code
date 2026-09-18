@@ -83,9 +83,16 @@ def adjust_expr(expr: str, mode: str, round_prices: bool = False) -> str:
     for f in PRICE_FIELDS:
         # 只匹配独立字段 token（前/后都不是字母数字下划线），避免误伤 Ref/Mean 等算子名
         pat = re.compile(r"(?<![0-9A-Za-z_])" + re.escape(f) + r"(?![0-9A-Za-z_])")
-        if round_prices:
+        if round_prices and m != "forward":
             out = pat.sub("ROUND((%s/$factor),2)" % f, out)
         else:
+            # ⚠ v1.19.97 **回退说明**（2026-09-18）：真前复权
+            #   `($close / FACTOR_END($factor))`（`FACTOR_END` = 该股区间内最后有效因子，已注册 ✓）
+            #   实测**求值后整列失效** ✗ —— `topk_curves` 直接为空（`n_days=None`、调仓日数 0 ✗），
+            #   两轮排查（返回 `pd.Series` → `ndarray` ✓）仍未通过 ⇒ **为保证可用性先不启用** ✗。
+            #   ⇒ 当前 `forward` 与 `none` 同为**真实价**口径（v1.19.96 ✓ 已验证与米筐吻合：
+            #     K=20 回撤 −81.55% ↔ 米筐 −81.51% ✓）；语义上仍非"真前复权" ✗，待 `FACTOR_END`
+            #     调通后切回（见 `md/开发记录.md` 待办 ✓）。
             out = pat.sub("(%s/$factor)" % f, out)
     return out
 

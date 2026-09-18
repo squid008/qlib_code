@@ -1559,7 +1559,40 @@ def llvbars_seg(vals, nvals, seg_start, seg_end) -> np.ndarray:
 
 # ---------------- 注册机制 ----------------
 
+class FACTOR_END(ExpressionOps):
+    """`FACTOR_END($factor)`：返回**该股在当前查询区间内最后一个有效值**（同形常数序列）。
+
+    用途（v1.19.97）：实现**真正的前复权** —— `前复权价 = $close / FACTOR_END($factor)`
+    （= `$close / $factor_end`，`$factor_end` = 每股最新交易日因子 ✓，见 `engine/adjust.py` docstring）。
+    ⚠ 表达式层写不出"每股最后一天的因子"（"最后"是**跨时间**的 ✗）⇒ 只能做成算子 ✓。
+    ⚠ **结果依赖查询区间**（同一表达式不同 start/end ⇒ 不同 `factor_end` ✓；qlib 缓存 key 含区间
+      ⇒ 不会串 ✓）；语义与米筐 rqalpha / 聚宽一致（它们也按**回测区间末**归一化 ✓）。
+    ⚠ `__str__` 保证 **round-trip**（v1.19.85 的教训 ✓：能算 ≠ 字符串能被重新解析 ✓）。
+    """
+
+    def __init__(self, feature):
+        self.feature = feature
+        super().__init__()
+
+    def __str__(self):
+        return "FACTOR_END(%s)" % self.feature
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        s = pd.Series(np.asarray(self.feature.load(instrument, start_index, end_index, *args),
+                                 dtype=np.float64))
+        if s.empty:
+            return s
+        last = s.ffill().iloc[-1]                     # 区间内最后一个有效值
+        if not np.isfinite(last):
+            last = s.dropna().iloc[-1] if s.notna().any() else np.nan
+        # ⚠ 必须返回 **ndarray**（qlib 的 `Expression.load` 返回 array ⇒ 子算子也要同类型 ✓；
+        #   返回 `pd.Series` 会让上层算子/面板把它当异常值处理 ⇒ **整列失效、因子全空** ✗
+        #   —— 实测踩到：`topk_curves` 直接为空（`n_days=None`、调仓日数 0 ✗））。
+        return np.full(len(s), last, dtype=np.float64)
+
+
 _ALL_OPS = [
+    FACTOR_END,          # v1.19.97：前复权用（$close / FACTOR_END($factor)）
     BARSLAST, BARSCOUNT, BARSSINCEN,
     DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM, DYN_HHVBARS, DYN_LLVBARS,
     And, Or,          # 覆盖 qlib 内建：np.bitwise_and 对 float&bool 混输脆弱
