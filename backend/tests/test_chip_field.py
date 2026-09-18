@@ -125,7 +125,18 @@ def test_field_cache_reuses_result():
 # ---------------------------------------------------------------------------
 @pytest.mark.datareq
 def test_chip_fields_on_real_data():
-    """真实行情上跑：换手率反推量级合理、COST 单调、WINNER ∈ [0,1]、与内核逐位一致、耗时。"""
+    """真实行情上跑 **两条路径**（v1.20.21 修，方案 c —— 两条路各自都有守护）：
+
+    · **读物化 bin 的路径**（`ev.field("$chip_cost_5")`，即生产主路径）⇒ 只断言**合理性**：
+      有值（非全 NaN）、`COST(5) ≤ COST(95)`、`WINNER ∈ [0,1]`、换手率反推量级、耗时；
+    · **现算路径**（`ev._chip_field("$chip_cost_95")`）⇒ 与 `chip_run` 内核**逐位一致**（这才是
+      "逐位"有意义的比较：同一条计算路径、同一窗口、同一预热）。
+
+    ⚠ 为什么不能再用 `field()` 的输出做"逐位"比较（原写法）：v1.20.17 起 `field()` **优先读物化 bin**，
+    而 bin 是**长预热递推**（`materialize` 从 1999/2000 起算）的结果，本测试的参照却是**本窗现算**（无预热）
+    ⇒ 两者必然不等（实测 6.05 vs 4.22）。**通用教训：凡"物化字段"，测试都不该再用小区间现算当参照** ——
+    要么比同一条路径，要么只做合理性断言。
+    """
     import time
 
     from app.factors.chip_dist import chip_run
@@ -160,9 +171,18 @@ def test_chip_fields_on_real_data():
     assert 0.001 < med < 0.15, f"换手率反推量级异常：中位数 {med:.4f}（应落在 0.001 ~ 0.15）"
     # 3 只 × ~240 日：面板级向量化（非逐股循环）
     assert el < 30.0, "3 只一年应远快于 30s（实测 %.1fs）—— 若超了说明退化成逐股循环" % el
-    # 与内核直算逐位一致（同一批输入矩阵）
+    # 与内核直算逐位一致（同一批输入矩阵）—— ⚠ 必须比**同一条计算路径**：
+    # `field()` 现在优先读物化 bin（长预热），而 `ref` 是本窗现算（无预热）⇒ 只能拿"强制现算"的
+    # `_chip_field()` 来比（方案 c：读 bin 路径已由上面的合理性断言守护）。
     ref = chip_run(C.to_numpy(float), H.to_numpy(float), L.to_numpy(float),
                    T.to_numpy(float), qs=(95,))["cost_95"].reshape(-1, order="F")
-    got = c95.to_numpy(dtype=float)
+    computed = ev._chip_field("chip_cost_95")           # noqa: SLF001 —— 故意走现算路径（裸字段名，不带 `$`）
+    got = computed.to_numpy(dtype=float)
+    assert got.shape == c95.to_numpy(dtype=float).shape, "现算与读 bin 两条路径的形状必须一致"
     both = np.isfinite(ref) & np.isfinite(got)
-    assert both.any() and np.array_equal(got[both], ref[both]), "真实数据上也要逐位一致"
+    assert both.any() and np.array_equal(got[both], ref[both]), "现算路径应与内核逐位一致"
+    # 读 bin 的路径：只要求"值合理且在真实数据上非空"（与现算**不必**逐位相同 —— 预热窗口不同）
+    bin_vals = c95.to_numpy(dtype=float)
+    mb = np.isfinite(bin_vals)
+    assert mb.any(), "物化 bin 路径应能读到值（若本机未物化会退回现算，同样有值）"
+    assert np.nanmedian(bin_vals[mb]) > 0, "COST 价格应为正"

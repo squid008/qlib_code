@@ -121,6 +121,31 @@ pip install pyqlib
 
 > 校验：`mf_amount_main = mf_amount_xl + mf_amount_l`、`mf_vol_<档> = mf_vol_<档>_b − mf_vol_<档>_s`（勾稽）；源 h5 vs bin 逐日比对已一致（开发机验证）。
 
+### 物化字段：前复权价（`pre*`）+ 筹码（`chip_*`）—— **每台机器必须各做一次**
+
+这两组是**本项目自造的派生字段**（`data/` 已被 .gitignore 排除）⇒ **既不在数据包里、也不在 git 里**，
+必须在目标机器上各生成一次。⚠ **缺了不报错、会静默失效**（最坑的地方）：
+
+| 缺失字段 | 后果 |
+|---|---|
+| `preclose / preopen / prehigh / prelow / prevwap` | **`forward`（前复权）失效** ⇒ 价格量纲因子被按**后复权价**排序（LLT K=20 年化 +9.03% ↔ 米筐 −5.24%，见 change_log `[1.19.96]`） |
+| `chip_cost_{5,30,75,95}` / `chip_win_{close,high,low}` | 用 `COST()/WINNER()` 的公式（过顶 / 黏合强突破 / 蹦极新生 …）**静默返回全 NaN**（`panel_expr._chip_or_bin` 优先读 bin、**不检查文件是否存在**） |
+
+生成与核对（cwd 任意；实测耗时：`pre*` 约 8 分钟、`chip_*` 约 9 分钟）：
+
+```bash
+python tools/build_preclose.py            # 前复权：5 字段 × ~6141 只
+python tools/materialize_chip.py 400      # 筹码：7 字段 × ~6141 只（分批；可中断续跑）
+python tools/verify_materialized.py       # 核对覆盖率/同轴/NaN/数值；退出码 0 才算好
+```
+
+- 两者默认**只补缺失**（`build_preclose.py --overwrite` 可全量重写；`materialize_chip.py` 靠 `overwrite=False` 天然断点续跑）；
+- ⚠ **行情数据更新后必须重跑 `build_preclose.py`**（`factor_last` 变 ⇒ 整条历史价缩放）；
+- ⚠ `materialize_chip.py` **必须分批**（默认 400 只/批）：`chip_store.materialize` 一次吃全池会构造
+  "全池一次性面板" ⇒ 实测 **20 分钟 0 个文件、CPU 仅 ~22% 单核、ETA 不可估**（2026-09-19 实测教训）；
+- 口径：`pre* = 源字段 / factor_last`（逐位；`factor_last` = `factor.day.bin` 末值，五字段共用 ⇒ 不会 `prehigh < prelow`）；
+  `chip_*` 必须与 `$close` **同轴**（首值+长度一致，否则多股票一起加载会报 `identically-labeled`，见 change_log `[1.19.91]/[1.19.92]`）。
+
 ---
 
 ## 五、启动前端

@@ -3,6 +3,28 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.21] - 2026-09-19
+
+### Added
+- **物化脚本入库 `tools/`**（此前只在 `ai_test/`（.gitignore）⇒ **换机器拿不到**，而物化数据本身又不在 git 里 ⇒ 新机器上「前复权失效 / COST·WINNER 静默全 NaN」）：
+  - `tools/build_preclose.py` —— 生成 `preclose / preopen / prehigh / prelow / prevwap`（口径：`源字段 / factor_last`；各字段用**自己 bin 的 `first_idx`**；五字段**共用同一 `factor_last`** ⇒ 同尺度、不会 `prehigh < prelow`）；
+  - `tools/materialize_chip.py` —— 生成 7 个 `chip_*`，**分批**（默认 400 只/批；`overwrite=False` ⇒ 可断点续跑）；
+  - `tools/verify_materialized.py` —— 核对覆盖率 / 同轴 / NaN 位置 / 数值（退出码 0 才算好）。
+
+### Fixed
+- **`tests/test_chip_field.py::test_chip_fields_on_real_data` 在"已物化"的机器上必然失败**（按方案 c 修复，双路径断言）：
+  - 现象（2026-09-19 本机实测）：补齐 `chip_*` 后失败于「真实数据上也要逐位一致」（`got≈6.05` vs `ref≈4.22`，第 168 行）；此前**缺 bin** 时失败于「真实数据上应算出 COST 值」（第 143 行）⇒ **两种数据状态都过不了** ✗。
+  - 根因：v1.20.17 起 `field()` **优先读物化 bin**（= **长预热**递推，物化从 1999/2000 起算），而测试参照是**本窗现算**（无预热）⇒ 必然不等；且该用例标了 `@pytest.mark.datareq` ⇒ **CI 不跑** ⇒ 一直没人发现。
+  - 修法：**读 bin 的生产路径只断言合理性**（有值 / `COST(5) ≤ COST(95)` / `WINNER ∈ [0,1]` / 换手率量级 / 耗时）；**「逐位一致」改用 `ev._chip_field()` 强制现算**再与 `chip_run` 内核比（同一条计算路径才有意义）。
+  - ⚠ **通用教训（已写进测试 docstring）**：**凡"物化字段"，测试都不该再用小区间现算当参照** —— 要么比同一条路径，要么只做合理性断言。
+
+### Docs
+- **`md/deploy.md` 新增「物化字段：前复权价（`pre*`）+ 筹码（`chip_*`）」一节**：为什么必须每台机器各做一次、缺失的两种**静默**后果（对照表）、三条命令与实测耗时（`pre*` ≈8 分钟、`chip` ≈9 分钟）、
+  以及两条踩坑提示 —— ⚠「行情更新后必须重跑 `build_preclose.py`」、⚠「`materialize` 必须分批：一次吃全池实测 **20 分钟 0 个文件、CPU 仅 ~22% 单核、ETA 不可估**」。
+
+### Changed
+- 版本 1.20.20 → 1.20.21。
+
 ## [1.20.20] - 2026-09-18
 
 ### Performance（B2：净值曲线「回测段」热循环减负）+ Fixed（UI 对齐）
