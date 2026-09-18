@@ -144,6 +144,10 @@ export default function EventStudyModal({
   //   慢 ⇒ 改持仓周期后**不自动算**（等按钮 ✓）；快 ⇒ 照旧**自动算**（体验不变 ✓）。
   //   `lastTickRef` 用来区分"按钮触发"与"自动触发" ✓。
   const slowRef = useRef(false)
+  // ⚠ v1.2.13（用户 2026-09-18）：「二浪加强点进去怎么还有计算按钮？不应该先自动计算、
+  //   再根据实际判断要不要显示重新计算按钮么？」✓ 完全对 ✓ —— 按钮**只应在实测慢之后出现** ✗。
+  //   `ref` 变化**不触发重渲染** ✗ ⇒ 另开一个 state 专门控制按钮显隐 ✓（两者同置同清 ✓）。
+  const [navSlow, setNavSlow] = useState(false)
   const lastTickRef = useRef(0)
   // 自动识别"大小公式"的阈值（秒）：一次回测耗时超过它 ⇒ 该公式转入"手动模式"（等按钮 ✓）；
   // 低于它 ⇒ 保持自动计算（小公式体验与从前一致 ✓）。5s 是经验值 ——
@@ -165,6 +169,7 @@ export default function EventStudyModal({
     //   现在：`result` 变化（= 换公式/换任务）时清空 ✓ ⇒ 每个公式**各自首次自动算一次**、
     //   再按**自己**的耗时决定要不要转手动 ✓（⇒ 只有真正慢的「过顶 / 黏合强突破」转手动 ✓）。
     slowRef.current = false
+    setNavSlow(false)                  // 换公式 ⇒ 先收起按钮 ✓（首次一律自动算 ✓，快公式就不该有按钮 ✓）
     lastTickRef.current = navTick
     const last = result.curve?.length ? result.curve[result.curve.length - 1].k : null
     const k0 = defaultK ?? last ?? 20
@@ -233,6 +238,7 @@ export default function EventStudyModal({
             //   低于阈值 ⇒ 保持自动 ✓（小公式体验与从前一致 ✓）。
             if ((performance.now() - _t0) / 1000.0 > NAV_SLOW_S) {
               slowRef.current = true
+              setNavSlow(true)           // 实测慢 ⇒ **这时才**把「（重新）计算」按钮显示出来 ✓
             }
             setNavRes(r)
             setNavErr('')
@@ -1011,14 +1017,18 @@ export default function EventStudyModal({
                     onChange={(e) => setNavCost(Number(e.target.value))}
                   />
                 </label>
-                <button
-                  type="button"
-                  onClick={() => setNavTick((t) => t + 1)}
-                  disabled={navBusy}
-                  className="border rounded px-2 py-0.5 text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
-                >
-                  {navBusy ? '计算中…' : navRes ? '重新计算' : '计算'}
-                </button>
+                {/* ⚠ v1.2.13：`navSlow || navBusy` ✓ —— 慢公式**首次自动算**的那几十秒也要能看到
+                    「计算中…」✗（否则界面像卡死了 ✓）；算完且判定为快 ⇒ `navSlow=false` ⇒ 按钮收起 ✓ */}
+                {(navSlow || navBusy) && (
+                  <button
+                    type="button"
+                    onClick={() => setNavTick((t) => t + 1)}
+                    disabled={navBusy}
+                    className="border rounded px-2 py-0.5 text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
+                  >
+                    {navBusy ? '计算中…' : navRes ? '重新计算' : '计算'}
+                  </button>
+                )}
                 {/* ⚠ v1.2.11（用户 2026-09-18 要求）：**长提示、"计算中…（期间旧曲线保留）"、
                     以及 v1.2.10 删除的耗时行，一律不再显示** ✗ —— 按钮自身就是提示 ✓
                     （自动/手动由"实测耗时"自动判定 ✓，见 effect 里的 `slowRef` ✓）。 */}
