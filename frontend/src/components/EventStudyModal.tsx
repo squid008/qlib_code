@@ -276,12 +276,15 @@ export default function EventStudyModal({
     //   而「过顶」这类高触发公式一次回测实测 **57s**（14.88 万笔 ✓，取价另 17.6s ✓）⇒
     //   改一下持仓周期就卡一分钟 ✓ ⇒ 改为**只由 `navTick`（按钮）驱动** ✓。
     //   ⚠ `navK` / `navCost` 仍从闭包读取（每次点按钮时取当前值 ✓）⇒ 故不放进依赖 ✓。
-    // ⚠ v1.2.12：依赖里**要放 `result`** ✓ —— 换公式（= 换 result）时应当**自动算一次** ✓，
-    //   否则"小公式自动"这条就失效了 ✗（v1.2.9 曾只留 `navTick` 是因为当时一律手动 ✓，
-    //   现在既然自动识别，就必须让换公式也走一次自动判定 ✓）。
-    //   慢公式由 effect 开头的 `slowRef` 拦截 ✓（换公式时初始化 effect 已把它清成 false ✓
-    //   ⇒ 每个公式都"首次自动、按自己耗时决定是否转手动" ✓）。
-  }, [result, navTick])                                                       // eslint-disable-line react-hooks/exhaustive-deps
+    // ⚠⚠ v1.2.14（用户 2026-09-18 报障）：「点持仓周期的上下箭头，怎么不会自动计算？」✓
+    //   **必须把 `navK` / `navCost` / `sourceTaskId` 都放进依赖** ✗ —— v1.2.9 曾只留 `navTick`
+    //   （那是一律手动时期的写法 ✓），v1.2.12 只补了 `result` ✓ ⇒ **改了持仓周期 effect 根本不重跑** ✗
+    //   ⇒ 快公式也不再自动 ✓（用户实测 ✓）。
+    //   ⇒ 现在依赖齐全 ✓：**任何参数变化都会重跑**，而"慢公式不自动算"由 effect 开头的
+    //     `slowRef` 拦截 ✓（`byButton` 判断只放过"点按钮"那种 ✓）⇒ 两条语义同时成立 ✓：
+    //       · 快公式：改周期 ⇒ **自动算** ✓（含上下箭头 / 换公式 / 改成本 ✓）
+    //       · 慢公式：改周期 ⇒ **等按钮** ✓；点按钮 ⇒ 算 ✓
+  }, [result, navK, navCost, sourceTaskId, navTick])                          // eslint-disable-line react-hooks/exhaustive-deps
 
   const taskRef = useRef<string | null>(null)
   const timerRef = useRef<number | null>(null)
