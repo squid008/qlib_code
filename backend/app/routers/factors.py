@@ -928,6 +928,14 @@ def _nav_req_current(key) -> int:
         return _NAV_REQ_SEQ.get(key, 0)
 
 
+# ⚠ v1.2.15（用户 2026-09-18：「关弹窗即取消」✓）：前端**卸载弹窗**时会调
+#   `POST /event-study/nav/cancel` ✓ ⇒ 这里记下 task_id ✓；在途回测的 `cancel_cb`
+#   每次检查命中即抛 ⇒ **关掉弹窗后后端立刻停算** ✓（此前是"自己跑完为止、没人收结果"✗，
+#   大公式一次白烧几十秒 ✓）。
+_NAV_CANCEL: set = set()
+_NAV_CANCEL_MAX = 64
+
+
 def _nav_bt_key(codes, ev, start, end, k, cost, capital, modes):
     return (len(codes), hash(tuple(codes)), str(start), str(end),
             len(ev), str(ev["dt"].iloc[0]), str(ev["dt"].iloc[-1]),
@@ -960,6 +968,26 @@ def _nav_panel_cached(codes, start, end, *, strict: bool = True):
             _NAV_PANEL_CACHE.pop(next(iter(_NAV_PANEL_CACHE)))
         _NAV_PANEL_CACHE[key] = panel
     return panel, False
+
+
+class EventNavCancelRequest(BaseModel):
+    """关弹窗取消（v1.2.15）：前端只要把 task_id 报上来即可 ✓。"""
+    task_id: str = ""
+
+
+@router.post("/event-study/nav/cancel", summary="取消净值曲线计算（关弹窗时调用）")
+def event_study_nav_cancel(req: EventNavCancelRequest):
+    """把该 task 标记为"已放弃" ✓ ⇒ 在途回测的 `cancel_cb` 下一次检查即抛 ⇒ 立即停算 ✓。
+
+    ⚠ 幂等 ✓、永远返回 ok ✓（前端卸载时调用，不该因任何原因报错 ✓）。
+    ⚠ 集合上限 64（FIFO 清理 ✓）—— 只存 task_id，量极小 ✓。
+    """
+    tid = str(req.task_id or "")
+    if tid:
+        _NAV_CANCEL.add(tid)
+        while len(_NAV_CANCEL) > _NAV_CANCEL_MAX:
+            _NAV_CANCEL.pop()
+    return {"ok": True}
 
 
 @router.post("/event-study/nav", summary="事件研究的净值曲线（两种资金方案 + 基准）")
@@ -1023,7 +1051,16 @@ def event_study_nav(req: EventNavRequest):
         # 取消源（v1.2.5）：登记本次请求序号；同事件指纹来了更新的请求 ⇒ 本次立即自停 ✓
         _seq = _nav_req_begin(_nav_req_key(codes, ev, start, end))
 
+        _tid_key = str(req.task_id or "")
+        # ⚠⚠ 必须**清除旧的取消标记** ✗ —— 否则用户"关掉弹窗、再重新打开同一个公式"时
+        #   会命中上次留下的标记 ⇒ **一开就被取消** ✓（v1.2.15 自查发现 ✓）。
+        if _tid_key:
+            _NAV_CANCEL.discard(_tid_key)
+
         def _cancel_cb():
+            # ① 前端关了弹窗（v1.2.15 ✓）② 同事件指纹来了更新的请求（v1.2.5 ✓）⇒ 立即自停 ✓
+            if _tid_key and _tid_key in _NAV_CANCEL:
+                raise _NavCancelled()
             if _nav_req_current(_nav_req_key(codes, ev, start, end)) != _seq:
                 raise _NavCancelled()
         with _NAV_BT_LOCK:

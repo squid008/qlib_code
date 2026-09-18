@@ -148,6 +148,23 @@ export default function EventStudyModal({
   //   再根据实际判断要不要显示重新计算按钮么？」✓ 完全对 ✓ —— 按钮**只应在实测慢之后出现** ✗。
   //   `ref` 变化**不触发重渲染** ✗ ⇒ 另开一个 state 专门控制按钮显隐 ✓（两者同置同清 ✓）。
   const [navSlow, setNavSlow] = useState(false)
+
+  // ⚠⚠ v1.2.15（用户 2026-09-18：「关弹窗即取消」✓）：**卸载时通知后端停算** ✓ ——
+  //   此前关掉弹窗只是"没人收结果" ✗，而后端那次回测**照跑完为止** ✓（大公式一次白烧几十秒 ✗）。
+  //   用原生 `fetch` + `keepalive: true`（卸载期间的请求不能被浏览器取消 ✓）；
+  //   失败**静默** ✓（取消只是尽力而为 ✓，绝不能因此报错 ✓）。
+  useEffect(() => () => {
+    const tid = sourceTaskId || taskRef.current || ''
+    if (!tid) return
+    try {
+      fetch('/api/factors/event-study/nav/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: tid }),
+        keepalive: true,
+      }).catch(() => { /* 静默 ✓ */ })
+    } catch { /* 静默 ✓ */ }
+  }, [sourceTaskId])
   const lastTickRef = useRef(0)
   // 自动识别"大小公式"的阈值（秒）：一次回测耗时超过它 ⇒ 该公式转入"手动模式"（等按钮 ✓）；
   // 低于它 ⇒ 保持自动计算（小公式体验与从前一致 ✓）。5s 是经验值 ——
