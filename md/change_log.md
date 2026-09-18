@@ -3,6 +3,39 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.2.16] - 2026-09-18
+
+### Fixed（**"复用参数"回测崩溃** `406 vs 400` —— 用户报障）
+
+- **用户报障**：「复用参数回测也报错：`失败: operands could not be broadcast together with
+  shapes (406,) (400,)`」✓
+- **自助复现** ✓：`POST /api/backtest/{task_id}/resume` ⇒ **45 秒内即 failed**，`message` 与
+  用户报障**逐字一致** ✓（`GET /api/backtest/{task_id}` 查状态 ✓）。
+- **根因**（★ 与复权/市值/股票池/特征数**全都无关** ✗）：`app/factors/ops_ext.py` 的
+  **`SR` 算子**（停牌删行语义 ✓）在 `_load_internal` 末尾 `return series[keep.values]` /
+  `series.dropna()` **主动删行** ✗，而 **qlib 算子契约要求返回定长序列** ✗ ⇒ 与 qlib 内建
+  `Corr` 组合即崩：`qlib/data/ops.py:1495` 的
+  `res.loc[np.isclose(left.rolling(N).std(),0) | np.isclose(right.rolling(N).std(),0)]`
+  要求 `res`/`left`/`right` **严格等长** ⇒ 左串 `Add($preclose,0)` **406** 行、
+  右串 `Log(Add(SR($volume,$close,250),1))` **只有 400** 行 ✗
+  （**差值 = 该股停牌天数**：实测 `SH600008` 丢 **6** 行、`SH600026` 丢 **2** 行 ✓）。
+- **为何"复用参数"才爆** ✓：`SR` 只在 **"停牌删行"开关打开**时包裹叶子
+  （`feature_cache.py:314-316` 的 `_sr_wrap_expr` ✓），而 `_MIX_A158_CONF` 的 `rolling:{}`
+  是**全量** ⇒ 含 `Corr($close, Log($volume+1), N)` ✓ ⇒ 该开关 + 含 `Corr` 的特征才触发 ✓。
+- **修复**：`ops_ext.py` 新增 **`class Corr(_QLIB_CORR)` 覆盖 qlib 内建** ✓（与既有
+  `And/Or`/`Pow`/`EMA_TDX` 同一模式 ✓）：左右 **`reindex` 对齐到左串索引**（= qlib 给出的
+  完整区间 ✓）⇒ **返回定长** ✓；停牌日（被 `SR` 删掉的行）结果 = `NaN` ✓ —— 与
+  `panel_expr.py` 声明的 SR 语义（"停牌日结果 = NaN"）**完全一致** ✓；仍用
+  `expanding(min_periods=1).corr()` 保持 qlib 原口径 ✓；常数序列置 `NaN` 逻辑保留 ✓。
+  已加入 `_ALL_OPS` 注册 ✓（`Operators.register` 同名覆盖 ✓）。
+- **测试**：新增 `backend/tests/test_ops_ext_corr.py`（3 条 ✓：is-override / 左右 406-400
+  不等长不抛且定长 / 常数序列全 NaN ✓）；全量 **386 passed** ✓；ruff 全过 ✓。
+- **验证** ✓：真跑 resume ⇒ 从"**45 秒内 failed**"变为正常跑到 **50%+（段4/7 训练中）** ✓。
+- ⚠ **定位手段（值得复用）**：在 `qlib/data/ops.py` 的 `Corr._load_internal` 里**临时插桩
+  写文件**（`backend/workdir/corr_dbg.log` ✓）—— **stderr 会被 loky/joblib 子进程吞掉 ✗，
+  必须写文件 ✓** —— 打印 `len(res)/len(left)/len(right)` + 左右表达式 + 索引首尾 ⇒
+  **一次跑即锁定** ✓（插桩已完全回退，`D:\quant\qlib` 仓库干净 ✓）。
+
 ## [1.2.15] - 2026-09-18
 
 ### Added（**关弹窗即取消** —— 用户选择）
