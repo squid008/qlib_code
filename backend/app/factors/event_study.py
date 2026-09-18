@@ -430,7 +430,14 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
                 # 1172×5418 = 635 万），大 k 时绝大多数行整行无效仍参与 nanmean/median。
                 r_idx = np.nonzero(ok)[0]
                 with np.errstate(all="ignore"):
-                    num = F[tgt[r_idx]] / entry_mat[r_idx] - 1.0
+                    # ⚠ v1.2.19 性能（用户 2026-09-18："全A 六年还是四五十秒"）：原式
+                    #   `A / B - 1.0` 会**分配 3 份**同规模大矩阵（商、常量、差），而
+                    #   `num` 是「配对日 × 未触发股」（全 A ≈ 1172×5418 = 635 万 × 60 个 k）
+                    #   ⇒ 每 k 白分配两份、合计约 6 GB 级的内存往返 ✗。
+                    #   改成两步**原地**（`np.subtract(..., out=num)`）⇒ 只分配 1 份 ✓，
+                    #   数值逐位不变（同一 dtype、同一运算顺序 ✓）。
+                    num = F[tgt[r_idx]] / entry_mat[r_idx]
+                    np.subtract(num, 1.0, out=num)
                 # 剔除当日触发股（保持 NaN）：把「配对日行位置」映射到 r_idx 内的下标
                 if trig_i.size:
                     pos = np.full(rows.size, -1, dtype=np.intp)
