@@ -322,10 +322,14 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             trades.append((i, c, side, int(qty), price, reason, mode))
 
         def _reject(i, c, reason, decision_pos=None):
-            rejects.append({"date": str(cal[i].date()), "code": codes[c],
-                            "reason": reason, "text": REJECT_TEXT.get(reason, reason),
-                            "signal_date": str(cal[decision_pos].date()) if decision_pos is not None else None,
-                            "mode": mode})
+            # ⚠⚠ v1.2.20 性能（2026-09-18，与 v1.2.7 给 `_log_trade` 做的同一件事 ✓）：
+            #   原实现**在热循环里**就构造 dict + 调 `str(cal[i].date())` ✗ —— 后者触发
+            #   pandas `Timestamp` 装箱与格式化；过顶这类公式 `rejects` 可达**几万条** ✗
+            #   （严格口径下涨跌停/停牌/资金不足每次重试都记一条 ✓）。
+            #   ⇒ 循环里**只存元组**（4 个原生值 ✓ 零格式化 ✓），`str`/dict 组装挪到
+            #     `for mode_spec` 轮次结束后**一次性做** ✓（那里不在热路径 ✓）
+            #   ⇒ 语义逐位相同（末尾生成的正是原来那些字段 ✓）。
+            rejects.append((i, c, reason, decision_pos))
 
         i_start = min([max(0, min(bk["buys"], default=0) - 1)] +
                       [max(0, min(bk["exits"], default=0) - 1)] + [0])
@@ -457,7 +461,13 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 dsz[c] = dsz.get(c, 0) + 1
         navs[mode] = pd.Series(nav_vals, index=pd.DatetimeIndex(nav_dates))
         all_trades += trades
-        mode_rejects[mode] = rejects
+        # ⚠ v1.2.20：这里（**热循环之外** ✓）一次性把元组展开成 dict ⇒ 字段与原来逐位相同 ✓
+        mode_rejects[mode] = [
+            {"date": str(cal[_i].date()), "code": codes[_c], "reason": _rs,
+             "text": REJECT_TEXT.get(_rs, _rs),
+             "signal_date": (str(cal[_dp].date()) if _dp is not None else None),
+             "mode": mode}
+            for (_i, _c, _rs, _dp) in rejects]
         closed = hold_n
         net = navs[mode].pct_change().fillna(0.0).to_numpy()
         perf = _perf(net)
@@ -479,9 +489,10 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             "avg_hold_days": round(hold_sum / closed, 1) if closed else None,
             "win_rate": round(wins / (wins + losses), 3) if (wins + losses) else None,
             "open_positions_end": len(sh),
-            "rejects_limit_up": sum(1 for r in rejects if r["reason"].startswith("limit_up")),
-            "rejects_suspended": sum(1 for r in rejects if r["reason"] == "suspended"),
-            "rejects_no_cash": sum(1 for r in rejects if r["reason"] == "no_cash"),
+            # ⚠ v1.2.20：`rejects` 现在是元组 `(i, c, reason, decision_pos)` ⇒ 取 `[2]` ✓
+            "rejects_limit_up": sum(1 for r in rejects if r[2].startswith("limit_up")),
+            "rejects_suspended": sum(1 for r in rejects if r[2] == "suspended"),
+            "rejects_no_cash": sum(1 for r in rejects if r[2] == "no_cash"),
             "rejects_total": len(rejects),      # 该方案的真实总数（明细列表可能被截断，见下）
             "perf": perf,
             }

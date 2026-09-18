@@ -409,7 +409,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
         {/* ⚠ `items-start`（v1.2.19，用户 2026-09-18）：标题区是多行文本，用 `items-center`
             会把「关闭」按钮**垂直居中于整个文本块** ⇒ 看着比第一行"掉下去"一截 ✗。
             改成顶部对齐 ⇒ 按钮与**第一行**文字齐平 ✓（同「事件研究」弹窗观感 ✓）。 */}
-        <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+        <div className="flex items-baseline justify-between gap-3 px-4 py-3 border-b border-slate-200 dark:border-slate-700">
           <div className="min-w-0">
             <span className="font-semibold text-slate-700 dark:text-slate-200">
               持仓期收益曲线（含三档成本）
