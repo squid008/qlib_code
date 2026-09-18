@@ -135,6 +135,9 @@ export default function EventStudyModal({
   //   `lastOkKRef` 记录**上一次请求成功时的 k** ⇒ 删光时把 `navK` 回退到它 ⇒ 命中缓存**秒回** ✓
   //   （⇒ "6 算到一半删光 ⇒ 停在 60" 这个诉求靠它实现 ✓）。
   const [navKInput, setNavKInput] = useState('')
+  // ⚠ v1.2.9：净值曲线改为**手动计算** ✓ —— `navTick` 是"点按钮"的计数器 ✓，
+  //   只有它变化才会触发请求 effect ✓（原因见 effect 尾部的注释：高触发公式单次 57s ✗）。
+  const [navTick, setNavTick] = useState(0)
   const lastOkKRef = useRef<number | null>(null)
   const [navCost, setNavCost] = useState(0.004)
   const [navRes, setNavRes] = useState<EventNavResult | null>(null)
@@ -233,7 +236,15 @@ export default function EventStudyModal({
       //   （紧接着的新一轮若确实要算，会再 setNavBusy(true)，顺序安全）。
       setNavBusy(false)
     }
-  }, [result, navK, navCost, sourceTaskId])
+    // ⚠ v1.2.9（用户 2026-09-18：**"计算很慢，改成手动按钮、不自动算"** ✓）：
+    //   本 effect 原来依赖 `[result, navK, navCost, sourceTaskId]` ✗ ⇒ **输入框一改就自动重算** ✓；
+    //   而「过顶」这类高触发公式一次回测实测 **57s**（14.88 万笔 ✓，取价另 17.6s ✓）⇒
+    //   改一下持仓周期就卡一分钟 ✓ ⇒ 改为**只由 `navTick`（按钮）驱动** ✓。
+    //   ⚠ `navK` / `navCost` 仍从闭包读取（每次点按钮时取当前值 ✓）⇒ 故不放进依赖 ✓。
+    // ⚠ 依赖**只留 `navTick`** ✗ 不放 `result` —— 换结果时也**不自动算** ✓
+    //   （打开弹窗就自动跑 57s 正是用户要避免的 ✓；`result` 变化由上面的初始化 effect
+    //    负责清空旧图 ✓，用户点一次按钮即可 ✓）。
+  }, [navTick])                                                               // eslint-disable-line react-hooks/exhaustive-deps
 
   const taskRef = useRef<string | null>(null)
   const timerRef = useRef<number | null>(null)
@@ -969,7 +980,19 @@ export default function EventStudyModal({
                     onChange={(e) => setNavCost(Number(e.target.value))}
                   />
                 </label>
-                {navBusy && <span className="text-sky-600">计算中…</span>}
+                <button
+                  type="button"
+                  onClick={() => setNavTick((t) => t + 1)}
+                  disabled={navBusy}
+                  className="border rounded px-2 py-0.5 text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
+                >
+                  {navBusy ? '计算中…' : navRes ? '重新计算（按当前持仓周期）' : '开始计算'}
+                </button>
+                <span className="text-amber-600 dark:text-amber-500">
+                  已改为<strong>手动计算</strong>：高触发公式一次回测可达 1 分钟，
+                  改完持仓周期后请点左侧按钮 ✓
+                </span>
+                {navBusy && <span className="text-sky-600">计算中…（期间旧曲线保留）</span>}
                 {navRes && !navBusy && (
                   <span className="text-slate-400">
                     取价 {navRes.timings?.prices}s + 回测 {navRes.timings?.backtest}s（按持仓周期缓存，改回去秒开）
