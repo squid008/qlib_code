@@ -3,6 +3,38 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.2.18] - 2026-09-18
+
+### Performance（**单因子测试端到端 −53%**：7.6 s → 3.6 s；用户追问"到底哪个函数慢"）
+
+- **用户追问**：「你测过顶的耗时，看看到底哪个函数慢」✓
+- **profile 结论**（`ai_test/prof_chip2.py`，cProfile，「过顶」公式 / csi300 / h20 / 2021~2022）：
+  **慢的完全不是 chip** ✗ —— 先证 `field($chip_cost_95)` = **0.052 s / 300 只**（与 `$close`
+  0.040 s 同量级 ✓ 物化直读生效 ✓）；热点全在**共性开销**：
+  ```
+   ncalls  tottime  cumtime  function
+    10310    1.107    1.114  {nt.stat}                        ← ★★★ 最大单项
+        1    0.907    0.907  inst_mask.py:60 (<setcomp>)      ← ★★ 逐行 pd.Timestamp() 转换
+     4545    0.770    0.777  {numpy.fromfile}                 ← 正常读盘
+     6797    0.739    0.748  {io.open}                        ← 每字段每股票开一次
+     5054    0.047    1.156  panel_expr.py:427 (_field_bin_meta)
+  ```
+- **改动**（`app/engine/inst_mask.py::_daily_member_mask`）：原实现对**每一行**都做
+  `np.datetime64(pd.Timestamp(x).to_datetime64())`（面板可达几十万行 ⇒ **0.91 s** ✗）。
+  而面板 index 的 `datetime` 级别**本来就是 `DatetimeIndex`** ⇒ 改为
+  **`pd.DatetimeIndex(dt_raw).unique().sort_values()`** 一次转换 ✓（语义逐位等价 ✓）。
+- **效果**（同一 profile 复跑）：
+  | 项 | 前 | 后 |
+  |---|---|---|
+  | **端到端** | **7.6 s** | **3.6 s** ✓ |
+  | `nt.stat` | 10310 次 / 1.107 s | **5255 次 / 0.545 s** ✓ |
+  | `io.open` | 6797 次 / 0.739 s | **1748 次 / 0.232 s** ✓ |
+  | `inst_mask.py:60` setcomp | **0.907 s** | **消失** ✓ |
+  | `_daily_member_mask` 累计 | 1.245 s | **0.319 s**（−74%）✓ |
+- **测试**：全量 **398 passed** ✓；ruff 全过 ✓。
+- ⚠ 仍可继续（未做）：`nt.stat` 剩 5255 次 / 0.545 s（`_field_bin_meta` 逐字段探测 ✗
+  ⇒ 可整体改"一次目录扫描 + 内存字典"✓）、`_daily_member_mask` 的 spans 解析可缓存 ✓。
+
 ## [1.2.17] - 2026-09-18
 
 ### Performance（**筹码字段 `COST()` 慢** —— 用户提问"bin 都物化了为啥还慢"）

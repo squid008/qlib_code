@@ -56,8 +56,17 @@ def _daily_member_mask(universe: str, index: pd.MultiIndex) -> Optional[np.ndarr
     dt_raw = np.asarray(index.get_level_values(dt_lv))
     if inst_raw.size == 0:
         return None
+    # ⚠⚠ v1.2.18（2026-09-18 profile 定位）：原实现对**每一行**都做
+    #   `pd.Timestamp(x).to_datetime64()`（`dt_raw` 可达几十万行）⇒ 实测 **0.91 s** ✗，
+    #   是"过顶公式 7.6 s"里最大的单项之一。而面板 index 的 datetime 级别**本来就是
+    #   DatetimeIndex** ⇒ 直接 `pd.DatetimeIndex(dt_raw)` 一次转换 + `.unique()` 排序即可 ✓
+    #   （语义逐位等价：原来是对每行做同一变换后去重排序 ✓）。
+    dt_index = pd.DatetimeIndex(dt_raw)
+    uniq_days = dt_index.unique().sort_values()
+    days = uniq_days.values.astype("datetime64[ns]")
+    # ⚠ 原来的 `days` 走 setcomp + `pd.Timestamp(x)` 逐行转换（0.91 s ✗）；
+    #   `insts` 同理但量小（几十万行 → 几百只 ✓）。这里都用 **numpy/Index 向量化** ✓。
     insts = np.asarray(sorted({str(x).upper() for x in inst_raw}))
-    days = np.asarray(sorted({np.datetime64(pd.Timestamp(x).to_datetime64()) for x in dt_raw}))
     inst_pos = {c: i for i, c in enumerate(insts)}
 
     # 解析区间：code -> [(start, end), ...]（同一代码可有多段：进出池多次）
