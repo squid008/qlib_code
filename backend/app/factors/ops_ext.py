@@ -655,6 +655,49 @@ class Or(_LogicalAndOr):
 
 # ---------------- SR：益盟"删停牌行"语义包装 ----------------
 
+# ---------------- Corr：覆盖 qlib 内建，容忍 SR 删行导致的左右不等长 ----------------
+
+from qlib.data.ops import Corr as _QLIB_CORR  # noqa: E402
+
+
+class Corr(_QLIB_CORR):
+    """滚动相关系数（覆盖 qlib 内建 `Corr`）。
+
+    ★ 背景（2026-09-18 用户实测复现）：qlib 内建 `PairRolling`/`Corr._load_internal`
+    末尾这一段**要求 `res`、`series_left`、`series_right` 三者严格等长**：
+        res.loc[np.isclose(series_left.rolling(N,min_periods=1).std(),0,atol=2e-05)
+                | np.isclose(series_right.rolling(N,min_periods=1).std(),0,atol=2e-05)] = np.nan
+    而本项目的 `SR(X)`（**停牌删行**语义，见上面 `SR` 类）返回的是**删行后的短序列** ✗
+    ⇒ 只要表达式里出现 `Corr(...)` 且叶子被 `SR` 包裹（即"停牌删行"开关打开 ✓
+    `feature_cache._sr_wrap_expr` ✓），右串就会比左串短若干行（**行数 = 该股停牌天数** ✗）
+    ⇒ `ValueError: operands could not be broadcast together with shapes (406,) (400,)` ✗
+    （实测 `SH600008` 丢 6 行、`SH600026` 丢 2 行 ✓；栈在 `qlib/data/ops.py:1495` ✓）。
+
+    修法：左右**先对齐到同一索引**（以左串索引为准 = qlib 给出的完整区间 ✓），
+    返回值**保持定长**（qlib 算子契约 ✓）。被 `SR` 删掉的行（停牌日）结果 = `NaN` ✓
+    —— 与 `panel_expr.py` 声明的 SR 语义（"停牌日结果 = NaN"）**完全一致** ✓。
+    ⚠ 语义保持：仍是 `expanding(min_periods=1).corr()`（qlib 原口径），窗口仍是 `self.N` ✓。
+    """
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        left = self.feature_left.load(instrument, start_index, end_index, *args)
+        right = self.feature_right.load(instrument, start_index, end_index, *args)
+        if not left.index.equals(right.index):
+            # `SR` 删行 ⇒ 右串更短 ✗：按左串索引重铺（缺的行 = NaN ✓，即"停牌日不参与" ✓）
+            right = right.reindex(left.index)
+        res = getattr(left.expanding(min_periods=1), self.func)(right)
+        res = res.reindex(left.index)                      # 定长 ✓（防空交集导致索引漂移）
+        # 常数序列置 NaN（qlib 原逻辑 ✓）；两边长度此刻必与 left 相同 ⇒ 不再崩 ✓
+        _l_std = left.rolling(self.N, min_periods=1).std().to_numpy(dtype=float)
+        _r_std = right.rolling(self.N, min_periods=1).std().to_numpy(dtype=float)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            _bad = np.isclose(_l_std, 0, atol=2e-05) | np.isclose(_r_std, 0, atol=2e-05)
+        if _bad.any():
+            res = res.copy()
+            res[_bad] = np.nan
+        return res
+
+
 class SR(ExpressionOps):
     """SR(X, [M])：按停牌掩码剔除行，返回"只有有效交易日"的连续序列。
 
@@ -1596,6 +1639,7 @@ _ALL_OPS = [
     BARSLAST, BARSCOUNT, BARSSINCEN,
     DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM, DYN_HHVBARS, DYN_LLVBARS,
     And, Or,          # 覆盖 qlib 内建：np.bitwise_and 对 float&bool 混输脆弱
+    Corr,             # v1.19.99：覆盖 qlib 内建，容忍 SR 删行导致的左右不等长（406 vs 400 ✗）
     SR,
     EMA_TDX,
     SGN, TRUNC, BETWEEN,
