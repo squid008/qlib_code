@@ -3,13 +3,38 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.23] - 2026-09-19
+
+### Fixed
+- **补 v1.20.22 漏提交的版本号与文档**：上个提交（`87e4359`，tag `v1.20.22`）实际**只带上了 3 个脚本的重命名** ✗ ——
+  因为命令里 `git add -A tools backend/tools …` 中的 `tools/` 已被删除，而 **`git add` 遇到不存在的 pathspec 会
+  `fatal: pathspec ... did not match` 并中止整条 add**（其余路径一并丢弃）⇒ 版本号与文档都没被暂存。
+  本次补上 `README.md` / `backend/app/__init__.py`（版本号）/ `md/change_log.md` / `md/deploy.md` / `md/开发记录.md`，
+  并把版本号推进到 **1.20.23**（已推送的 `v1.20.22` 不改写、不强推 ⇒ 用新版本号保持"每个 tag 的版本号自洽"）。
+- ⚠ **教训（可推广）**：**`git add` 的参数里不要出现已删除/不存在的路径** —— 它会中止整条 add；
+  **提交前务必 `git status --short` 复核暂存区**（本次正是靠它发现漏加）。
+
+### Changed
+- 版本 1.20.22 → 1.20.23。
+
+## [1.20.22] - 2026-09-19
+
+### Fixed
+- **合并重复的 `tools/` 目录：根目录 `tools/` → `backend/tools/`**（用户指出「搞两个 tools 目录不科学」）：
+  `backend/tools/` 是**原有约定**（CI 的 ruff 就是 `ruff check app tests tools`、`md/deploy.md` 的
+  `dump_moneyflow.py` 也在那儿）⇒ v1.20.21 新加的 3 个物化脚本**并入 `backend/tools/`**，
+  根目录那个 `tools/` 删除（`git mv` 保留历史）。同步改：脚本内 `_BACKEND` 路径推导（少一层）、
+  脚本 docstring 用法、`md/deploy.md` 三条命令、`md/change_log.md` / `md/开发记录.md` 的路径引用。
+  ⚠ 教训：**新建目录前先看仓库既有约定**（CI 配置 / 文档里的调用路径就是约定本身）。
+- 版本 1.20.21 → 1.20.22。
+
 ## [1.20.21] - 2026-09-19
 
 ### Added
-- **物化脚本入库 `tools/`**（此前只在 `ai_test/`（.gitignore）⇒ **换机器拿不到**，而物化数据本身又不在 git 里 ⇒ 新机器上「前复权失效 / COST·WINNER 静默全 NaN」）：
-  - `tools/build_preclose.py` —— 生成 `preclose / preopen / prehigh / prelow / prevwap`（口径：`源字段 / factor_last`；各字段用**自己 bin 的 `first_idx`**；五字段**共用同一 `factor_last`** ⇒ 同尺度、不会 `prehigh < prelow`）；
-  - `tools/materialize_chip.py` —— 生成 7 个 `chip_*`，**分批**（默认 400 只/批；`overwrite=False` ⇒ 可断点续跑）；
-  - `tools/verify_materialized.py` —— 核对覆盖率 / 同轴 / NaN 位置 / 数值（退出码 0 才算好）。
+- **物化脚本入库 `backend/tools/`**（此前只在 `ai_test/`（.gitignore）⇒ **换机器拿不到**，而物化数据本身又不在 git 里 ⇒ 新机器上「前复权失效 / COST·WINNER 静默全 NaN」）：
+  - `backend/tools/build_preclose.py` —— 生成 `preclose / preopen / prehigh / prelow / prevwap`（口径：`源字段 / factor_last`；各字段用**自己 bin 的 `first_idx`**；五字段**共用同一 `factor_last`** ⇒ 同尺度、不会 `prehigh < prelow`）；
+  - `backend/tools/materialize_chip.py` —— 生成 7 个 `chip_*`，**分批**（默认 400 只/批；`overwrite=False` ⇒ 可断点续跑）；
+  - `backend/tools/verify_materialized.py` —— 核对覆盖率 / 同轴 / NaN 位置 / 数值（退出码 0 才算好）。
 
 ### Fixed
 - **`tests/test_chip_field.py::test_chip_fields_on_real_data` 在"已物化"的机器上必然失败**（按方案 c 修复，双路径断言）：

@@ -131,12 +131,12 @@ pip install pyqlib
 | `preclose / preopen / prehigh / prelow / prevwap` | **`forward`（前复权）失效** ⇒ 价格量纲因子被按**后复权价**排序（LLT K=20 年化 +9.03% ↔ 米筐 −5.24%，见 change_log `[1.19.96]`） |
 | `chip_cost_{5,30,75,95}` / `chip_win_{close,high,low}` | 用 `COST()/WINNER()` 的公式（过顶 / 黏合强突破 / 蹦极新生 …）**静默返回全 NaN**（`panel_expr._chip_or_bin` 优先读 bin、**不检查文件是否存在**） |
 
-生成与核对（cwd 任意；实测耗时：`pre*` 约 8 分钟、`chip_*` 约 9 分钟）：
+生成与核对（脚本在 **`backend/tools/`**，与 `dump_moneyflow.py` 同处；cwd 任意；实测耗时：`pre*` 约 8 分钟、`chip_*` 约 9 分钟）：
 
 ```bash
-python tools/build_preclose.py            # 前复权：5 字段 × ~6141 只
-python tools/materialize_chip.py 400      # 筹码：7 字段 × ~6141 只（分批；可中断续跑）
-python tools/verify_materialized.py       # 核对覆盖率/同轴/NaN/数值；退出码 0 才算好
+python backend/tools/build_preclose.py            # 前复权：5 字段 × ~6141 只
+python backend/tools/materialize_chip.py 400      # 筹码：7 字段 × ~6141 只（分批；可中断续跑）
+python backend/tools/verify_materialized.py       # 核对覆盖率/同轴/NaN/数值；退出码 0 才算好
 ```
 
 - 两者默认**只补缺失**（`build_preclose.py --overwrite` 可全量重写；`materialize_chip.py` 靠 `overwrite=False` 天然断点续跑）；
