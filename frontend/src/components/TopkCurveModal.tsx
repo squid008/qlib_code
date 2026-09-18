@@ -489,7 +489,11 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               )}
             </span>
           </div>
-          <button onClick={onClose} className="px-2 py-1 text-xs rounded border">
+          {/* ⚠ `whitespace-nowrap shrink-0`（v1.2.19）：标题栏右侧被别的元素挤压时，
+              按钮宽度会被压到比"关闭"两个字还窄 ⇒ 文字**竖排换行**（用户 2026-09-18 报 ✓）。
+              与「事件研究」弹窗的关闭按钮保持一致：永远一行 ✓。 */}
+          <button onClick={onClose}
+                  className="px-2 py-1 text-xs rounded border whitespace-nowrap shrink-0">
             关闭
           </button>
         </div>
