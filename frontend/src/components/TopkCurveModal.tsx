@@ -406,8 +406,11 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
         className="bg-white dark:bg-slate-800 rounded-lg shadow-xl w-[1040px] max-w-full max-h-[92vh] overflow-auto overscroll-contain"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-700">
-          <div>
+        {/* ⚠ `items-start`（v1.2.19，用户 2026-09-18）：标题区是多行文本，用 `items-center`
+            会把「关闭」按钮**垂直居中于整个文本块** ⇒ 看着比第一行"掉下去"一截 ✗。
+            改成顶部对齐 ⇒ 按钮与**第一行**文字齐平 ✓（同「事件研究」弹窗观感 ✓）。 */}
+        <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+          <div className="min-w-0">
             <span className="font-semibold text-slate-700 dark:text-slate-200">
               持仓期收益曲线（含三档成本）
             </span>
@@ -424,7 +427,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                      不是样本外结论 ⇒ 不能拿它当"因子有效"的证据（十档不单调 = 没 alpha ✓）；
                   ② **但 TopK 的 K 不是平台挑的** —— K 由用户选择，平台只把整排 K 并列展示；
                      TopK 选股 = **按最强分位所在的方向，取名次最头上的 K 只** ✓（不是 K 扫描后的 argmax ✗）。 */}
-              {qc ? '（最强/最弱为样本内最优，非样本外；K 由你选择）' : ''}
+              {qc ? '（最强/最弱为样本内最优，非样本外）' : ''}
               {/* ★ 单调性（v1.19.94）：|ρ| 小 ⇒ 十档乱跳 = 没有横截面 alpha，`最强档`只是事后挑的噪声 ✗ */}
               {/* ★ 分段稳健性（v1.19.94，用户 2026-09-18）：用**已有的** `groups[].cum`（逐期算术累加）
                   看"最强档 − 最弱档"在几个起点之后**是不是每段都赢** —— 只在某一段赢的多半是
