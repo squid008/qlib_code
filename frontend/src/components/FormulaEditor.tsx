@@ -302,8 +302,15 @@ export default function FormulaEditor({
         <div
           ref={gutterRef}
           aria-hidden
-          className="shrink-0 select-none overflow-hidden text-right text-slate-400 dark:text-slate-500 bg-slate-50 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-700"
-          style={{ ...metricsStyle, width: `${Math.max(2, String(lines.length).length) + 1.5}ch` }}
+          className="shrink-0 select-none pointer-events-none overflow-hidden text-right text-slate-400 dark:text-slate-500 bg-slate-50 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-700"
+          // ⚠ 同 `backdrop`：**必须与 textarea 保留同样的滚动条占位**（否则 `maxScrollTop`
+          //   比 textarea 小一个滚动条尺寸 ⇒ 滚到底时行号**少滚十几像素** ⇒ 行号与内容错开一行 ✗）。
+          //   这里用 `overflow: scroll` + 宽度补偿（`+2ch` 抵消本层新出现的滚动条宽度 ✓）。
+          style={{
+            ...metricsStyle,
+            overflow: 'scroll',
+            width: `${Math.max(2, String(lines.length).length) + 3.5}ch`,
+          }}
         >
           {lines.map((_l, i) => (
             <div
@@ -323,8 +330,15 @@ export default function FormulaEditor({
           <pre
             ref={backdropRef}
             aria-hidden
-            className="absolute inset-0 overflow-hidden pointer-events-none text-slate-800 dark:text-slate-100"
-            style={metricsStyle}
+            className="absolute inset-0 pointer-events-none text-slate-800 dark:text-slate-100"
+            // ⚠⚠ v1.19.102 **必须与 textarea 保留同样的滚动条占位**（2026-09-18 用户发现：
+            //   "一往下滚就出重影、光标点 28 行却显示 29 行" ✓）—— textarea 是 `overflow:auto`
+            //   ⇒ 内容超出时**出现滚动条、占掉十几像素** ✗；本层原是 `overflow:hidden`
+            //   ⇒ **不占** ✗ ⇒ 两层**可视内容盒尺寸不同** ⇒ 同一个 `scrollTop` 渲染出的偏移
+            //   差一行（≈ 滚动条宽度/高度 ≈ 一行高 18px ✓）⇒ **越滚越错、出现重影** ✗。
+            //   ⇒ 本层改用 `overflow:scroll`（**强制保留滚动条占位** ✓，且 `pointer-events-none`
+            //     保证它不可交互 ✓）：内容需要滚动时 textarea 也必然显示滚动条 ⇒ **两层恒等** ✓。
+            style={{ ...metricsStyle, overflow: 'scroll' }}
           >{backdrop}</pre>
           <textarea
             ref={(el) => {
