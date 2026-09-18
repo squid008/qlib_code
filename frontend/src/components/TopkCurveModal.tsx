@@ -419,6 +419,12 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   }）　${tc.n} 次调仓`
                 : ''}
               {qc ? `　分位档：最强 Q${qc.best_quantile} / 最弱 Q${qc.worst_quantile}` : ''}
+              {/* ⚠ 认账（用户 2026-09-18 定稿口径）：
+                  ① **「最强 / 最弱分位」是样本内 argmax** —— 事后从十档里挑出来的最优/最差那档，
+                     不是样本外结论 ⇒ 不能拿它当"因子有效"的证据（十档不单调 = 没 alpha ✓）；
+                  ② **但 TopK 的 K 不是平台挑的** —— K 由用户选择，平台只把整排 K 并列展示；
+                     TopK 选股 = **按最强分位所在的方向，取名次最头上的 K 只** ✓（不是 K 扫描后的 argmax ✗）。 */}
+              {qc ? '（最强/最弱为样本内最优，非样本外；K 由你选择）' : ''}
             </span>
           </div>
           <button onClick={onClose} className="px-2 py-1 text-xs rounded border">
@@ -690,7 +696,9 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                     十分位累计收益曲线（<b>无成本</b> · 起点 0）
                   </span>
                   <span className="text-[11px] text-slate-400">
-                    最强 Q{qc.best_quantile} / 最弱 Q{qc.worst_quantile}；
+                    最强 Q{qc.best_quantile} / 最弱 Q{qc.worst_quantile}
+                    （<b className="text-amber-600 dark:text-amber-400">样本内最优</b>
+                    ⇒ 十档不单调时不能当结论）；
                     {basis === 'arith' ? (
                       <>
                         <b>右轴 = 多空</b>（最强−最弱，<b>逐期价差累加</b>，起点 0；不可实现，仅作参考）
