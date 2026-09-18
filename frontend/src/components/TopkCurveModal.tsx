@@ -434,7 +434,13 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                 const gb = qc.groups.find((g) => g.quantile === qc.best_quantile)
                 const gw = qc.groups.find((g) => g.quantile === qc.worst_quantile)
                 if (!gb || !gw) return null
+                // ⚠⚠ v1.19.95 修 bug（用户 2026-09-18 抓到）：以前用「第一个 ≥ YYYY-01-01 的日期」
+                //   找分段起点 —— 若该年份**早于数据起点**，findIndex 会返回 **0** ✗ ⇒ 这些年份
+                //   全部退化成"整段"，于是 2013/2018/2021 显示**同一个数**（实测都是 126.4pp ✗）。
+                //   ⇒ 只保留 **≥ 数据实际起点年** 的年份（其余不可评估，直接不显示 ✓）。
+                const _y0 = Number(String(qc.dates[0] ?? '').slice(0, 4)) || 0
                 const segs = [2013, 2018, 2021, 2023]
+                  .filter((y) => y >= _y0)
                   .map((y) => {
                     const i = qc.dates.findIndex((d) => d >= `${y}-01-01`)
                     if (i < 0 || i >= qc.dates.length - 1) return null
