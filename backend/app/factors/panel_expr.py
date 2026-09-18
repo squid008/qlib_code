@@ -2342,8 +2342,17 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     cal = _calendar()
     fdir = _feature_dir()
 
-    # 切块：把 instruments 均分成 n_jobs 份
-    chunk_size = math.ceil(n / n_jobs)
+    # 切块（v1.2.1，2026-09-18 改）：**块数 = n_jobs × 4**，不再等于 n_jobs ✗ ——
+    #   进度只在"每完成一块"时上报 ✓，块数 = 核数时每块要跑**几分钟**（全 A 5418 只、
+    #   过顶那种重公式 ⇒ 用户看到进度条**长时间停在 6%** ✗，体感"卡死了" ✓）。
+    #   块数 ×4 后：上报次数 ×4（进度肉眼可见地走 ✓）、**总耗时基本不变**（进程池按块调度，
+    #   块数 > worker 数时负载反而更均衡 ✓），且单块内存更小 ✓。
+    #   ⚠ 下限保护 `_MIN_PER_CHUNK`：块太碎会放大"主↔子进程"的数据传输与建池开销 ✓。
+    #   ⚠⚠ worker 数**仍必须是 n_jobs**（见下方 `_panel_executor(n_jobs, ...)` ✗ 不能用
+    #     `len(chunks)` —— 否则 worker 数 ×4 ⇒ 内存直接爆 ✓）。
+    _MIN_PER_CHUNK = 80
+    n_chunk_target = max(n_jobs, min(n_jobs * 4, max(1, n // _MIN_PER_CHUNK)))
+    chunk_size = math.ceil(n / n_chunk_target)
     chunks = [instruments[i:i + chunk_size] for i in range(0, n, chunk_size)]
     n_chunk = len(chunks)
     _wu = max(0, int(warmup_days or 0))
@@ -2366,7 +2375,9 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     parts: dict = {}
     done = 0
     with _nowin_spawn():
-        cm = _panel_executor(len(chunks), _worker_init,
+        # ⚠ worker 数 = `n_jobs`（**不是** `len(chunks)` ✗ —— 块数已 ×4，若按块数建池
+        #   会把并发 worker 也 ×4 ⇒ 内存爆 ✓）；多出的块由进程池**排队**执行 ✓。
+        cm = _panel_executor(n_jobs, _worker_init,
                              (cal, fdir, bin_cache_mb, node_cache_mb))
         ex = cm.__enter__()
         try:
