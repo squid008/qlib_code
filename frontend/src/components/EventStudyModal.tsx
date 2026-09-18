@@ -127,6 +127,15 @@ export default function EventStudyModal({
   // ---- 净值曲线（v1.19.60）：复用任务里已算好的触发事件 + 缓存价格面板，只花"一次回测"的钱
   //      （实测 0.12~0.6s/次）⇒ 持仓周期可自己调、净值跟着变；按 k 缓存 ⇒ 来回改秒开。
   const [navK, setNavK] = useState<number | null>(null)
+  // ⚠ v1.2.2（用户 2026-09-18 要求）：**输入框显示值与"已生效的 k"分开** ✗ ——
+  //   原来 `value={navK ?? ''}` + `onChange={setNavK(max(1, Number(v)))}` ⇒ 一按删除键
+  //   `Number('') == 0` ⇒ 立刻被回填成 **1** ⇒ **永远删不光** ✓（个位数尤其烦 ✓）。
+  //   现在：输入框绑 `navKInput`（**可为空** ✓），只有"合法正整数"才去改 `navK`（⇒ 才发请求）；
+  //   空/非法 ⇒ **不动 `navK`** ⇒ **不发请求、图保留上一次** ✓（正是用户要的手感 ✓）。
+  //   `lastOkKRef` 记录**上一次请求成功时的 k** ⇒ 删光时把 `navK` 回退到它 ⇒ 命中缓存**秒回** ✓
+  //   （⇒ "6 算到一半删光 ⇒ 停在 60" 这个诉求靠它实现 ✓）。
+  const [navKInput, setNavKInput] = useState('')
+  const lastOkKRef = useRef<number | null>(null)
   const [navCost, setNavCost] = useState(0.004)
   const [navRes, setNavRes] = useState<EventNavResult | null>(null)
   const [navBusy, setNavBusy] = useState(false)
@@ -138,7 +147,9 @@ export default function EventStudyModal({
     if (!result) return
     navCacheRef.current.clear()
     const last = result.curve?.length ? result.curve[result.curve.length - 1].k : null
-    setNavK(defaultK ?? last ?? 20)
+    const k0 = defaultK ?? last ?? 20
+    setNavK(k0)
+    setNavKInput(String(k0))          // ⚠ 输入框跟着同步（否则换结果后显示值不动 ✗）
     setNavRes(null)
     setNavErr('')
     // ⚠ v1.19.84：换结果/换周期入口也要清 spinner（否则上一轮的 "计算中…" 会跟着新结果一起挂着）
@@ -190,6 +201,7 @@ export default function EventStudyModal({
           .then((r) => {
             if (cancelled) return
             navCacheRef.current.set(key, r)
+            lastOkKRef.current = navK        // 记下"最后一次真正算出结果的 k" ✓
             setNavRes(r)
             setNavErr('')
             setNavBusy(false)
@@ -931,8 +943,18 @@ export default function EventStudyModal({
                     min={1}
                     max={250}
                     className="w-16 border rounded px-1 py-0.5"
-                    value={navK ?? ''}
-                    onChange={(e) => setNavK(Math.max(1, Math.min(250, Number(e.target.value))))}
+                    value={navKInput}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setNavKInput(v)                       // 显示什么就是什么（**可空** ✓ 能删光）
+                      const n = Number(v)
+                      if (v.trim() !== '' && Number.isFinite(n) && n >= 1) {
+                        setNavK(Math.max(1, Math.min(250, Math.round(n))))   // 合法 ⇒ 才发请求 ✓
+                      } else if (v.trim() === '' && lastOkKRef.current != null) {
+                        setNavK(lastOkKRef.current)         // 删光 ⇒ 回到上一次成功的那条（**命中缓存秒回** ✓）
+                      }
+                      // 其余非法输入（如 0 / 负数）⇒ 什么都不做 ⇒ **图保留上次** ✓
+                    }}
                   />
                   天
                 </label>
