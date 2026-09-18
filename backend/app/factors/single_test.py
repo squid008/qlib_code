@@ -211,11 +211,24 @@ def _quantile_curves(mat: pd.DataFrame) -> dict:
     base = float(means.mean())          # 等频分组 ⇒ 各组均值之平均 = 全样本均值（同口径基准）
     best, worst = int(means.idxmax()), int(means.idxmin())
     spread = mat[best] - mat[worst]        # 逐期价差（最强 − 最弱）
+    # ★ 十档单调性（v1.19.94，用户 2026-09-18 要求提到结论区）：
+    #   分位均值 vs 档位序号的 **Spearman** ⇒ |ρ| 小 ⇒ **十档乱跳 = 没有横截面 alpha** ✗
+    #   （LLT 就是典型：rank(LLT)≈rank(close)、十档乱跳，`best_quantile` 挑出来的"最强档"
+    #     只是噪声 & 事后选择 ✗）。⚠ 单调性只是**必要条件**（单调也可能是风格暴露 ✓）。
+    _mono = None
+    try:
+        _idx = pd.Series(np.asarray(means.index, dtype=float))
+        _val = pd.Series(np.asarray(means.values, dtype=float))
+        _m = float(_val.corr(_idx, method="spearman"))
+        _mono = round(_m, 4) if np.isfinite(_m) else None
+    except Exception:                                    # noqa: BLE001 —— 缺库/数据异常时不阻塞
+        _mono = None
     return {
         "n_groups": len(qs),
         "n_periods": int(len(mat)),
         "dates": [pd.Timestamp(d).strftime("%Y-%m-%d") for d in mat.index],
         "baseline_mean": round(base, 6),
+        "monotonicity": _mono,
         "best_quantile": best,
         "worst_quantile": worst,
         "groups": [{"quantile": q,

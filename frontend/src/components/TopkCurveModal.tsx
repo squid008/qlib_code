@@ -425,6 +425,21 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   ② **但 TopK 的 K 不是平台挑的** —— K 由用户选择，平台只把整排 K 并列展示；
                      TopK 选股 = **按最强分位所在的方向，取名次最头上的 K 只** ✓（不是 K 扫描后的 argmax ✗）。 */}
               {qc ? '（最强/最弱为样本内最优，非样本外；K 由你选择）' : ''}
+              {/* ★ 单调性（v1.19.94）：|ρ| 小 ⇒ 十档乱跳 = 没有横截面 alpha，`最强档`只是事后挑的噪声 ✗ */}
+              {qc && qc.monotonicity != null && (
+                <span
+                  className={
+                    Math.abs(qc.monotonicity) < 0.5
+                      ? ' text-red-600 dark:text-red-400 font-semibold'
+                      : ' text-emerald-700 dark:text-emerald-300'
+                  }
+                  title="十档均值 vs 档位的 Spearman：越接近 ±1 越单调（单调只是必要条件，也可能是风格暴露）"
+                >
+                  {'　十档单调性 ρ='}
+                  {qc.monotonicity.toFixed(2)}
+                  {Math.abs(qc.monotonicity) < 0.5 ? '（无单调性 ⇒ 别信"最强档"）' : ''}
+                </span>
+              )}
             </span>
           </div>
           <button onClick={onClose} className="px-2 py-1 text-xs rounded border">

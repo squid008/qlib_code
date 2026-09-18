@@ -315,6 +315,8 @@ export interface QuantileCurves {
   n_periods: number // 调仓期数（= 曲线点数）
   dates: string[] // 调仓日 YYYY-MM-DD（每期一个点）
   baseline_mean: number // 各组均值之平均（等频分组 ⇒ = 全样本均值，超额的同口径基准）
+  /** 十档单调性（v1.19.94）：分位均值 vs 档位的 Spearman ⇒ |ρ| 小 = 十档乱跳 = 无横截面 alpha ✗ */
+  monotonicity?: number | null
   best_quantile: number // **超额收益最强的分位组**（默认档展示的那一档，可能是 Q10/Q9/Q2…）
   worst_quantile: number // 最弱分位组
   groups: {
