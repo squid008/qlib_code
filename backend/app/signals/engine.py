@@ -173,8 +173,12 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
     _raw = O if px_kind == "open" else C
     PX = np.where(np.isfinite(_raw) & (_raw > 0), _raw, np.nan)
 
-    def price(i: int, c: int, kind: str = None) -> float:
+    def price(i: int, c: int, kind: str = None):
         if kind is None:
+            # ⚠⚠ v1.2.9 **试过去掉 `float()`，实测反而变慢（1.28s → 1.72s ✗），已回退** ——
+            #   原因是下游 `round(np.float64)` 比 `round(float)` **慢一个量级** ✗
+            #   （`builtins.round` 的 tottime 从 0.128 飙到 **0.269** ✓）。
+            #   ⇒ **收益/风险都不划算，保持 `float()` 装箱** ✓（这条如实记录，避免以后再试 ✓）。
             return float(PX[i, c])              # 快路径：主循环 100% 走这里 ✓
         arr = O if (kind or px_kind) == "open" else C
         v = arr[i, c]
