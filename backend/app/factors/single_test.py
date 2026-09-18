@@ -1210,9 +1210,18 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
         _got_cols = [str(c) for c in pdf.columns]
         if _got_cols != list(all_cols):
             _dump_sft_error(RuntimeError(
-                "面板列名/顺序与 all_cols 不一致（位置对齐隐患 ✗）：期望 %s ｜实际 %s"
+                "面板列顺序与 all_cols 不一致（已按名字重排 ✓）：期望 %s ｜实际 %s"
                 % (list(all_cols), _got_cols)))
-        pdf.columns = all_cols
+        _missing = [c for c in all_cols if c not in pdf.columns]
+        if _missing:
+            raise ValueError("面板缺列 %s ⇒ 无法按名字取列 ✗" % (_missing,))
+        # ⚠⚠⚠ v1.19.97 **关键修复**：**绝不能用 `pdf.columns = all_cols` 按位置改名** ✗ ——
+        #   qlib 返回的列顺序**不保证**与传入一致（实测：因子列 `F0` 被排到最后 ✗，
+        #   实际列序 = [LABEL, CLOSE, ..., F0]）；按位置改名会把**数据也搬错位**
+        #   （`F0` 列里装进 `T1_IS_ST` 的值 ✗）⇒ 因子变成 ST 标签（0/1）⇒ **信号从十几万掉到几百、
+        #   触发/未触发收益统计整块消失** ✗✗（用户 2026-09-18 实测报障 ✓）。
+        #   安全做法：**按名字取列**（下面的 `pdf = pdf[list(all_cols)]` ✓）⇒ 顺序自然正确 ✓。
+        #   以前之所以没暴露：`forward` 不替换表达式、列名是长表达式串 ⇒ qlib 恰好保序 ✓。
         # 对齐列顺序（panel_features 顺序与 fields/all_cols 一致，此处兜底）
         pdf = pdf[list(all_cols)]
         if progress_cb:
@@ -1246,9 +1255,18 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
         _got_cols = [str(c) for c in pdf.columns]
         if _got_cols != list(all_cols):
             _dump_sft_error(RuntimeError(
-                "面板列名/顺序与 all_cols 不一致（位置对齐隐患 ✗）：期望 %s ｜实际 %s"
+                "面板列顺序与 all_cols 不一致（已按名字重排 ✓）：期望 %s ｜实际 %s"
                 % (list(all_cols), _got_cols)))
-        pdf.columns = all_cols
+        _missing = [c for c in all_cols if c not in pdf.columns]
+        if _missing:
+            raise ValueError("面板缺列 %s ⇒ 无法按名字取列 ✗" % (_missing,))
+        # ⚠⚠⚠ v1.19.97 **关键修复**：**绝不能用 `pdf.columns = all_cols` 按位置改名** ✗ ——
+        #   qlib 返回的列顺序**不保证**与传入一致（实测：因子列 `F0` 被排到最后 ✗，
+        #   实际列序 = [LABEL, CLOSE, ..., F0]）；按位置改名会把**数据也搬错位**
+        #   （`F0` 列里装进 `T1_IS_ST` 的值 ✗）⇒ 因子变成 ST 标签（0/1）⇒ **信号从十几万掉到几百、
+        #   触发/未触发收益统计整块消失** ✗✗（用户 2026-09-18 实测报障 ✓）。
+        #   安全做法：**按名字取列**（下面的 `pdf = pdf[list(all_cols)]` ✓）⇒ 顺序自然正确 ✓。
+        #   以前之所以没暴露：`forward` 不替换表达式、列名是长表达式串 ⇒ qlib 恰好保序 ✓。
         # 对齐列顺序（panel_features 顺序与 fields/all_cols 一致，此处兜底）
         pdf = pdf[list(all_cols)]
         if progress_cb:
