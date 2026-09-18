@@ -182,7 +182,14 @@ def chip_run(close: np.ndarray, high: np.ndarray, low: np.ndarray,
     chips = np.zeros((n_stk, int(bins)), dtype=float)
     qs_arr = np.asarray(qs, dtype=float)
     out: Dict[str, np.ndarray] = {("cost_%g" % q): np.full((n_day, n_stk), np.nan) for q in qs_arr}
-    out["winner"] = np.full((n_day, n_stk), np.nan) if prices is not None else None
+    # `prices`：单矩阵 ⇒ 键 `winner`（向后兼容）；**多个矩阵的序列** ⇒ 键 `winner_0/1/…`
+    #   ⚠ 这样一次递推就能同时产出多个价位的获利盘 —— 否则"每个价位各跑一遍全池递推"
+    #   （物化 7 个字段时实测慢 3~7 倍，v1.19.85）
+    _pmats = None
+    if prices is not None:
+        _pmats = list(prices) if isinstance(prices, (list, tuple)) else [prices]
+        for _i in range(len(_pmats)):
+            out[("winner" if len(_pmats) == 1 else "winner_%d" % _i)] = np.full((n_day, n_stk), np.nan)
     out["winner_max"] = np.full((n_day, n_stk), np.nan)   # WINNER(当日最高价)：打进"最乐观"的获利盘
 
     for t in range(n_day):
@@ -219,11 +226,16 @@ def chip_run(close: np.ndarray, high: np.ndarray, low: np.ndarray,
         # ⚠ 停牌日（价格 NaN）筹码**冻结** ⇒ COST 仍有值（上面），但"当日获利盘"无意义 ⇒ NaN
         wmax = _cum_at(edges, cum, np.where(ok, h, edges[:, 0]))
         out["winner_max"][t] = np.where(ok, np.clip(wmax, 0.0, 1.0), np.nan)
-        if prices is not None:
-            p = np.asarray(prices, dtype=float)[t]
-            pok = np.isfinite(p)
-            w = _cum_at(edges, cum, np.where(pok, p, edges[:, 0]))
-            out["winner"][t] = np.where(pok, np.clip(w, 0.0, 1.0), np.nan)
+        if _pmats is not None:
+            # ⚠ 尚无筹码的股票（没有换手率 ⇒ 从未注入）必须给 **NaN**，不能给 0
+            #   （0 = "0% 获利盘" 是个"看起来正常"的假值，会被回测当成真信号 ✗，v1.19.85）
+            has_chips = s.reshape(-1) > _EPS if np.ndim(s) else s > _EPS
+            for _i, _pm in enumerate(_pmats):
+                p = np.asarray(_pm, dtype=float)[t]
+                pok = np.isfinite(p) & has_chips
+                w = _cum_at(edges, cum, np.where(pok, p, edges[:, 0]))
+                out[("winner" if len(_pmats) == 1 else "winner_%d" % _i)][t] = np.where(
+                    pok, np.clip(w, 0.0, 1.0), np.nan)
     if prices is None:
         out.pop("winner", None)
     out["edges"] = edges                    # 便于调用方/体检（末尾边界）
