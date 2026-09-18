@@ -125,15 +125,22 @@ export default function FormulaEditor({
   const [query, setQuery] = useState('')
   const [hitIdx, setHitIdx] = useState(0)
 
-  const lines = useMemo(() => value.split('\n'), [value])
+  // ⚠⚠ v1.19.99（2026-09-18 修 **CRLF 导致选区/高亮错行**）：本编辑器是**三层叠加**
+  //   （行号槽 + `<pre>` 高亮层 + 透明 `<textarea>`）。`<textarea>` 由**浏览器按规范把
+  //   `\r\n`/`\r` 原生归一成 `\n`** 再排版 ✗ —— 若行号槽与 `<pre>` 用**原始 value**，
+  //   遇到从记事本/通达信粘进来的 **CRLF** 文本就会**多算一次换行** ⇒ 两层行盒**错开一行**
+  //   ⇒ 光标/选区画到下一行（用户实测：鼠标在第 20 行拖动、高亮的却是第 21 行的字 ✗，
+  //   而行号显示本身是"对"的 ✓）。修法：**三层共用同一份归一化文本** ✓。
+  const text = useMemo(() => value.replace(/\r\n?/g, '\n'), [value])
+  const lines = useMemo(() => text.split('\n'), [text])
   const activeLine = useMemo(
-    () => value.slice(0, caret).split('\n').length,
-    [value, caret],
+    () => text.slice(0, caret).split('\n').length,
+    [text, caret],
   )
 
   // 查找命中 + 着色层
-  const hits = useMemo(() => matchRanges(value, query), [value, query])
-  const toks = useMemo(() => tokenClasses(value), [value])
+  const hits = useMemo(() => matchRanges(text, query), [text, query])
+  const toks = useMemo(() => tokenClasses(text), [text])
 
   const syncScroll = () => {
     const a = inner.current
@@ -169,8 +176,9 @@ export default function FormulaEditor({
   const scrollToMatch = (start: number, len: number) => {
     const a = inner.current
     if (!a) return
-    const line = value.slice(0, start).split('\n').length - 1
-    const col = start - (value.lastIndexOf('\n', start - 1) + 1)
+    // ⚠ 用归一化后的 `text`（与 textarea 同一份串）⇒ 行列换算不会因 CRLF 偏一行 ✓
+    const line = text.slice(0, start).split('\n').length - 1
+    const col = start - (text.lastIndexOf('\n', start - 1) + 1)
     const lh = M.lineHeight
     const top = line * lh - (a.clientHeight - lh) / 2
     a.scrollTop = Math.max(0, Math.min(top, a.scrollHeight - a.clientHeight))
@@ -205,7 +213,7 @@ export default function FormulaEditor({
     const a = inner.current
     // 有选中内容 ⇒ 直接拿来当搜索词（省一次输入 ✓）
     if (a && a.selectionEnd > a.selectionStart) {
-      setQuery(value.slice(a.selectionStart, a.selectionEnd))
+      setQuery(text.slice(a.selectionStart, a.selectionEnd))
     }
     setHitIdx(0)
     setFindOpen(true)
@@ -309,7 +317,7 @@ export default function FormulaEditor({
             style={metricsStyle}
           >
             {/* 面板关掉后不再画高亮底色（`hits` 只为"计数"继续算着，不渲染 ✓） */}
-            {renderText(value, toks, findOpen ? hits : [], hitIdx, query.length)}
+            {renderText(text, toks, findOpen ? hits : [], hitIdx, query.length)}
             {'\n'}
           </pre>
           <textarea
@@ -317,9 +325,10 @@ export default function FormulaEditor({
               inner.current = el
               innerRef?.(el)
             }}
-            value={value}
+            value={text}
             onChange={(e) => {
-              onChange(e.target.value)
+              // ⚠ 回写前先归一化：否则 CRLF 会一直滞留在上层 state 里，粘贴/失焦后可能再带出去 ✓
+              onChange(e.target.value.replace(/\r\n?/g, '\n'))
               setCaret(e.target.selectionStart)
             }}
             onScroll={syncScroll}
