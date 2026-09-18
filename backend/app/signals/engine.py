@@ -163,8 +163,19 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
     """
     C, O, CR, OR, LU, LD = (prep["C"], prep["O"], prep["CR"], prep["OR"],
                             prep["LU"], prep["LD"])
+    # ⚠ v1.2.4（2026-09-18 性能）：**预先把整块成交价矩阵规范化**（一次性 ✓）——
+    #   原 `price(i,c)` 每次调用都要做 `np.isfinite(v) and v > 0` 两个判定 + `float()`
+    #   转换 ✗，而主循环里它被调用**百万次**（每日盯市 + 三处再平衡遍历 × 两种资金方案 ✓）
+    #   ⇒ 仅"函数调用 + 分支"这一项就是数秒 ✓（实测这是净值曲线慢的**大头**，不是 dict 遍历 ✓）。
+    #   改为预计算 `PX = where(isfinite(arr) & arr > 0, arr, nan)` ✓ ⇒ 主循环走**纯数组索引** ✓
+    #   ⇒ **零调用、零分支** ✓，且**语义逐位相同** ✓（同一条件、同一结果 ✓，
+    #     由 `tests/test_backtest_semantics.py` 的冻结基准守门 ✓）。
+    _raw = O if px_kind == "open" else C
+    PX = np.where(np.isfinite(_raw) & (_raw > 0), _raw, np.nan)
 
     def price(i: int, c: int, kind: str = None) -> float:
+        if kind is None:
+            return float(PX[i, c])              # 快路径：主循环 100% 走这里 ✓
         arr = O if (kind or px_kind) == "open" else C
         v = arr[i, c]
         return float(v) if np.isfinite(v) and v > 0 else float("nan")
@@ -212,8 +223,16 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                  hold_days: int = 20, fill: str = "t1_open", cost: float = 0.004,
                  capital: float = 1e9, strict_limit: bool = True,
                  alloc_modes: Sequence[str] = ("event_even", "cash_even"),
-                 lot: int = LOT_DEFAULT, rebal_band: float = 0.0) -> BtResult:
-    """跑回测，返回**两种资金方案**的净值 + 成交/被拒明细 + 统计。"""
+                 lot: int = LOT_DEFAULT, rebal_band: float = 0.0,
+                 cancel_cb=None) -> BtResult:
+    """跑回测，返回**两种资金方案**的净值 + 成交/被拒明细 + 统计。
+
+    `cancel_cb`（v1.2.4）：可选取消检查回调 —— 主循环里**每 20 个交易日**调一次 ✓，
+    约定「应取消时直接抛异常」（与 `panel_features_parallel` 同一约定 ✓）。
+    ⚠ 之前**完全没有取消检查点** ✗ ⇒ 用户改了持仓周期后，旧的那次回测只能跑完 ✓
+    （净值曲线 + 两资金方案 + 全持仓遍历 ⇒ 数十秒白等 ✓）。加上之后配合路由层
+    "新请求作废旧请求"的 token ⇒ **改 k 时旧计算立即停** ✓。
+    """
     if not len(signals) or "CALENDAR" not in panel or "CLOSE" not in panel:
         return BtResult(diag={"error": "无可用信号或价格面板"})
     fill = fill if fill in _FILL_LAG else "t1_open"
@@ -301,6 +320,10 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         i_start = min([max(0, min(bk["buys"], default=0) - 1)] +
                       [max(0, min(bk["exits"], default=0) - 1)] + [0])
         for i in range(i_start, n_row):
+            # 取消检查点（v1.2.4）：每 20 天一次 ⇒ 取消响应 ≤ 20 个交易日的计算量 ✓
+            #   （⚠ 不能每天都调：回调本身有开销，而本循环要跑数千天 ✓）
+            if cancel_cb is not None and (i - i_start) % 20 == 0:
+                cancel_cb()
             # ---- 1) 到期/信号卖出 ----
             for c in list(sell_q.keys()):
                 dec, reason = sell_q[c]
