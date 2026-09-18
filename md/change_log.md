@@ -3,6 +3,58 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.103] - 2026-09-18
+
+### Added
+1. **`$open/$high/$low/$vwap` 前复权物化**（此前只有 `$close` 有 ✗ ⇒ 用到 HIGH/LOW/VWAP 的因子在前复权下是
+   **混合口径** ✗）：`ai_test/build_preclose.py` 泛化成四字段循环 ⇒ 生成 `preopen / prehigh / prelow /
+   prevwap`，各 **6141** 个 ✓。规则：**各字段用自己 bin 的 `first_idx`**（与原字段逐位同轴 ✓）、
+   **四个字段共用同一个 `factor_last`**（同尺度 ✓，不会出现 high < low 的荒谬 ✗）。
+   `adjust.py` 新增 `_PRE_OF` 映射 ⇒ `forward` 覆盖全部 **5 个价格字段**（`Add($pre*,0)` ✓）；
+   **未映射字段仍落回真实价** ✓（不会拼出空字段名 ✗）。
+2. 回归测试两条：`test_forward_covers_open_high_low_vwap` ✓、
+   `test_market_cap_not_adjusted_in_any_mode` ✓（一并断言 `$volume/$amount/$turn` 不受复权影响 ✓）。
+
+### Fixed（★ 公式编辑器三连 bug：错行 / 光标跳末尾 / 滚动重影）
+1. **选区与高亮错行、最后一行选不到** ✗ —— 根因是**三层的行数不同源**：
+   - `<pre>` 着色层里掺着 **JSX 缩进空白 + 尾随 `{'\n'}`** ⇒ 在 `white-space: pre` 下被**真实渲染** ⇒ 多出行 ✓；
+   - 文本里的 **`\r`（CRLF，从记事本/达信粘贴）**：`<textarea>` 由浏览器**按规范自动归一成 `\n`** ✗，
+     行号槽 / `<pre>` 却吃原始串 ⇒ 又差 1 行 ✓。
+   ⇒ **修法**：① 三层共用 `const text = value.replace(/\r\n?/g, '\n')` ✓；
+   ② 着色层**收敛为单一表达式** `<pre>{backdrop}</pre>` ✓（两侧**零 JSX 空白、不追加尾随换行** ✓）。
+2. **按一下删除键光标跳到末尾**（上一版改动引入的 ✗）：受控 `<textarea>` 的 value 一旦在 `onChange` 里
+   被改写（归一化去掉 `\r` ⇒ 长度变了 ✗），React 会重设 DOM ⇒ **光标被扔到文本末尾** ✓。
+   ⇒ **修法**：`onChange` 里**只在真含 `\r` 时才动**（99.9% 的输入走原路、**绝不碰 DOM** ✓），
+   且必须**手工 `el.value = clean`**（否则 React 会因"新旧 value 相同"而**不重设 DOM** ⇒ `\r` 继续残留 ✗）
+   + **按被删掉的字符数还原光标** ✓；`onPaste` 仍保留手工插入清理 ✓（互为保险 ✓）。
+3. ★ **滚动后出现重影、光标在第 28 行却显示第 29 行**（用户发现"**跟滚动条有关系**" ✓）：
+   三层**滚动盒尺寸不同** ✗ —— `<textarea>` 是 `overflow:auto` ⇒ 内容超出时**真的出现滚动条、占掉
+   ~15px ≈ 一行高 18px** ✗；行号槽 / `<pre>` 原是 `overflow:hidden` ⇒ **不占** ✗ ⇒ 同一个 `scrollTop`
+   渲染出的偏移**差一行** ⇒ **越往下滚越错** ✓。
+   ⇒ **最终修法（已生效）**：**只让 `<textarea>` 当滚动容器** ✓，行号槽与 `<pre>` 改 `overflow:hidden`
+   + **`syncScroll` 里用 `style.transform = translate(-scrollLeft, -scrollTop)` 平移跟随** ✓
+   ⇒ **完全不依赖 `scrollHeight / clientHeight / maxScrollTop`** ⇒ 误差源从根上消失 ✓。
+   配套（否则会"底部露白"✗）：两层**高度跟内容走** —— `<pre>` 去掉 `inset-0`（改 `absolute top-0
+   left-0 w-full`）✓、行号槽 `alignSelf:flex-start` + `height:auto` ✓。
+   > 两次**失败尝试**（如实记录 ✗）：① 只在 `onPaste` 清 `\r`（拖拽/输入法/插件不走它 ⇒ 无兜底 ✗）；
+   > ② 给三层都加"滚动条占位"（等于要求三者**逐像素相同** ✗ 而滚动条宽高**动态变化** ⇒ 永远对不齐 ✗）。
+
+### Changed
+- 版本号 `1.19.98` → **`1.19.103`**（本次改动合并记录于此）。
+
+### Notes（澄清，避免误判）
+- ★ **市值因子与复权方式无关** ✓：`adjust_expr` 的 `PRICE_FIELDS` **不含 `$market_cap`** ⇒ `$market_cap`
+  三模式**恒等返回** ✓（实测 `['MARKET_CAP','MARKET_CAP','MARKET_CAP']` ✓）；独立佐证：`sh600000` 的
+  `market_cap ÷ (close/factor)` 尾部 10 日**恒为 333.06 亿股**（若被乘 factor 该比值会随价格漂移 ✗）。
+  ⇒ 实测对照（csi300 / 2021-01~2023-12 / h=60）：**backward 与 forward 逐位相同**（Q1 −28.32%、
+  Q10 −5.60%、**K=20 +4.26%/+1.36%** ✓）；用户全A 5 年实测亦逐位相同（**K=20 +32.4%、回撤 −50.2%** ✓）。
+  ⇒ 历史上"后复权年化为负"属 **1.19.95 及更早**的问题（`forward` 原样返回 + `label` 未强制后复权 ✗），
+  已由 1.19.87 / 1.19.96 修掉 ✓。
+- ⚠ 单因子测试的 `factors[].expression` **不做别名编译** ✗（`routers/factors.py` 原样透传）⇒
+  **独立脚本必须写 `$market_cap`** ✓，写 `MARKET_CAP` 会整列 NaN 并被判成 `is_binary` 0/1 信号 ✗
+  （前端走「编译并保存」则不受影响 ✓）。
+- ⚠ `build_preclose.py` 在**数据更新后需重跑** ✓（`factor_last` 变 ⇒ 历史价整体缩放 ✓）。
+
 ## [1.19.97] - 2026-09-18
 
 ### Fixed（三个**连环** bug：前复权语义 / 面板列错位 / 缓存串参）
