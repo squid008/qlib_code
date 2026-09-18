@@ -3,6 +3,25 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.2.20] - 2026-09-18
+
+### Performance（B2：净值曲线「回测段」热循环减负）+ Fixed（UI 对齐）
+
+- **UI（用户反馈"还是没对齐"）**：`TopkCurveModal.tsx` 标题栏改 **`items-baseline`** ✓ ——
+  `items-start` 只让**盒子顶部**对齐，而文字有 `line-height` ⇒ 视觉上「关闭」按钮仍比第一行
+  文字**偏高** ✗；基线对齐后按钮与第一行文字**同一基线** ✓。
+- **★ B2 调查结论（重要，避免下次重复投入）**：`signals/engine.py::run_backtest` 是
+  **逐日 × 逐股的状态机**（持仓/现金/费用/涨跌停拒单都有**路径依赖** ✗）⇒ **无法简单向量化** ✓；
+  且**今天已优化过一轮**（v1.2.7：`_log_trade` 的逐笔 `str(cal[i].date())`/`round()` 移出热循环，
+  实测省 ~26% ✓）。⇒ 剩余耗时是状态推进的本质成本 ✓，**不建议**盲改。
+- **本轮实际优化**：`_reject`（被拒/顺延明细）**元组化** ✓ —— 与 v1.2.7 同一思路：热循环里
+  只 `rejects.append((i, c, reason, decision_pos))`（**零格式化** ✓），`str(cal[i].date())`、
+  `REJECT_TEXT`、dict 组装全部挪到 `for mode_spec` 轮次结束后**一次性做** ✓；
+  循环外的三处统计（`rejects_limit_up/suspended/no_cash`）改取元组 `r[2]` ✓；
+  `rejects_total` 仍为真实总数 ✓。**语义逐位相同** ✓（末尾生成的正是原来那些字段 ✓）。
+  ⚠ 过顶这类公式 `rejects` 可达**几万条**（严格口径下每次重试都记一条 ✓）⇒ 收益显著 ✓。
+- **测试**：全量 **398 passed** ✓（含既有 `rejects` 断言 ✓）；ruff 全过 ✓；tsc 通过 ✓。
+
 ## [1.2.19] - 2026-09-18
 
 ### Fixed（UI）+ 定位（用户 2026-09-18 深夜：「全A 六年还是四五十秒」）
