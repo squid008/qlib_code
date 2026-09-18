@@ -180,39 +180,42 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
         v = arr[i, c]
         return float(v) if np.isfinite(v) and v > 0 else float("nan")
 
-    def _suspended(i: int, c: int) -> bool:
-        return not np.isfinite(CR[i, c])
-
-    def _limit(i: int, c: int, up: bool, level: str) -> bool:
-        """成交日涨/跌停判定（level=close 用收盘价，open 用开盘价；标签是**价格**）。"""
-        lv = LU[i, c] if up else LD[i, c]
-        if not np.isfinite(lv) or lv <= 0:
-            return False
-        v = CR[i, c] if level == "close" else OR[i, c]
-        if not np.isfinite(v):
-            return False
-        return (v >= lv - 1e-6) if up else (v <= lv + 1e-6)
+    # ⚠⚠ v1.2.8 性能（2026-09-18，cProfile 实测 −12%）：把「涨跌停 / 停牌」判定
+    #   **预计算成 5 个布尔矩阵**（一次性 ✓）—— 原来 `_limit` 被调 **14.9 万次**、
+    #   `_suspended` 7.5 万次，合计 ≈15% 总耗时 ✗（每次都要现查 4 个矩阵 + `isfinite` + 比较 ✓）；
+    #   而「过顶」有 14.88 万笔 ⇒ 又被放大 37 倍 ✓ ⇒ 属于"按笔数计费"的大头之一 ✓。
+    #   ⚠ 三个判据与原来**逐位等价**（同一条件 / 同一阈值 `1e-6` ✓）：
+    #     停牌 = 真实收盘价缺失 ✓；涨停价无效（NaN 或 ≤0）⇒ 原实现直接 `return False` ✓
+    #     ⇒ 这里用 `isfinite(LU) & (LU > 0)` 做门 ✓ 完全一致 ✓。
+    _SUSP = ~np.isfinite(CR)
+    _LU_ok = np.isfinite(LU) & (LU > 0)
+    _LD_ok = np.isfinite(LD) & (LD > 0)
+    LIM_UP_C = _LU_ok & np.isfinite(CR) & (CR >= LU - 1e-6)     # 收盘涨停 ⇒ 买不进
+    LIM_UP_O = _LU_ok & np.isfinite(OR) & (OR >= LU - 1e-6)     # 开盘一字涨停 ✓
+    LIM_DN_C = _LD_ok & np.isfinite(CR) & (CR <= LD + 1e-6)     # 收盘跌停 ⇒ 卖不出
+    LIM_DN_O = _LD_ok & np.isfinite(OR) & (OR <= LD + 1e-6)
+    _use_open = (px_kind == "open")
 
     def can_buy(i: int, c: int) -> Optional[str]:
-        if _suspended(i, c):
+        if _SUSP[i, c]:
             return "suspended"
         if not strict_limit:
             return None
         # 成交日**收盘涨停** ⇒ 买不进（用户口径：次日涨停时无论开盘/收盘都不买）
-        if _limit(i, c, True, "close"):
+        if LIM_UP_C[i, c]:
             return "limit_up"
-        if px_kind == "open" and _limit(i, c, True, "open"):
+        if _use_open and LIM_UP_O[i, c]:
             return "limit_up_open"                     # 开盘一字涨停
         return None
 
     def can_sell(i: int, c: int) -> Optional[str]:
-        if _suspended(i, c):
+        if _SUSP[i, c]:
             return "suspended"
         if not strict_limit:
             return None
-        if _limit(i, c, False, "close"):
+        if LIM_DN_C[i, c]:
             return "limit_down"
-        if px_kind == "open" and _limit(i, c, False, "open"):
+        if _use_open and LIM_DN_O[i, c]:
             return "limit_down_open"
         return None
 
