@@ -426,6 +426,47 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                      TopK 选股 = **按最强分位所在的方向，取名次最头上的 K 只** ✓（不是 K 扫描后的 argmax ✗）。 */}
               {qc ? '（最强/最弱为样本内最优，非样本外；K 由你选择）' : ''}
               {/* ★ 单调性（v1.19.94）：|ρ| 小 ⇒ 十档乱跳 = 没有横截面 alpha，`最强档`只是事后挑的噪声 ✗ */}
+              {/* ★ 分段稳健性（v1.19.94，用户 2026-09-18）：用**已有的** `groups[].cum`（逐期算术累加）
+                  看"最强档 − 最弱档"在几个起点之后**是不是每段都赢** —— 只在某一段赢的多半是
+                  风格/时点运气 ✗（LLT 那种"只有 2021 之后好"的，一眼就露馅 ✓）。
+                  ⚠ 口径与上面十分位图一致（无成本、算术累加、同一基准线）⇒ 只作稳健性参考 ✓ */}
+              {qc && (() => {
+                const gb = qc.groups.find((g) => g.quantile === qc.best_quantile)
+                const gw = qc.groups.find((g) => g.quantile === qc.worst_quantile)
+                if (!gb || !gw) return null
+                const segs = [2013, 2018, 2021, 2023]
+                  .map((y) => {
+                    const i = qc.dates.findIndex((d) => d >= `${y}-01-01`)
+                    if (i < 0 || i >= qc.dates.length - 1) return null
+                    const last = qc.dates.length - 1
+                    const db = gb.cum[last] - gb.cum[i]
+                    const dw = gw.cum[last] - gw.cum[i]
+                    return { y, spread: db - dw, win: db > dw }
+                  })
+                  .filter((x): x is { y: number; spread: number; win: boolean } => !!x)
+                if (!segs.length) return null
+                const nWin = segs.filter((s) => s.win).length
+                return (
+                  <span
+                    className="text-[11px] text-slate-500 dark:text-slate-400"
+                    title="用十分位图的逐期累计（无成本、算术累加）算「最强档 − 最弱档」在各起点之后的表现；只在某一段赢 ⇒ 多半是风格/时点运气"
+                  >
+                    {'　分段（最强−最弱，算累）：'}
+                    {segs.map((s) => (
+                      <span key={s.y}>
+                        {s.y}
+                        {'起 '}
+                        <b className={s.win ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600 dark:text-red-400'}>
+                          {s.spread >= 0 ? '+' : ''}
+                          {(s.spread * 100).toFixed(1)}pp
+                        </b>
+                        {'　'}
+                      </span>
+                    ))}
+                    {nWin === segs.length ? '（每段都赢 ✓）' : `（仅 ${nWin}/${segs.length} 段赢 ✗）`}
+                  </span>
+                )
+              })()}
               {qc && qc.monotonicity != null && (
                 <span
                   className={
