@@ -270,10 +270,12 @@ export default function EventStudyModal({
     //   而「过顶」这类高触发公式一次回测实测 **57s**（14.88 万笔 ✓，取价另 17.6s ✓）⇒
     //   改一下持仓周期就卡一分钟 ✓ ⇒ 改为**只由 `navTick`（按钮）驱动** ✓。
     //   ⚠ `navK` / `navCost` 仍从闭包读取（每次点按钮时取当前值 ✓）⇒ 故不放进依赖 ✓。
-    // ⚠ 依赖**只留 `navTick`** ✗ 不放 `result` —— 换结果时也**不自动算** ✓
-    //   （打开弹窗就自动跑 57s 正是用户要避免的 ✓；`result` 变化由上面的初始化 effect
-    //    负责清空旧图 ✓，用户点一次按钮即可 ✓）。
-  }, [navTick])                                                               // eslint-disable-line react-hooks/exhaustive-deps
+    // ⚠ v1.2.12：依赖里**要放 `result`** ✓ —— 换公式（= 换 result）时应当**自动算一次** ✓，
+    //   否则"小公式自动"这条就失效了 ✗（v1.2.9 曾只留 `navTick` 是因为当时一律手动 ✓，
+    //   现在既然自动识别，就必须让换公式也走一次自动判定 ✓）。
+    //   慢公式由 effect 开头的 `slowRef` 拦截 ✓（换公式时初始化 effect 已把它清成 false ✓
+    //   ⇒ 每个公式都"首次自动、按自己耗时决定是否转手动" ✓）。
+  }, [result, navTick])                                                       // eslint-disable-line react-hooks/exhaustive-deps
 
   const taskRef = useRef<string | null>(null)
   const timerRef = useRef<number | null>(null)
