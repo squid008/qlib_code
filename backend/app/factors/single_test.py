@@ -1290,7 +1290,7 @@ def run_single_factor_tests(
     exclude_limit_up_signal: bool = True,
     exclude_limit_up_trade: bool = True,
     exclude_suspended: bool = True,
-    price_adjust: str = "none",
+    price_adjust: str = "backward",     # v1.19.97：默认改后复权
     freeze_suspended_price: bool = True,
     suspend_remove: bool = True,
     exclude_st_t1: bool = False,

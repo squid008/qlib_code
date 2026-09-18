@@ -54,7 +54,7 @@ export default function App() {
     selected_features: null,
     custom_formulas: null,
     deal_price: 'close',
-    price_adjust: 'forward',
+    price_adjust: 'backward',   // v1.19.97：多因子训练/回测默认后复权
     open_cost: 0.0005,
     close_cost: 0.0015,
     min_cost: 5,

@@ -69,7 +69,7 @@ class SelectedAlpha158(DataHandlerLP):
         process_type=DataHandlerLP.PTYPE_A,
         filter_pipe=None,
         inst_processors=None,
-        price_adjust: str = "none",
+        price_adjust: str = "backward",      # v1.19.97：默认改后复权
         **kwargs,
     ):
         from qlib.contrib.data.handler import check_transform_proc, _DEFAULT_LEARN_PROCESSORS
@@ -161,7 +161,7 @@ class SelectedAlpha360(DataHandlerLP):
         process_type=DataHandlerLP.PTYPE_A,
         filter_pipe=None,
         inst_processors=None,
-        price_adjust: str = "none",
+        price_adjust: str = "backward",      # v1.19.97：默认改后复权
         **kwargs,
     ):
         from qlib.contrib.data.handler import check_transform_proc, _DEFAULT_LEARN_PROCESSORS
@@ -254,7 +254,7 @@ class FormulaHandler(DataHandlerLP):
         inst_processors=None,
         formulas: Optional[List[str]] = None,
         label_horizon: Optional[int] = 2,
-        price_adjust: str = "none",
+        price_adjust: str = "backward",      # v1.19.97：默认改后复权
         **kwargs,
     ):
         # 注册自定义算子（BARSCOUNT/BARSSINCEN），幂等
@@ -376,7 +376,7 @@ class MixedHandler(DataHandlerLP):
         process_type=DataHandlerLP.PTYPE_A,
         filter_pipe=None,
         inst_processors=None,
-        price_adjust: str = "none",
+        price_adjust: str = "backward",      # v1.19.97：默认改后复权
         **kwargs,
     ):
         ensure_ops_registered()

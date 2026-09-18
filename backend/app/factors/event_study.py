@@ -526,7 +526,7 @@ def run_event_study(
     exclude_st_t1: bool = False,
     exclude_stock_gem: bool = False,
     exclude_stock_kcb: bool = False,
-    price_adjust: str = "forward",
+    price_adjust: str = "backward",     # v1.19.97：默认改后复权
     price_round: bool = True,
     suspend_remove: bool = True,
     freeze_suspended_price: bool = True,

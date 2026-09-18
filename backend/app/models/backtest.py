@@ -64,7 +64,7 @@ class BacktestRequest(BaseModel):
         ),
     )
     price_adjust: str = Field(
-        "forward",
+        "backward",      # v1.19.97：默认改后复权（多因子训练/回测）
         description=(
             "复权方式：none=不复权(真实价) / forward=前复权 / backward=后复权。"
             "数据 $close 原生为后复权价(=真实价×$factor)：none=$close/$factor、"

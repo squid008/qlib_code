@@ -173,7 +173,7 @@ class SingleFactorTestRequest(BaseModel):
     exclude_st_t1: bool = False           # 剔除成交日（T+1）处于 ST/*ST/退市整理 的样本（日截面，T+1 当日状态）
     exclude_stock_gem: bool = False       # 剔除创业板（SZ30 段，20% 涨跌幅）
     exclude_stock_kcb: bool = False       # 剔除科创板（SH688，20% 涨跌幅）
-    price_adjust: str = "forward"         # 复权方式：none/forward/backward（与回测对齐，默认前复权）
+    price_adjust: str = "backward"      # v1.19.97：默认改后复权（收益率含分红、无除权跳空 ✓）         # 复权方式：none/forward/backward（与回测对齐，默认前复权）
     freeze_suspended_price: bool = True   # 停牌日价格冻结计入未来收益（对齐聚宽口径 B）
     suspend_remove: bool = True           # 信号停牌行语义：True=SR删行(益盟/回测一致)；False=NaN占位(聚宽口径)
     price_round: bool = True              # 真实价按分取整参与因子计算（仅不复权生效，默认开；与益盟/聚宽对齐）
@@ -701,7 +701,7 @@ class EventStudyRequest(BaseModel):
     exclude_st_t1: bool = False
     exclude_stock_gem: bool = False
     exclude_stock_kcb: bool = False
-    price_adjust: str = "forward"
+    price_adjust: str = "backward"      # v1.19.97：默认改后复权（收益率含分红、无除权跳空 ✓）
     price_round: bool = True
     suspend_remove: bool = True
     freeze_suspended_price: bool = True

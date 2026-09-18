@@ -445,7 +445,7 @@ export default function SingleFactorTestPanel({
   const startDateRef = useRef<DateInputHandle>(null)
   const endDateRef = useRef<DateInputHandle>(null)
   // 复权方式：none/forward/backward（与回测一致，默认前复权；前/后复权在比率类因子与收益率上数学等价）
-  const [priceAdjust, setPriceAdjust] = useState('forward')
+  const [priceAdjust, setPriceAdjust] = useState('backward')   // v1.19.97：默认后复权
   // 触发组剔除开关：信号日(T)涨停 / 成交日(T+1)涨停 / 成交日停牌（默认全开，保持原行为 + 新增成交日口径）
   const [excludeLimitUpSignal, setExcludeLimitUpSignal] = useState(true)
   const [excludeLimitUpTrade, setExcludeLimitUpTrade] = useState(true)
