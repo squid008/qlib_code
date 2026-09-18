@@ -333,16 +333,39 @@ export default function FormulaEditor({
             }}
             value={text}
             onChange={(e) => {
-              // ⚠⚠ 这里**绝不能**再 `replace` 归一化 ✗ —— 受控 `<textarea>` 的 value 一旦在
-              //   onChange 里被改写（哪怕只少一个 `\r` ⇒ 长度变了 ✗），React 会重设 DOM value
-              //   ⇒ **浏览器把光标扔到文本末尾** ✗（用户 2026-09-18 实测：粘贴后按一下删除键，
-              //   光标跳到第 28 行 ✓）。归一化统一挪到 `onPaste` 里做 ✓（那里可精确控制光标）。
-              onChange(e.target.value)
-              setCaret(e.target.selectionStart)
+              // ⚠⚠ v1.19.101 **归一化必须在这里兜底**（用户 2026-09-18：「复制进来的时候自动把
+              //   换行符转成没问题的形式不就得了」✓ 说得对 ✓）—— 只在 `onPaste` 清 `\r` 不够 ✗：
+              //   拖拽/输入法/插件/程序化赋值都不会走 `onPaste` ⇒ `\r` 会滞留在 **textarea 的 DOM 值**
+              //   里，而着色层用的是已归一化的 `text` ⇒ **两层永远差 1 行** ✗（现象：第 28 行位置
+              //   画出第 29 行的字、最后一行在着色层里没有对应 ⇒ "选不到" ✗）。
+              // ⚠ 但**不能无脑 replace**：受控 textarea 的值一旦被改写，React 会重设 DOM ⇒ 光标
+              //   被扔到末尾 ✗（上一轮踩过 ✓）。⇒ 折中：**只有真含 `\r` 时才动**（极少 ✓），
+              //   并**按删掉的字符数把光标还原** ✓；不含 `\r` 时走原路、绝不动 DOM ✓。
+              const el = e.currentTarget
+              const raw = el.value
+              const pos = el.selectionStart
+              const head = raw.slice(0, pos)
+              const cleanHead = head.replace(/\r\n?/g, '\n')
+              if (cleanHead === head) {
+                onChange(raw)                       // 99.9% 的输入：路径与原来完全一致 ✓
+                setCaret(pos)
+                return
+              }
+              const clean = raw.replace(/\r\n?/g, '\n')
+              onChange(clean)
+              // ⚠⚠ 必须**手工把 DOM 值也纠正**（`el.value = clean`）✗ —— 否则 React 会认为
+              //   "新旧 value 相同"（归一化后的 clean 常常正好等于上一轮的 text ✓）⇒ **不重设 DOM**
+              //   ⇒ `\r` 继续留在 textarea 的 DOM 值里 ✗ ⇒ 着色层（用干净的 `text`）与它**差 1 行**
+              //   ⇒ 就是用户看到的"第 28 行显示第 29 行的字、最后一行选不到" ✗✓✓（这次根治 ✓）。
+              el.value = clean
+              const np = cleanHead.length            // 光标左移被删掉的 `\r` 个数 ✓
+              requestAnimationFrame(() => {
+                el.setSelectionRange(np, np)
+                setCaret(np)
+              })
             }}
             onPaste={(e) => {
-              // CRLF/CR 只在「粘贴」时进入 ✗ ⇒ 在这里一次性清理（打字不会引入 \r ✓）。
-              // 手工插入（而非改 onChange）才能**精确保住光标**：插完把光标放到**插入内容之后** ✓。
+              // 粘贴是 `\r` 的主要入口 ⇒ 这里就清掉（手工插入以保住光标 ✓，与上面的兜底互为保险 ✓）
               const raw = e.clipboardData?.getData('text')
               if (raw == null) return
               const clean = raw.replace(/\r\n?/g, '\n')
@@ -351,7 +374,6 @@ export default function FormulaEditor({
               const s = el.selectionStart
               const en = el.selectionEnd
               onChange(text.slice(0, s) + clean + text.slice(en))
-              // ⚠ 必须等 React 把新值写进 DOM 之后再设光标，否则会被 value 同步覆盖 ✗
               requestAnimationFrame(() => {
                 const pos = s + clean.length
                 el.setSelectionRange(pos, pos)
