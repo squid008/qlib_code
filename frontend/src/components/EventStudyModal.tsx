@@ -159,6 +159,13 @@ export default function EventStudyModal({
   useEffect(() => {
     if (!result) return
     navCacheRef.current.clear()
+    // ⚠⚠ v1.2.12（用户 2026-09-18 报障）：「二浪加强 / 强突破」也被判成慢公式 ⇒ **必须换公式时重置** ✗
+    //   原因：`slowRef` 是按**上一个结果实测**置位的 ✓，但换公式时没清 ⇒
+    //   开过「过顶」（57s）之后，**后面每一个公式都继承了"慢"** ✗（用户实测 ✓）。
+    //   现在：`result` 变化（= 换公式/换任务）时清空 ✓ ⇒ 每个公式**各自首次自动算一次**、
+    //   再按**自己**的耗时决定要不要转手动 ✓（⇒ 只有真正慢的「过顶 / 黏合强突破」转手动 ✓）。
+    slowRef.current = false
+    lastTickRef.current = navTick
     const last = result.curve?.length ? result.curve[result.curve.length - 1].k : null
     const k0 = defaultK ?? last ?? 20
     setNavK(k0)
