@@ -139,6 +139,16 @@ export default function EventStudyModal({
   //   只有它变化才会触发请求 effect ✓（原因见 effect 尾部的注释：高触发公式单次 57s ✗）。
   const [navTick, setNavTick] = useState(0)
   const lastOkKRef = useRef<number | null>(null)
+  // ⚠ v1.2.11（用户 2026-09-18：「可不可以改成自动识别？大公式就手动计算，小公式就自动计算」✓）
+  //   `slowRef` = 该结果对应的公式**是否已知"慢"**（上次回测耗时 > `NAV_SLOW_S` 秒 ✓）；
+  //   慢 ⇒ 改持仓周期后**不自动算**（等按钮 ✓）；快 ⇒ 照旧**自动算**（体验不变 ✓）。
+  //   `lastTickRef` 用来区分"按钮触发"与"自动触发" ✓。
+  const slowRef = useRef(false)
+  const lastTickRef = useRef(0)
+  // 自动识别"大小公式"的阈值（秒）：一次回测耗时超过它 ⇒ 该公式转入"手动模式"（等按钮 ✓）；
+  // 低于它 ⇒ 保持自动计算（小公式体验与从前一致 ✓）。5s 是经验值 ——
+  // 实测「过顶」57s（14.88 万笔 ✓），普通公式 0.1~0.6s ✓ ⇒ 两者分得很开 ✓。
+  const NAV_SLOW_S = 5
   const [navCost, setNavCost] = useState(0.004)
   const [navRes, setNavRes] = useState<EventNavResult | null>(null)
   const [navBusy, setNavBusy] = useState(false)
@@ -161,6 +171,12 @@ export default function EventStudyModal({
 
   useEffect(() => {
     if (!result || navK == null) return
+    // ---- 自动识别（v1.2.11）：已知慢的公式**不自动算** ✓（等按钮），其余自动 ✓ ----
+    const byButton = navTick !== lastTickRef.current
+    lastTickRef.current = navTick
+    if (slowRef.current && !byButton) {
+      return                            // 已知慢 ⇒ 不自动算；界面不提示（只用按钮 ✓ 用户要求不加文字 ✗）
+    }
     const tid = sourceTaskId || taskRef.current
     // ⚠ 没有任务 id 也可以试：后端会按**因子表达式**在最近的任务里找回触发事件
     //   （v1.19.61）；只有连表达式都没有时才真的没法算。
@@ -185,6 +201,7 @@ export default function EventStudyModal({
     }
     setNavBusy(true)
     setNavErr('')
+    const _t0 = performance.now()       // v1.2.11：测本次回测耗时 ⇒ 决定该公式是否转入"手动模式" ✓
     let cancelled = false
     const timer = window.setTimeout(() => {
       /**
@@ -205,6 +222,11 @@ export default function EventStudyModal({
             if (cancelled) return
             navCacheRef.current.set(key, r)
             lastOkKRef.current = navK        // 记下"最后一次真正算出结果的 k" ✓
+            // v1.2.11：**实测耗时超过阈值 ⇒ 该公式转入"手动模式"** ✓（此后改周期不再自动算 ✓）；
+            //   低于阈值 ⇒ 保持自动 ✓（小公式体验与从前一致 ✓）。
+            if ((performance.now() - _t0) / 1000.0 > NAV_SLOW_S) {
+              slowRef.current = true
+            }
             setNavRes(r)
             setNavErr('')
             setNavBusy(false)
@@ -986,16 +1008,11 @@ export default function EventStudyModal({
                   disabled={navBusy}
                   className="border rounded px-2 py-0.5 text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
                 >
-                  {navBusy ? '计算中…' : navRes ? '重新计算（按当前持仓周期）' : '开始计算'}
+                  {navBusy ? '计算中…' : navRes ? '重新计算' : '计算'}
                 </button>
-                <span className="text-amber-600 dark:text-amber-500">
-                  已改为<strong>手动计算</strong>：高触发公式一次回测可达 1 分钟，
-                  改完持仓周期后请点左侧按钮 ✓
-                </span>
-                {navBusy && <span className="text-sky-600">计算中…（期间旧曲线保留）</span>}
-                {/* ⚠ v1.2.10（用户 2026-09-18 要求）：**删掉**「取价 0s + 回测 0s（按持仓周期缓存，
-                    改回去秒开）」那一行 ✗ —— 命中缓存时它显示 "0s + 0s"，既没信息量又占地方 ✓。
-                    （耗时仍可从响应 `timings` 与后端日志查看 ✓，不占界面 ✓） */}
+                {/* ⚠ v1.2.11（用户 2026-09-18 要求）：**长提示、"计算中…（期间旧曲线保留）"、
+                    以及 v1.2.10 删除的耗时行，一律不再显示** ✗ —— 按钮自身就是提示 ✓
+                    （自动/手动由"实测耗时"自动判定 ✓，见 effect 里的 `slowRef` ✓）。 */}
               </div>
               {navErr ? (
                 <div className="text-slate-400 text-xs">净值曲线暂不可用：{navErr}</div>
@@ -1025,7 +1042,7 @@ export default function EventStudyModal({
                   </div>
                 </>
               ) : (
-                <div className="text-slate-400 text-xs">（选好持仓周期后自动计算；首次约 0.1~0.6s）</div>
+                <div className="text-slate-400 text-xs">（点上方「计算」生成净值曲线）</div>
               )}
             </div>
 
