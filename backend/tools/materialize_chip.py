@@ -20,15 +20,15 @@
 `overwrite=False` ⇒ **断点续跑安全**（中断后重跑只补缺失）。
 
 用法（cwd 任意）：
-    python tools/materialize_chip.py            # 默认 400 只/批
-    python tools/materialize_chip.py 1000        # 自定义批大小
-之后跑 `python tools/verify_materialized.py` 核对。
+    python backend/tools/materialize_chip.py            # 默认 400 只/批
+    python backend/tools/materialize_chip.py 1000        # 自定义批大小
+之后跑 `python backend/tools/verify_materialized.py` 核对。
 """
 import os
 import sys
 import time
 
-_BACKEND = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend")
+_BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # = backend/（本脚本在 backend/tools/ 下）
 sys.path.insert(0, _BACKEND)
 
 

@@ -20,14 +20,14 @@
 - ⚠ **数据更新后必须重跑**（`factor_last` 变 ⇒ 整条历史价缩放）。
 
 用法（cwd 任意）：
-    python tools/build_preclose.py               # 只补缺失
-    python tools/build_preclose.py --overwrite    # 全量重写
-之后跑 `python tools/verify_materialized.py` 核对。
+    python backend/tools/build_preclose.py               # 只补缺失
+    python backend/tools/build_preclose.py --overwrite    # 全量重写
+之后跑 `python backend/tools/verify_materialized.py` 核对。
 """
 import os
 import sys
 
-_BACKEND = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend")
+_BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # = backend/（本脚本在 backend/tools/ 下）
 sys.path.insert(0, _BACKEND)
 
 # 源字段 → 目标字段（与 backend/app/engine/adjust.py 的 _PRE_OF 对应）

@@ -15,14 +15,14 @@
      `identically-labeled` —— v1.19.91/92 的坑）；
   7. 抽样数值合理：`cost5 ≤ cost95`、`WINNER ∈ [0,1]`、非全 NaN。
 
-用法（cwd 任意）：python tools/verify_materialized.py [抽样数，默认 200]
+用法（cwd 任意）：python backend/tools/verify_materialized.py [抽样数，默认 200]
 退出码：0 = 全过；1 = 有问题。
 """
 import os
 import random
 import sys
 
-_BACKEND = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend")
+_BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # = backend/（本脚本在 backend/tools/ 下）
 sys.path.insert(0, _BACKEND)
 
 PRE_PAIRS = (("close", "preclose"), ("open", "preopen"), ("high", "prehigh"),

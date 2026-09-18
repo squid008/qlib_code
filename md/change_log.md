@@ -3,6 +3,19 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.24] - 2026-09-19
+
+### Fixed
+- **补 v1.20.22/v1.20.23 漏提交的 `backend/tools/*` 脚本内容**：`git mv` 之后的**内容修改**（`_BACKEND` 路径推导少一层、
+  docstring 用法改 `python backend/tools/...`）一直停在**未暂存**状态 ⇒ 仓库里的脚本仍按"根目录版"算相对路径
+  （结果是 `backend/backend` ⇒ 直接 `ModuleNotFoundError`）。本次补上这 3 个文件（已推送的 tag 不改写，用新版本号保持自洽）。
+- ⚠ **教训（比 [1.20.23] 那条更狠）**：**`git mv` 之后的内容编辑必须再次 `git add`**；复核暂存区时要**分清
+  `git status --short` 的两列** —— `M `（第一列）= 已暂存、` M`（第二列）= **未暂存**。上一轮我明明看到
+  ` M backend/tools/*` 却没处理，才拖到今天。⇒ **提交前固定动作：`git status --short` 逐行看两列 + `git show --stat HEAD` 复核提交内容。**
+
+### Changed
+- 版本 1.20.23 → 1.20.24。
+
 ## [1.20.23] - 2026-09-19
 
 ### Fixed
