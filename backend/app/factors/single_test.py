@@ -1487,9 +1487,21 @@ def run_single_factor_tests(
     if _os_sft.environ.get("QLIB_SFT_PANEL", "1") != "0":
         try:
             from ..engine.feature_cache import _cache_path, _load_cache, _save_cache
+            # ⚠⚠ v1.19.97 关键：key 里必须带**代码指纹** ✗ —— 2026-09-18 血泪：改了
+            #   `adjust_expr`（前复权替换价格字段）后，旧缓存里存的是"列错位"时期的坏面板
+            #   （`F0` 列装的是 `T1_IS_ST` ✗）⇒ 被复用 ⇒ 复利滚成 2e31 ✗（清了 4GB 缓存才好 ✓）。
+            #   这里用**本模块源码的 mtime+size** 当指纹：任何改动 ⇒ key 变 ⇒ 自动失效 ✓
+            #   （比"手工改版本号"可靠 ✓，不会忘 ✓）。
+            _sig = "na"
+            try:
+                _st = __import__("os").stat(__file__)
+                _sig = "m%d-s%d" % (int(_st.st_mtime), int(_st.st_size))
+            except Exception:                                     # noqa: BLE001
+                pass
             _pc = _cache_path(
                 instruments, list(fields), all_cols, start_date, load_end,
-                extra="sft|w=%s|f=%s|e=%s" % (warmup_days, freeze_suspended_price, end_date),
+                extra="sft|v=%s|w=%s|f=%s|e=%s" % (_sig, warmup_days,
+                                                  freeze_suspended_price, end_date),
             )
         except Exception:
             _pc = None
