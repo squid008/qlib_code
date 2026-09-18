@@ -3,6 +3,29 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.2.19] - 2026-09-18
+
+### Fixed（UI）+ 定位（用户 2026-09-18 深夜：「全A 六年还是四五十秒」）
+
+- **UI（用户报，已修 ✓）**：`TopkCurveModal.tsx` ① 标题栏 `items-center` → **`items-start`** ⇒
+  「关闭」按钮与**第一行**文字齐平 ✓（原来垂直居中于多行文本块、看着"掉下去"✗）；
+  ② 去掉「；K 由你选择」字样 ✓；③ 按钮加 `whitespace-nowrap shrink-0` ⇒ 不再竖排换行 ✓。
+- **★ 澄清定位（重要）**：`/api/factors/event-study/nav` 的 **B1 缓存本来就存在** ✓ ——
+  `_nav_bt_key`（含 k/cost/capital/modes）+ `_NAV_BT_CACHE`（`routers/factors.py:1050-1080`）
+  ⇒ **同一个 k 重复点必然命中** ✓；价格面板另有 `_NAV_PANEL_CACHE`（v1.19.93）。
+  ⇒ 用户说的"点开后净值曲线慢"，**唯一来源是 `signals/engine.run_backtest` 的逐日估值
+  （Python 循环 ✗）**，不是缓存缺失 ✗。
+- **⚠ 尝试过但实测无效（如实记录 ✗）**：`event_study.compute_baseline_curves` 里
+  `num = F[tgt]/entry - 1.0` 改 `np.subtract(..., out=num)` **原地减法**（省两份大矩阵分配 ✓
+  代码更清晰、内存更省 ✓）—— 但全 A/6 年/h60 复跑 **32.9 s vs 29.3 s（噪声级 ✗）**
+  ⇒ **瓶颈不是内存分配，而是算法本身**（`compute_baseline_curves` tottime ≈ 12 s、
+  `np.median` 的 `partition` ≈ 3.8 s ⇒ 逐 k 的 635 万级矩阵运算）。
+  ⇒ 改动**保留**（无副作用 ✓），但**不要指望它提速** ✗。
+- **测试**：全量 **398 passed** ✓；ruff 全过 ✓。
+- ⚠ **未做（B2，需谨慎）**：`run_backtest` 逐日估值向量化 ⇒ 预计几十秒 → 几秒，但
+  **必须带新旧对拍**（成交/被拒/净值逐位一致 ✓）才可上
+  （`routers/factors.py:870` 的原注释持同一结论 ✓）。
+
 ## [1.2.18] - 2026-09-18
 
 ### Performance（**单因子测试端到端 −53%**：7.6 s → 3.6 s；用户追问"到底哪个函数慢"）
