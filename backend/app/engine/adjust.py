@@ -50,8 +50,13 @@ def normalize_mode(mode: str) -> str:
 # v1.19.97：前复权**已物化**的价格字段 → 对应物化字段名（`ai_test/build_preclose.py` 生成 ✓，
 # 公式 = `后复权 ÷ factor_last` ✓，四个字段共用同一个 factor_last ⇒ **同尺度** ✓，
 # 各字段用自己 bin 的 `first_idx` ⇒ 与原字段**逐位同轴** ✓）。
-# ⚠ 未列入的字段（如 `$vwap`）在 forward 下**落回真实价** ✓（不会拼出空字段名 ✗）。
-_PRE_OF = {"$close": "preclose", "$open": "preopen", "$high": "prehigh", "$low": "prelow"}
+# ⚠ 未列入的字段在 forward 下**落回真实价** ✓（不会拼出空字段名 ✗）。
+# v1.19.98：`$vwap` 也物化了（`prevwap` ✓）—— 它同为**真实价量纲**（成交额/成交量），
+#   不复权时含除权跳空 ⇒ 与 close/high/low 同属必须前复权的价格字段 ✓。
+# ⚠ `$market_cap` / `$volume` / `$amount` / `$turn` **不在** `PRICE_FIELDS` ⇒ 复权不触碰 ✓：
+#   市值 = 真实价 × 总股本（绝对元，与复权无关 ✓）；量/额/换手率天然与复权无关 ✓。
+_PRE_OF = {"$close": "preclose", "$open": "preopen", "$high": "prehigh",
+           "$low": "prelow", "$vwap": "prevwap"}
 
 
 def adjust_expr(expr: str, mode: str, round_prices: bool = False) -> str:

@@ -30,17 +30,25 @@ def test_forward_is_true_pre_adjust_and_wrapped():
     assert adjust_expr("Mean($close, 20)", "forward") == "Mean(Add($preclose,0), 20)"
 
 
-def test_forward_covers_open_high_low():
-    """v1.19.97：`$open/$high/$low` 的前复权也物化了 ⇒ 同样走 `Add($pre*,0)` ✓
-    （此前它们落回真实价 ⇒ 用到 HIGH/LOW 的因子在前复权下是**混合口径** ✗）。"""
+def test_forward_covers_open_high_low_vwap():
+    """v1.19.97/98：`$open/$high/$low/$vwap` 的前复权也物化了 ⇒ 同样走 `Add($pre*,0)` ✓
+    （此前它们落回真实价 ⇒ 用到 HIGH/LOW/VWAP 的因子在前复权下是**混合口径** ✗）。"""
     assert adjust_expr("$open", "forward") == "Add($preopen,0)"
     assert adjust_expr("$high", "forward") == "Add($prehigh,0)"
     assert adjust_expr("$low", "forward") == "Add($prelow,0)"
+    assert adjust_expr("$vwap", "forward") == "Add($prevwap,0)"
 
 
-def test_forward_unmapped_price_field_falls_back():
-    """没有物化前复权版的字段（如 `$vwap`）⇒ 落回真实价 ✓（不会拼出空字段名 ✗）。"""
-    assert adjust_expr("$vwap", "forward") == "($vwap/$factor)"
+def test_market_cap_not_adjusted_in_any_mode():
+    """`$market_cap`（总市值，绝对元）**任何复权模式下都不改写** ✓
+    —— 市值 = 真实价 × 总股本，复权只改价格序列不改股本 ⇒ 与复权无关 ✓。"""
+    for m in ("none", "forward", "backward"):
+        assert adjust_expr("$market_cap", m) == "$market_cap", m
+        assert adjust_expr("LOG($market_cap)", m) == "LOG($market_cap)", m
+    # 量/额/换手率同理不受复权影响 ✓
+    assert adjust_expr("$volume", "forward") == "$volume"
+    assert adjust_expr("$amount", "forward") == "$amount"
+    assert adjust_expr("$turn", "forward") == "$turn"
 
 
 def test_invalid_mode_falls_back_none():
