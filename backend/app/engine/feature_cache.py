@@ -94,6 +94,40 @@ def _sr_wrap_expr(expr: str) -> str:
     return _SR_FIELD_RE.sub(_repl, expr)
 
 
+_CODE_SIG = None
+
+
+def _code_version() -> str:
+    """**影响面板结果的代码**指纹（源码 mtime + size 汇总；模块级只算一次 ✓）。
+
+    ⚠ 2026-09-18 血泪（v1.19.97）：key 里原本只有"数据版本"✓ 没有"代码版本"✗ ⇒
+    改了 `adjust_expr`（前复权替换价格字段）与列对齐逻辑后，**旧缓存仍被复用** ✗ ⇒
+    拿到"列错位"的坏面板（`F0` 列里装的是 `T1_IS_ST` ✗）⇒ 收益复利滚到 **2e31** ✗
+    （手工清 4 GB 缓存才恢复 ✓）。⇒ 把这几处源码指纹拼进 key：**任何改动 ⇒ key 变 ⇒
+    自动失效** ✓（比手工维护版本号可靠 ✓ 不会忘 ✓；单次 stat，开销可忽略 ✓）。
+    """
+    global _CODE_SIG
+    if _CODE_SIG is None:
+        _here = os.path.dirname(os.path.abspath(__file__))        # app/engine
+        _fac = os.path.join(os.path.dirname(_here), "factors")    # app/factors
+        _cands = [os.path.join(_here, "feature_cache.py"),
+                  os.path.join(_here, "adjust.py"),
+                  os.path.join(_here, "limits.py"),
+                  os.path.join(_fac, "ops_ext.py"),
+                  os.path.join(_fac, "panel_expr.py"),
+                  os.path.join(_fac, "single_test.py")]
+        _sig = []
+        for _p in _cands:
+            try:
+                _st = os.stat(_p)
+                _sig.append("%s:%d-%d" % (os.path.basename(_p),
+                                          int(_st.st_mtime), int(_st.st_size)))
+            except Exception:                                     # noqa: BLE001
+                pass
+        _CODE_SIG = ";".join(_sig) or "na"
+    return _CODE_SIG
+
+
 def _cache_path(instruments, exprs, names, start_time, end_time, extra="") -> str:
     """缓存 key 必须同时含表达式与列名（names）。
 
@@ -103,6 +137,9 @@ def _cache_path(instruments, exprs, names, start_time, end_time, extra="") -> st
     `extra`（v1.18.69）：额外的**影响结果的参数**指纹。单因子测试的面板求值器除了
     表达式/区间，还受 `warmup_days` / `freeze_suspended_price` / 信号截断日等影响
     —— 这些不放进 key 就会**跨参数命中脏缓存**，故调用方必须把它们拼进来。
+
+    `_code_version()`（v1.19.97）：**代码指纹** ⇒ 改了 evaluate/adjust/ops/列对齐
+    之类的代码，旧缓存自动失效 ✓（覆盖**所有**调用方：单因子面板 + 回测/训练 Handler ✓）。
     """
     parts = [
         "v1",
@@ -112,6 +149,7 @@ def _cache_path(instruments, exprs, names, start_time, end_time, extra="") -> st
         str(start_time),
         str(end_time),
         _data_version(),
+        _code_version(),
         str(extra or ""),
     ]
     raw = "|".join(parts)
