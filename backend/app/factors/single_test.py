@@ -1200,6 +1200,18 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
         if pdf is None or len(pdf) == 0:
             return None
         pdf = pdf.copy()
+        # ⚠ v1.19.97：**列一致性校验** ✗ —— `fields` 与 `all_cols` 靠**位置**对齐，
+        #   一旦面板层对列做去重/改名/重排（**裸字段名**如 `$preclose` 最易触发 ✗）就会
+        #   **整表错位** ⇒ 因子列拿到价格列 ⇒ 价格比爆炸（实测 nav 1.86e32、年化 172 万倍 ✗）。
+        #   长度不符**直接报错**（必然错位 ✓）；名字/顺序不符先**记日志**（防误报 ✓）。
+        if len(pdf.columns) != len(all_cols):
+            raise ValueError("面板列数不符：实际 %d ≠ 期望 %d ⇒ 列会错位、统计不可信 ✗"
+                             % (len(pdf.columns), len(all_cols)))
+        _got_cols = [str(c) for c in pdf.columns]
+        if _got_cols != list(all_cols):
+            _dump_sft_error(RuntimeError(
+                "面板列名/顺序与 all_cols 不一致（位置对齐隐患 ✗）：期望 %s ｜实际 %s"
+                % (list(all_cols), _got_cols)))
         pdf.columns = all_cols
         # 对齐列顺序（panel_features 顺序与 fields/all_cols 一致，此处兜底）
         pdf = pdf[list(all_cols)]
@@ -1224,6 +1236,18 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
         if pdf is None or len(pdf) == 0:
             return None
         pdf = pdf.copy()
+        # ⚠ v1.19.97：**列一致性校验** ✗ —— `fields` 与 `all_cols` 靠**位置**对齐，
+        #   一旦面板层对列做去重/改名/重排（**裸字段名**如 `$preclose` 最易触发 ✗）就会
+        #   **整表错位** ⇒ 因子列拿到价格列 ⇒ 价格比爆炸（实测 nav 1.86e32、年化 172 万倍 ✗）。
+        #   长度不符**直接报错**（必然错位 ✓）；名字/顺序不符先**记日志**（防误报 ✓）。
+        if len(pdf.columns) != len(all_cols):
+            raise ValueError("面板列数不符：实际 %d ≠ 期望 %d ⇒ 列会错位、统计不可信 ✗"
+                             % (len(pdf.columns), len(all_cols)))
+        _got_cols = [str(c) for c in pdf.columns]
+        if _got_cols != list(all_cols):
+            _dump_sft_error(RuntimeError(
+                "面板列名/顺序与 all_cols 不一致（位置对齐隐患 ✗）：期望 %s ｜实际 %s"
+                % (list(all_cols), _got_cols)))
         pdf.columns = all_cols
         # 对齐列顺序（panel_features 顺序与 fields/all_cols 一致，此处兜底）
         pdf = pdf[list(all_cols)]

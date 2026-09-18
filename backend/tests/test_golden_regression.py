@@ -41,7 +41,7 @@ class TestAdjustExprGolden:
         from app.engine.adjust import adjust_expr
 
         expr = "Mean($close, 20)"
-        assert adjust_expr(expr, "forward") == "Mean(($close/$factor), 20)"
+        assert adjust_expr(expr, "forward") == "Mean(Add($preclose,0), 20)"
         assert adjust_expr(expr, "backward") == expr
 
     def test_invalid_mode_falls_back_none(self):
