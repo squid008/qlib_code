@@ -66,7 +66,10 @@ def load_px_wide(codes, start_date: str, end_date: str, price_adjust: str,
     codes = list(codes)
     if not codes:
         return pd.DataFrame()
-    px_expr = adjust_expr("$close", price_adjust, round_prices=price_round)
+    # ⚠ v1.19.96：事件研究算的是**价格比/收益**（比率类）⇒ 必须**后复权** ✓（前/后复权收益逐位
+    #   等价 ✓ 含分红 ✓）；若跟 `price_adjust` 走，`forward` 现在是真实价 ⇒ 除权日跳空 ✗。
+    _px_mode = "none" if (price_adjust or "none").lower() == "none" else "backward"
+    px_expr = adjust_expr("$close", _px_mode, round_prices=price_round)
     df = D.features(codes, [px_expr], start_time=start_date, end_time=end_date, freq="day")
     if df is None or len(df) == 0:
         return pd.DataFrame()

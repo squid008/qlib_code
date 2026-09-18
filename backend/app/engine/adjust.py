@@ -64,8 +64,21 @@ def adjust_expr(expr: str, mode: str, round_prices: bool = False) -> str:
     forward 的前复权观感归一只在回测 quote / K 线展示层做（见 board_exchange.py）。
     """
     m = normalize_mode(mode)
-    if not expr or m in ("forward", "backward"):
+    if not expr:
         return expr
+    if m == "backward":
+        return expr
+    # ⚠ v1.19.87（2026-09-18）：**前复权不再"原样返回"** ✗ —— 原实现只考虑"比率类表达式"
+    #   （前/后复权只差一个常数，比值等价 ✓），但漏了**价格量纲**表达式（LLT / close / COST /
+    #   WINNER 这类要拿价格**互相比较、排序**的因子 ✗）：此时返回原生 `$close`（= **后复权**）
+    #   等于**按后复权价排序** ✗（长期上涨股的后复权价虚高）⇒ "LLT 最小 20 只"选出的是
+    #   "**长期涨幅最小的股票**"而不是"股价最低的股票" ✗。
+    #   实测（2026-09-18，用米筐 rqalpha 真实成交价当标尺）：
+    #     SH600734 2021-01-04 ⇒ `$close/$factor` = **1.18**、SZ000662 ⇒ **0.79**
+    #     与米筐真实价**逐位一致** ⇒ `$close` = **后复权** ✓、`$close/$factor` = **真实价** ✓。
+    #   ⇒ forward 与 none 一样替换价格字段 ⇒ 截面排序与米筐"前复权"一致 ✓。
+    #   ⚠ 副作用（如实记录）：**纯比率类**表达式（如 `$close/Ref($close,1)`）在 forward 下变成
+    #   "真实价比率" ⇒ **除权日会有跳空** ✗ ⇒ 这类表达式请用 **backward（后复权）** 跑 ✓。
     out = expr
     for f in PRICE_FIELDS:
         # 只匹配独立字段 token（前/后都不是字母数字下划线），避免误伤 Ref/Mean 等算子名

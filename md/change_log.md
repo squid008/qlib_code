@@ -3,6 +3,39 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.19.96] - 2026-09-18
+
+### Fixed（**"前复权"被当成"保持原样"** ⇒ 价格量纲因子按**后复权**排序，与米筐对不上）
+- 现象（用户本日实测）：`LLT`（低延迟趋势线，量纲 = 价格；`rank(LLT)` vs `rank(close)` ρ≈0.998）在
+  **全A / 2021-01-01~2026-12-31 / h=60 / 前复权**下，平台 `固定 K=20` 年化 **+9.03%**、回撤 −54.16%；
+  米筐 rqalpha（`data_wash` 的 `all_jq06`、对齐版 `all_jq08`）同策略 **−5.24% / −5.40%**、回撤 **−81.51%** ✗。
+- **根因**：`engine/adjust.py::adjust_expr` 对 `forward/backward` **直接 `return expr`** ✗（原注释只考虑
+  "**比率类**表达式（前/后复权只差常数、等价 ✓）"，**漏了价格量纲表达式** ✗）。qlib 的 `$close` 是
+  **后复权** ⇒ "LLT 最小的 20 只" = "**长期涨幅最小的股票**"（≠ 股价最低的股票 ✗）。
+  **实测标尺**（米筐真实成交价）：`SH600734` 2021-01-04 `$close`=0.113505 `$factor`=0.096191
+  ⇒ `$close/$factor` = **1.18** = 米筐 1.18 ✓；`SZ000662` ⇒ **0.79** = 米筐 0.79 ✓。
+- **修法（三处，缺一不可）**：
+  1. `adjust_expr`：`forward` 与 `none` 一样**替换价格字段** ⇒ 截面排序与米筐"前复权"一致 ✓；
+  2. ⚠ **反噬修正**：`label` / 事件研究取价是**比率类** ⇒ forward 变真实价后会在**除权日把分红当下跌**
+     ✗ ⇒ `single_test.label_exprs`、`single_test.px_field`、`event_study.px_expr`、
+     **`factors/handler.py` 四个 handler 的 `get_label_config`** 改为
+     `"none" if mode=="none" else "backward"`（`none` 保持原样 ⇒ 不影响"对齐益盟/东财不复权"口径 ✓）；
+  3. `single_test.py` 的 `except Exception as _pe:` 补 `_dump_sft_error(_pe)` ⇒ **异常不再被静默吞掉**
+     （此前插桩的 `NameError` 被吞 ⇒ `perf` 全 None ⇒ 页面"指标整块消失"，查了好几轮 ✗）。
+- **验收**（同参数重跑）：`K=20` **+9.03% → −3.86%**、回撤 **−54.16% → −81.55%** ↔ 米筐
+  **−5.24% / −81.51%** ✓（剩余 1.4pp = 撮合摩擦：整手/资金/跌停卖不出/T vs T+1 ✓）；
+  `decile Q1` +14.57% → +13.15% ✓（**大组合只微调** ⇒ 该 bug 只伤"小 K 档 + 价格量纲因子" ✓）。
+- ⚠ **副作用（如实记录）**：**纯比率类**表达式在 `forward` 下变成"真实价比率" ⇒ **除权日跳空** ✗
+  ⇒ 这类表达式请用 **`backward`（后复权）** ✓（已写进代码注释）。
+- ⚠ **影响面**：所有"前复权 + 价格量纲因子"（LLT / close / COST / WINNER 等）的历史结论需重跑 ✓。
+- ⚠ **盘点**：所有表达式路径都走 `adjust_expr` ✓（单因子 / 事件研究 / 模型训练 4 个 handler ✓）
+  ⇒ 一处修全局生效 ✓；回测撮合层（`board_exchange`）、信号模块（`signals/*`）、`limits`、`feature_cache`
+  等**各自直接处理价格** ⇒ 不受影响 ✓。
+- ⚠ **遗留待办**：`single_test` 的 `CLOSE_FF`（逐日盯市净值用价）源自 `CLOSE = $close/$factor`
+  ⇒ 仍是**真实价** ✗（期内收益在除权日有跳空）；当前 K=20 已与米筐吻合 ⇒ **暂不改** ✓。
+- 单测：新增 `tests/test_adjust_forward.py`（7 项 ✓）；更新旧断言
+  `test_golden_regression.py::TestAdjustExprGolden`（`forward` 保持原样 → 现在**替换** ✓）。
+
 ## [1.19.92] - 2026-09-17
 
 ### Fixed（★ 筹码字段彻底修好：**5 条公式全部通过**）

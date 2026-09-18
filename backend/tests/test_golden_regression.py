@@ -29,11 +29,19 @@ class TestAdjustExprGolden:
         # 算子名不受影响（不做 Ref/Mean 名替换）
         assert "($close/$factor)" in adjust_expr("Ref($close,1)-Mean($close,5)", "none")
 
-    def test_forward_backward_keep_original(self):
+    def test_forward_substitutes_backward_keeps(self):
+        """⚠ v1.19.96 语义变更：`forward` **不再保持原样** ✗（原断言的假设已不成立）。
+
+        原假设是"前/后复权**对比率类**表达式等价"✓ —— 但**价格量纲**表达式（LLT/close 这类要拿
+        价格**互相比较、排序**的因子 ✗）在该假设下会退化成"按**后复权**价排序" ✗ ⇒ 与米筐 rqalpha
+        （前复权/真实价）对不上：K=20 年化 **+9.03%** vs 米筐 **−5.24%**、回撤 −54.16% vs **−81.51%**
+        ✗；修复后 **−3.86% / −81.55%** ✓。⇒ `forward` 现在与 `none` 一样替换价格字段 ✓，
+        `backward`（后复权 = 收益率口径）保持原样 ✓。
+        """
         from app.engine.adjust import adjust_expr
 
         expr = "Mean($close, 20)"
-        assert adjust_expr(expr, "forward") == expr
+        assert adjust_expr(expr, "forward") == "Mean(($close/$factor), 20)"
         assert adjust_expr(expr, "backward") == expr
 
     def test_invalid_mode_falls_back_none(self):

@@ -855,14 +855,56 @@ def _test_one(
                         ⚠ 仅当 **调仓期 ≥ 预测周期** 时各期持有区间不重叠；否则返回 None（前端标注）。
                         """
                         _h_i = int(horizon or 0)
-                        if (_h_i <= 0 or _REBAL < _h_i or _n_inst_all <= 0
-                                or ("CLOSE_FF" not in tmp.columns and "CLOSE" not in tmp.columns)):
+                        # ★ 探针（2026-09-18）：放在**函数入口**，早退也要留下痕迹 ——
+                        #   上一轮插桩放在早退之后 ⇒ perf 全空时什么都没打印 ✗（无法判断为什么空）。
+                        # ⚠⚠ 本模块**顶层没有 `import os`**（os 是在别处 `import os as _os_sft` 局部导入 ✗）
+                        #   ⇒ 直接写 `os.environ.get(...)` 会抛 `NameError: name 'os' is not defined`，
+                        #   并被外层 `except` 吞成 `perf=None` ✗（2026-09-18 **我插桩时踩的坑** ✓：
+                        #   连续几轮"平台各档 perf 全空、年化 0.00%"就是这个 NameError 造成的 ✗，
+                        #   **不是平台 bug、也不是"非确定性"** ✗）。用 `__import__` 避免依赖顶层导入 ✓。
+                        _dbg = __import__("os").environ.get("QLIB_SFT_TOPK_DEBUG") == "1"
+                        _why = ("h<=0" if _h_i <= 0 else
+                                "REBAL<h" if _REBAL < _h_i else
+                                "无标的" if _n_inst_all <= 0 else
+                                "无价列" if ("CLOSE_FF" not in tmp.columns
+                                             and "CLOSE" not in tmp.columns) else "")
+                        if _dbg:
+                            print("[SFT-DBG] 进入 %s k=%s ｜ h=%s REBAL=%s 标的数=%s 日轴=%s 期数=%s "
+                                  "｜ 有 CLOSE_FF=%s CLOSE=%s ｜ 早退原因=%s"
+                                  % (_k_kind, _k_val, _h_i, _REBAL, _n_inst_all, _nd, len(_reb_pos),
+                                     "CLOSE_FF" in tmp.columns, "CLOSE" in tmp.columns,
+                                     _why or "否"), flush=True)
+                        if _why:
                             return None, 0
                         if _k_kind == "decile" and _k_q is not None:
                             _held = _qr_row == float(_k_q)
                         else:
                             _held = _rkr_row <= float(_k_val)
                         _ok = _held & _valid & np.isfinite(_px0_row) & (_px0_row > 0)
+                        if _dbg:
+                            # ★ 临时诊断（2026-09-18，用户要求"插桩开跑"）：判定 K 档的
+                            #   「持仓集合」是否真是**名次最前 K 只**、是否**全期一致方向**、
+                            #   以及是否随期完整（不被快照打散）。默认关闭 ⇒ 不影响生产 ✓。
+                            #   看点：① 每期只数应 ≈ K（远小 ⇒ 快照丢股票 ✗）；② **选中名次的中位**
+                            #   应 ≈ K/2（若是 ~N-K ⇒ 取到了**另一端** ✗）；③ 前几期收益是否合理。
+                            try:
+                                _h_tab = ((_tab_q == float(_k_q)) if _k_kind == "decile"
+                                          else (_tab_rk <= float(_k_val)))
+                                _cnt = _h_tab.sum(axis=1)
+                                _sel = np.where(_h_tab, _tab_rk, np.nan)
+                                print("[SFT-DBG] %s k=%s ｜ 期数=%d ｜ 只数 min/中位/max=%d/%d/%d ｜ "
+                                      "前 8 期只数=%s ｜ 选中名次 中位/最小/最大=%.0f/%.0f/%.0f ｜ "
+                                      "前 6 期收益(%%)=%s"
+                                      % (_k_kind, _k_val, len(_reb_pos),
+                                         int(np.nanmin(_cnt)), int(np.nanmedian(_cnt)), int(np.nanmax(_cnt)),
+                                         list(_cnt[:8].astype(int)),
+                                         float(np.nanmedian(_sel)), float(np.nanmin(_sel)),
+                                         float(np.nanmax(_sel)),
+                                         [round(float(x) * 100, 2) for x in np.asarray(_k_ret)[:6]]),
+                                      flush=True)
+                            except Exception as _de:      # noqa: BLE001 —— 诊断绝不拖垮主流程
+                                print("[SFT-DBG] 诊断失败: %r" % (_de,), flush=True)
+
                         if not _ok.any():
                             return None, 0
                         _f = np.full(len(tmp), np.nan)
@@ -994,6 +1036,11 @@ def _test_one(
                                 item["perf_note"] = (
                                     "期内首点异常 %d 期（该档样本稀疏，指标仅供参考）" % _seg0_bad)
                         except Exception as _pe:
+                            # ⚠ v1.19.87（2026-09-18）：**不再静默** ✗ —— 我插桩时写的 `os.environ`
+                            #   触发的 `NameError` 被这里吞掉 ⇒ `perf` 全变 None ⇒ 页面上"指标整块
+                            #   消失"，害我们查了好几轮才定位 ✗。现在落盘留痕（`workdir/sft_error.log`）
+                            #   ⇒ 事后一眼可见 ✓。（`perf_error` 字段仍回传前端，双保险 ✓。）
+                            _dump_sft_error(_pe)
                             item["perf"] = None
                             item["perf_error"] = repr(_pe)
                         _items.append(item)
@@ -1259,8 +1306,14 @@ def run_single_factor_tests(
 
     pa = normalize_mode(price_adjust)
     # 各周期 label 表达式列（LABEL_{h}），一次 D.features 全部算出
+    # ⚠ v1.19.96：**label（收益率）必须走后复权** ✗ —— 它是**比率类**表达式：前/后复权收益
+    #   逐位等价 ✓ 且含分红送转 ✓；而 `none`（真实价）在**除权日会跳空** ✗（有意为之：对齐
+    #   益盟/东财"不复权"口径 ✓）。2026-09-18 把 `forward` 改成"替换价格字段（真实价）"以修复
+    #   「价格量纲因子按后复权排序」后，若不在这里特判，**label 会跟着变成"真实价收益率"**
+    #   ⇒ 把分红当成下跌 ✗✗ ⇒ 故 forward/backward 下强制后复权（`none` 保持原样 ✓）。
+    _lab_mode = "none" if pa == "none" else "backward"
     label_exprs = {
-        h: adjust_expr(f"Ref($close, -{h + 1})/Ref($close, -1) - 1", pa) for h in horizons
+        h: adjust_expr(f"Ref($close, -{h + 1})/Ref($close, -1) - 1", _lab_mode) for h in horizons
     }
     # 尾部加载长度：label 需 n_max+1 个交易日；冻结价 label 与事件研究另需尾部延展。
     # **统计区间不受影响**：默认 freeze_suspended_price=True 时面板会在统计前裁回
@@ -1365,8 +1418,9 @@ def run_single_factor_tests(
         adj_exprs = [adjust_expr(e, pa, round_prices=price_round) for e in ordered_exprs]
     base_fields = ["$close/$factor", "$change", "Ref($close/$factor, -1)", "Ref($change, -1)"]
     base_names = ["CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]
-    # 事件研究取价用（复权口径与 label 一致）：forward/backward=后复权价、none=真实价
-    px_field = adjust_expr("$close", pa, round_prices=price_round)
+    # 事件研究取价用（⚠ v1.19.96：与 label 同口径 —— 事件研究算的是**价格比/收益**，属比率类
+    #   ⇒ 必须后复权 ✓；原先跟 `pa` 走，`forward` 改成真实价后会引入除权跳空 ✗）
+    px_field = adjust_expr("$close", _lab_mode, round_prices=price_round)
     tag_fields: List[str] = []
     tag_names: List[str] = []
     if field_bin_available("limit_up") and field_bin_available("limit_down"):

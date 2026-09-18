@@ -137,7 +137,8 @@ class SelectedAlpha158(DataHandlerLP):
         # 复权：label 收益率口径随模式（none=真实价，除权日跳空；forward/backward=后复权
         # 原生价，含分红送转收益；前/后复权等价，见 adjust.py docstring）。
         n = self._label_horizon
-        return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1", self._price_adjust)], ["LABEL0"]
+        return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1",
+                                 "none" if self._price_adjust == "none" else "backward")], ["LABEL0"]
 
 
 class SelectedAlpha360(DataHandlerLP):
@@ -222,7 +223,8 @@ class SelectedAlpha360(DataHandlerLP):
         # 复权：label 收益率口径随模式（none=真实价，除权日跳空；forward/backward=后复权
         # 原生价，含分红送转收益；前/后复权等价，见 adjust.py docstring）。
         n = self._label_horizon
-        return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1", self._price_adjust)], ["LABEL0"]
+        return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1",
+                                 "none" if self._price_adjust == "none" else "backward")], ["LABEL0"]
 
 
 class FormulaHandler(DataHandlerLP):
@@ -330,7 +332,8 @@ class FormulaHandler(DataHandlerLP):
         # 复权：label 收益率口径随模式（none=真实价，除权日跳空；forward/backward=后复权
         # 原生价，含分红送转收益；前/后复权等价，见 adjust.py docstring）。
         n = self._label_horizon
-        return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1", self._price_adjust)], ["LABEL0"]
+        return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1",
+                                 "none" if self._price_adjust == "none" else "backward")], ["LABEL0"]
 
 
 # ---------------------------------------------------------------------------
@@ -463,4 +466,5 @@ class MixedHandler(DataHandlerLP):
 
     def get_label_config(self):
         n = self._label_horizon
-        return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1", self._price_adjust)], ["LABEL0"]
+        return [adjust_expr(f"Ref($close, -{n + 1})/Ref($close, -1) - 1",
+                                 "none" if self._price_adjust == "none" else "backward")], ["LABEL0"]
