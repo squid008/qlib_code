@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v1.2.17 回归：`$chip_*` 取数**物化优先**（用户 2026-09-18 提问"cost 那么慢"）。
+"""v1.20.17 回归：`$chip_*` 取数**物化优先**（用户 2026-09-18 提问"cost 那么慢"）。
 
 规则（`panel_expr.PanelEvaluator._chip_or_bin`）：
 - 字段在 `chip_store.DEFAULT_FIELDS`（**已物化** ✓）⇒ **直读 bin**（与 `$close` 同路径 ✓）；

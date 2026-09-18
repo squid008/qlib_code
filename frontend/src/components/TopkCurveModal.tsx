@@ -406,7 +406,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
         className="bg-white dark:bg-slate-800 rounded-lg shadow-xl w-[1040px] max-w-full max-h-[92vh] overflow-auto overscroll-contain"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* ⚠ `items-start`（v1.2.19，用户 2026-09-18）：标题区是多行文本，用 `items-center`
+        {/* ⚠ `items-start`（v1.20.19，用户 2026-09-18）：标题区是多行文本，用 `items-center`
             会把「关闭」按钮**垂直居中于整个文本块** ⇒ 看着比第一行"掉下去"一截 ✗。
             改成顶部对齐 ⇒ 按钮与**第一行**文字齐平 ✓（同「事件研究」弹窗观感 ✓）。 */}
         <div className="flex items-baseline justify-between gap-3 px-4 py-3 border-b border-slate-200 dark:border-slate-700">
@@ -492,7 +492,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               )}
             </span>
           </div>
-          {/* ⚠ `whitespace-nowrap shrink-0`（v1.2.19）：标题栏右侧被别的元素挤压时，
+          {/* ⚠ `whitespace-nowrap shrink-0`（v1.20.19）：标题栏右侧被别的元素挤压时，
               按钮宽度会被压到比"关闭"两个字还窄 ⇒ 文字**竖排换行**（用户 2026-09-18 报 ✓）。
               与「事件研究」弹窗的关闭按钮保持一致：永远一行 ✓。 */}
           <button onClick={onClose}

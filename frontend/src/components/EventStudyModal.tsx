@@ -127,7 +127,7 @@ export default function EventStudyModal({
   // ---- 净值曲线（v1.19.60）：复用任务里已算好的触发事件 + 缓存价格面板，只花"一次回测"的钱
   //      （实测 0.12~0.6s/次）⇒ 持仓周期可自己调、净值跟着变；按 k 缓存 ⇒ 来回改秒开。
   const [navK, setNavK] = useState<number | null>(null)
-  // ⚠ v1.2.2（用户 2026-09-18 要求）：**输入框显示值与"已生效的 k"分开** ✗ ——
+  // ⚠ v1.20.2（用户 2026-09-18 要求）：**输入框显示值与"已生效的 k"分开** ✗ ——
   //   原来 `value={navK ?? ''}` + `onChange={setNavK(max(1, Number(v)))}` ⇒ 一按删除键
   //   `Number('') == 0` ⇒ 立刻被回填成 **1** ⇒ **永远删不光** ✓（个位数尤其烦 ✓）。
   //   现在：输入框绑 `navKInput`（**可为空** ✓），只有"合法正整数"才去改 `navK`（⇒ 才发请求）；
@@ -135,21 +135,21 @@ export default function EventStudyModal({
   //   `lastOkKRef` 记录**上一次请求成功时的 k** ⇒ 删光时把 `navK` 回退到它 ⇒ 命中缓存**秒回** ✓
   //   （⇒ "6 算到一半删光 ⇒ 停在 60" 这个诉求靠它实现 ✓）。
   const [navKInput, setNavKInput] = useState('')
-  // ⚠ v1.2.9：净值曲线改为**手动计算** ✓ —— `navTick` 是"点按钮"的计数器 ✓，
+  // ⚠ v1.20.9：净值曲线改为**手动计算** ✓ —— `navTick` 是"点按钮"的计数器 ✓，
   //   只有它变化才会触发请求 effect ✓（原因见 effect 尾部的注释：高触发公式单次 57s ✗）。
   const [navTick, setNavTick] = useState(0)
   const lastOkKRef = useRef<number | null>(null)
-  // ⚠ v1.2.11（用户 2026-09-18：「可不可以改成自动识别？大公式就手动计算，小公式就自动计算」✓）
+  // ⚠ v1.20.11（用户 2026-09-18：「可不可以改成自动识别？大公式就手动计算，小公式就自动计算」✓）
   //   `slowRef` = 该结果对应的公式**是否已知"慢"**（上次回测耗时 > `NAV_SLOW_S` 秒 ✓）；
   //   慢 ⇒ 改持仓周期后**不自动算**（等按钮 ✓）；快 ⇒ 照旧**自动算**（体验不变 ✓）。
   //   `lastTickRef` 用来区分"按钮触发"与"自动触发" ✓。
   const slowRef = useRef(false)
-  // ⚠ v1.2.13（用户 2026-09-18）：「二浪加强点进去怎么还有计算按钮？不应该先自动计算、
+  // ⚠ v1.20.13（用户 2026-09-18）：「二浪加强点进去怎么还有计算按钮？不应该先自动计算、
   //   再根据实际判断要不要显示重新计算按钮么？」✓ 完全对 ✓ —— 按钮**只应在实测慢之后出现** ✗。
   //   `ref` 变化**不触发重渲染** ✗ ⇒ 另开一个 state 专门控制按钮显隐 ✓（两者同置同清 ✓）。
   const [navSlow, setNavSlow] = useState(false)
 
-  // ⚠⚠ v1.2.15（用户 2026-09-18：「关弹窗即取消」✓）：**卸载时通知后端停算** ✓ ——
+  // ⚠⚠ v1.20.15（用户 2026-09-18：「关弹窗即取消」✓）：**卸载时通知后端停算** ✓ ——
   //   此前关掉弹窗只是"没人收结果" ✗，而后端那次回测**照跑完为止** ✓（大公式一次白烧几十秒 ✗）。
   //   用原生 `fetch` + `keepalive: true`（卸载期间的请求不能被浏览器取消 ✓）；
   //   失败**静默** ✓（取消只是尽力而为 ✓，绝不能因此报错 ✓）。
@@ -180,7 +180,7 @@ export default function EventStudyModal({
   useEffect(() => {
     if (!result) return
     navCacheRef.current.clear()
-    // ⚠⚠ v1.2.12（用户 2026-09-18 报障）：「二浪加强 / 强突破」也被判成慢公式 ⇒ **必须换公式时重置** ✗
+    // ⚠⚠ v1.20.12（用户 2026-09-18 报障）：「二浪加强 / 强突破」也被判成慢公式 ⇒ **必须换公式时重置** ✗
     //   原因：`slowRef` 是按**上一个结果实测**置位的 ✓，但换公式时没清 ⇒
     //   开过「过顶」（57s）之后，**后面每一个公式都继承了"慢"** ✗（用户实测 ✓）。
     //   现在：`result` 变化（= 换公式/换任务）时清空 ✓ ⇒ 每个公式**各自首次自动算一次**、
@@ -200,7 +200,7 @@ export default function EventStudyModal({
 
   useEffect(() => {
     if (!result || navK == null) return
-    // ---- 自动识别（v1.2.11）：已知慢的公式**不自动算** ✓（等按钮），其余自动 ✓ ----
+    // ---- 自动识别（v1.20.11）：已知慢的公式**不自动算** ✓（等按钮），其余自动 ✓ ----
     const byButton = navTick !== lastTickRef.current
     lastTickRef.current = navTick
     if (slowRef.current && !byButton) {
@@ -230,7 +230,7 @@ export default function EventStudyModal({
     }
     setNavBusy(true)
     setNavErr('')
-    const _t0 = performance.now()       // v1.2.11：测本次回测耗时 ⇒ 决定该公式是否转入"手动模式" ✓
+    const _t0 = performance.now()       // v1.20.11：测本次回测耗时 ⇒ 决定该公式是否转入"手动模式" ✓
     let cancelled = false
     const timer = window.setTimeout(() => {
       /**
@@ -251,7 +251,7 @@ export default function EventStudyModal({
             if (cancelled) return
             navCacheRef.current.set(key, r)
             lastOkKRef.current = navK        // 记下"最后一次真正算出结果的 k" ✓
-            // v1.2.11：**实测耗时超过阈值 ⇒ 该公式转入"手动模式"** ✓（此后改周期不再自动算 ✓）；
+            // v1.20.11：**实测耗时超过阈值 ⇒ 该公式转入"手动模式"** ✓（此后改周期不再自动算 ✓）；
             //   低于阈值 ⇒ 保持自动 ✓（小公式体验与从前一致 ✓）。
             if ((performance.now() - _t0) / 1000.0 > NAV_SLOW_S) {
               slowRef.current = true
@@ -288,14 +288,14 @@ export default function EventStudyModal({
       //   （紧接着的新一轮若确实要算，会再 setNavBusy(true)，顺序安全）。
       setNavBusy(false)
     }
-    // ⚠ v1.2.9（用户 2026-09-18：**"计算很慢，改成手动按钮、不自动算"** ✓）：
+    // ⚠ v1.20.9（用户 2026-09-18：**"计算很慢，改成手动按钮、不自动算"** ✓）：
     //   本 effect 原来依赖 `[result, navK, navCost, sourceTaskId]` ✗ ⇒ **输入框一改就自动重算** ✓；
     //   而「过顶」这类高触发公式一次回测实测 **57s**（14.88 万笔 ✓，取价另 17.6s ✓）⇒
     //   改一下持仓周期就卡一分钟 ✓ ⇒ 改为**只由 `navTick`（按钮）驱动** ✓。
     //   ⚠ `navK` / `navCost` 仍从闭包读取（每次点按钮时取当前值 ✓）⇒ 故不放进依赖 ✓。
-    // ⚠⚠ v1.2.14（用户 2026-09-18 报障）：「点持仓周期的上下箭头，怎么不会自动计算？」✓
-    //   **必须把 `navK` / `navCost` / `sourceTaskId` 都放进依赖** ✗ —— v1.2.9 曾只留 `navTick`
-    //   （那是一律手动时期的写法 ✓），v1.2.12 只补了 `result` ✓ ⇒ **改了持仓周期 effect 根本不重跑** ✗
+    // ⚠⚠ v1.20.14（用户 2026-09-18 报障）：「点持仓周期的上下箭头，怎么不会自动计算？」✓
+    //   **必须把 `navK` / `navCost` / `sourceTaskId` 都放进依赖** ✗ —— v1.20.9 曾只留 `navTick`
+    //   （那是一律手动时期的写法 ✓），v1.20.12 只补了 `result` ✓ ⇒ **改了持仓周期 effect 根本不重跑** ✗
     //   ⇒ 快公式也不再自动 ✓（用户实测 ✓）。
     //   ⇒ 现在依赖齐全 ✓：**任何参数变化都会重跑**，而"慢公式不自动算"由 effect 开头的
     //     `slowRef` 拦截 ✓（`byButton` 判断只放过"点按钮"那种 ✓）⇒ 两条语义同时成立 ✓：
@@ -1037,7 +1037,7 @@ export default function EventStudyModal({
                     onChange={(e) => setNavCost(Number(e.target.value))}
                   />
                 </label>
-                {/* ⚠ v1.2.13：`navSlow || navBusy` ✓ —— 慢公式**首次自动算**的那几十秒也要能看到
+                {/* ⚠ v1.20.13：`navSlow || navBusy` ✓ —— 慢公式**首次自动算**的那几十秒也要能看到
                     「计算中…」✗（否则界面像卡死了 ✓）；算完且判定为快 ⇒ `navSlow=false` ⇒ 按钮收起 ✓ */}
                 {(navSlow || navBusy) && (
                   <button
@@ -1049,8 +1049,8 @@ export default function EventStudyModal({
                     {navBusy ? '计算中…' : navRes ? '重新计算' : '计算'}
                   </button>
                 )}
-                {/* ⚠ v1.2.11（用户 2026-09-18 要求）：**长提示、"计算中…（期间旧曲线保留）"、
-                    以及 v1.2.10 删除的耗时行，一律不再显示** ✗ —— 按钮自身就是提示 ✓
+                {/* ⚠ v1.20.11（用户 2026-09-18 要求）：**长提示、"计算中…（期间旧曲线保留）"、
+                    以及 v1.20.10 删除的耗时行，一律不再显示** ✗ —— 按钮自身就是提示 ✓
                     （自动/手动由"实测耗时"自动判定 ✓，见 effect 里的 `slowRef` ✓）。 */}
               </div>
               {navErr ? (

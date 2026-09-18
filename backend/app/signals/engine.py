@@ -95,7 +95,7 @@ def _prepare(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame]) -> dict:
 def _bucket_signals(signals: pd.DataFrame, prep: dict) -> dict:
     """信号 → 交易日位置分桶（非交易日**顺延**到下一交易日；数据范围外丢弃）。
 
-    ⚠ v1.2.0（2026-09-18）**向量化**：原实现是**逐事件 Python 循环** ✗ —— 过顶一次有
+    ⚠ v1.20.0（2026-09-18）**向量化**：原实现是**逐事件 Python 循环** ✗ —— 过顶一次有
     **14.88 万**条触发 ✓，每条都要 `pd.Timestamp(dt)` + 标量 `cal.searchsorted(d)`（微秒级）
     ⇒ 仅这一步就要**数秒** ✓。现改为批量：`DatetimeIndex` 一次解析 + `searchsorted(数组)`
     + `Series.map`（C 实现）+ `groupby` 分桶 ✓。
@@ -163,7 +163,7 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
     """
     C, O, CR, OR, LU, LD = (prep["C"], prep["O"], prep["CR"], prep["OR"],
                             prep["LU"], prep["LD"])
-    # ⚠ v1.2.4（2026-09-18 性能）：**预先把整块成交价矩阵规范化**（一次性 ✓）——
+    # ⚠ v1.20.4（2026-09-18 性能）：**预先把整块成交价矩阵规范化**（一次性 ✓）——
     #   原 `price(i,c)` 每次调用都要做 `np.isfinite(v) and v > 0` 两个判定 + `float()`
     #   转换 ✗，而主循环里它被调用**百万次**（每日盯市 + 三处再平衡遍历 × 两种资金方案 ✓）
     #   ⇒ 仅"函数调用 + 分支"这一项就是数秒 ✓（实测这是净值曲线慢的**大头**，不是 dict 遍历 ✓）。
@@ -175,7 +175,7 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
 
     def price(i: int, c: int, kind: str = None):
         if kind is None:
-            # ⚠⚠ v1.2.9 **试过去掉 `float()`，实测反而变慢（1.28s → 1.72s ✗），已回退** ——
+            # ⚠⚠ v1.20.9 **试过去掉 `float()`，实测反而变慢（1.28s → 1.72s ✗），已回退** ——
             #   原因是下游 `round(np.float64)` 比 `round(float)` **慢一个量级** ✗
             #   （`builtins.round` 的 tottime 从 0.128 飙到 **0.269** ✓）。
             #   ⇒ **收益/风险都不划算，保持 `float()` 装箱** ✓（这条如实记录，避免以后再试 ✓）。
@@ -184,7 +184,7 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
         v = arr[i, c]
         return float(v) if np.isfinite(v) and v > 0 else float("nan")
 
-    # ⚠⚠ v1.2.8 性能（2026-09-18，cProfile 实测 −12%）：把「涨跌停 / 停牌」判定
+    # ⚠⚠ v1.20.8 性能（2026-09-18，cProfile 实测 −12%）：把「涨跌停 / 停牌」判定
     #   **预计算成 5 个布尔矩阵**（一次性 ✓）—— 原来 `_limit` 被调 **14.9 万次**、
     #   `_suspended` 7.5 万次，合计 ≈15% 总耗时 ✗（每次都要现查 4 个矩阵 + `isfinite` + 比较 ✓）；
     #   而「过顶」有 14.88 万笔 ⇒ 又被放大 37 倍 ✓ ⇒ 属于"按笔数计费"的大头之一 ✓。
@@ -234,7 +234,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                  cancel_cb=None) -> BtResult:
     """跑回测，返回**两种资金方案**的净值 + 成交/被拒明细 + 统计。
 
-    `cancel_cb`（v1.2.4）：可选取消检查回调 —— 主循环里**每 20 个交易日**调一次 ✓，
+    `cancel_cb`（v1.20.4）：可选取消检查回调 —— 主循环里**每 20 个交易日**调一次 ✓，
     约定「应取消时直接抛异常」（与 `panel_features_parallel` 同一约定 ✓）。
     ⚠ 之前**完全没有取消检查点** ✗ ⇒ 用户改了持仓周期后，旧的那次回测只能跑完 ✓
     （净值曲线 + 两资金方案 + 全持仓遍历 ⇒ 数十秒白等 ✓）。加上之后配合路由层
@@ -314,7 +314,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     sh.pop(c, None)
                     dsz.pop(c, None)
                     basis.pop(c, None)
-            # ⚠⚠ v1.2.7 性能（2026-09-18 cProfile 实测）：**逐笔明细构造占总耗时约 26%** ✗
+            # ⚠⚠ v1.20.7 性能（2026-09-18 cProfile 实测）：**逐笔明细构造占总耗时约 26%** ✗
             #   （`str(cal[i].date())` 触发 pandas `Timestamp` 装箱 0.185s + 4 个 `round()` 0.128s ✓，
             #   而过顶有 **14.88 万笔** ⇒ 这是**最大的"逐笔开销"** ✓）。
             #   ⇒ 循环里**只存元组**（7 个原生值，零格式化 ✓），`str`/`round`/dict 组装全部挪到
@@ -322,7 +322,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             trades.append((i, c, side, int(qty), price, reason, mode))
 
         def _reject(i, c, reason, decision_pos=None):
-            # ⚠⚠ v1.2.20 性能（2026-09-18，与 v1.2.7 给 `_log_trade` 做的同一件事 ✓）：
+            # ⚠⚠ v1.20.20 性能（2026-09-18，与 v1.20.7 给 `_log_trade` 做的同一件事 ✓）：
             #   原实现**在热循环里**就构造 dict + 调 `str(cal[i].date())` ✗ —— 后者触发
             #   pandas `Timestamp` 装箱与格式化；过顶这类公式 `rejects` 可达**几万条** ✗
             #   （严格口径下涨跌停/停牌/资金不足每次重试都记一条 ✓）。
@@ -334,7 +334,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         i_start = min([max(0, min(bk["buys"], default=0) - 1)] +
                       [max(0, min(bk["exits"], default=0) - 1)] + [0])
         for i in range(i_start, n_row):
-            # 取消检查点（v1.2.4）：每 20 天一次 ⇒ 取消响应 ≤ 20 个交易日的计算量 ✓
+            # 取消检查点（v1.20.4）：每 20 天一次 ⇒ 取消响应 ≤ 20 个交易日的计算量 ✓
             #   （⚠ 不能每天都调：回调本身有开销，而本循环要跑数千天 ✓）
             if cancel_cb is not None and (i - i_start) % 20 == 0:
                 cancel_cb()
@@ -461,7 +461,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 dsz[c] = dsz.get(c, 0) + 1
         navs[mode] = pd.Series(nav_vals, index=pd.DatetimeIndex(nav_dates))
         all_trades += trades
-        # ⚠ v1.2.20：这里（**热循环之外** ✓）一次性把元组展开成 dict ⇒ 字段与原来逐位相同 ✓
+        # ⚠ v1.20.20：这里（**热循环之外** ✓）一次性把元组展开成 dict ⇒ 字段与原来逐位相同 ✓
         mode_rejects[mode] = [
             {"date": str(cal[_i].date()), "code": codes[_c], "reason": _rs,
              "text": REJECT_TEXT.get(_rs, _rs),
@@ -489,7 +489,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             "avg_hold_days": round(hold_sum / closed, 1) if closed else None,
             "win_rate": round(wins / (wins + losses), 3) if (wins + losses) else None,
             "open_positions_end": len(sh),
-            # ⚠ v1.2.20：`rejects` 现在是元组 `(i, c, reason, decision_pos)` ⇒ 取 `[2]` ✓
+            # ⚠ v1.20.20：`rejects` 现在是元组 `(i, c, reason, decision_pos)` ⇒ 取 `[2]` ✓
             "rejects_limit_up": sum(1 for r in rejects if r[2].startswith("limit_up")),
             "rejects_suspended": sum(1 for r in rejects if r[2] == "suspended"),
             "rejects_no_cash": sum(1 for r in rejects if r[2] == "no_cash"),
@@ -520,7 +520,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     # ⇒ 就算明细被截断，界面也能如实写"共 X 条、明细含 Y 条"（别再出现"正好 800"这种误读）
     out.diag["rejects_total"] = int(sum((out.stats.get(k, {}) or {}).get("rejects_total", 0)
                                         for k in out.stats))
-    # ⚠ v1.2.7：成交明细**在这里一次性格式化**（循环里只存元组 ✓，见 `_log_trade` 注释 ✓）。
+    # ⚠ v1.20.7：成交明细**在这里一次性格式化**（循环里只存元组 ✓，见 `_log_trade` 注释 ✓）。
     #   `("__ROW__", dict)` 是 `batch_even` 分支带过来的**已格式化行** ✓ 直接沿用 ✓。
     def _trade_row(t):
         if t[0] == "__ROW__":

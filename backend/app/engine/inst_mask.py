@@ -56,7 +56,7 @@ def _daily_member_mask(universe: str, index: pd.MultiIndex) -> Optional[np.ndarr
     dt_raw = np.asarray(index.get_level_values(dt_lv))
     if inst_raw.size == 0:
         return None
-    # ⚠⚠ v1.2.18（2026-09-18 profile 定位）：原实现对**每一行**都做
+    # ⚠⚠ v1.20.18（2026-09-18 profile 定位）：原实现对**每一行**都做
     #   `pd.Timestamp(x).to_datetime64()`（`dt_raw` 可达几十万行）⇒ 实测 **0.91 s** ✗，
     #   是"过顶公式 7.6 s"里最大的单项之一。而面板 index 的 datetime 级别**本来就是
     #   DatetimeIndex** ⇒ 直接 `pd.DatetimeIndex(dt_raw)` 一次转换 + `.unique()` 排序即可 ✓

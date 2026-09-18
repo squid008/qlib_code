@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""`run_backtest` **语义基准**（v1.2.3，2026-09-18）。
+"""`run_backtest` **语义基准**（v1.20.3，2026-09-18）。
 
 为什么：下一步要把主循环（`engine.py:303-424`，逐日 Python 循环 × 两种资金方案 ×
 遍历全部持仓 ✗）**向量化** ⇒ 这类改动**只许改性能、不许改语义** ✗，而语义错了通常
@@ -47,7 +47,7 @@ def _events():
     return pd.DataFrame({"date": pd.to_datetime(dts), "code": codes, "side": 1})
 
 
-# 期望值 = 旧实现（v1.2.3 之前）的逐位输出 ✓（生成脚本 `ai_test/check_bt_ref.py`）
+# 期望值 = 旧实现（v1.20.3 之前）的逐位输出 ✓（生成脚本 `ai_test/check_bt_ref.py`）
 EXPECT = {
     "k5_cost0": dict(hold_days=5, cost=0.0, n_trades=329, n_rejects=47,
                      nav={"event_even": 1.12127641, "cash_even": 0.81812352}),

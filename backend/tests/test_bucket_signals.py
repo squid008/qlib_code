@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""`_bucket_signals` 向量化（v1.2.0）与**旧实现逐位对拍**。
+"""`_bucket_signals` 向量化（v1.20.0）与**旧实现逐位对拍**。
 
 为什么必须有这条：向量化只允许**改性能**，绝不允许**改语义** ✗ —— 分桶错了会静默改变
 成交/被拒/净值，而且不会报错 ✓。故此处保留**旧实现的逐事件循环副本** `_ref`，
@@ -12,7 +12,7 @@ from app.signals.engine import _bucket_signals
 
 
 def _ref(signals, prep):
-    """旧实现**原样副本**（v1.2.0 之前的逐事件 Python 循环）——对拍基准 ✓。"""
+    """旧实现**原样副本**（v1.20.0 之前的逐事件 Python 循环）——对拍基准 ✓。"""
     cal, col_of = prep["cal"], prep["col_of"]
     buys, exits = {}, {}
     defer = beyond = 0

@@ -874,7 +874,7 @@ _NAV_PANEL_CACHE: dict = {}
 _NAV_PANEL_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# 回测结果缓存（v1.2.0；用户 2026-09-18：「事件研究里净值曲线（两种方案 + 基准）计算很慢」）
+# 回测结果缓存（v1.20.0；用户 2026-09-18：「事件研究里净值曲线（两种方案 + 基准）计算很慢」）
 #
 # 病根：`run_backtest` **与 k 强相关** ⇒ 改一次持仓周期就整条重跑 ✗，且它内部是
 #   **逐日 Python 循环 × 两种资金方案 × 遍历全部持仓** ⇒ 过顶（14.88 万触发）下单次数十秒 ✓。
@@ -889,7 +889,7 @@ _NAV_BT_LOCK = threading.Lock()
 _NAV_BT_CAP = 4
 
 # ---------------------------------------------------------------------------
-# 取消源（v1.2.5；用户 2026-09-18：「先把取消源接通」✓）
+# 取消源（v1.20.5；用户 2026-09-18：「先把取消源接通」✓）
 #
 # 需求：用户在净值曲线上反复改持仓周期（60 → 6 → …）时，**旧的那次回测应当立刻停** ✗
 #   —— 否则每改一次就多堆一个"逐日循环 × 两资金方案"的任务在后台空烧 CPU ✓。
@@ -928,7 +928,7 @@ def _nav_req_current(key) -> int:
         return _NAV_REQ_SEQ.get(key, 0)
 
 
-# ⚠ v1.2.15（用户 2026-09-18：「关弹窗即取消」✓）：前端**卸载弹窗**时会调
+# ⚠ v1.20.15（用户 2026-09-18：「关弹窗即取消」✓）：前端**卸载弹窗**时会调
 #   `POST /event-study/nav/cancel` ✓ ⇒ 这里记下 task_id ✓；在途回测的 `cancel_cb`
 #   每次检查命中即抛 ⇒ **关掉弹窗后后端立刻停算** ✓（此前是"自己跑完为止、没人收结果"✗，
 #   大公式一次白烧几十秒 ✓）。
@@ -961,7 +961,7 @@ def _nav_panel_cached(codes, start, end, *, strict: bool = True):
         return panel, False
     panel = fill_limits(panel, strict=strict)
     with _NAV_PANEL_LOCK:
-        # ⚠ v1.2.0：原为 `clear()` **只留 1 条** ✗ ⇒ 换个因子/池（或先点 K=5 再点 K=20 触发
+        # ⚠ v1.20.0：原为 `clear()` **只留 1 条** ✗ ⇒ 换个因子/池（或先点 K=5 再点 K=20 触发
         #   不同 codes 集合）就整段重算（全A 面板 ≈12s ✓）⇒ 改为**容量 2 的 LRU**：一块
         #   5000×4000 的宽表面板是数百 MB 量级 ✓，容 2 条即可覆盖"来回切两个池/因子"的常见操作 ✓。
         while len(_NAV_PANEL_CACHE) >= 2:
@@ -971,7 +971,7 @@ def _nav_panel_cached(codes, start, end, *, strict: bool = True):
 
 
 class EventNavCancelRequest(BaseModel):
-    """关弹窗取消（v1.2.15）：前端只要把 task_id 报上来即可 ✓。"""
+    """关弹窗取消（v1.20.15）：前端只要把 task_id 报上来即可 ✓。"""
     task_id: str = ""
 
 
@@ -1048,17 +1048,17 @@ def event_study_nav(req: EventNavRequest):
         t0 = time.perf_counter()
         _modes = ("event_even", "cash_even")
         _btk = _nav_bt_key(codes, ev, start, end, k, req.cost, req.capital, _modes)
-        # 取消源（v1.2.5）：登记本次请求序号；同事件指纹来了更新的请求 ⇒ 本次立即自停 ✓
+        # 取消源（v1.20.5）：登记本次请求序号；同事件指纹来了更新的请求 ⇒ 本次立即自停 ✓
         _seq = _nav_req_begin(_nav_req_key(codes, ev, start, end))
 
         _tid_key = str(req.task_id or "")
         # ⚠⚠ 必须**清除旧的取消标记** ✗ —— 否则用户"关掉弹窗、再重新打开同一个公式"时
-        #   会命中上次留下的标记 ⇒ **一开就被取消** ✓（v1.2.15 自查发现 ✓）。
+        #   会命中上次留下的标记 ⇒ **一开就被取消** ✓（v1.20.15 自查发现 ✓）。
         if _tid_key:
             _NAV_CANCEL.discard(_tid_key)
 
         def _cancel_cb():
-            # ① 前端关了弹窗（v1.2.15 ✓）② 同事件指纹来了更新的请求（v1.2.5 ✓）⇒ 立即自停 ✓
+            # ① 前端关了弹窗（v1.20.15 ✓）② 同事件指纹来了更新的请求（v1.20.5 ✓）⇒ 立即自停 ✓
             if _tid_key and _tid_key in _NAV_CANCEL:
                 raise _NavCancelled()
             if _nav_req_current(_nav_req_key(codes, ev, start, end)) != _seq:

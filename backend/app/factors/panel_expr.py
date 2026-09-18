@@ -971,7 +971,7 @@ class PanelEvaluator:
         key = name.lstrip("$")
         s = self._field_cache.get(key)
         if s is None and key.startswith("chip_"):
-            # ★ v1.2.17：**物化 bin 优先**（用户要求「COST(36) 这种没物化的就走计算」✓）
+            # ★ v1.20.17：**物化 bin 优先**（用户要求「COST(36) 这种没物化的就走计算」✓）
             s = self._chip_or_bin(key)
             self._field_cache[key] = s
             return s
@@ -986,7 +986,7 @@ class PanelEvaluator:
         return s
 
     def _chip_or_bin(self, key: str) -> pd.Series:
-        """`$chip_*` 取数（v1.2.17）：**已物化的直读 bin** ✓ / **未物化的现算** ✓。
+        """`$chip_*` 取数（v1.20.17）：**已物化的直读 bin** ✓ / **未物化的现算** ✓。
 
         为什么必须分开（用户 2026-09-18 提问"cost 函数那么慢？bin 都物化了"）：
           · 筹码是**状态递推**字段（128 箱 × 全池 × 全历史 ⇒ `chip_dist` 自述"8 亿次元素
@@ -2371,7 +2371,7 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     cal = _calendar()
     fdir = _feature_dir()
 
-    # 切块（v1.2.1，2026-09-18 改）：**块数 = n_jobs × 4**，不再等于 n_jobs ✗ ——
+    # 切块（v1.20.1，2026-09-18 改）：**块数 = n_jobs × 4**，不再等于 n_jobs ✗ ——
     #   进度只在"每完成一块"时上报 ✓，块数 = 核数时每块要跑**几分钟**（全 A 5418 只、
     #   过顶那种重公式 ⇒ 用户看到进度条**长时间停在 6%** ✗，体感"卡死了" ✓）。
     #   块数 ×4 后：上报次数 ×4（进度肉眼可见地走 ✓）、**总耗时基本不变**（进程池按块调度，

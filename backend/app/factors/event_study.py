@@ -430,7 +430,7 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
                 # 1172×5418 = 635 万），大 k 时绝大多数行整行无效仍参与 nanmean/median。
                 r_idx = np.nonzero(ok)[0]
                 with np.errstate(all="ignore"):
-                    # ⚠ v1.2.19 性能（用户 2026-09-18："全A 六年还是四五十秒"）：原式
+                    # ⚠ v1.20.19 性能（用户 2026-09-18："全A 六年还是四五十秒"）：原式
                     #   `A / B - 1.0` 会**分配 3 份**同规模大矩阵（商、常量、差），而
                     #   `num` 是「配对日 × 未触发股」（全 A ≈ 1172×5418 = 635 万 × 60 个 k）
                     #   ⇒ 每 k 白分配两份、合计约 6 GB 级的内存往返 ✗。
