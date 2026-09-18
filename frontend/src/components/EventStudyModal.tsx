@@ -993,11 +993,9 @@ export default function EventStudyModal({
                   改完持仓周期后请点左侧按钮 ✓
                 </span>
                 {navBusy && <span className="text-sky-600">计算中…（期间旧曲线保留）</span>}
-                {navRes && !navBusy && (
-                  <span className="text-slate-400">
-                    取价 {navRes.timings?.prices}s + 回测 {navRes.timings?.backtest}s（按持仓周期缓存，改回去秒开）
-                  </span>
-                )}
+                {/* ⚠ v1.2.10（用户 2026-09-18 要求）：**删掉**「取价 0s + 回测 0s（按持仓周期缓存，
+                    改回去秒开）」那一行 ✗ —— 命中缓存时它显示 "0s + 0s"，既没信息量又占地方 ✓。
+                    （耗时仍可从响应 `timings` 与后端日志查看 ✓，不占界面 ✓） */}
               </div>
               {navErr ? (
                 <div className="text-slate-400 text-xs">净值曲线暂不可用：{navErr}</div>
