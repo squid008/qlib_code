@@ -93,36 +93,38 @@ def _prepare(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame]) -> dict:
 
 
 def _bucket_signals(signals: pd.DataFrame, prep: dict) -> dict:
-    """信号 → 交易日位置分桶（非交易日**顺延**到下一交易日；数据范围外丢弃）。"""
-    cal, pos_of, col_of = prep["cal"], prep["pos_of"], prep["col_of"]
-    buys: Dict[int, List[int]] = {}
-    exits: Dict[int, List[int]] = {}
-    raw_days: Dict[int, int] = {}
-    defer = beyond = 0
+    """信号 → 交易日位置分桶（非交易日**顺延**到下一交易日；数据范围外丢弃）。
+
+    ⚠ v1.2.0（2026-09-18）**向量化**：原实现是**逐事件 Python 循环** ✗ —— 过顶一次有
+    **14.88 万**条触发 ✓，每条都要 `pd.Timestamp(dt)` + 标量 `cal.searchsorted(d)`（微秒级）
+    ⇒ 仅这一步就要**数秒** ✓。现改为批量：`DatetimeIndex` 一次解析 + `searchsorted(数组)`
+    + `Series.map`（C 实现）+ `groupby` 分桶 ✓。
+    ⚠ **语义必须与旧实现逐位相同**（`tests/test_bucket_signals.py` 用旧算法副本对拍 ✓）：
+      · code 不在面板 ⇒ **直接丢弃且不计入 `beyond`** ✓（旧实现最先 `continue` ✓）；
+      · 早于起始日 / 晚于末尾 ⇒ 计入 `beyond` ✓（**不能**映射到首日 ✗）；
+      · 非交易日 ⇒ `deferred` 计数 ✓ 并顺延到下一交易日 ✓；
+      · `buys` / `exits` **各自去重**（同一 (日,股) 只留一次，买卖互不影响 ✓）。
+    """
+    cal, col_of = prep["cal"], prep["col_of"]
     n = len(cal)
-    for dt, code, side in zip(signals["date"], signals["code"], signals["side"]):
-        if code not in col_of:
-            continue
-        d = pd.Timestamp(dt)
-        if n == 0 or d < cal[0]:
-            beyond += 1                                 # 早于行情起点 ⇒ 丢弃（**不能**映射到首日）
-            continue
-        p = int(cal.searchsorted(d))
-        if p >= n:
-            beyond += 1                                 # 晚于行情末尾 ⇒ 丢弃
-            continue
-        if cal[p] != d:
-            defer += 1                                  # 非交易日 ⇒ 顺延到下一交易日
-        c = col_of[code]
-        tgt = buys if side > 0 else exits
-        bucket = tgt.setdefault(p, [])
-        if c in bucket:
-            continue
-        bucket.append(c)
-        if side > 0:
-            raw_days[p] = raw_days.get(p, 0) + 1
+    if n == 0 or len(signals) == 0:
+        return {"buys": {}, "exits": {}, "deferred": 0, "beyond": 0, "n_mapped": 0}
+    dts = pd.DatetimeIndex(signals["date"])
+    cols = pd.Series(signals["code"].to_numpy()).map(col_of)
+    in_col = cols.notna()
+    p = cal.searchsorted(dts)
+    beyond = int(((p >= n) & in_col).sum()) + int(((dts < cal[0]) & in_col).sum())
+    ok = (in_col & (dts >= cal[0]) & (p < n)).to_numpy()
+    pp, cc = p[ok], cols[ok].to_numpy().astype(np.int64)
+    defer = int((cal[pp] != dts[ok]).sum())
+    side = signals["side"].to_numpy()[ok]
+    df = pd.DataFrame({"p": pp, "c": cc, "s": side}).drop_duplicates(["p", "c", "s"])
+    buys = {int(k): v for k, v in
+            df[df["s"] > 0].groupby("p")["c"].apply(list).to_dict().items()}
+    exits = {int(k): v for k, v in
+             df[df["s"] <= 0].groupby("p")["c"].apply(list).to_dict().items()}
     return {"buys": buys, "exits": exits, "deferred": defer, "beyond": beyond,
-            "n_mapped": sum(len(v) for v in buys.values()) + sum(len(v) for v in exits.values())}
+            "n_mapped": int(len(df))}
 
 
 def _interleave_rejects(by_mode: Dict[str, List[dict]], cap: int) -> List[dict]:

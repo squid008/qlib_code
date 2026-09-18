@@ -3,6 +3,38 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.2.0] - 2026-09-18
+
+> **版本号断代说明**：此前为 `1.19.x` 线性递增；本次起改用 **`1.2.0`** 作为**大改动锚点**
+> （用户要求：「先把版本号搞到 1.2.0，因为这是大改动，后面我回退就知道回退到哪里」✓）。
+> `1.19.98 ~ 1.19.103` 是本次大改的**预备提交**（详见下一条目 ✓）。
+
+### Changed（★ 性能：事件研究「净值曲线（两种资金方案 + 基准）」）
+用户反馈：「**过顶**这个 0/1 信号的事件研究里，净值曲线算得很慢」✗。链路边界先厘清：
+它**不是** `build_event_stats`/`compute_baseline_curves`（那条 ≈11.2s 是**事件研究任务本身** ✓），
+而是 `EventStudyModal.tsx` → `POST /api/factors/event-study/nav`（`routers/factors.py:901`）
+→ 取价 `_nav_panel_cached` + **回测 `signals/engine.run_backtest`（两资金方案各跑一遍 ✗）** + 基准 ✓。
+
+1. **① 回测结果加缓存**（`factors.py`，新 `_NAV_BT_CACHE`，容量 4 的 LRU）：
+   原实现**完全没有缓存** ✗ ⇒ 改一个 k / 切一次基准 / 重开弹窗都要**整条重跑** ✓。
+   key = `codes 指纹 + 区间 + **事件指纹**(条数+首末日期) + k + cost + capital + modes` ✓
+   （⚠ 必须含**事件指纹**：同一批 codes 但触发集合不同时结果不同 ✗）。响应新增
+   `timings.backtest_cached` ✓ 便于验证命中。收益：**重复点开从数十秒 → 亚毫秒** ✓。
+2. **② `_bucket_signals` 向量化**（`engine.py:95`）：原实现**逐事件 Python 循环** ✗ ——
+   过顶一次 **14.88 万**条触发，每条都 `pd.Timestamp(dt)` + 标量 `cal.searchsorted(d)` ✓
+   ⇒ 改为 `DatetimeIndex` 批量解析 + `searchsorted(数组)` + `Series.map`（C 实现）+ `groupby` 分桶 ✓。
+   **新增逐位对拍回归** `tests/test_bucket_signals.py`：内置**旧算法副本**，10 组边界用例
+   （非交易日顺延 / 早于起点 / 晚于末尾 / 不在面板 / 同股同日重复 / 买+卖并存 / 混合 / 空日历 ✓）
+   逐键比对 `buys / exits / deferred / beyond / n_mapped` ✓ —— 向量化**只许改性能、不许改语义** ✗。
+3. **③ 取价面板缓存 1 条 → 2 条 LRU**（`factors.py:_nav_panel_cached`）：原 `clear()` 只留最近 1 条 ✗
+   ⇒ 换个因子/池就整段重算（全A 面板 ≈12s ✓）⇒ 容量 2 覆盖"来回切两个池/因子"的常见操作 ✓
+   （一块 5000×4000 宽表是数百 MB 量级 ⇒ 不宜更多 ✓）。
+
+### Notes
+- ④ `run_backtest` 主循环 numpy 向量化（`engine.py:301-422`：逐日循环 + 每日遍历全部持仓 ×
+  两个方案）**收益最高但风险最高** ⇒ **未在本次做** ✓，须**新旧逐位对拍**（成交/被拒/净值）后再上 ✓。
+- ⑤ `fill_limits` 向量化、⑥ 前端缓存外提：本次未做 ✓（低优先 ✓）。
+
 ## [1.19.103] - 2026-09-18
 
 ### Added

@@ -873,6 +873,27 @@ class EventNavRequest(BaseModel):
 _NAV_PANEL_CACHE: dict = {}
 _NAV_PANEL_LOCK = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# 回测结果缓存（v1.2.0；用户 2026-09-18：「事件研究里净值曲线（两种方案 + 基准）计算很慢」）
+#
+# 病根：`run_backtest` **与 k 强相关** ⇒ 改一次持仓周期就整条重跑 ✗，且它内部是
+#   **逐日 Python 循环 × 两种资金方案 × 遍历全部持仓** ⇒ 过顶（14.88 万触发）下单次数十秒 ✓。
+#   而"同一 k 重复点开"（前端缓存失效后重算 / 切换基准 / 关掉弹窗再开）尤其浪费 ✗。
+# 做法：按 (codes 指纹 + 区间 + **事件指纹** + k + cost + capital + modes + 口径) 缓存 `BtResult` ✓。
+#   结果对象很小（净值/成交/统计 ✓）⇒ 容量 4 的 LRU 足够覆盖"来回切 2~3 个 k/成本" ✓。
+#   ⚠ key **必须含事件指纹**（同一批 codes 但触发集合不同 ⇒ 结果不同 ✗）。
+#   ⚠ `BtResult` 只读复用（调用方不改 ✓）⇒ 直接返回同一对象 ✓ 省一次深拷贝 ✓。
+# ---------------------------------------------------------------------------
+_NAV_BT_CACHE: dict = {}
+_NAV_BT_LOCK = threading.Lock()
+_NAV_BT_CAP = 4
+
+
+def _nav_bt_key(codes, ev, start, end, k, cost, capital, modes):
+    return (len(codes), hash(tuple(codes)), str(start), str(end),
+            len(ev), str(ev["dt"].iloc[0]), str(ev["dt"].iloc[-1]),
+            int(k), float(cost), float(capital), tuple(modes))
+
 
 def _nav_cache_key(codes, start, end, strict: bool = True):
     return (len(codes), hash(tuple(codes)), str(start), str(end), bool(strict))
@@ -893,7 +914,11 @@ def _nav_panel_cached(codes, start, end, *, strict: bool = True):
         return panel, False
     panel = fill_limits(panel, strict=strict)
     with _NAV_PANEL_LOCK:
-        _NAV_PANEL_CACHE.clear()          # 只留最近 1 条（大对象，别攒 ✗）
+        # ⚠ v1.2.0：原为 `clear()` **只留 1 条** ✗ ⇒ 换个因子/池（或先点 K=5 再点 K=20 触发
+        #   不同 codes 集合）就整段重算（全A 面板 ≈12s ✓）⇒ 改为**容量 2 的 LRU**：一块
+        #   5000×4000 的宽表面板是数百 MB 量级 ✓，容 2 条即可覆盖"来回切两个池/因子"的常见操作 ✓。
+        while len(_NAV_PANEL_CACHE) >= 2:
+            _NAV_PANEL_CACHE.pop(next(iter(_NAV_PANEL_CACHE)))
         _NAV_PANEL_CACHE[key] = panel
     return panel, False
 
@@ -954,11 +979,23 @@ def event_study_nav(req: EventNavRequest):
         if panel is None or "CLOSE" not in panel:
             raise HTTPException(status_code=400, detail="取不到触发标的的行情数据")
         t0 = time.perf_counter()
-        events = pd.DataFrame({"date": pd.to_datetime(ev["dt"]),
-                               "code": ev["code"].astype(str), "side": 1})
-        bt = run_backtest(events, panel, hold_days=k, fill="t1_open", cost=float(req.cost),
-                          capital=float(req.capital), strict_limit=True,
-                          alloc_modes=("event_even", "cash_even"))
+        _modes = ("event_even", "cash_even")
+        _btk = _nav_bt_key(codes, ev, start, end, k, req.cost, req.capital, _modes)
+        with _NAV_BT_LOCK:
+            bt = _NAV_BT_CACHE.get(_btk)
+        if bt is not None:
+            timings["backtest_cached"] = True
+        else:
+            timings["backtest_cached"] = False
+            events = pd.DataFrame({"date": pd.to_datetime(ev["dt"]),
+                                   "code": ev["code"].astype(str), "side": 1})
+            bt = run_backtest(events, panel, hold_days=k, fill="t1_open", cost=float(req.cost),
+                              capital=float(req.capital), strict_limit=True,
+                              alloc_modes=_modes)
+            with _NAV_BT_LOCK:
+                while len(_NAV_BT_CACHE) >= _NAV_BT_CAP:
+                    _NAV_BT_CACHE.pop(next(iter(_NAV_BT_CACHE)))
+                _NAV_BT_CACHE[_btk] = bt
         timings["backtest"] = round(time.perf_counter() - t0, 3)
         if bt.nav is None:
             raise HTTPException(status_code=400, detail="回测没有产出净值：%s" % bt.diag.get("error"))
