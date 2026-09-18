@@ -3,6 +3,25 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.2.5] - 2026-09-18
+
+### Added（取消源接通 → 旧回测"秒级自停"）
+- 用户要求：「**先把取消源接通**」✓。此前 `run_backtest` 已有 `cancel_cb` 挂点（v1.2.4 ✓）
+  但**没有任何取消源** ✗ ⇒ 用户在净值曲线反复改持仓周期（60 → 6 → …）时，**每一次旧回测都会
+  在后台继续跑完** ✗（逐日循环 × 两资金方案 ⇒ 白烧 CPU 数十秒 ✓）。
+- 实现（`routers/factors.py`）：
+  - 新增 **`_NAV_REQ_SEQ`**（按"取消分组键"维护**单调递增序号** ✓，LRU 上限 32 ✓）+ `_NavCancelled`；
+  - **分组键 `_nav_req_key` 只含"事件指纹 + 区间"** ✓（**不含 k / cost** ✗）⇒
+    同一批事件下「**最新那次 k 才算数**」✓（若把 k 放进分组键就永远不会互相取消 ✗，这点很关键 ✓）；
+  - 每次请求 `_seq = _nav_req_begin(...)` ✓，`cancel_cb` 里回查 `_nav_req_current(...) != _seq`
+    ⇒ 抛 `_NavCancelled` ✓；`run_backtest` 主循环**每 20 个交易日**查一次（v1.2.4 ✓）
+    ⇒ **取消响应 ≤ 20 个交易日的计算量** ✓；
+  - 端点新增 `except _NavCancelled` ⇒ 返回 **409**「已被更新的一次计算取代」✓
+    （前端此刻通常已切到新 key ✓，一般看不到这条 ✓）。
+- ⚠ **如实说明**：用户随后反馈「**计算还是很慢**」✗ ⇒ 说明 v1.2.4 只消掉了"百万次函数调用"，
+  **真正的大头仍在** ⇒ 下一步做 **`sh/dsz/basis` dict → numpy 数组**（盯市 `np.nansum(sh_vec*PX[i])`
+  + 三处再平衡遍历 ✓），并有 `tests/test_backtest_semantics.py` 冻结基准守门 ✓。
+
 ## [1.2.4] - 2026-09-18
 
 ### Changed（④ 第一步：`run_backtest` 热点取价 + 取消检查点）

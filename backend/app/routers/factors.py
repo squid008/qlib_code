@@ -888,6 +888,45 @@ _NAV_BT_CACHE: dict = {}
 _NAV_BT_LOCK = threading.Lock()
 _NAV_BT_CAP = 4
 
+# ---------------------------------------------------------------------------
+# 取消源（v1.2.5；用户 2026-09-18：「先把取消源接通」✓）
+#
+# 需求：用户在净值曲线上反复改持仓周期（60 → 6 → …）时，**旧的那次回测应当立刻停** ✗
+#   —— 否则每改一次就多堆一个"逐日循环 × 两资金方案"的任务在后台空烧 CPU ✓。
+# 做法：按 **回测指纹**（= `_nav_bt_key`，含事件指纹 + k + 成本 ✓）维护一个**单调递增序号** ✓。
+#   每次请求开始时把自己的序号记下来 ✓，`run_backtest` 主循环每 20 个交易日回查一次
+#   （`cancel_cb`，见 `signals/engine.py` ✓）⇒ **序号被后来者顶掉 ⇒ 抛 `_NavCancelled`** ✓
+#   ⇒ 立即中止（不再继续算完 ✓）。响应 409 ⚠ 前端此时早已 abort/换了 key ⇒ 通常看不到它 ✓。
+# ⚠ 用**回测指纹**而不是任务 id：改 k 时 `_nav_bt_key` 里 k 不同 ⇒ **不会互相取消** ✗
+#   ⇒ 所以这里额外**只按事件指纹分组**（见 `_nav_req_key` ✓），同一批事件下"最新那次 k 才算数" ✓。
+# ---------------------------------------------------------------------------
+_NAV_REQ_SEQ: dict = {}
+_NAV_REQ_LOCK = threading.Lock()
+_NAV_REQ_KEEP = 32
+
+
+class _NavCancelled(Exception):
+    """同事件指纹下已有更新的请求 ⇒ 本次在途回测立即中止（由 `cancel_cb` 抛出）✓。"""
+
+
+def _nav_req_key(codes, ev, start, end):
+    """取消分组键：**只含事件与区间**（不含 k/cost ✓ ⇒ 同批事件下"最新的 k 才算数" ✓）。"""
+    return (len(codes), hash(tuple(codes)), str(start), str(end),
+            len(ev), str(ev["dt"].iloc[0]), str(ev["dt"].iloc[-1]))
+
+
+def _nav_req_begin(key) -> int:
+    with _NAV_REQ_LOCK:
+        _NAV_REQ_SEQ[key] = _NAV_REQ_SEQ.get(key, 0) + 1
+        while len(_NAV_REQ_SEQ) > _NAV_REQ_KEEP:      # 防字典无限增长 ✓
+            _NAV_REQ_SEQ.pop(next(iter(_NAV_REQ_SEQ)))
+        return _NAV_REQ_SEQ[key]
+
+
+def _nav_req_current(key) -> int:
+    with _NAV_REQ_LOCK:
+        return _NAV_REQ_SEQ.get(key, 0)
+
 
 def _nav_bt_key(codes, ev, start, end, k, cost, capital, modes):
     return (len(codes), hash(tuple(codes)), str(start), str(end),
@@ -981,6 +1020,12 @@ def event_study_nav(req: EventNavRequest):
         t0 = time.perf_counter()
         _modes = ("event_even", "cash_even")
         _btk = _nav_bt_key(codes, ev, start, end, k, req.cost, req.capital, _modes)
+        # 取消源（v1.2.5）：登记本次请求序号；同事件指纹来了更新的请求 ⇒ 本次立即自停 ✓
+        _seq = _nav_req_begin(_nav_req_key(codes, ev, start, end))
+
+        def _cancel_cb():
+            if _nav_req_current(_nav_req_key(codes, ev, start, end)) != _seq:
+                raise _NavCancelled()
         with _NAV_BT_LOCK:
             bt = _NAV_BT_CACHE.get(_btk)
         if bt is not None:
@@ -991,7 +1036,7 @@ def event_study_nav(req: EventNavRequest):
                                    "code": ev["code"].astype(str), "side": 1})
             bt = run_backtest(events, panel, hold_days=k, fill="t1_open", cost=float(req.cost),
                               capital=float(req.capital), strict_limit=True,
-                              alloc_modes=_modes)
+                              alloc_modes=_modes, cancel_cb=_cancel_cb)
             with _NAV_BT_LOCK:
                 while len(_NAV_BT_CACHE) >= _NAV_BT_CAP:
                     _NAV_BT_CACHE.pop(next(iter(_NAV_BT_CACHE)))
@@ -1006,6 +1051,9 @@ def event_study_nav(req: EventNavRequest):
         return {"hold_days": k, "nav": nav_rows(nav), "stats": bt.stats, "diag": bt.diag,
                 "nav_columns": [str(c) for c in nav.columns],
                 "alloc_default": "event_even", "timings": timings}
+    except _NavCancelled:
+        # 被"更新的那次 k"顶掉 ⇒ 如实告知（前端此时通常已切到新的 key ✓，一般看不到这条 ✓）
+        raise HTTPException(status_code=409, detail="已被更新的一次计算取代（旧请求自动取消）")
     except HTTPException:
         raise
     except Exception as e:                                      # noqa: BLE001
