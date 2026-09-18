@@ -141,6 +141,16 @@ export default function FormulaEditor({
   // 查找命中 + 着色层
   const hits = useMemo(() => matchRanges(text, query), [text, query])
   const toks = useMemo(() => tokenClasses(text), [text])
+  // ⚠⚠ v1.19.100 **着色层必须是"一个表达式"**（2026-09-18 第三次修，前两次治标 ✗）：
+  //   原写法是 `<pre> {renderText(...)} {'\n'} </pre>` —— React 会把**表达式之间的缩进/换行
+  //   也渲染进 `<pre>`**（`whiteSpace:'pre'` 下空白全部可见 ✗），再加那个**尾随 `{'\n'}`**
+  //   ⇒ 着色层比 `<textarea>` **多出至少一行** ⇒ 两层行盒**从某行起逐行错开**（用户实测：
+  //   光标在第 28 行、高亮画第 29 行的字 ✗），且末尾多出的行被 `overflow:hidden` **裁掉**
+  //   ⇒ **最后一行永远选不到** ✗。根因**不是 CRLF**（那只影响换行语义 ✓ 已另修 ✓），
+  //   而是**着色层的行数 ≠ 输入层的行数** ✗。
+  //   ⇒ 铁律：**着色层只能由一个表达式产生、两侧不留任何 JSX 空白、不追加尾随换行** ✓，
+  //     这样它的行数**恒等于** `text.split('\n').length`，与行号槽 / textarea **三方同源** ✓。
+  const backdrop = renderText(text, toks, findOpen ? hits : [], hitIdx, query.length)
 
   const syncScroll = () => {
     const a = inner.current
@@ -315,11 +325,7 @@ export default function FormulaEditor({
             aria-hidden
             className="absolute inset-0 overflow-hidden pointer-events-none text-slate-800 dark:text-slate-100"
             style={metricsStyle}
-          >
-            {/* 面板关掉后不再画高亮底色（`hits` 只为"计数"继续算着，不渲染 ✓） */}
-            {renderText(text, toks, findOpen ? hits : [], hitIdx, query.length)}
-            {'\n'}
-          </pre>
+          >{backdrop}</pre>
           <textarea
             ref={(el) => {
               inner.current = el
