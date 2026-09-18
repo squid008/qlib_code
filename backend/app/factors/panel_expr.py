@@ -971,7 +971,8 @@ class PanelEvaluator:
         key = name.lstrip("$")
         s = self._field_cache.get(key)
         if s is None and key.startswith("chip_"):
-            s = self._chip_field(key)          # 筹码分布派生字段（v1.19.83，见下）
+            # ★ v1.2.17：**物化 bin 优先**（用户要求「COST(36) 这种没物化的就走计算」✓）
+            s = self._chip_or_bin(key)
             self._field_cache[key] = s
             return s
         if s is None:
@@ -983,6 +984,34 @@ class PanelEvaluator:
             s = pd.Series(vals, index=self._full)
             self._field_cache[key] = s
         return s
+
+    def _chip_or_bin(self, key: str) -> pd.Series:
+        """`$chip_*` 取数（v1.2.17）：**已物化的直读 bin** ✓ / **未物化的现算** ✓。
+
+        为什么必须分开（用户 2026-09-18 提问"cost 函数那么慢？bin 都物化了"）：
+          · 筹码是**状态递推**字段（128 箱 × 全池 × 全历史 ⇒ `chip_dist` 自述"8 亿次元素
+            运算 ⇒ 几十秒"✗），而 close/high/low 是**逐点函数**（O(1) ✓）；
+          · `chip_store.materialize`（v1.19.85 ✓）已把 7 个常用字段落成 `.day.bin`
+            （`chip_cost_{5,30,75,95}` / `chip_win_{close,high,low}` ✓ 实测各 6075 份 ✓）
+            ⇒ 这些**直读即可**，开销与 `$close` 同量级（实测各 1.0 ms ✓）；
+          · 但此前 `field()` 对**所有** `$chip_*` 一律走 `_chip_field` **现算** ✗ ⇒ 物化白做了 ✗。
+        判据用**静态清单**（`chip_store.DEFAULT_FIELDS` ✓）**零 IO** ✓；清单外的档位
+        （如 `COST(36)` ⇒ `$chip_cost_36` ✓）**按用户要求退回现算** ✓（结果同样正确 ✓，
+        只是慢 ⇒ 想快就把该档位加进 `chip_store.DEFAULT_FIELDS` 再物化一次 ✓）。
+        """
+        try:
+            from .chip_store import DEFAULT_FIELDS as _MAT
+        except Exception:                                     # noqa: BLE001
+            _MAT = ()
+        if key in _MAT:
+            # ⚠ 轻量构造（单测里 `PanelEvaluator.__new__` 不走 `__init__` ✓）没有 `_full`
+            #   ⇒ 视为"面板未就绪"，退回现算 ✓（生产路径恒有 ✓，行为不变 ✓）。
+            _full = getattr(self, "_full", None)
+            if _full is not None:
+                vals = _load_field_on(_full, self._layout,
+                                      self._req_lo, self._req_hi, key)
+                return pd.Series(vals, index=_full)
+        return self._chip_field(key)
 
     def _chip_field(self, key: str) -> pd.Series:
         """筹码分布**派生字段**（v1.19.83）：`chip_cost_<q>`（= `COST(q)`）/ `chip_win_<close|high|low>`

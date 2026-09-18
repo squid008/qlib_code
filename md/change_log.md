@@ -3,6 +3,28 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.2.17] - 2026-09-18
+
+### Performance（**筹码字段 `COST()` 慢** —— 用户提问"bin 都物化了为啥还慢"）
+
+- **用户提问**：「为啥 `cost` 函数那么慢？不都已经 dump 成 bin 文件可以直接读了么？按理说应该跟
+  算高开低收一样快才对啊？」✓
+- **结论：直读路径本来就一样快，慢的是"根本没走直读"** ✗：
+  `panel_expr.field()` 此前对**所有** `$chip_*` 一律调 `_chip_field` **现算** ✗ ——
+  而 `chip_store.materialize`（v1.19.85）早已把 `chip_cost_{5,30,75,95}` /
+  `chip_win_{close,high,low}` 落成 `.day.bin`（实测各 **6075** 份 ✓）⇒ **物化白做了** ✗。
+- **量级差来源**（`chip_dist.py` 自述 ✓）：筹码是**状态递推**字段（128 箱 × 全池 × 全历史
+  ≈ **8 亿次元素运算 ⇒ 几十秒** ✗）；而 `close/high/low` 是**逐点函数**（O(1) ✓）。
+  实测读 bin：`close` 0.0 ms、`chip_cost_95/5` / `chip_win_close` 各 **1.0 ms** ✓ ⇒ 同量级 ✓。
+- **改动**：`panel_expr.py` 的 `field()` 改为调新的 `_chip_or_bin()` ✓ ——
+  **已物化（在 `chip_store.DEFAULT_FIELDS` 静态清单里）⇒ 直读 bin** ✓（`_load_field_on`，
+  与 `$close` 同路径同开销 ✓）；**清单外档位（如 `COST(36)` ⇒ `$chip_cost_36`）
+  ⇒ 退回 `_chip_field` 现算** ✓（用户明确要求 ✓，结果同样正确、只是慢 ⇒ 想快就把该档位
+  加进 `chip_store.DEFAULT_FIELDS` 再物化一次 ✓）。
+  判据用**静态清单**（**零 IO** ✓）；轻量构造（单测 `__new__`，无 `_full`）⇒ 自动退回现算 ✓。
+- **测试**：全量 **386 passed** ✓；ruff 全过 ✓；物化 bin 数值合理
+  （`sh600000`：`chip_cost_5/30/75/95` 单调 ✓、前 1927 天 NaN = 预热期 ✓）。
+
 ## [1.2.16] - 2026-09-18
 
 ### Fixed（**"复用参数"回测崩溃** `406 vs 400` —— 用户报障）
