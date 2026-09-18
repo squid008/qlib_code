@@ -155,10 +155,17 @@ export default function FormulaEditor({
   const syncScroll = () => {
     const a = inner.current
     if (!a) return
-    if (gutterRef.current) gutterRef.current.scrollTop = a.scrollTop
+    // ⚠⚠ v1.19.103 **改用 `transform` 位移跟随**（2026-09-18 用户第 5 次反馈"还有重影" ✓）：
+    //   旧写法给 `<pre>`/行号槽也设 `scrollTop` ⇒ 要求它们**自身可滚** ✗ ⇒ 于是必须让三者的
+    //   `scrollHeight/clientHeight/滚动条占位`**逐像素相同** ✗ —— 而滚动条宽高（15~17px ≈
+    //   一行高 18px）随"是否需要滚动"动态变化 ⇒ 永远对不齐 ⇒ **越滚越错、重影** ✗。
+    //   ⇒ 改为：**只有 textarea 滚动** ✓，另两层 `overflow:hidden` + **`transform: translate()`
+    //     反向位移** ⇒ 完全不依赖滚动盒尺寸 ⇒ 误差源从根上消失 ✓。
+    if (gutterRef.current) {
+      gutterRef.current.style.transform = `translateY(${-a.scrollTop}px)`
+    }
     if (backdropRef.current) {
-      backdropRef.current.scrollTop = a.scrollTop
-      backdropRef.current.scrollLeft = a.scrollLeft
+      backdropRef.current.style.transform = `translate(${-a.scrollLeft}px, ${-a.scrollTop}px)`
     }
   }
 
@@ -303,13 +310,15 @@ export default function FormulaEditor({
           ref={gutterRef}
           aria-hidden
           className="shrink-0 select-none pointer-events-none overflow-hidden text-right text-slate-400 dark:text-slate-500 bg-slate-50 dark:bg-slate-900 border-r border-slate-200 dark:border-slate-700"
-          // ⚠ 同 `backdrop`：**必须与 textarea 保留同样的滚动条占位**（否则 `maxScrollTop`
-          //   比 textarea 小一个滚动条尺寸 ⇒ 滚到底时行号**少滚十几像素** ⇒ 行号与内容错开一行 ✗）。
-          //   这里用 `overflow: scroll` + 宽度补偿（`+2ch` 抵消本层新出现的滚动条宽度 ✓）。
+          // ⚠ v1.19.103：`overflow:hidden` + `syncScroll` 用 `transform` 位移跟随 ✓
+          //   （**绝不**再让本层自己滚 ✗ —— 滚动条尺寸会变成"一行"的误差源 ✓）。
+          //   `alignSelf:flex-start` + 高度 auto ⇒ 内容多长就多高，位移后底部不露白 ✓。
           style={{
             ...metricsStyle,
-            overflow: 'scroll',
-            width: `${Math.max(2, String(lines.length).length) + 3.5}ch`,
+            overflow: 'hidden',
+            alignSelf: 'flex-start',
+            height: 'auto',
+            width: `${Math.max(2, String(lines.length).length) + 1.5}ch`,
           }}
         >
           {lines.map((_l, i) => (
@@ -330,15 +339,12 @@ export default function FormulaEditor({
           <pre
             ref={backdropRef}
             aria-hidden
-            className="absolute inset-0 pointer-events-none text-slate-800 dark:text-slate-100"
-            // ⚠⚠ v1.19.102 **必须与 textarea 保留同样的滚动条占位**（2026-09-18 用户发现：
-            //   "一往下滚就出重影、光标点 28 行却显示 29 行" ✓）—— textarea 是 `overflow:auto`
-            //   ⇒ 内容超出时**出现滚动条、占掉十几像素** ✗；本层原是 `overflow:hidden`
-            //   ⇒ **不占** ✗ ⇒ 两层**可视内容盒尺寸不同** ⇒ 同一个 `scrollTop` 渲染出的偏移
-            //   差一行（≈ 滚动条宽度/高度 ≈ 一行高 18px ✓）⇒ **越滚越错、出现重影** ✗。
-            //   ⇒ 本层改用 `overflow:scroll`（**强制保留滚动条占位** ✓，且 `pointer-events-none`
-            //     保证它不可交互 ✓）：内容需要滚动时 textarea 也必然显示滚动条 ⇒ **两层恒等** ✓。
-            style={{ ...metricsStyle, overflow: 'scroll' }}
+            // ⚠ `inset-0` 会**钉死高度 = 容器高** ✗ ⇒ 配合 `transform` 位移时**底部会露白** ✗
+            //   ⇒ 改成只钉上/左/右（高度由**内容**决定 ✓），位移多远都有内容 ✓。
+            className="absolute top-0 left-0 w-full pointer-events-none text-slate-800 dark:text-slate-100"
+            // ⚠ v1.19.103：**本层永不自己滚动** ✓ —— `overflow:hidden`，跟随靠 `transform`（syncScroll ✓）
+            //   ⇒ 与 textarea 的滚动条占位无关 ⇒ 不再差那十几像素（用户 2026-09-18 第 5 次反馈 ✓）。
+            style={{ ...metricsStyle, overflow: 'hidden' }}
           >{backdrop}</pre>
           <textarea
             ref={(el) => {
