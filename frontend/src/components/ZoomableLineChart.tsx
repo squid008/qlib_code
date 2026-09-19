@@ -329,7 +329,8 @@ export default function ZoomableLineChart({
   return (
     <div className="relative">
       <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400 mb-1">
-        <span>滚轮缩放 · 按住拖动平移 · 鼠标移动时下方读数（点标签可隐藏/显示）</span>
+        {/* ⚠ v1.20.32：删掉「滚轮缩放 · 按住拖动平移 · 鼠标移动时下方读数（点标签可隐藏/显示）」
+            这行操作提示（交互已足够直观，且下方"显示第 x~y 点 / 共 n 点"本身就在说明 ✓）。 */}
         <span>
           显示第 {win[0] + 1}~{win[1] + 1} 点 / 共 {n} 点
           {view.length >= 2 && (

@@ -250,10 +250,12 @@ def run(req: SignalTestRequest) -> Dict:
         if (neg.get("exact") or 0) > 0:
             warnings.append(
                 "现金口径：按卖出所得当日即可用于买入推演，现金最低 %s 元（占本金 %.1f%%）、期末 %s 元。"
+                # ⚠ v1.20.32：删掉「（下方已用官方《收益概述》校准）」后缀 —— 下方面板已有校准信息 ✓
+                #   保留「建议一并上传…」这条**行动指引**（没上传时确实需要提示 ✓）。
                 "缺口量级与分红入账相当（成交明细不含现金红利），不影响本次重建的可信度%s。"
                 % (("{:,.0f}".format(cap_info["min_cash"])), 100 * abs(cap_info["min_cash"]) / max(capital, 1.0),
                    "{:,.0f}".format(cap_info["cash_end"]),
-                   "（下方已用官方《收益概述》校准）" if perf_res else "（建议一并上传官方《收益概述》校准）"))
+                   "" if perf_res else "（建议一并上传官方《收益概述》校准）"))
         elif abs(capital - caps) / max(caps, 1.0) > 0.05:
             warnings.append("初始资金与首日买入总额相差 %.0f%%（A/B 按资金等比缩放股数，"
                             "C 按它原始股数记账；要公平比较请填它的真实资金）"
@@ -291,13 +293,10 @@ def run(req: SignalTestRequest) -> Dict:
                 },
                 "issues": perf_res.issues[:50],
             }
-            if off_end:
-                warnings.append(
-                    "官方《收益概述》已叠加校准：官方期末净值 %.4f、官方最大回撤 %.2f%%；"
-                    "我方 C（它的成交价 + 实际手续费）%.4f，偏差 %+.2f%%。"
-                    "逐日买卖金额与成交明细一致 %d/%d 天，重建可信。"
-                    % (off_end, 100 * float((perf_res.stats or {}).get("max_drawdown") or 0.0),
-                       exact_end, 100 * (exact_end / off_end - 1.0), ok_n, ok_n + bad_n))
+            # ⚠ v1.20.32：删掉这条「官方《收益概述》已叠加校准：…重建可信。」提示 ✗
+            #   —— 下方**校准面板**（前端 `official.calib`，含官方期末净值/最大回撤/偏差/逐日一致
+            #   天数 ✓）已经完整展示同样信息 ✓，再在 warnings 里重复一遍是冗余 ✓。
+            #   ⚠ 校准数据本身（`resp["official"]`）**照常返回** ✓，只是不再往 warnings 里塞文字 ✓。
         resp.update({
             "capital": cap_info,
             "fees": {"rate_buy": res.stats.get("fee_rate_buy"),
