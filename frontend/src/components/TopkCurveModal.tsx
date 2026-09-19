@@ -435,8 +435,15 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   ⚠ 口径与上面十分位图一致（无成本、算术累加、同一基准线）⇒ 只作稳健性参考 ✓ */}
               {/* ⚠ v1.20.26（用户 2026-09-19）：顶部那行「分位档 / 单调性 / 分段」拼在同一个
                   `<span>` 里，内容一多就**跨行断在中间**（用户截图：「分段（最强−最弱，算累）…」
-                  被拆两行 ✗）。⇒ 在「分段」之前强制换行，让它**整块落在第二行** ✓。 */}
+                  被拆两行 ✗）。⇒ 在「分段」之前强制换行，让它**整块落在第二行** ✓。
+                  ⚠ v1.20.27：换行后第二行会从**最左**起（比第一行的 `{name}` 靠左 ✗）⇒
+                  用一个**同样式但不可见**（`invisible`）的标题占位撑出等宽缩进 ⇒
+                  「分段」与上面的 `{name}`（因子名，如"市值"）**左边界对齐** ✓
+                  （不用硬编码宽度：字体/字号一变也自动跟着走 ✓）。 */}
               <br />
+              <span className="invisible font-semibold mr-2" aria-hidden="true">
+                持仓期收益曲线（含三档成本）
+              </span>
               {qc && (() => {
                 const gb = qc.groups.find((g) => g.quantile === qc.best_quantile)
                 const gw = qc.groups.find((g) => g.quantile === qc.worst_quantile)
