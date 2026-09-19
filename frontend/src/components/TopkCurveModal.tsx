@@ -441,7 +441,15 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   「分段」与上面的 `{name}`（因子名，如"市值"）**左边界对齐** ✓
                   （不用硬编码宽度：字体/字号一变也自动跟着走 ✓）。 */}
               <br />
-              <span className="invisible font-semibold mr-2" aria-hidden="true">
+              {/* ⚠⚠ v1.20.28（用户 2026-09-19：「还是没对齐，而且字体、大小、颜色也不太一样」）：
+                  ① **占位必须带上与真实标题完全相同的字号 `text-xs`** ✗ —— 原先漏了 ⇒ 它继承
+                     **更大的默认字号**（16px）⇒ 占位比真实标题**宽** ⇒ 「分段」被推得**偏右** ✗；
+                  ② 第二行的「分段」原本用 `text-[11px] text-slate-500` ✗，而第一行用
+                     `text-xs text-slate-400` ⇒ **字号小一号、灰色更深** ⇒ 两行风格不一致 ✗
+                     ⇒ 统一成 `text-xs text-slate-400`（见下方「分段」那段的 className ✓）；
+                  ③ 内部的「+187.5pp」与「十档单调性 ρ=…」是**绿色高亮**（`emerald-700` ✓）
+                     —— 这是**有意醒目**的，保持不变 ✓（用户明确要求保留 ✓）。 */}
+              <span className="invisible font-semibold text-xs mr-2" aria-hidden="true">
                 持仓期收益曲线（含三档成本）
               </span>
               {qc && (() => {
@@ -468,7 +476,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                 const nWin = segs.filter((s) => s.win).length
                 return (
                   <span
-                    className="text-[11px] text-slate-500 dark:text-slate-400"
+                    className="text-xs text-slate-400"
                     title="用十分位图的逐期累计（无成本、算术累加）算「最强档 − 最弱档」在各起点之后的表现；只在某一段赢 ⇒ 多半是风格/时点运气"
                   >
                     {'　分段（最强−最弱，算累）：'}
