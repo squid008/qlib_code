@@ -328,10 +328,17 @@ export default function ZoomableLineChart({
 
   return (
     <div className="relative">
-      <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400 mb-1">
+      <div className="flex flex-wrap items-center gap-4 text-[11px] text-slate-400 mb-1">
         {/* ⚠ v1.20.32：删掉「滚轮缩放 · 按住拖动平移 · 鼠标移动时下方读数（点标签可隐藏/显示）」
             这行操作提示（交互已足够直观，且下方"显示第 x~y 点 / 共 n 点"本身就在说明 ✓）。 */}
-        <span>
+        {/* ⚠⚠ v1.20.33：这段文字**长度会变**（点数从 1 位到 10 万位、日期串也从 10 字符起 ✓）
+            ⇒ 它一变就把右边的「缩放后起点对齐」「重置缩放」**推着走** ✗（用户实测：一缩放控件就
+            横向跳动，很难点 ✓）。修法：
+              ① **固定宽度** `w-[58ch]`（按最坏情况预留：10 万点 + 两段完整日期 ✓）+
+                 `shrink-0` ⇒ 右侧控件位置**恒定** ✓；
+              ② `tabular-nums`（等宽数字 ✓）⇒ 即使偶有超出也只是数字间距更均匀、不会挤动右侧 ✓；
+              ③ 外层 `gap-2` → `gap-4`（与右侧控件**隔开**更明显 ✓）。 */}
+        <span className="inline-block w-[60ch] shrink-0 tabular-nums whitespace-nowrap">
           显示第 {win[0] + 1}~{win[1] + 1} 点 / 共 {n} 点
           {view.length >= 2 && (
             <>
@@ -339,7 +346,7 @@ export default function ZoomableLineChart({
             </>
           )}
         </span>
-        <label className="flex items-center gap-1">
+        <label className="flex items-center gap-1 shrink-0">
           缩放后起点对齐
           <select
             className="border border-slate-300 dark:border-slate-600 rounded px-1 py-0.5 text-[11px]"
