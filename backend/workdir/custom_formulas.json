@@ -246,5 +246,13 @@
     "expression": "Sum(If(Gt($close,Ref($close,1)),Log(Div($close,Ref($close,1))),0),60)",
     "created_at": "2026-09-20 15:20:06",
     "updated_at": "2026-09-20 15:20:06"
+  },
+  {
+    "id": "144c9954ab95",
+    "name": "ALPHA143原版",
+    "text": "R:=IF(CLOSE>REF(CLOSE,1),LOG(CLOSE/REF(CLOSE,1)),0);\nALPHA143原版:EXP(DYN_SUM(R,BARSCOUNT(CLOSE)));",
+    "expression": "Exp(DYN_SUM(If(Gt($close,Ref($close,1)),Log(Div($close,Ref($close,1))),0),BARSCOUNT($close)))",
+    "created_at": "2026-09-20 15:30:56",
+    "updated_at": "2026-09-20 15:30:56"
   }
 ]
