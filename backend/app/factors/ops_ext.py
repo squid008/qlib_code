@@ -806,6 +806,44 @@ class EMA_TDX(_QLIB_EMA):
 
 # ---------------- POW 幂运算（qlib 内建名 Power；Pow 为旧编译别名） ----------------
 
+class Exp(ExpressionOps):
+    """`EXP(X)` = e^X（v1.20.34）。
+
+    为什么加：WorldQuant Alpha101 / 国泰君安 Alpha 系列研报**大量使用** `EXP(...)`
+    （常与 `POW`/`LOG` 组合，如 `EXP(SUM(LOG(1+r),N))` 的复利还原 ✓）；此前平台
+    **不支持** ⇒ 用户粘贴研报公式直接 `CodeGenError: 不支持的函数：EXP` ✗。
+
+    ⚠ **性能（用户明确要求"别走慢速通道"，2026-09-20）**：
+      · 本算子 `_load_internal` 里**只调一次 `np.exp(series)`**（numpy C 实现 ✓ 向量化 ✓）
+        —— 与 qlib 内建 `Sqrt`/`Log`（都是 `NpUnaryOperator`）**同一路径、同一开销** ✓；
+      · **不是** `PATCH:` 补丁算子、**不做逐点 Python 循环** ✗ ⇒ 多因子训练 / 回测走
+        qlib 时**不会退化** ✓；
+      · 单因子测试走 `panel_expr`（见其 `_UNARY` 表 ✓）⇒ 整块面板 `np.exp` 一次 ✓。
+      ⚠ 溢出（输入很大 ⇒ `inf`）由既有 `CleanInf` 处理器在 learn 阶段转 NaN ✓（不会污染训练 ✓）。
+    """
+
+    def __init__(self, feature):
+        # ⚠ 与 `Pow`/`BARSLAST` 等同款：qlib 算子必须自己存住子表达式 ✓
+        #   （缺这行 ⇒ 实例化即 `TypeError: Exp() takes ...` ✗ —— 单测抓到 ✓）。
+        self.feature = feature
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        with np.errstate(all="ignore"):        # 与面板层一致：不泄漏 RuntimeWarning（溢出→inf ✓）
+            return np.exp(series)
+
+    def __str__(self):
+        # 同 BARSLAST 的说明：qlib 用 `str(self)` 作进程内缓存 key ⇒ 必须带子表达式 ✓
+        return "EXP({})".format(self.feature)
+
+    def get_longest_back_rolling(self):
+        return self.feature.get_longest_back_rolling()
+
+    def get_extended_window_size(self):
+        return self.feature.get_extended_window_size()
+
+
 class Pow(ExpressionOps):
     """POW(X, Y) = X^Y（逐元素幂）。
 
@@ -1644,6 +1682,7 @@ _ALL_OPS = [
     EMA_TDX,
     SGN, TRUNC, BETWEEN,
     Pow,
+    Exp,              # v1.20.34：EXP(X)=e^X（向量化 `np.exp`，与 Sqrt/Log 同路径 ✓）
     ROUND,
     FILTER, SMA, BARSSINCE, HHVBARS, LLVBARS,
 ]

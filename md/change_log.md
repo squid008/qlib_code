@@ -3,6 +3,35 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.34] - 2026-09-20
+
+### Added（**`EXP(X)` = e^X** —— 此前不支持，研报公式无法直接粘贴）
+
+- **背景**：WorldQuant Alpha101 / 国泰君安 Alpha 系列研报**大量使用** `EXP(...)`
+  （常与 `POW`/`LOG` 组合，如 `EXP(SUM(LOG(1+r),N))` 做复利还原 ✓）。此前平台**没有它** ✗
+  ⇒ 用户粘贴 `EXP(...)` 直接 `CodeGenError: 不支持的函数：EXP` ✗。
+- **实现（三条路径都在 ✓，且都是向量化）**：
+  1. 编译层 `parser/codegen.py::FUNC_QLIB` 加 `"EXP": "Exp"` ✓；
+  2. **面板层**（单因子测试 / 事件研究路径）`panel_expr._UNARY` 加 `"Exp": "exp"` ✓ +
+     求值分支走 `np.exp(series)`（整块面板一次 ✓，与 `Sqrt`/`Log` 同路径 ✓）；
+  3. **qlib 层**（多因子训练 / 回测路径）`ops_ext.Exp` 算子 ✓ + 注册进 `_ALL_OPS` ✓
+     —— `_load_internal` **只调一次 `np.exp`** ✓，**不**走 `PATCH:` 补丁通道、
+     **不做**逐点 Python 循环 ✗（用户明确要求"别走慢速通道" ✓）。
+  ⚠ 溢出（输入过大 ⇒ `inf`）**不抛异常** ✓，交由既有 `CleanInf` 处理器在 learn 阶段转 NaN ✓。
+- **性能实测**（`ai_test/bench_exp.py`，200 只 / 2 年，清节点缓存后 3 次取最优 ✓）：
+  ```
+  $close            0.0000 s
+  Sqrt($close)      0.0003 s
+  Log($close)       0.0003 s
+  Exp($close)       0.0005 s      ← ★ 与 Sqrt/Log 同量级 ✓（未退化成慢速通道 ✓）
+  Exp(Log($close))  0.0004 s
+  ```
+- **测试**：新增 `tests/test_exp_op.py`（**6 条** ✓：编译 / 两侧注册 / qlib 侧向量化取值 /
+  `EXP(LOG(x))≈x` 往返 / 溢出为 inf 不抛 / 端到端 `EXP(DYN_SUM(R,BARSCOUNT(CLOSE)))` 形态 ✓）；
+  全量 **410 passed** ✓；ruff 全过 ✓。
+  ⚠ 踩坑记录：`Exp` 类初版**漏了 `__init__`**（qlib 算子必须自己存住子表达式 ✓）⇒
+  实例化 `TypeError` ✗ ⇒ 单测抓到并补齐 ✓。
+
 ## [1.20.33] - 2026-09-19
 
 ### Fixed（UI：图表顶部控件位置随点数文本跳动）

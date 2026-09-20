@@ -174,6 +174,9 @@ FUNC_QLIB = {
     "HHV": "Max", "LLV": "Min",
     "SUM": "Sum", "COUNT": "Count",
     "ABS": "Abs", "SQRT": "Sqrt", "LOG": "Log", "LN": "Log",
+    # v1.20.34：EXP(X)=e^X（研报公式常用：Alpha101/GTJA 系列里 EXP(POW(...)) 等组合很常见 ✓）
+    #   ⚠ 之前**不支持** ⇒ 用户写 `EXP(...)` 直接 `CodeGenError: 不支持的函数：EXP` ✗
+    "EXP": "Exp",
     "POW": "Power",   # qlib 内建名是 Power（曾误映射 Pow → "operator [Pow] is not registered"）
     "POWER": "Power",  # 别名：POWER(X,Y)=X^Y（Excel/部分软件写法，与 POW 等价）
     "MAX": "Greater", "MIN": "Less", "MOD": "Mod",

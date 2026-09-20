@@ -859,7 +859,8 @@ _BIN_ELEM = {
     "Power": "pow", "Pow": "pow",  # POW(X,Y)=X^Y（Power=qlib 内建名；Pow=旧编译别名）
 }
 _BIN_CMP = {"Gt": "gt", "Ge": "ge", "Lt": "lt", "Le": "le", "Eq": "eq", "Ne": "ne"}
-_UNARY = {"Abs": "abs", "Sqrt": "sqrt", "Log": "log", "Neg": "neg", "Sgn": "sign"}
+_UNARY = {"Abs": "abs", "Sqrt": "sqrt", "Log": "log", "Neg": "neg", "Sgn": "sign",
+          "Exp": "exp"}          # v1.20.34：EXP(X)=e^X（向量化 ⇒ 与 Sqrt/Log 同路径 ✓）
 
 # 逐元素算子的 numpy ufunc 直落表（v1.18.29）。
 # 本机无 numexpr，pandas 的 Series 算术分派走 operator.* + 重包 Series；当两列同 index
@@ -1347,6 +1348,12 @@ class PanelEvaluator:
                 return np.sqrt(s)
             if fn == "log":
                 return np.log(s)
+            if fn == "exp":
+                # v1.20.34：EXP(X)=e^X —— 整块面板一次 `np.exp`（numpy C 实现 ✓），
+                # 与 Sqrt/Log 同一路径 ⇒ **单因子测试不会因它变慢** ✓；
+                # 溢出（输入过大 ⇒ inf）由前端/后端既有清洗（CleanInf）处理 ✓。
+                with np.errstate(all="ignore"):
+                    return np.exp(s)
             if fn == "neg":
                 return -s
             if fn == "sign":
