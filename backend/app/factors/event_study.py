@@ -540,17 +540,24 @@ def run_event_study(
     warmup_days: Optional[int] = None,
     progress_cb=None,
     cancelled=None,
+    use_cache: bool = True,
 ) -> dict:
     """执行事件研究，返回 {error} 或完整结果字典（见文件末尾结构说明）。
 
     progress_cb(h, p, msg)：h=None 表示整体阶段（0-100）。
     cancelled()：返回 True 时在检查点抛出 FactorTestCancelled。
+    use_cache：**内容寻址磁盘缓存**（v1.20.36，见 `event_study_cache.py`）；命中即秒回并回传
+               `cached=True` + `timings`。仅成功结果落盘（错误不缓存）。
+    返回体新增 **`timings`**（v1.20.36）：`{total_s, cached, stages:[{p,msg,t}], stages_s:[{msg,s}], slowest}`
+               —— 供前端把「重算很快 ⇒ 自动跟随周期变更 / 很慢 ⇒ 退回手工按钮」做成自适应。
     """
     import os
+    import time
 
     from qlib.data import D
 
     from ..engine.inst_mask import _daily_member_mask
+    from . import event_study_cache as _escache
     from .single_test import (
         FactorTestCancelled,
         _ensure_qlib_init,
@@ -559,13 +566,25 @@ def run_event_study(
         _resolve_instruments,
     )
 
+    _t0 = time.perf_counter()
+    _stages: list = []
+
     def _check():
         if cancelled is not None and cancelled():
             raise FactorTestCancelled()
 
     def _prog(p, msg):
+        _stages.append({"p": float(p), "msg": str(msg),
+                        "t": round(time.perf_counter() - _t0, 3)})
         if progress_cb:
             progress_cb(None, p, msg)
+
+    def _timings(cached: bool) -> dict:
+        gaps = [{"msg": _stages[i]["msg"], "s": round(_stages[i + 1]["t"] - _stages[i]["t"], 3)}
+                for i in range(len(_stages) - 1)]
+        slow = max(gaps, key=lambda x: x["s"]) if gaps else None
+        return {"total_s": round(time.perf_counter() - _t0, 3), "cached": bool(cached),
+                "stages": _stages, "stages_s": gaps, "slowest": slow}
 
     _ensure_qlib_init()
     pa = normalize_mode(price_adjust)
@@ -581,6 +600,37 @@ def run_event_study(
         except Exception:
             warmup_days = 250
     warmup_days = max(0, int(warmup_days or 0))
+
+    # ---------- 0.5 内容寻址缓存（v1.20.36）----------
+    # 指纹含**所有影响结果的参数** + 数据版本（漏一个就会出现"参数不同却命中同一结果"）。
+    # 命中即跳过全部计算 ⇒「同参数重算」从"碰运气变快"变成**确定秒回**，前端据此可放心自动跟随。
+    _cache_params = {
+        "universe": universe, "start_date": start_date, "end_date": end_date,
+        "expr": expr, "max_k": max_k,
+        "exclude_limit_up_signal": exclude_limit_up_signal,
+        "exclude_limit_up_trade": exclude_limit_up_trade,
+        "exclude_suspended": exclude_suspended,
+        "exclude_st_t1": exclude_st_t1,
+        "exclude_stock_gem": exclude_stock_gem,
+        "exclude_stock_kcb": exclude_stock_kcb,
+        "price_adjust": pa, "price_round": price_round,
+        "suspend_remove": suspend_remove,
+        "freeze_suspended_price": freeze_suspended_price,
+        "warmup_days": warmup_days,
+    }
+    _cache_fp = None
+    if use_cache:
+        try:
+            _cache_fp = _escache.path_for(_cache_params)
+            _hit = _escache.load(_cache_fp)
+        except Exception:
+            _cache_fp, _hit = None, None
+        if _hit is not None:
+            _prog(100.0, "缓存命中（同参数上次已算过，直接复用）")
+            out = dict(_hit)
+            out["cached"] = True
+            out["timings"] = _timings(True)
+            return out
 
     # ---------- 1. 股票池 ----------
     _prog(2.0, "解析股票池成分股...")
@@ -723,7 +773,7 @@ def run_event_study(
         baseline = {"error": repr(_ble)}
 
     _prog(100.0, "完成")
-    return {
+    out = {
         "factor": {
             "id": (factor or {}).get("id") or "",
             "name": (factor or {}).get("name") or "",
@@ -741,4 +791,11 @@ def run_event_study(
         #   供"净值曲线"端点复用（`/factors/event-study/nav`）；**绝不进 HTTP 响应**
         #   （几万行会把事件研究结果撑大，而且前端也不需要）。
         "_ev": ev,
-        }
+        # v1.20.36：耗时明细（前端据此自适应：快 ⇒ 自动跟随周期变更、慢 ⇒ 退回手工按钮）
+        "timings": _timings(False),
+        "cached": False,
+    }
+    # 只缓存**成功**结果（错误/取消不落盘）；失败静默（缓存不能挡住主流程）
+    if _cache_fp:
+        _escache.save(_cache_fp, dict(out))
+    return out

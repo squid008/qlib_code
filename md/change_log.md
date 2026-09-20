@@ -3,6 +3,25 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.36] - 2026-09-20
+
+### Added
+- **事件研究「重算」自适应：后端回传耗时/缓存命中 + 前端自动跟随/按钮显隐**（用户 2026-09-20 提出：
+  「检测到重算很快 ⇒ 自动跟随周期变更、把『重新计算』隐藏；只有实测很慢才回到手工、按钮再显示」）：
+  - **后端耗时明细**：`run_event_study` 新增 `timings`（`total_s` + 逐阶段 `stages_s` + `slowest`）
+    与 `cached`；`GET /factors/event-study/progress/{id}` 透出两者 ⇒ 前端不再靠"掐表"猜快慢。
+  - **内容寻址磁盘缓存**（新模块 `factors/event_study_cache.py`，范式与 `signals/event.py` 一致）：
+    指纹 = **所有影响结果的参数**（universe / 区间 / 表达式 / `max_k` / 6 个剔除开关 / 复权 / 停牌处理 / 预热天数…）
+    + `CACHE_VERSION` + 数据版本 ⇒ **同参数必命中、任一参数变必失效**；只缓存**成功**结果、原子落盘、
+    损坏/结构不对即当未命中（**缓存绝不挡主流程**）。**实测**：同参数重算 **11.0s → 0.5s**
+    （`cached=true`，服务端 `total_s=0.002`）；换 `max_k` 正确失效（`cached=false`）。
+    ⚠ 口径/算法变更时必须 `CACHE_VERSION` +1（否则"新算法返回旧结果"变成看不见的口径漂移）。
+  - **前端自适应**（`EventStudyModal.tsx`）：判据改用后端 `timings.total_s` / `cached`（阈值 `ES_SLOW_S=20s`）——
+    快（或命中缓存）⇒ **自动跟随**周期变更（防抖 600ms；同一 `maxK` 只自动试一次，避免与后端 1~120 截断来回打转）；
+    慢 ⇒ 不自动、**露出「重算至 N 期」按钮**回到手工。`maxK ≤ 已算期数` 时**按钮直接隐藏**
+    （此前是 disabled 占位，看起来像"点了没反应"）。`api.ts` 的 `EventStudyProgress` 增补 `timings`/`cached`。
+- 版本 1.20.35 → 1.20.36。
+
 ## [1.20.35] - 2026-09-20
 
 ### Fixed
@@ -20,6 +39,9 @@
   - **验证**：`ai_test/probe_est_leak.py` 连跑 **5 次**（> 并发上限 3~4）全部 `success`，且每次结束
     `running` 都回落到 0（修复前第 4/5 次必然永久排队）；新增回归测试
     `backend/tests/test_event_study_slot_release.py`（2 例：单次归还、连做 3 次无残留；纯逻辑、不碰数据）。
+- ⚠ **更正**：先前记的「`max_k` 20→40 端到端 8.9s→307.8s（≈35×）」**已实测推翻**——
+  逐阶段探针显示 20/21/40 分别为 **11.0s / 7.2s / 7.5s（无悬崖）**；那 307.8s 实为
+  **在 `external_wait_slot` 里排队等配额**（同一泄漏 bug 的另一种表现）。
 - 版本 1.20.34 → 1.20.35。
 
 ## [1.20.34] - 2026-09-20

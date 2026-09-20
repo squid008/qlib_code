@@ -149,6 +149,22 @@ export default function EventStudyModal({
   //   `ref` 变化**不触发重渲染** ✗ ⇒ 另开一个 state 专门控制按钮显隐 ✓（两者同置同清 ✓）。
   const [navSlow, setNavSlow] = useState(false)
 
+  // ⚠ v1.20.36（用户 2026-09-20）：「重算很快 ⇒ 自动跟随周期变更、把『重新计算』藏起来；
+  //   只有实测很慢才回到手工、按钮再出现」。
+  //   与净值的 `slowRef` 同一套思路，但判据换成**后端回传的 `timings` / `cached`**
+  //   （v1.20.36 新增）—— 比前端掐表稳：不受本机冷/热缓存、并发排队干扰 ✓。
+  //   `esSlowExprRef` 记住"这个耗时是**哪个公式**测出来的"：换公式（result 变化）即视为未知 ⇒
+  //   新公式各自"首次自动算一次"，再按自己的耗时决定要不要按钮 ✓（与 v1.20.12 净值曲线的教训一致）。
+  const esSlowRef = useRef(false)
+  const [esSlow, setEsSlow] = useState(false)
+  const esSlowExprRef = useRef('')
+  // 同一个 maxK 只自动试一次（否则后端把 k 截断/异常时会来回重发请求 ✗）；
+  // 换公式时由下面的 effect 清空 ✓。
+  const autoTriedRef = useRef<number | null>(null)
+  // 事件研究"重算"的自动/手动阈值（秒）：≥ 它 ⇒ 转手工（等按钮）。
+  // 实测普通 0I 信号（csi300/一年）≈ 7~11s；全 A 大池/长区间可到分钟级 ⇒ 20s 分得开 ✓。
+  const ES_SLOW_S = 20
+
   // ⚠⚠ v1.20.15（用户 2026-09-18：「关弹窗即取消」✓）：**卸载时通知后端停算** ✓ ——
   //   此前关掉弹窗只是"没人收结果" ✗，而后端那次回测**照跑完为止** ✓（大公式一次白烧几十秒 ✗）。
   //   用原生 `fetch` + `keepalive: true`（卸载期间的请求不能被浏览器取消 ✓）；
@@ -336,6 +352,14 @@ export default function EventStudyModal({
             setProgress(p.progress)
             setMessage(p.message)
             if (p.status === 'success') {
+              // v1.20.36：用**后端回传的耗时/缓存命中**判定快慢（会话内稳定，不受前端掐表误差影响）
+              //   命中缓存 ⇒ 必快；否则看 total_s 是否超阈值 ⇒ 超了才转"手工模式"（露出按钮）
+              const totalS = p.cached ? 0 : (p.timings?.total_s ?? null)
+              if (totalS != null) {
+                esSlowRef.current = totalS > ES_SLOW_S
+                esSlowExprRef.current = reqRef.current?.factor?.expression ?? ''
+                setEsSlow(esSlowRef.current)
+              }
               setResult(p.result ?? null)
               setStatus('success')
               stopPoll()
@@ -401,6 +425,26 @@ export default function EventStudyModal({
   // 只有调到超过 computedMaxK 时才需要真正重算（后端没有更长的期数）。
   const computedMaxK = result?.params?.max_k ?? result?.ks?.length ?? 0
   const needRecompute = result != null && maxK > computedMaxK
+
+  // v1.20.36：`esSlow` 只对**测出它的那个公式**有效（换公式 ⇒ 视为未知 ⇒ 新公式首次自动算一次 ✓）
+  const esSlowNow = esSlow && esSlowExprRef.current === (result?.factor?.expression ?? '')
+  // 换公式 ⇒ 清「自动已试过」标记（新公式要先自动算一次 ✓）
+  useEffect(() => {
+    autoTriedRef.current = null
+  }, [result?.factor?.expression])
+  // v1.20.36 **自动跟随**：后端已算期数不够时 —— 已知慢 ⇒ 不自动（等按钮）；
+  //   其余（含"尚未测过"）⇒ 防抖 600ms 后自动重算一次（拖动数字框时不会连发请求 ✓）。
+  //   `autoTriedRef` 保证同一个 maxK 只自动试一次（防后端截断导致的来回重试 ✗）。
+  useEffect(() => {
+    if (!needRecompute || status === 'running' || esSlowNow) return
+    if (maxK > 120) return                     // 后端硬上限（1~120）⇒ 不自动打转，交给用户改小
+    if (autoTriedRef.current === maxK) return
+    const t = window.setTimeout(() => {
+      autoTriedRef.current = maxK
+      void start(maxK)
+    }, 600)
+    return () => window.clearTimeout(t)
+  }, [needRecompute, maxK, status, esSlowNow, start])
   const viewCurve = useMemo(
     () => (result?.curve ?? []).filter((c) => c.k <= maxK),
     [result, maxK],
@@ -677,7 +721,9 @@ export default function EventStudyModal({
                 min={1}
                 max={120}
                 value={maxK}
-                onChange={(e) => setMaxK(Number(e.target.value) || computedMaxK || 40)}
+                onChange={(e) =>
+                  setMaxK(Math.min(120, Math.max(1, Number(e.target.value) || computedMaxK || 40)))
+                }
                 className="ml-1 w-16 px-1 py-0.5 border rounded text-xs dark:bg-slate-700 dark:border-slate-600"
               />
               日
@@ -685,18 +731,28 @@ export default function EventStudyModal({
                 <span className="ml-1 text-slate-400">(已算 {computedMaxK} 期)</span>
               )}
             </label>
-            <button
-              onClick={() => void start(maxK)}
-              disabled={status === 'running' || !needRecompute}
-              title={
-                needRecompute
-                  ? `重算到 ${maxK} 个交易日（超过后端已算的 ${computedMaxK} 期）`
-                  : `后端已算到 ${computedMaxK} 个交易日，${maxK} 期直接切换展示即可，无需重算`
-              }
-              className="px-2 py-1 text-xs rounded bg-sky-600 text-white disabled:opacity-40"
-            >
-              {needRecompute ? `重算至 ${maxK} 期` : '重新计算'}
-            </button>
+            {/* ⚠ v1.20.36（用户 2026-09-20）：按钮**只在「需要重算 且 已知慢」时出现** ——
+                · `maxK ≤ 已算期数` ⇒ 纯前端截断展示，**按钮直接隐藏**（以前是 disabled 占位，
+                  看起来像"点了没反应"✗）；
+                · 需要重算但公式已知快 ⇒ 上方 effect **自动跟随**重算，按钮同样收起（只留一句"自动重算中…"）；
+                · 只有实测慢（或正在跑）才露出按钮，回到手工模式 ✓。 */}
+            {needRecompute && (status === 'running' || esSlowNow || maxK > 120) && (
+              <button
+                onClick={() => void start(maxK)}
+                disabled={status === 'running' || !needRecompute}
+                title={
+                  needRecompute
+                    ? `重算到 ${maxK} 个交易日（超过后端已算的 ${computedMaxK} 期）`
+                    : `后端已算到 ${computedMaxK} 个交易日，${maxK} 期直接切换展示即可，无需重算`
+                }
+                className="px-2 py-1 text-xs rounded bg-sky-600 text-white disabled:opacity-40"
+              >
+                {needRecompute ? `重算至 ${maxK} 期` : '重新计算'}
+              </button>
+            )}
+            {needRecompute && !esSlowNow && maxK <= 120 && status !== 'running' && (
+              <span className="px-1 text-xs text-slate-400">自动重算中…</span>
+            )}
             {status === 'running' && (
               <button
                 onClick={() => void onCancel()}

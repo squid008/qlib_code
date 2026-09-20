@@ -637,6 +637,16 @@ export interface EventStudyProgress {
   message: string
   result?: EventStudyResult | null
   error?: string | null
+  /** v1.20.36：服务端耗时明细（前端据此自适应「快 ⇒ 自动跟随 / 慢 ⇒ 手工按钮」，不展示数字也用它判定） */
+  timings?: {
+    total_s?: number
+    cached?: boolean
+    stages?: { p: number; msg: string; t: number }[]
+    stages_s?: { msg: string; s: number }[]
+    slowest?: { msg: string; s: number } | null
+  } | null
+  /** v1.20.36：是否命中**内容寻址磁盘缓存**（命中 ⇒ 秒回，必判为"快"） */
+  cached?: boolean | null
 }
 export interface EventStudyRequest {
   universe: string

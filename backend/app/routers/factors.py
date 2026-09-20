@@ -828,6 +828,9 @@ def event_study(req: EventStudyRequest):
                 #   同时留一份请求参数（取价需要区间）。
                 state["_ev"] = res.pop("_ev", None)
                 state["_req"] = req.model_dump()
+                # v1.20.36：把耗时明细/缓存命中透出给前端（`/event-study/progress` 会带上）
+                state["timings"] = res.get("timings")
+                state["cached"] = res.get("cached")
                 state.update(status="success", progress=100.0, message="事件研究完成",
                              result=_json_safe(res), ts=time.time())
         except FactorTestCancelled:
@@ -1120,6 +1123,9 @@ def event_study_progress(task_id: str):
         "message": state.get("message", ""),
         "result": state.get("result"),
         "error": state.get("error"),
+        # v1.20.36：耗时明细 + 缓存命中标记（前端据此自适应"自动跟随 / 手工按钮"，不显示耗时数字也用它做判定）
+        "timings": state.get("timings"),
+        "cached": state.get("cached"),
     }
 
 

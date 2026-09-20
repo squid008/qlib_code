@@ -29,7 +29,9 @@ def patched(monkeypatch):
     monkeypatch.setattr(F, "get_task_manager", lambda *a, **k: tm)
     monkeypatch.setattr("app.factors.single_test._ensure_qlib_init", lambda: None)
     monkeypatch.setattr(F, "run_event_study",
-                        lambda **kw: {"error": None, "n_events": 3, "n_short": 0, "_ev": None})
+                        lambda **kw: {"error": None, "n_events": 3, "n_short": 0, "_ev": None,
+                                      "cached": True,
+                                      "timings": {"total_s": 1.5, "cached": True, "stages": []}})
     return tm
 
 
@@ -69,3 +71,13 @@ def test_repeated_event_studies_do_not_leak(patched):
         assert _wait_done(tid).get("status") == "success"
     assert tm._hold_slots == 0, "多次事件研究后配额仍应归零"
     assert tm.external_queued() == 0
+
+
+def test_progress_exposes_timings_and_cached(patched):
+    """v1.20.36：进度接口必须透出 `timings` / `cached`（前端据此自适应自动/手工）。"""
+    tid = F.event_study(_req())["task_id"]
+    assert _wait_done(tid).get("status") == "success"
+    p = F.event_study_progress(tid)
+    assert p["cached"] is True
+    assert p["timings"]["total_s"] == 1.5
+    assert isinstance(p["timings"]["stages"], list)
