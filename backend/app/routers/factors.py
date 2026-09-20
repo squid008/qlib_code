@@ -836,6 +836,16 @@ def event_study(req: EventStudyRequest):
             state.update(status="failed", progress=100.0, message=f"事件研究失败: {e}",
                          error=str(e), ts=time.time())
         finally:
+            # ⚠⚠ v1.20.35 修复（用户 2026-09-20 报「事件研究卡死」）：
+            #   `external_wait_slot` 拿到的并发配额**必须成对归还**（同 `factors.py` 单因子路径
+            #   的 `release_slot`）。此前这里只调 `_est_trim()`、**漏了归还** ⇒ 每做一次事件研究
+            #   就永久泄漏 1 个槽；泄漏数攒到并发上限（本机 `max_concurrent=3`）之后，
+            #   **后续所有事件研究 / 单因子测试都会永远排队**（message 停在「已提交」、CPU 0、
+            #   磁盘 0 —— 表现完全像"卡死"，且取消也未必能唤醒）。
+            #   诊断特征（很好认）：`GET /api/backtest/capacity` 的 `running` **大于实际在跑的任务数**
+            #   （`running=3 / queued=1` 但没有任何任务在跑）⇒ 就是配额泄漏。
+            #   注：走到这里必然已持有配额（`if not got: return` 在 try 之前）⇒ 归还恒成对。
+            manager.release_slot(task_id)
             _est_trim()
 
     threading.Thread(target=_run, daemon=True).start()

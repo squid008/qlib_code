@@ -3,6 +3,25 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.35] - 2026-09-20
+
+### Fixed
+- **★★★ 事件研究任务不归还并发配额 ⇒ 连做若干次后「全体任务卡死」**（用户报「事件研究卡死」）：
+  - **根因**：`POST /factors/event-study` 的任务体用 `TaskManager.external_wait_slot()` 抢占一个并发配额，
+    但 `finally` 里**只调了 `_est_trim()`、漏了 `manager.release_slot(task_id)`**
+    （对照：单因子路径 `routers/factors.py:552` 有成对释放）⇒ **每做一次事件研究就永久泄漏 1 个槽**；
+    泄漏数攒到并发上限（`current_max_concurrent()`，随内存/CPU 动态算，本机 3~4）之后，
+    **后续所有事件研究 / 单因子测试永远排在队列里**：`message` 停在「已提交」、`progress=0`、
+    后端 CPU≈0、无面板 worker —— 表现完全像「卡死」，且排队线程只认 `cancel_check`，取消也未必能唤醒。
+  - **修复**：事件研究任务体的 `finally` 里补 `manager.release_slot(task_id)`
+    （`if not got: return` 在 `try` 之前 ⇒ 走到那里必然已持有配额 ⇒ 归还恒成对）。
+  - **诊断特征（写进代码注释与开发记录，下次一眼可认）**：`GET /api/backtest/capacity` 的 `running`
+    **大于实际在跑的任务数**（实测 `running=3 / queued=1`，但没有任何任务在跑、CPU 不涨）⇒ 配额泄漏。
+  - **验证**：`ai_test/probe_est_leak.py` 连跑 **5 次**（> 并发上限 3~4）全部 `success`，且每次结束
+    `running` 都回落到 0（修复前第 4/5 次必然永久排队）；新增回归测试
+    `backend/tests/test_event_study_slot_release.py`（2 例：单次归还、连做 3 次无残留；纯逻辑、不碰数据）。
+- 版本 1.20.34 → 1.20.35。
+
 ## [1.20.34] - 2026-09-20
 
 ### Added（**`EXP(X)` = e^X** —— 此前不支持，研报公式无法直接粘贴）
