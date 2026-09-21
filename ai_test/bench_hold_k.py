@@ -27,6 +27,11 @@ FP = r"d:\quant\qlib_code\backend\workdir\custom_formulas.json"
 START, END = "2021-01-01", "2026-12-31"
 N = 600
 KS = (5, 20, 50, 60, 120)
+# 允许命令行覆盖：`python bench_hold_k.py 6142 5,60`（全 A 只需两档时快很多 ✓）
+if len(sys.argv) > 1:
+    N = int(sys.argv[1])
+if len(sys.argv) > 2:
+    KS = tuple(int(x) for x in sys.argv[2].split(","))
 
 
 def _f(name):

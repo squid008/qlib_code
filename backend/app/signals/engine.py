@@ -232,6 +232,46 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
     return price, can_buy, can_sell, PX
 
 
+# 成交明细的列名与**顺序**（= 旧 `_trade_row` 里 dict 的键序 ✓ 必须保持一致 ✗）
+_TRADE_KEYS = ("date", "code", "side", "shares", "price", "amount", "fee",
+               "reason", "mode")
+
+
+def _trades_frame(rows, date_arr, codes, half):
+    """把「逐笔元组」构造为成交 DataFrame（v1.20.40 / 2a：**按列**构造 ✓）。
+
+    为什么（cProfile 实测，`ai_test/prof_nav_bt.py`）：原来是造 2 万个小 dict 再交给
+    `pd.DataFrame` ✗ ⇒ 走 pandas 的 `_list_of_dict_to_arrays`，它会**为每一列再遍历一遍
+    dict 列表** ✗（实测 cum **0.70 s / 20 轮 = 3.0%** ✓）。本函数直接产出 9 个列 ✓ ⇒ 避开该路径 ✓。
+
+    ⚠ **逐位不变** ✓：字段名与**顺序**固定一致 ✓；`round` 全部用 **Python 内建** ✓
+    （不用 `np.round` ✗ —— 它的 banker 舍入在二进制上与 `round` 可能有末位差异 ✗）；
+    `shares` 仍 `int()` ✓；日期仍取自 `_date_arr` ✓。
+    `("__ROW__", dict)`（`batch_even` 分支的**已格式化行** ✓）按 `rows` **原位置**并入 ✓
+    ⇒ 混排顺序与旧实现一致 ✓（该路径下列顺序以本表固定序为准 ✓）。
+    """
+    cols = {k: [] for k in _TRADE_KEYS}
+    for t in rows:
+        if t[0] == "__ROW__":
+            d = t[1]
+            for k in _TRADE_KEYS:
+                cols[k].append(d.get(k))
+            continue
+        _i, _c, _s, _q, _p, _r, _m = t
+        _amt = _q * _p
+        cols["date"].append(date_arr[_i])
+        cols["code"].append(codes[_c])
+        cols["side"].append("买" if _s > 0 else "卖")
+        cols["shares"].append(int(_q))
+        cols["price"].append(round(_p, 4))
+        cols["amount"].append(round(_amt, 2))
+        cols["fee"].append(round(_amt * half, 2))
+        cols["reason"].append(_r)
+        cols["mode"].append(_m)
+    # ⚠ 空输入保持 `pd.DataFrame()`（= 旧 `pd.DataFrame([])` ⇒ 0×0 ✓，不是 0×9 ✗）
+    return pd.DataFrame(cols) if rows else pd.DataFrame()
+
+
 def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                  hold_days: int = 20, fill: str = "t1_open", cost: float = 0.004,
                  capital: float = 1e9, strict_limit: bool = True,
@@ -252,6 +292,10 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     lag, px_kind = _FILL_LAG[fill], _FILL_PRICE[fill]
     hold_days = max(1, int(hold_days))
     half = float(cost) / 2.0
+    # ★ v1.20.40（2a）**循环不变量外提** ✓ —— 原写法 `max(0, hold_days - lag)` 出现在
+    #   「每个持仓 × 每个交易日」的内层 ✗（cProfile：`builtins.max` **26.7 万次/轮**，
+    #   其中约 **19.7 万次**来自这里 ✓）⇒ 提到循环外 ✓（`hold_days`/`lag` 全程不变 ✓ 逐位等价 ✓）。
+    _expiry_thr = max(0, hold_days - lag)
 
     prep = _prepare(signals, panel)
     cal, codes, col_of = prep["cal"], prep["codes"], prep["col_of"]
@@ -428,21 +472,36 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         # 死区：偏差小于「目标市值的 rebal_band」就不动（默认 0 = 每次事件完全调平，
                         # 即用户口径"有信号/到期就平衡"）。实测全调平的代价是 9 年 45% 本金的费用
                         # ⇒ 想让成本下来就把 band 调到 1%~10%（界面上可调）。
-                        gap_of = lambda tv, px: max(band * tv, px * lot)   # 死区随方案（可 @ 指定）
+                        # ★ v1.20.40（2a）：三处**等价但更快**的写法 ✓
+                        #   ① 原 `gap_of(tgt, px)` = `max(band*tgt, px*lot)` **每个持仓现算** ✗
+                        #      ⇒ `dlt > max(a, b)` ⟺ `dlt > a and dlt > b` ✓（a、b 均有限 ✓）
+                        #      ⇒ `band*tgt` 外提 ✓（那个 lambda 也就不需要了 ✓）。
+                        #   ② 原 `k in [c for c, _ in ok]` 在**每个持仓**上都重建一次列表 ✗
+                        #      （O(持仓数 × 待买数) ✗）⇒ 改**集合** ✓（键都是 int ⇒ 判定等价 ✓）。
+                        #   ③ `_price(i, k)` 闭包调用 ⇒ `float(_pxr[k])` ✓
+                        #      （`_price` 快路径就是 `float(PX[i, k])` ✓ **逐位相同** ✓）。
+                        #      ⚠ 保留 `float()` 装箱：下游 `round(np.float64)` 反而慢一档 ✗
+                        #        （见 `_limit_ctx` 里 v1.20.9 的实测记录 ✓）。
+                        _gap_bt = band * tgt
+                        _okc = {c for c, _ in ok}
                         # ① 减仓超配（腾出现金给新信号）
                         for k in list(sh.keys()):
-                            px = _price(i, k)
-                            if not np.isfinite(px) or k in [c for c, _ in ok]:
+                            px = float(_pxr[k])
+                            if not np.isfinite(px) or k in _okc:
                                 continue
                             dlt = sh[k] * px - tgt
-                            if dlt > gap_of(tgt, px) and can_sell(i, k) is None:
+                            if dlt > _gap_bt and dlt > px * lot and can_sell(i, k) is None:
                                 q = min(int(dlt / px / lot) * lot, sh[k])
                                 if q > 0:
                                     _log_trade(i, k, -1, q, px, "rebalance_sell")
                         # ② 买新信号（含费；现金不足则按比例缩减）
                         tgt_eff = tgt / (1.0 + half)
-                        need = sum(int(tgt_eff / _price(i, c) / lot) * lot * _price(i, c) * (1 + half)
-                                   for c, _ in ok)
+                        # ★ 同一项原来把 `_price(i, c)` **算了两遍** ✗（实测 0.70 s/20 轮 ✓）；
+                        #   `need` 从 `0.0` 起、按 `ok` **原序**累加 ⇒ 与 `sum(...)` 结合序一致 ✓
+                        need = 0.0
+                        for c, _dec in ok:
+                            _v = _pxr[c]
+                            need += int(tgt_eff / _v / lot) * lot * _v * (1 + half)
                         scale = 1.0 if need <= cash * 1.0001 else max(0.0, cash / max(need, 1e-9))
                         for c, _dec in ok:
                             px = _price(i, c)
@@ -454,17 +513,18 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         # ③ 补低配的老仓（先算新目标：新买入已计入 sh ⇒ tgt 用最新只数重算）
                         # ★ v1.20.37：同上（`_pxr` 行切片 + 原顺序 ✓ 逐位等价 ✓）
                         mv = 0.0
-                        for k in list(sh):
+                        for k in sh:                 # ★ 2a：本循环不改 `sh` ⇒ 无需 list() ✓
                             _v = _pxr[k]
                             if np.isfinite(_v):
                                 mv += sh[k] * _v
                         tgt = (cash + mv) / max(1, len(sh))
+                        _gap_bt = band * tgt         # ★ 2a：`tgt` 已重算 ⇒ 死区同步重算 ✓
                         for k in list(sh.keys()):
-                            px = _price(i, k)
+                            px = float(_pxr[k])      # ★ 2a：闭包调用 ⇒ 行切片（逐位相同 ✓）
                             if not np.isfinite(px):
                                 continue
                             dlt = tgt - sh[k] * px
-                            if dlt > gap_of(tgt, px) and can_buy(i, k) is None:
+                            if dlt > _gap_bt and dlt > px * lot and can_buy(i, k) is None:
                                 q = int(dlt / (px * (1 + half)) / lot) * lot
                                 if q > 0 and cash >= q * px * (1 + half):
                                     _log_trade(i, k, 1, q, px, "rebalance_buy")
@@ -473,8 +533,11 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             #   若仍写 `days >= N` 就会持有 N+1 个交易日（单测 test_basic_buy_hold_sell_and_cost
             #   抓到）。`t_close`（lag=0）不变 ⇒ 两种口径的**实际持有都正好 N 个交易日**，
             #   与事件研究「T+1 买入、T+1+N 卖出」一致。
-            for c in list(sh.keys()):
-                if c not in sell_q and dsz.get(c, 0) >= max(0, hold_days - lag):
+            # ★ v1.20.40（2a）：本循环**只改 `sell_q`**（不动 `sh` ✓）⇒ 直接迭代 `sh` ✓
+            #   —— 原来 `list(sh.keys())` **每个交易日都白复制一次持仓列表** ✗
+            #   （4 处这种循环 × 2732 个日-方案 ✓）；阈值已外提 ✓
+            for c in sh:
+                if c not in sell_q and dsz.get(c, 0) >= _expiry_thr:
                     sell_q[c] = (i, "sell_expiry")
             # ---- 5) 逐日盯市 ----
             # ★★ v1.20.37 性能（2026-09-21 cProfile 实测，工具 `ai_test/prof_nav_bt.py` ✓）：
@@ -499,7 +562,8 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             #   构造实测占 11% ✓）—— 净值索引在轮次末尾用 `cal[i_start:n_row]` **切片** ✓
             #   （每天必有且仅有一条 nav ✓ ⇒ 长度恒等 ✓）。
             nav_vals.append(equity / capital)
-            for c in list(sh.keys()):
+            # ★ v1.20.40（2a）：同上 —— 本循环**只改 `dsz`**（不动 `sh` ✓）⇒ 不必 `list()` ✓
+            for c in sh:
                 dsz[c] = dsz.get(c, 0) + 1
         # ★ v1.20.37：索引直接用**日历切片**（每日必有一条 nav ✓ ⇒ 长度恒等 ✓），
         #   省掉主循环里逐日 `cal[i]` 的 Timestamp 装箱 ✓
@@ -565,18 +629,11 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     out.diag["rejects_total"] = int(sum((out.stats.get(k, {}) or {}).get("rejects_total", 0)
                                         for k in out.stats))
     # ⚠ v1.20.7：成交明细**在这里一次性格式化**（循环里只存元组 ✓，见 `_log_trade` 注释 ✓）。
-    #   `("__ROW__", dict)` 是 `batch_even` 分支带过来的**已格式化行** ✓ 直接沿用 ✓。
-    def _trade_row(t):
-        if t[0] == "__ROW__":
-            return t[1]
-        _i, _c, _s, _q, _p, _r, _m = t
-        _amt = _q * _p
-        return {"date": _date_arr[_i], "code": codes[_c],
-                "side": "买" if _s > 0 else "卖", "shares": int(_q),
-                "price": round(_p, 4), "amount": round(_amt, 2),
-                "fee": round(_amt * half, 2), "reason": _r, "mode": _m}
-
-    out.trades = pd.DataFrame([_trade_row(t) for t in all_trades[:20000]])
+    # ★ v1.20.40（2a）：改为调 `_trades_frame` **按列构造** ✓ —— 原来造 2 万个小 dict 再交给
+    #   pandas 走 `_list_of_dict_to_arrays`（它会**为每一列再遍历一遍 dict 列表** ✗）
+    #   ⇒ 该路径实测 cum **0.70 s / 20 轮（3.0%）** ✗。**字段/顺序/类型/格式逐位不变** ✓
+    #   （`("__ROW__", dict)` 的 `batch_even` 行按**原位置**沿用 ✓）。
+    out.trades = _trades_frame(all_trades[:20000], _date_arr, codes, half)
     out.rejects = pd.DataFrame(_interleave_rejects(mode_rejects, 30000))
     return out
 
