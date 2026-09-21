@@ -169,17 +169,35 @@ def _compute_layers(pred_label, N: int = 5, benchmark_ret: Optional[dict] = None
         # 每日收益列（算法A需要逐日收益累加）；每日重排模式不依赖它
         has_ret = "ret" in df.columns
 
+        # ⚠⚠ v1.20.43：**每日重排分支的口径修正（有 `ret` 就用 `ret`）** ✗
+        #   原实现无条件用 **`label`** ✗ —— 而 `label` 是 **N 日远期收益**
+        #   （回测页 `label_horizon` 默认 20 ✗）⇒ **逐日 `cumprod` 会把重叠的 20 日收益
+        #   反复复利 ⇒ 曲线虚高** ✗✗（同一个 20 日窗口被计入 20 次 ✓）。
+        #   ⚠ 旧 docstring 那句"复利是**与累加粒度无关**的口径（Π 可结合 ⇒ 按日复利 ≡
+        #     按持有期复利）"**是错的** ✗ —— 该性质只对**同一组合的真实逐期收益**成立 ✓，
+        #     对"重叠的 N 日远期收益"不成立 ✗。
+        #   ⇒ 有 `ret`（**真实每日收益** ✓）就用 `ret` ✓ —— 与 `rebalance_period > 1`
+        #     分支**同源** ✓（那支一直用 `ret` ✓）；确实没有 `ret`（旧数据 / 纯因子诊断 ✗）
+        #     才退回 `label` ✓。**注意：这不改"调仓频率"** ✗ ——
+        #     `rebalance_period` 仍由用户设定（1 = 每日重排、20 = 每 20 日 ✓），
+        #     改的只是"用哪个收益序列" ✓。
+        _col = "ret" if has_ret else "label"
         if rebalance_period <= 1 or not has_ret:
-            # ---- 每日重排（原逻辑）：每日横截面按 score 分 N 组，取各组当日 label 均值 ----
+            # ---- 每日重排：每日横截面按 score 分 N 组，取各组当日 `_col` 均值 ----
             d = df.sort_values("score", ascending=False)
             t_df = pd.DataFrame({
-                "Group%d" % (i + 1): d.groupby(level="datetime", group_keys=False)["label"].apply(
+                "Group%d" % (i + 1): d.groupby(level="datetime", group_keys=False)[_col].apply(
                     lambda x: x[len(x) // N * i: len(x) // N * (i + 1)].mean()  # noqa: B023
                 )
                 for i in range(N)
             })
             t_df["long_short"] = t_df["Group1"] - t_df["Group%d" % N]
-            t_df["long_average"] = t_df["Group1"] - d.groupby(level="datetime", group_keys=False)["label"].mean()
+            # ★ v1.20.43：**池内等权**（= 全样本 `_col` 等权均值 ✓）单列出来 ⇒
+            #   前端可把它画成一条基准线 ✓（"模型到底赢没赢"一眼可辨 ✓，
+            #   不再被"等权组合 vs 市值加权指数"的口径差误导 ✗）。
+            _uni = d.groupby(level="datetime", group_keys=False)[_col].mean()
+            t_df["long_average"] = t_df["Group1"] - _uni
+            t_df["universe"] = _uni
             t_df = t_df.dropna(how="all")
             cum = (1.0 + t_df).cumprod() - 1.0      # 复利（v1.19.5，原 cumsum）
             rows = cum.iterrows()
@@ -232,6 +250,7 @@ def _compute_layers(pred_label, N: int = 5, benchmark_ret: Optional[dict] = None
             #   口径说明：`long_average` = 组1 相对**池内等权**的超额 ✓（复利 ✓）。
             _uni_ret = df.groupby(level="datetime", group_keys=False)["ret"].mean()
             t_df["long_average"] = t_df["Group1"] - _uni_ret
+            t_df["universe"] = _uni_ret        # ★ v1.20.43：池内等权单列 ✓（前端画基准线 ✓）
 
             cum = (1.0 + t_df).cumprod() - 1.0      # 复利（v1.19.5，原 cumsum）
             rows = cum.iterrows()
@@ -245,6 +264,12 @@ def _compute_layers(pred_label, N: int = 5, benchmark_ret: Optional[dict] = None
             pt["Group%d" % (i + 1)] = round(float(row["Group%d" % (i + 1)]), 6)
         pt["long_short"] = round(float(row["long_short"]), 6)
         pt["long_average"] = round(float(row["long_average"]), 6)
+        # ★ v1.20.43：池内等权（全样本等权）累计收益 —— 前端画出"分子分母同源"的基准线 ✓
+        #   ⚠ 旧落盘数据没有该列 ⇒ 前端需容错为 `null` ✓（`universe?: number | null` ✓）。
+        if "universe" in row.index and row["universe"] == row["universe"]:
+            pt["universe"] = round(float(row["universe"]), 6)
+        else:
+            pt["universe"] = None
         if benchmark_ret is not None:
             pt["benchmark"] = benchmark_ret.get(date_str)
         points.append(pt)

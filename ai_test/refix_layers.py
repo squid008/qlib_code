@@ -25,7 +25,15 @@ import sys
 
 sys.path.insert(0, r"d:\quant\qlib_code\backend")
 
+from app.services.qlib_runtime import ensure_qlib_init  # noqa: E402
+
+# ⚠⚠ 必须初始化 qlib ✗ —— `_compute_benchmark_returns` 走 `D.calendar`/qlib ✗，
+#   未初始化时会**静默失败**（异常被吞 ✓）⇒ `benchmark` 列变 None ⇒ **图上基准线消失** ✗✗
+#   （第一版漏了这一步，实测把段1 的 benchmark 弄丢 ✓ 已修 ✓）。
+ensure_qlib_init()
+
 from app.engine.analysis import _compute_benchmark_returns, _compute_layers  # noqa: E402
+
 
 BASE = r"d:\quant\qlib_code\backend\workdir\artifacts"
 
@@ -81,6 +89,15 @@ def main(tid, apply=False):
         new_layers = {"segment": sd.replace("segment_", "段"),
                       "groups": new_groups, "benchmark": benchmark}
         old = (seg.get("layers") or {}).get("groups") or []
+        # ⚠⚠ 基准**与本 BUG 无关** ✓（它一直是"指数累计收益"口径 ✓ 是对的 ✓）
+        #   ⇒ 重算拿不到时（qlib 未初始化 / 该区间无指数数据 ✗）**一律沿用旧值** ✓，
+        #     绝不能让 benchmark 变成 None ✗（否则图上基准线直接消失 ✗）。
+        if old:
+            for _i, _p in enumerate(new_groups):
+                if _p.get("benchmark") is None and _i < len(old):
+                    _p["benchmark"] = old[_i].get("benchmark")
+        _nb = sum(1 for _p in new_groups if _p.get("benchmark") is not None)
+        print("  %-12s 基准点 %d/%d" % (sd, _nb, len(new_groups)))
         old_la = old[0].get("long_average") if old else None
         new_la = new_groups[0].get("long_average")
         old_lt = old[-1].get("long_average") if old else None

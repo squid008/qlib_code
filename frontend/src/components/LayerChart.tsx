@@ -22,7 +22,8 @@ const GROUP_COLORS = [
 ]
 
 // 所有可显示的曲线 key（含基准）。默认全显。
-const ALL_LINES = ['Group1', 'Group2', 'Group3', 'Group4', 'Group5', 'long_short', 'benchmark'] as const
+const ALL_LINES = ['Group1', 'Group2', 'Group3', 'Group4', 'Group5', 'long_short',
+  'universe', 'benchmark'] as const
 type LineKey = (typeof ALL_LINES)[number]
 
 const LINE_META: Record<LineKey, { name: string; color: string; dashed?: boolean }> = {
@@ -32,6 +33,11 @@ const LINE_META: Record<LineKey, { name: string; color: string; dashed?: boolean
   Group4: { name: 'Group4', color: GROUP_COLORS[3] },
   Group5: { name: 'Group5', color: GROUP_COLORS[4] },
   long_short: { name: '多空(1-5)', color: GROUP_COLORS[5], dashed: true },
+  // ★ v1.20.43：**池内等权**（全样本等权收益，与 Group1 **同源** ✓）——
+  //   用户 2026-09-21 遇到的"回测跑赢、分层跑不过"，根因是**等权组合 vs 市值加权指数**
+  //   的口径差 ✗（2021-01 抱团行情：沪深300 +2.85%，而全 A 等权 ≈ −5.8% ✗）
+  //   ⇒ 画出"分子分母同源"的等权基准线 ✓，"模型到底赢没赢"一眼可辨 ✓。
+  universe: { name: '池内等权', color: '#0891b2', dashed: true },
   benchmark: { name: '基准', color: '#475569', dashed: true },
 }
 
@@ -95,6 +101,8 @@ export default function LayerChart({ data }: { data?: LayerReturns | null }) {
     (effective === '汇总' ? data.merged : undefined)
   const groups = curSeg?.groups || []
   const hasBench = groups.some((g) => g.benchmark !== undefined && g.benchmark !== null)
+  // ★ v1.20.43：池内等权线是否存在（⚠ 旧落盘数据无 `universe` 列 ⇒ 自动不显示 ✓ 向后兼容 ✓）
+  const hasUniverse = groups.some((g) => g.universe !== undefined && g.universe !== null)
 
   // 图例点击：隐藏/回显某条曲线
   const toggleLine = (key: string) => {
@@ -104,6 +112,7 @@ export default function LayerChart({ data }: { data?: LayerReturns | null }) {
   // 用于 Legend 的 payload（点击回调）
   const legendPayload = ALL_LINES.filter((k) => {
     if (k === 'benchmark') return hasBench
+    if (k === 'universe') return hasUniverse
     return true
   }).map((k) => ({
     value: LINE_META[k].name,
@@ -133,6 +142,7 @@ export default function LayerChart({ data }: { data?: LayerReturns | null }) {
           Group5: 0,
           long_short: 0,
           long_average: 0,
+          ...(hasUniverse ? { universe: 0 } : {}),
           ...(hasBench ? { benchmark: 0 } : {}),
         },
         ...groups,
@@ -193,6 +203,19 @@ export default function LayerChart({ data }: { data?: LayerReturns | null }) {
                 dot={false}
                 hide={hidden.long_short}
               />
+              {/* ★ v1.20.43：**池内等权**基准线（与 Group1 同源 ⇒ 可直接比 ✓） */}
+              {hasUniverse && (
+                <Line
+                  type="monotone"
+                  dataKey="universe"
+                  name={LINE_META.universe.name}
+                  stroke={LINE_META.universe.color}
+                  strokeWidth={2}
+                  strokeDasharray="6 3"
+                  dot={false}
+                  hide={hidden.universe}
+                />
+              )}
               {hasBench && (
                 <Line
                   type="monotone"

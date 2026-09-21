@@ -81,6 +81,11 @@ export interface LayerPoint {
   Group5: number
   long_short: number
   long_average: number
+  /**
+   * ★ v1.20.43：**池内等权**（全样本等权）累计收益 —— 与 `Group1` **同源** ✓
+   * ⇒ 可直接与分组比（"模型到底赢没赢" ✓）；⚠ 旧落盘数据无该列 ⇒ 可能为 `undefined`。
+   */
+  universe?: number | null
   benchmark?: number | null
 }
 
