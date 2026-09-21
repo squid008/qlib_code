@@ -182,10 +182,17 @@ export default function EventStudyModal({
     } catch { /* 静默 ✓ */ }
   }, [sourceTaskId])
   const lastTickRef = useRef(0)
-  // 自动识别"大小公式"的阈值（秒）：一次回测耗时超过它 ⇒ 该公式转入"手动模式"（等按钮 ✓）；
-  // 低于它 ⇒ 保持自动计算（小公式体验与从前一致 ✓）。5s 是经验值 ——
-  // 实测「过顶」57s（14.88 万笔 ✓），普通公式 0.1~0.6s ✓ ⇒ 两者分得很开 ✓。
-  const NAV_SLOW_S = 5
+  // 自动识别"大小公式"的阈值（秒）—— ⚠⚠ v1.20.38 起**判据换成后端回传的 `timings.backtest`** ✓
+  //   （= "改一次持仓周期就要重付"的那部分 ✓；**取价面板是一次性的**，命中 `_NAV_PANEL_CACHE`
+  //   之后不再付 ✓ ⇒ 不该计入 ✗）。
+  //   ⚠ 为什么不再用前端掐表（v1.20.11~v1.20.37 的做法 ✗）：用户 2026-09-21 报
+  //   「k=5 五六秒就算好了，怎么还显示『重新计算』按钮？」—— 两个病根：
+  //     ① 前端掐表把**取价面板（全A ≈12s）/网络/并发排队**都算进去 ✗ ⇒ 首次打开**必然**被判慢 ✗；
+  //     ② 判慢后 `slowRef.current = true` **单向锁死** ✗ ⇒ 之后改周期再也不自动算 ✗
+  //        （哪怕切到 k=5 只要 2~3s ✓）⇒ 按钮**永远**挂着 ✗。
+  //   10s 是经验值：全 A「过顶」实测 k=5 的回测段 ≈ 5~7s、k=60 ≈ 15s ✓ ⇒ 正好分得开 ✓
+  //   （600 只抽样同机实测：k=5 → **0.68s**、k=60 → **1.48s**，**2.17×** ✓，被拒 3286 → 10200 ✓）。
+  const NAV_SLOW_S = 10
   const [navCost, setNavCost] = useState(0.004)
   const [navRes, setNavRes] = useState<EventNavResult | null>(null)
   const [navBusy, setNavBusy] = useState(false)
@@ -216,32 +223,35 @@ export default function EventStudyModal({
 
   useEffect(() => {
     if (!result || navK == null) return
-    // ---- 自动识别（v1.20.11）：已知慢的公式**不自动算** ✓（等按钮），其余自动 ✓ ----
     const byButton = navTick !== lastTickRef.current
     lastTickRef.current = navTick
-    if (slowRef.current && !byButton) {
-      return                            // 已知慢 ⇒ 不自动算；界面不提示（只用按钮 ✓ 用户要求不加文字 ✗）
-    }
     const tid = sourceTaskId || taskRef.current
     // ⚠ 没有任务 id 也可以试：后端会按**因子表达式**在最近的任务里找回触发事件
     //   （v1.19.61）；只有连表达式都没有时才真的没法算。
     // ⚠ v1.19.84：改用 `reqRef` 而不是依赖 `req` 对象 —— 父组件每次渲染都可能重建 req，
     //   把它放进依赖数组会让本 effect 反复重跑（spinner 抖动/无谓重算）。reqRef.current 已在渲染期同步。
     const expr = (reqRef.current?.factor as { expression?: string } | undefined)?.expression
+    // ⚠⚠ v1.20.38：**缓存命中必须排在「慢公式不自动算」的门之前** ✓ ——
+    //   命中的结果**零成本**（本会话已经算过 ✓）⇒ 慢公式切回一个算过的 k 也该**立刻出图** ✓，
+    //   没理由让用户再点一次「重新计算」✗（旧顺序把它挡在门外 ⇒ 用户白点一下 ✗）。
+    //   ⚠ 用户 2026-09-17 报的 bug 也在这里：命中缓存 ⇒ 曲线**立刻**出来，但此前没复位 busy
+    //     ⇒ 界面上「曲线已算好、却一直显示计算中…」✗（缓存命中本就是"秒出" ⇒ busy=false ✓）。
+    const key = `${navK}|${navCost}|${tid ?? ''}`
+    const hit = navCacheRef.current.get(key)
+    if (hit) {
+      setNavRes(hit)
+      setNavErr('')
+      setNavBusy(false)
+      return
+    }
+    // ---- 自动识别（v1.20.11 / v1.20.38）：已知慢的公式**不自动算** ✓（等按钮），其余自动 ✓ ----
+    if (slowRef.current && !byButton) {
+      return                            // 已知慢 ⇒ 不自动算；界面不提示（只用按钮 ✓ 用户要求不加文字 ✗）
+    }
     if (!tid && !expr) {
       setNavErr('这次结果没有关联到测试任务，也没有因子表达式 ⇒ 无法复用触发明细；' +
         '点上方「重新计算」重跑一次即可看到净值曲线')
       setNavBusy(false)              // v1.19.84：提前返回也必须收尾，否则 spinner 永挂
-      return
-    }
-    const key = `${navK}|${navCost}|${tid ?? ''}`
-    const hit = navCacheRef.current.get(key)
-    if (hit) {
-      // ★ 用户 2026-09-17 报的 bug 就在这里：命中缓存 ⇒ 曲线**立刻**出来，但此前没复位 busy
-      //   ⇒ 界面上「曲线已算好、却一直显示计算中…」。缓存命中本就是"秒出"，必须 busy=false。
-      setNavRes(hit)
-      setNavErr('')
-      setNavBusy(false)
       return
     }
     setNavBusy(true)
@@ -267,12 +277,25 @@ export default function EventStudyModal({
             if (cancelled) return
             navCacheRef.current.set(key, r)
             lastOkKRef.current = navK        // 记下"最后一次真正算出结果的 k" ✓
-            // v1.20.11：**实测耗时超过阈值 ⇒ 该公式转入"手动模式"** ✓（此后改周期不再自动算 ✓）；
-            //   低于阈值 ⇒ 保持自动 ✓（小公式体验与从前一致 ✓）。
-            if ((performance.now() - _t0) / 1000.0 > NAV_SLOW_S) {
-              slowRef.current = true
-              setNavSlow(true)           // 实测慢 ⇒ **这时才**把「（重新）计算」按钮显示出来 ✓
-            }
+            // ⚠⚠ v1.20.38（用户 2026-09-21）：「k=5 五六秒就算好了，怎么还会显示『重新计算』
+            //   按钮？不应该隐藏掉、改周期自动算么？等下一次算 50~60 天发现慢再显示按钮」✓
+            //   —— 两条都改：
+            //   ① **判据 = 后端回传的回测段耗时** `timings.backtest` ✓（不再前端掐表 ✗）——
+            //      取价面板是一次性的（`_NAV_PANEL_CACHE` 命中后不再付 ✓）⇒ 不计入 ✓；
+            //   ② **双向更新**（原来只 `= true` 单向锁死 ✗）⇒ **每次算完都按本次 k 重判** ✓：
+            //      · 快 ⇒ `navSlow=false` ⇒ **按钮收起 + 恢复"改周期自动算"** ✓
+            //      · 慢 ⇒ `navSlow=true` ⇒ 按钮露出 + 转手工 ✓
+            //      ⇒ 于是「k=5 快速算完 ⇒ 自动；切到 k=60 实测慢 ⇒ 按钮再出现」正是用户要的 ✓。
+            //   `backtest_cached`（命中 `_NAV_BT_CACHE`，同一个 k 重复点 ✓）⇒ 视为 0 秒 ✓。
+            const _btRaw = (r.timings as Record<string, number | boolean> | undefined)?.backtest
+            const _btCached = Boolean(
+              (r.timings as Record<string, number | boolean> | undefined)?.backtest_cached)
+            const btSec = typeof _btRaw === 'number'
+              ? (_btCached ? 0 : _btRaw)
+              : (performance.now() - _t0) / 1000.0        // 兜底：后端没给就用前端耗时 ✓
+            const nowSlow = btSec > NAV_SLOW_S
+            slowRef.current = nowSlow
+            setNavSlow(nowSlow)
             setNavRes(r)
             setNavErr('')
             setNavBusy(false)

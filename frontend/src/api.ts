@@ -846,7 +846,13 @@ export interface EventNavResult {
   diag: Record<string, any>
   nav_columns: string[]
   alloc_default: string
-  timings: Record<string, number>
+  /**
+   * 分段耗时（秒）+ 缓存命中标记（`*_cached` 是**布尔** ✓）。
+   * ⚠ v1.20.38：前端据 **`backtest`**（= 改一次持仓周期就要重付的那段 ✓）判定
+   * 「快 ⇒ 自动跟随 / 慢 ⇒ 手工按钮」—— **不用 `prices`**：取价面板是一次性的
+   * （命中 `_NAV_PANEL_CACHE` 之后不再付 ✓）⇒ 计入会**首次必判慢** ✗（用户报障的原因之一 ✓）。
+   */
+  timings: Record<string, number | boolean>
 }
 
 export async function runEventNav(req: EventNavRequest): Promise<EventNavResult> {
