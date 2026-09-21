@@ -154,7 +154,13 @@ def _interleave_rejects(by_mode: Dict[str, List[dict]], cap: int) -> List[dict]:
 def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
     """成交价与"能不能成交"的判定 —— **主引擎与 batch_even 共用同一套口径**（避免分叉）。
 
-    返回 (price, can_buy, can_sell)：
+    返回 (price, can_buy, can_sell, PX)：
+      · `PX`（v1.20.37 新增）：**规范化后的成交价矩阵**（= `where(isfinite & >0, arr, nan)` ✓）。
+        ⚠ 为什么要把它暴露出来：主循环里"逐日盯市 + 三处再平衡求和"是**纯算术聚合** ✗，
+        却走了 `price(...)` **闭包调用**（`price` 实测被调 588 万次/轮 ✓ 其中 86% 来自这四处 ✓）
+        ⇒ 允许调用方**每日取一次行切片 `PX[i]`** 直接做数组运算 ✓（见 `run_backtest`
+        「逐日盯市」处注释 ✓）。`PX[i, c]` 与 `price(i, c)` 的**快路径逐位等价** ✓
+        （后者就是 `float(PX[i, c])` ✓ 无损转换 ✓）。
       · `price(i, c, kind=None)`：成交价（kind='open' 用开盘，否则收盘；非正/NaN ⇒ NaN）；
       · `can_buy(i, c)`：None 可买；否则返回拒绝原因码（suspended / limit_up / limit_up_open）；
       · `can_sell(i, c)`：镜像（limit_down / limit_down_open）。
@@ -223,7 +229,7 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
             return "limit_down_open"
         return None
 
-    return price, can_buy, can_sell
+    return price, can_buy, can_sell, PX
 
 
 def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
@@ -255,7 +261,12 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                             prep["LU"], prep["LD"])
     bk = _bucket_signals(signals, prep)
     n_row = len(cal)
-    _price, can_buy, can_sell = _limit_ctx(prep, px_kind, strict_limit)
+    # ★ v1.20.37：`PX` = 规范化成交价矩阵（见 `_limit_ctx` 说明 ✓）—— 供逐日聚合走数组 ✓
+    _price, can_buy, can_sell, PX = _limit_ctx(prep, px_kind, strict_limit)
+    # ★ v1.20.37：**日期字符串一次预生成** ✓ —— 明细/拒绝逐条 `str(cal[i].date())` 会触发
+    #   pandas `Timestamp` 装箱（实测 `_box_func`+3 层 `__getitem__` 合计 **11%** ✗）
+    #   ⇒ 改走 numpy 字符串数组 O(1) 取值 ✓（格式 `%Y-%m-%d` 与 `str(...date())` **逐字相同** ✓）。
+    _date_arr = np.asarray(cal.strftime("%Y-%m-%d"))
 
     out = BtResult(
         diag={"fill": fill, "cost": cost, "capital": capital, "hold_days": hold_days,
@@ -282,7 +293,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         sell_q: Dict[int, Tuple[int, str]] = {}       # 列号 → (决策日, 原因)
         trades: List[dict] = []
         rejects: List[dict] = []
-        nav_dates, nav_vals = [], []
+        nav_vals: List[float] = []
         n_refresh = n_defer_sell = 0
         fee_sum = 0.0
         wins = losses = 0
@@ -338,6 +349,10 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             #   （⚠ 不能每天都调：回调本身有开销，而本循环要跑数千天 ✓）
             if cancel_cb is not None and (i - i_start) % 20 == 0:
                 cancel_cb()
+            # ★ v1.20.37 性能：**当日成交价行切片**（纯算术聚合直接用 `_pxr[k]` ✓）——
+            #   实测 `price()` 闭包被调 **588 万次/轮**，其中 **86%** 来自
+            #   「逐日盯市」+「两处市值求和」这四处纯算术 ✗ ⇒ 全部改走数组 ✓。
+            _pxr = PX[i]
             # ---- 1) 到期/信号卖出 ----
             for c in list(sell_q.keys()):
                 dec, reason = sell_q[c]
@@ -397,7 +412,13 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                                 continue
                             _log_trade(i, c, 1, q, px, "buy_signal")
                     else:                            # event_even：只在成交当日把全体再平衡到等权
-                        mv = sum(sh[k] * _price(i, k) for k in list(sh) if np.isfinite(_price(i, k)))
+                        # ★ v1.20.37：改数组行切片（原 genexpr 里 `_price` 被调**两遍/项** ✗）；
+                        #   保持 `list(sh)` 原顺序 + `mv` 从 0.0 起 ⇒ 浮点结合序不变 ✓ 逐位等价 ✓
+                        mv = 0.0
+                        for k in list(sh):
+                            _v = _pxr[k]
+                            if np.isfinite(_v):
+                                mv += sh[k] * _v
                         n_tgt = len(sh) + len(ok)
                         tgt = (cash + mv) / max(1, n_tgt)
                         # ⚠⚠ 顺序必须是「先减仓腾现金 → 再买新信号 → 最后补低配」，否则：
@@ -431,7 +452,12 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                                 continue
                             _log_trade(i, c, 1, q, px, "buy_signal")
                         # ③ 补低配的老仓（先算新目标：新买入已计入 sh ⇒ tgt 用最新只数重算）
-                        mv = sum(sh[k] * _price(i, k) for k in list(sh) if np.isfinite(_price(i, k)))
+                        # ★ v1.20.37：同上（`_pxr` 行切片 + 原顺序 ✓ 逐位等价 ✓）
+                        mv = 0.0
+                        for k in list(sh):
+                            _v = _pxr[k]
+                            if np.isfinite(_v):
+                                mv += sh[k] * _v
                         tgt = (cash + mv) / max(1, len(sh))
                         for k in list(sh.keys()):
                             px = _price(i, k)
@@ -451,21 +477,39 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 if c not in sell_q and dsz.get(c, 0) >= max(0, hold_days - lag):
                     sell_q[c] = (i, "sell_expiry")
             # ---- 5) 逐日盯市 ----
-            equity = cash + sum(sh[k] * (_price(i, k) if np.isfinite(_price(i, k)) else 0.0)
-                                for k in sh)
+            # ★★ v1.20.37 性能（2026-09-21 cProfile 实测，工具 `ai_test/prof_nav_bt.py` ✓）：
+            #   这一行是**单点最大热点** —— tottime 5.457s + cumtime 7.809s / 36.115s = **21.6%** ✗
+            #   （`engine.py:454 <genexpr>` ✓）。三层浪费：
+            #     ① 每项都走 `_price(i, k)` **闭包调用** ✗（`price` 实测 588 万次/轮 ✓）；
+            #     ② 同一项把 `_price(i, k)` **算了两遍**（`np.isfinite()` 里又调一次 ✗）；
+            #     ③ genexpr 逐项 yield 的生成器开销 ✗。
+            #   ⇒ 改为「行切片 + 显式循环」✓，**逐位等价**：
+            #     · `_pxr[k]` 与 `_price(i, k)` 的快路径同为 `PX[i, k]` ✓（后者只多一次 `float()` ✓）；
+            #     · `mv` 从 `0.0` 起、按 `sh` **原迭代序**累加 ⇒ 与 `cash + sum(...)` 的浮点
+            #       结合序**完全一致** ✓；NaN 项按原样加 `0.0` ✓（不改变和 ✓）。
+            #     由 `tests/test_backtest_semantics.py`（冻结基准 ✓）逐位守门 ✓。
+            mv = 0.0
+            for k, _q in sh.items():
+                _v = _pxr[k]
+                mv += _q * _v if np.isfinite(_v) else 0.0
+            equity = cash + mv
             if cash < min_cash:
                 min_cash = cash
-            nav_dates.append(cal[i])
+            # ★ v1.20.37：`nav_dates` 去掉逐日 `cal[i]` **装箱** ✗（pandas `Timestamp`
+            #   构造实测占 11% ✓）—— 净值索引在轮次末尾用 `cal[i_start:n_row]` **切片** ✓
+            #   （每天必有且仅有一条 nav ✓ ⇒ 长度恒等 ✓）。
             nav_vals.append(equity / capital)
             for c in list(sh.keys()):
                 dsz[c] = dsz.get(c, 0) + 1
-        navs[mode] = pd.Series(nav_vals, index=pd.DatetimeIndex(nav_dates))
+        # ★ v1.20.37：索引直接用**日历切片**（每日必有一条 nav ✓ ⇒ 长度恒等 ✓），
+        #   省掉主循环里逐日 `cal[i]` 的 Timestamp 装箱 ✓
+        navs[mode] = pd.Series(nav_vals, index=cal[i_start:n_row])
         all_trades += trades
         # ⚠ v1.20.20：这里（**热循环之外** ✓）一次性把元组展开成 dict ⇒ 字段与原来逐位相同 ✓
         mode_rejects[mode] = [
-            {"date": str(cal[_i].date()), "code": codes[_c], "reason": _rs,
+            {"date": _date_arr[_i], "code": codes[_c], "reason": _rs,
              "text": REJECT_TEXT.get(_rs, _rs),
-             "signal_date": (str(cal[_dp].date()) if _dp is not None else None),
+             "signal_date": (_date_arr[_dp] if _dp is not None else None),
              "mode": mode}
             for (_i, _c, _rs, _dp) in rejects]
         closed = hold_n
@@ -527,7 +571,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             return t[1]
         _i, _c, _s, _q, _p, _r, _m = t
         _amt = _q * _p
-        return {"date": str(cal[_i].date()), "code": codes[_c],
+        return {"date": _date_arr[_i], "code": codes[_c],
                 "side": "买" if _s > 0 else "卖", "shares": int(_q),
                 "price": round(_p, 4), "amount": round(_amt, 2),
                 "fee": round(_amt * half, 2), "reason": _r, "mode": _m}
@@ -569,7 +613,7 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     cal, codes, col_of = prep["cal"], prep["codes"], prep["col_of"]
     if not codes:
         return BtResult(diag={"error": "信号标的不在行情数据里", "missing": prep["missing"][:20]})
-    _price, can_buy, can_sell = _limit_ctx(prep, px_kind, strict_limit)
+    _price, can_buy, can_sell, _PX = _limit_ctx(prep, px_kind, strict_limit)
     n_row = len(cal)
 
     bkt = (signals["bucket"].astype(str).fillna("") if "bucket" in signals.columns
