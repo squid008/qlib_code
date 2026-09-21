@@ -182,9 +182,10 @@ export default function EventStudyModal({
     } catch { /* 静默 ✓ */ }
   }, [sourceTaskId])
   const lastTickRef = useRef(0)
-  // 自动识别"大小公式"的阈值（秒）—— ⚠⚠ v1.20.38 起**判据换成后端回传的 `timings.backtest`** ✓
-  //   （= "改一次持仓周期就要重付"的那部分 ✓；**取价面板是一次性的**，命中 `_NAV_PANEL_CACHE`
-  //   之后不再付 ✓ ⇒ 不该计入 ✗）。
+  // 自动识别"大小公式"的阈值（秒）—— ⚠⚠ v1.20.38/1.20.39 起的判据 = 后端回传的
+  //   **"本次实际等待量"** ✓ = **未命中缓存的取价** + **未命中缓存的回测** + 基准 ✓
+  //   （⚠ v1.20.38 曾**只取回测段、把取价整个排除** ✗ ⇒ **首次打开**被判"快"、
+  //    而自动模式下**本就不渲染按钮** ✗ ⇒ 用户白等 20s 却看不到按钮 ✓ ⇒ 1.20.39 已修 ✓）。
   //   ⚠ 为什么不再用前端掐表（v1.20.11~v1.20.37 的做法 ✗）：用户 2026-09-21 报
   //   「k=5 五六秒就算好了，怎么还显示『重新计算』按钮？」—— 两个病根：
   //     ① 前端掐表把**取价面板（全A ≈12s）/网络/并发排队**都算进去 ✗ ⇒ 首次打开**必然**被判慢 ✗；
@@ -279,21 +280,30 @@ export default function EventStudyModal({
             lastOkKRef.current = navK        // 记下"最后一次真正算出结果的 k" ✓
             // ⚠⚠ v1.20.38（用户 2026-09-21）：「k=5 五六秒就算好了，怎么还会显示『重新计算』
             //   按钮？不应该隐藏掉、改周期自动算么？等下一次算 50~60 天发现慢再显示按钮」✓
-            //   —— 两条都改：
-            //   ① **判据 = 后端回传的回测段耗时** `timings.backtest` ✓（不再前端掐表 ✗）——
-            //      取价面板是一次性的（`_NAV_PANEL_CACHE` 命中后不再付 ✓）⇒ 不计入 ✓；
-            //   ② **双向更新**（原来只 `= true` 单向锁死 ✗）⇒ **每次算完都按本次 k 重判** ✓：
-            //      · 快 ⇒ `navSlow=false` ⇒ **按钮收起 + 恢复"改周期自动算"** ✓
-            //      · 慢 ⇒ `navSlow=true` ⇒ 按钮露出 + 转手工 ✓
-            //      ⇒ 于是「k=5 快速算完 ⇒ 自动；切到 k=60 实测慢 ⇒ 按钮再出现」正是用户要的 ✓。
-            //   `backtest_cached`（命中 `_NAV_BT_CACHE`，同一个 k 重复点 ✓）⇒ 视为 0 秒 ✓。
-            const _btRaw = (r.timings as Record<string, number | boolean> | undefined)?.backtest
-            const _btCached = Boolean(
-              (r.timings as Record<string, number | boolean> | undefined)?.backtest_cached)
-            const btSec = typeof _btRaw === 'number'
-              ? (_btCached ? 0 : _btRaw)
+            //   ⇒ 两条都改：① 判据换成**后端回传的耗时**（不再前端掐表 ✗）；
+            //     ② **双向更新**（原来只 `= true` 单向锁死 ✗）⇒ 每次算完按本次重判：
+            //        · 快 ⇒ `navSlow=false` ⇒ **按钮收起 + 恢复"改周期自动算"** ✓
+            //        · 慢 ⇒ `navSlow=true` ⇒ 按钮露出 + 转手工 ✓
+            // ⚠⚠⚠ v1.20.39（用户 2026-09-21 追问）：「刚点开事件研究时 60 天算得很慢，
+            //   但**没显示**重新计算按钮？初始这块是不是有问题？」⇒ **不是看错** ✓ ——
+            //   v1.20.38 的判据**只取 `timings.backtest`**，把**首次打开必须现付的取价面板
+            //   （全 A ≈12s ✓，一次性）整个排除** ✗ ⇒ 首次那次总等待 20s+ 却被判"快" ✗
+            //   ⇒ 进**自动模式** ⇒ 而**自动模式下本来就不渲染按钮** ✗ ⇒ 白等却没有按钮 ✗
+            //   —— 正是他报的现象 ✓（"初始这块"确实有问题 ✓）。
+            //   √ v1.20.39 判据 = **"这次实际让你等了多久"** = 未命中的取价 + 未命中的回测 + 基准 ✓
+            //     · 取价命中 `_NAV_PANEL_CACHE`（同会话再打开 ✓）⇒ 计 **0** ✓
+            //       （一次性成本不该让公式"永远判慢" ✗）；
+            //     · 回测命中 `_NAV_BT_CACHE`（同一个 k 重复点 ✓）⇒ 计 **0** ✓。
+            //   ⇒ 自洽：首次打开（付了取价）⇒ 判慢 ⇒ **露按钮** ✓；此后改 k 不再付取价 ⇒
+            //     回测若快 ⇒ **自动模式恢复、按钮收起** ✓ —— 正是用户描述的规则 ✓。
+            const _tm = r.timings as Record<string, number | boolean> | undefined
+            const _sec = (k: string) => (typeof _tm?.[k] === 'number' ? (_tm[k] as number) : 0)
+            const waitedSec = typeof _tm?.backtest === 'number'
+              ? (_tm?.prices_cached ? 0 : _sec('prices'))
+                + (_tm?.backtest_cached ? 0 : _sec('backtest'))
+                + _sec('benchmark')
               : (performance.now() - _t0) / 1000.0        // 兜底：后端没给就用前端耗时 ✓
-            const nowSlow = btSec > NAV_SLOW_S
+            const nowSlow = waitedSec > NAV_SLOW_S
             slowRef.current = nowSlow
             setNavSlow(nowSlow)
             setNavRes(r)
