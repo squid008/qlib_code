@@ -331,7 +331,13 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         band = float(rebal_band) if _band is None else float(_band)
         cash = float(capital)
         sh: Dict[int, int] = {}                       # 列号 → 股数
-        dsz: Dict[int, int] = {}                      # 列号 → 已持有交易日数
+        # ★★ v1.20.41（2b）：`dsz` 由 dict 改为 **numpy 定长数组** ✓（列号 → 已持有交易日数）——
+        #   dict 版在「每个持仓 × 每个交易日」上是 1 次 `get` + 1 次 `set` ✗
+        #   （cProfile：`dict.get` **44.6 万次/轮** ✗）；数组版把整段自增压成 `dsz[_ai] += 1` ✓。
+        #   ⚠ 语义等价 ✓：未持有处恒为 0 ⇒ `dsz.get(c, 0)` **就是** `dsz[c]` ✓；
+        #     但**清仓时必须显式置 0** ✗（原来是 `pop` ⇒ 不置 0 的话复买会继承旧持有天数 ✗）。
+        dsz = np.zeros(len(codes), dtype=np.int64)
+
         basis: Dict[int, float] = {}                  # 列号 → 持仓成本（用于胜率统计）
         buy_q: Dict[int, List[Tuple[int, int]]] = {}  # 成交日位置 → [(列号, 决策日), …]
         sell_q: Dict[int, Tuple[int, str]] = {}       # 列号 → (决策日, 原因)
@@ -367,7 +373,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 basis[c] = max(0.0, b - avg * qty)
                 if sh[c] <= 0:
                     sh.pop(c, None)
-                    dsz.pop(c, None)
+                    dsz[c] = 0                 # ★ 2b：数组版 ⇒ 显式清 0 ✓（等价于原 `pop` ✓）
                     basis.pop(c, None)
             # ⚠⚠ v1.20.7 性能（2026-09-18 cProfile 实测）：**逐笔明细构造占总耗时约 26%** ✗
             #   （`str(cal[i].date())` 触发 pandas `Timestamp` 装箱 0.185s + 4 个 `round()` 0.128s ✓，
@@ -385,6 +391,33 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             #     `for mode_spec` 轮次结束后**一次性做** ✓（那里不在热路径 ✓）
             #   ⇒ 语义逐位相同（末尾生成的正是原来那些字段 ✓）。
             rejects.append((i, c, reason, decision_pos))
+
+        _EMPTY_I = np.empty(0, dtype=np.int64)
+
+        def _act_views(pxr):
+            """当日**活跃持仓的保序视图** → `(列索引数组, 列索引列表, 股数列表, 价格列表)` ✓。
+
+            ★★ v1.20.41（2b）：把「遍历 dict + 逐项 `_pxr[k]` + `np.isfinite`」✗ 换成
+              **一次 C 层转换** ✓（`np.fromiter` / `ndarray.take` / `list`）——
+              这是本引擎**最大的内联热点**（`run_backtest` 自身字节码占 **61.6%** ✗）的主要来源 ✓。
+
+            契约（三条都必须守住 ✗）：
+              · **顺序 = `sh` 的插入序** ✓ —— `np.fromiter` 走 dict 迭代器，顺序不变 ✓
+                （`event_even` 的 ①减仓 → ②买新 → ③补低配**都按迭代序执行**，
+                 顺序会改变现金与成交结果 ✗）；
+              · 价格转成**原生 `float`** ✓ ⇒ 后续乘加是纯 Python float 运算 ✓，
+                与原 `sh[k] * float(PX[i, k])` **逐位相同** ✓；
+              · NaN 判定改用 `v == v` ✓ —— `PX` 已保证「非正 / 非有限 ⇒ NaN」 ✓
+                ⇒ 与 `np.isfinite(v)` **完全等价** ✓，但**没有 numpy 调用开销** ✓
+                （实测内联循环里 `np.isfinite` 是隐形大头 ✗）。
+            """
+            _n = len(sh)
+            if not _n:
+                return _EMPTY_I, [], [], []
+            _ai = np.fromiter(sh.keys(), dtype=np.int64, count=_n)
+            return (_ai, _ai.tolist(),
+                    np.fromiter(sh.values(), dtype=np.int64, count=_n).tolist(),
+                    pxr.take(_ai).tolist())
 
         i_start = min([max(0, min(bk["buys"], default=0) - 1)] +
                       [max(0, min(bk["exits"], default=0) - 1)] + [0])
@@ -407,11 +440,11 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     n_defer_sell += 1
                     _reject(i, c, bad, dec)
                     continue
-                px = _price(i, c)
-                if not np.isfinite(px):
+                px = float(_pxr[c])            # ★ 2b：闭包 ⇒ 行切片（逐位相同 ✓）
+                if px != px:                   # ★ 2b：`not np.isfinite(px)` ⟺ `px != px` ✓
                     _reject(i, c, "no_price", dec)
                     continue
-                hold_sum += dsz.get(c, 0)
+                hold_sum += dsz[c]             # ★ 2b：数组版（缺失恒 0 ✓ 等价于 `.get(c,0)` ✓）
                 hold_n += 1
                 _log_trade(i, c, -1, sh[c], px, reason)
                 sell_q.pop(c, None)
@@ -435,7 +468,8 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     if bad:
                         _reject(i, c, bad, dec)
                         continue
-                    if not np.isfinite(_price(i, c)):
+                    _pc = float(_pxr[c])            # ★ 2b：闭包 ⇒ 行切片 + `!=` 判 NaN ✓
+                    if _pc != _pc:
                         _reject(i, c, "no_price", dec)
                         continue
                     if c in sh:                     # 排队期间已被别的信号买进/刷新
@@ -459,9 +493,9 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         # ★ v1.20.37：改数组行切片（原 genexpr 里 `_price` 被调**两遍/项** ✗）；
                         #   保持 `list(sh)` 原顺序 + `mv` 从 0.0 起 ⇒ 浮点结合序不变 ✓ 逐位等价 ✓
                         mv = 0.0
-                        for k in list(sh):
-                            _v = _pxr[k]
-                            if np.isfinite(_v):
+                        for k in sh:             # ★ 2b：`_v == _v` 替代 `np.isfinite(_v)` ✓
+                            _v = float(_pxr[k])
+                            if _v == _v:
                                 mv += sh[k] * _v
                         n_tgt = len(sh) + len(ok)
                         tgt = (cash + mv) / max(1, n_tgt)
@@ -487,7 +521,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         # ① 减仓超配（腾出现金给新信号）
                         for k in list(sh.keys()):
                             px = float(_pxr[k])
-                            if not np.isfinite(px) or k in _okc:
+                            if px != px or k in _okc:     # ★ 2b：`!=` 判 NaN（等价更快 ✓）
                                 continue
                             dlt = sh[k] * px - tgt
                             if dlt > _gap_bt and dlt > px * lot and can_sell(i, k) is None:
@@ -514,14 +548,14 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         # ★ v1.20.37：同上（`_pxr` 行切片 + 原顺序 ✓ 逐位等价 ✓）
                         mv = 0.0
                         for k in sh:                 # ★ 2a：本循环不改 `sh` ⇒ 无需 list() ✓
-                            _v = _pxr[k]
-                            if np.isfinite(_v):
+                            _v = float(_pxr[k])      # ★ 2b：原生 float + `==` 判 NaN ✓
+                            if _v == _v:
                                 mv += sh[k] * _v
                         tgt = (cash + mv) / max(1, len(sh))
                         _gap_bt = band * tgt         # ★ 2a：`tgt` 已重算 ⇒ 死区同步重算 ✓
                         for k in list(sh.keys()):
                             px = float(_pxr[k])      # ★ 2a：闭包调用 ⇒ 行切片（逐位相同 ✓）
-                            if not np.isfinite(px):
+                            if px != px:             # ★ 2b：`!=` 判 NaN（等价更快 ✓）
                                 continue
                             dlt = tgt - sh[k] * px
                             if dlt > _gap_bt and dlt > px * lot and can_buy(i, k) is None:
@@ -533,11 +567,26 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             #   若仍写 `days >= N` 就会持有 N+1 个交易日（单测 test_basic_buy_hold_sell_and_cost
             #   抓到）。`t_close`（lag=0）不变 ⇒ 两种口径的**实际持有都正好 N 个交易日**，
             #   与事件研究「T+1 买入、T+1+N 卖出」一致。
-            # ★ v1.20.40（2a）：本循环**只改 `sell_q`**（不动 `sh` ✓）⇒ 直接迭代 `sh` ✓
-            #   —— 原来 `list(sh.keys())` **每个交易日都白复制一次持仓列表** ✗
-            #   （4 处这种循环 × 2732 个日-方案 ✓）；阈值已外提 ✓
+            # ★★ v1.20.41（2b）：**向量化「该不该挂到期卖单」** ✓ —— 原为每个持仓逐项
+            #   `c not in sell_q and dsz.get(c, 0) >= thr` ✗ ⇒ 先取好**活跃持仓的保序视图** ✓，
+            #   再用 `dsz[_ai] >= thr` + `np.isin(_ai, sell_q.keys())` **一次筛出** ✓，
+            #   **只有真正到期的**才进 Python 循环 ✓（通常远少于持仓数 ✓）。
+            #   ⚠ 顺序等价 ✓：`_ai` 按 `sh` **插入序** ✓、布尔掩码与 `isin` 都**保序** ✓
+            #     ⇒ 写进 `sell_q` 的**次序与旧实现逐条相同** ✓
+            #     （`sell_q` 的顺序会影响后续成交顺序 ✗ ⇒ 这一步不能省 ✓）。
+            #   ⚠ 这一份视图**「逐日盯市」继续复用** ✓（`sh` 在此期间不变 ✓）。
+            _ai, _ak, _aq, _ap = _act_views(_pxr)
+            # ⚠⚠⚠ v1.20.41 **实测教训（别再犯 ✗）**：这里**曾**写成
+            #   `dsz[_ai] >= thr` + `np.isin(_ai, sell_q.keys())` 的"向量化筛选" ✗ ——
+            #   实测 `numpy._in1d` 单独吃掉 **11.9%（1.99 s / 20 轮）** ✗✗，
+            #   比原来的 Python 循环**慢得多** ✗。原因：**持仓规模只有几十~几百** ✓，
+            #   `np.isin` 的 O(n log m) 常数 + 临时数组分配，远大于"几十次 dict 成员判定" ✗。
+            #   ⇒ **该处退回普通循环** ✓。
+            #   ★ 结论（写死在这里）：**numpy 只在大数组上才划算** ✗ ——
+            #     几千次的"小集合逐项 Python 判定"反而更快 ✓；本文件里凡是 n≈持仓数 的地方，
+            #     **不要**上 `np.isin`/`np.interp` 这类"每调用一次就建临时数组"的 API ✗。
             for c in sh:
-                if c not in sell_q and dsz.get(c, 0) >= _expiry_thr:
+                if c not in sell_q and dsz[c] >= _expiry_thr:
                     sell_q[c] = (i, "sell_expiry")
             # ---- 5) 逐日盯市 ----
             # ★★ v1.20.37 性能（2026-09-21 cProfile 实测，工具 `ai_test/prof_nav_bt.py` ✓）：
@@ -551,10 +600,13 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             #     · `mv` 从 `0.0` 起、按 `sh` **原迭代序**累加 ⇒ 与 `cash + sum(...)` 的浮点
             #       结合序**完全一致** ✓；NaN 项按原样加 `0.0` ✓（不改变和 ✓）。
             #     由 `tests/test_backtest_semantics.py`（冻结基准 ✓）逐位守门 ✓。
+            # ★★ 2b：直接复用上面那份**保序视图** ✓（全是 Python 原生 float ⇒ 原生乘加 ✓，
+            #   没有 numpy 标量运算、也没有 `np.isfinite` 调用 ✗）——
+            #   求和**按 `sh` 原插入序**、`mv` 从 `0.0` 起 ✓
+            #   ⇒ 与旧实现 `cash + sum(...)` 的浮点结合序**逐位相同** ✓。
             mv = 0.0
-            for k, _q in sh.items():
-                _v = _pxr[k]
-                mv += _q * _v if np.isfinite(_v) else 0.0
+            for _q, _v in zip(_aq, _ap):
+                mv += _q * _v if _v == _v else 0.0
             equity = cash + mv
             if cash < min_cash:
                 min_cash = cash
@@ -562,9 +614,10 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             #   构造实测占 11% ✓）—— 净值索引在轮次末尾用 `cal[i_start:n_row]` **切片** ✓
             #   （每天必有且仅有一条 nav ✓ ⇒ 长度恒等 ✓）。
             nav_vals.append(equity / capital)
-            # ★ v1.20.40（2a）：同上 —— 本循环**只改 `dsz`**（不动 `sh` ✓）⇒ 不必 `list()` ✓
-            for c in sh:
-                dsz[c] = dsz.get(c, 0) + 1
+            # ★★ 2b：整段「逐股自增」压成**一次花式索引** ✓
+            #   （整数加法 ⇒ 与顺序无关 ⇒ 逐位等价 ✓）
+            if len(_ai):
+                dsz[_ai] += 1
         # ★ v1.20.37：索引直接用**日历切片**（每日必有一条 nav ✓ ⇒ 长度恒等 ✓），
         #   省掉主循环里逐日 `cal[i]` 的 Timestamp 装箱 ✓
         navs[mode] = pd.Series(nav_vals, index=cal[i_start:n_row])
