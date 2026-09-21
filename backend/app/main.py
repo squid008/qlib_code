@@ -51,12 +51,24 @@ def create_app() -> FastAPI:
     try:
         from .factors.chip_store import chip_meta_state
         chip_meta = chip_meta_state()
+        # ⚠ v1.20.45：这条**刻意写成 ASCII** ✗ —— 本项目的 logging 流处理器在 Windows 下是
+        #   **GBK** ✗，中文消息会触发 `UnicodeEncodeError`，结果只落到 `workdir/backend_err.log`
+        #   里的 `Message: '[chip-meta] %s' Arguments: ...` ✗（等于**没有提示** ✓，实测踩到 ✓）。
+        #   ⇒ 详细的中文提示一律走 **`/api/version`** 的 `chip_meta.message` ✓
+        #     （JSON 是 UTF-8 ✓，已实测可读 ✓）。
+        _st = str(chip_meta.get("state", "?"))
+        _sm = str(chip_meta.get("expected", "?"))
+        _nc = chip_meta.get("n_chip_cost_95", "?")
+        _msg = "[chip-meta] state=%s semantics=%s n_chip=%s" % (_st, _sm, _nc)
         if chip_meta.get("ok"):
-            logger.info("[chip-meta] %s", chip_meta.get("message"))
+            logger.info(_msg)
         else:
-            logger.warning("[chip-meta] %s", chip_meta.get("message"))
+            logger.warning("%s -- RE-MATERIALIZE REQUIRED: run"
+                           " `python backend/tools/materialize_chip.py 400 --overwrite`"
+                           " then `python backend/tools/verify_materialized.py`"
+                           " (see GET /api/version -> chip_meta.message)", _msg)
     except Exception as _e:                                # noqa: BLE001
-        logger.warning("[chip-meta] 物化口径戳检查失败：%r", _e)
+        logger.warning("[chip-meta] check failed: %r", _e)
 
     # 路由
     app.include_router(backtest.router)
