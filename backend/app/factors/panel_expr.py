@@ -959,7 +959,14 @@ def chip_turn_of(ev) -> "pd.Series":
         #   实测该字段 `max=43.91` ✗ ⇒ 判为百分数 ✓；将来数据源若改成小数 ⇒ `max ≤ 1` ⇒ **不缩放** ✓
         #   ⇒ **两个方向都自洽** ✓（不会因为换源而误除 ✓）。
         _tv = _turn_field.to_numpy(dtype=float)
-        if np.isfinite(_tv).any() and float(np.nanmax(_tv)) > 1.0:
+        _mx = float(np.nanmax(_tv)) if np.isfinite(_tv).any() else float("nan")
+        # ★ v1.20.45：把「本口径用了什么」记在评测器上 ✓，物化时写进 `_chip_meta.json` ✓
+        #   （这样"这次物化到底是按什么单位算的"有**留痕** ✗ ⇒ 换机器/pull 后能自查 ✓）
+        ev._chip_turn_meta = {"mode": "turn", "scale": 100.0 if _mx > 1.0 else 1.0,
+                              "turn_max": _mx,
+                              "turn_median": (float(np.nanmedian(_tv))
+                                              if np.isfinite(_tv).any() else float("nan"))}
+        if np.isfinite(_mx) and _mx > 1.0:
             return (_turn_field / 100.0).where(_turn_field > 0)
         return _turn_field.where(_turn_field > 0)
     _vol_sh = _vol
@@ -981,6 +988,11 @@ def chip_turn_of(ev) -> "pd.Series":
         except Exception:                         # noqa: BLE001 —— 分组失败就用原值（退化为池级行为 ✓）
             _rs = _ratio
         _vol_sh = (_vol * 100.0).where(_rs < 0.1, _vol)   # 判为"手"⇒×100 ✓，否则原样（"股" ✓）
+        try:
+            ev._chip_turn_meta = {"mode": "proxy",
+                                  "lots_ratio": float((_rs < 0.1).to_numpy().mean())}
+        except Exception:                         # noqa: BLE001
+            ev._chip_turn_meta = {"mode": "proxy"}
     except Exception:                             # noqa: BLE001 —— 无 amount 就按"股"处理
         pass
     return (_vol_sh * _px_raw / _mc).where(_mc > 0)

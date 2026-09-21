@@ -131,20 +131,35 @@ pip install pyqlib
 | `preclose / preopen / prehigh / prelow / prevwap` | **`forward`（前复权）失效** ⇒ 价格量纲因子被按**后复权价**排序（LLT K=20 年化 +9.03% ↔ 米筐 −5.24%，见 change_log `[1.19.96]`） |
 | `chip_cost_{5,30,75,95}` / `chip_win_{close,high,low}` | 用 `COST()/WINNER()` 的公式（过顶 / 黏合强突破 / 蹦极新生 …）**静默返回全 NaN**（`panel_expr._chip_or_bin` 优先读 bin、**不检查文件是否存在**） |
 
-生成与核对（脚本在 **`backend/tools/`**，与 `dump_moneyflow.py` 同处；cwd 任意；实测耗时：`pre*` 约 8 分钟、`chip_*` 约 9 分钟）：
+生成与核对（脚本在 **`backend/tools/`**，与 `dump_moneyflow.py` 同处；cwd 任意；实测耗时：`pre*` 约 8 分钟、`chip_*` 约 6~9 分钟）：
 
 ```bash
-python backend/tools/build_preclose.py            # 前复权：5 字段 × ~6141 只
-python backend/tools/materialize_chip.py 400      # 筹码：7 字段 × ~6141 只（分批；可中断续跑）
-python backend/tools/verify_materialized.py       # 核对覆盖率/同轴/NaN/数值；退出码 0 才算好
+python backend/tools/build_preclose.py                  # 前复权：5 字段 × ~6141 只
+python backend/tools/materialize_chip.py 400            # 筹码：7 字段 × ~6141 只（分批；可中断续跑）
+python backend/tools/materialize_chip.py 400 --overwrite # ★ 全池**重算**（口径变过 / 修了口径之后必须用）
+python backend/tools/verify_materialized.py             # 核对覆盖率/同轴/NaN/数值/**口径戳/展开比**；退出码 0 才算好
 ```
 
-- 两者默认**只补缺失**（`build_preclose.py --overwrite` 可全量重写；`materialize_chip.py` 靠 `overwrite=False` 天然断点续跑）；
+- 两者默认**只补缺失** ⇒ ⚠⚠ **`materialize_chip.py` 不加 `--overwrite` 时，对"已有 `chip_cost_95` 的股票
+  一律跳过"** ✗ —— 所以**修了筹码口径之后直接跑它等于什么都没做** ✗（会打印"无需物化（都已有）" ✓）。
+  这是最容易漏的一步 ✗（v1.20.44 修换手率单位时就踩过 ✓）；
 - ⚠ **行情数据更新后必须重跑 `build_preclose.py`**（`factor_last` 变 ⇒ 整条历史价缩放）；
 - ⚠ `materialize_chip.py` **必须分批**（默认 400 只/批）：`chip_store.materialize` 一次吃全池会构造
   "全池一次性面板" ⇒ 实测 **20 分钟 0 个文件、CPU 仅 ~22% 单核、ETA 不可估**（2026-09-19 实测教训）；
 - 口径：`pre* = 源字段 / factor_last`（逐位；`factor_last` = `factor.day.bin` 末值，五字段共用 ⇒ 不会 `prehigh < prelow`）；
   `chip_*` 必须与 `$close` **同轴**（首值+长度一致，否则多股票一起加载会报 `identically-labeled`，见 change_log `[1.19.91]/[1.19.92]`）。
+
+> ★★ **v1.20.45 起：怎么判断"这台机器的 `chip_*` 要不要重物化"**（同事 `git pull` 后**先做这件** ✗）：
+> 1. `curl http://127.0.0.1:8001/api/version` ⇒ 看 **`chip_meta.ok`** ✓
+>    （`false` ⇒ 本机 bin 是**别的口径**物化的、或**压根没物化** ✗ ⇒ 立刻重物化 ✓）；
+> 2. 后端**启动日志**里也会有一条 `[chip-meta] …` ✓（不一致时是 **WARNING** ✗）；
+> 3. `python backend/tools/verify_materialized.py` ⇒ 退出码 `0` 才算好 ✓（它同时检查
+>    **物化口径戳** + **筹码展开比 `COST(95)/COST(5)`** ✓）。
+> ⚠ 为什么要这么绕：**旧口径的 bin 是"静默错误"** ✗ —— 不报错、数值看着合理、连
+> `COST(5) ≤ COST(95)` 单调都成立 ✗ ⇒ 只能靠"戳"（`features/_chip_meta.json` ✓）和
+> **跨度体检**发现 ✓。实测 2026-09-21：换手率被放大 100 倍时，四档塌缩成
+> `1.6 / 1.7 / 1.7 / 1.7` ✗，而**展开比从 1.58 掉到 1.015** ✗ 才看得出来 ✓。
+> 期望值（v1.20.44 重物化后 360 只实测 ✓）：有 `$turn` 组 p50 ≈ **1.58**、反推组 ≈ **2.41**。
 
 ---
 

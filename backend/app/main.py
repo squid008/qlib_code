@@ -41,6 +41,23 @@ def create_app() -> FastAPI:
     # 确保工作目录存在
     os.makedirs(config.WORK_DIR, exist_ok=True)
 
+    # ★★ v1.20.45：启动即检查「`chip_*` 物化口径戳」✓ —— 让 **pull 了新代码却没重物化** 一眼可见 ✗
+    #   为什么必须做：旧口径物化出来的 bin 是**静默偏差** ✗ —— 不报错、数值看着合理、
+    #   连"`COST(5) ≤ COST(95)` 单调"都成立 ✗（塌缩后照样单调 ✓）⇒ 只能靠"戳"发现 ✓。
+    #   典型场景：同事 `git pull` 拿到 v1.20.44 的换手率修正 ✓ 但没重物化 ✗
+    #   ⇒ 他那边 `chip_*` 依旧是**放大 100 倍**换手率算出来的 ✗，且**毫无提示** ✗。
+    #   ⇒ 这里 WARNING 一条 ✓，并把状态挂在 `/api/version` 上 ✓（前端/脚本/AI 都能直接看到 ✓）。
+    chip_meta: dict = {}
+    try:
+        from .factors.chip_store import chip_meta_state
+        chip_meta = chip_meta_state()
+        if chip_meta.get("ok"):
+            logger.info("[chip-meta] %s", chip_meta.get("message"))
+        else:
+            logger.warning("[chip-meta] %s", chip_meta.get("message"))
+    except Exception as _e:                                # noqa: BLE001
+        logger.warning("[chip-meta] 物化口径戳检查失败：%r", _e)
+
     # 路由
     app.include_router(backtest.router)
     app.include_router(data.router)
@@ -57,8 +74,14 @@ def create_app() -> FastAPI:
 
     @app.get("/api/version", summary="版本号")
     def version():
-        """返回当前版本号（语义化版本）。前端页面展示用。"""
-        return {"version": __version__}
+        """返回当前版本号 + `chip_*` 物化口径状态。
+
+        ⚠ v1.20.45：**换机器 / `git pull` 新代码之后，先看这里** ✓ ——
+        `chip_meta.ok == false` ⇒ 本机 `chip_*` 是**别的口径**物化的（或压根没物化 ✗）
+        ⇒ 必须跑 `python backend/tools/materialize_chip.py 400 --overwrite` ✓，
+        再 `python backend/tools/verify_materialized.py` 核对 ✓。
+        """
+        return {"version": __version__, "chip_meta": chip_meta}
 
     # 参数校验错误：返回友好信息，不暴露堆栈
     @app.exception_handler(RequestValidationError)

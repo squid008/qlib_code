@@ -13,7 +13,13 @@
   5. 覆盖率 ≥ 有 `close` 的股票数；
   6. **同轴**：与 `close.day.bin` 首值+长度一致（多股票一起加载才不会报
      `identically-labeled` —— v1.19.91/92 的坑）；
-  7. 抽样数值合理：`cost5 ≤ cost95`、`WINNER ∈ [0,1]`、非全 NaN。
+  7. 抽样数值合理：`cost5 ≤ cost95`、`WINNER ∈ [0,1]`、非全 NaN；
+  8. ★ v1.20.45 **物化口径戳**（`features/_chip_meta.json` 里的 `chip_semantics`）是否
+     与当前代码一致 ✓ —— **换机器 / `git pull` 新代码后最容易漏的一步** ✗；
+  9. ★ v1.20.45 **筹码展开比** `COST(95)/COST(5)`（跨度体检 ✓）——
+     ⚠ 第 7 项的单调检查**抓不到**"筹码塌缩"✗（塌缩后照样单调 ✓），
+     2026-09-21「换手率放大 100 倍」就是这种**静默**错误 ✗，只有看跨度才发现 ✓。
+     期望：有 `$turn` 组 p50 ≈1.58、反推组 ≈2.41；`p50 < 1.15` 判为塌缩 ✗。
 
 用法（cwd 任意）：python backend/tools/verify_materialized.py [抽样数，默认 200]
 退出码：0 = 全过；1 = 有问题。
@@ -70,8 +76,21 @@ def main() -> int:
         print("  ⚠ chip_* 不齐（缺 %d 只）⇒ 跑 tools/materialize_chip.py" % (len(has_close) - chip_cov))
         bad += 1
 
+    # ---- ★ v1.20.45 物化口径戳（换机器 / pull 新代码后最容易漏的一步 ✗）----
+    #   旧口径物化出来的 bin **完全看不出异常** ✗（数值合理、四档单调 ✓）⇒ 必须靠戳 ✓
+    try:
+        from app.factors.chip_store import chip_meta_state
+        st = chip_meta_state()
+        print("物化口径戳：%s" % st.get("message"))
+        if not st.get("ok"):
+            bad += 1
+    except Exception as e:                                # noqa: BLE001
+        print("  ⚠ 物化口径戳检查失败：%r" % (e,))
+        bad += 1
+
     # ---- 抽样逐位核对 ----
     n_axis = n_nan = n_val = n_order = 0
+    spreads = []                                          # ★ v1.20.45：COST95/COST5 跨度 ✓
     for inst in samp:
         d = os.path.join(fdir, inst)
         _fi, fv = read_bin(os.path.join(d, "factor.day.bin"))
@@ -106,10 +125,34 @@ def main() -> int:
             mw = np.isfinite(w)
             if mw.any() and (np.any(w[mw] < -1e-6) or np.any(w[mw] > 1 + 1e-6)):
                 n_order += 1
+        # ★ v1.20.45：最后一个有效日的 `COST(95)/COST(5)`（筹码分布的**跨度** ✓）
+        m2 = np.isfinite(c5) & np.isfinite(c95) & (c5 > 0)
+        if m2.any():
+            j = int(np.flatnonzero(m2)[-1])
+            spreads.append(float(c95[j] / c5[j]))
 
     print("抽样 %d 只：轴不符 %d | NaN 位置不符 %d | 值不符 %d | 筹码数值异常 %d"
           % (len(samp), n_axis, n_nan, n_val, n_order))
     bad += (n_axis + n_nan + n_val + n_order)
+
+    # ---- ★★ v1.20.45「展开比」体检：抓**筹码塌缩**（口径错了的**静默**症状 ✗）----
+    #   为什么必须加：`cost5 ≤ cost95` 这类单调检查**抓不到塌缩** ✗（塌缩后依然单调 ✓）——
+    #   2026-09-21「换手率放大 100 倍」就是这种 ✗：数值全"合理"、只有**跨度**塌成 ≈1.0 ✗。
+    #   期望值（v1.20.44 重物化后 360 只实测 ✓）：有 `$turn` 组 p50 ≈1.58、反推组 ≈2.41 ✓。
+    if spreads:
+        a = np.asarray(spreads)
+        p25, p50, p90 = (float(x) for x in np.percentile(a, [25, 50, 90]))
+        print("筹码展开比 COST95/COST5：n=%d | p25 %.3f | **p50 %.3f** | p90 %.3f | <1.05 占比 %.1f%%"
+              % (a.size, p25, p50, p90, float((a < 1.05).mean() * 100)))
+        if p50 < 1.15:
+            print("  ⚠ 展开比中位数 %.3f **偏低** ⇒ 筹码很可能**塌缩** ✗"
+                  "（换手率口径偏大 / bin 是旧口径 ✗）" % p50)
+            print("     ⇒ 期望：有 turn 组 ≈1.58、反推组 ≈2.41（2026-09-21 实测 ✓）"
+                  "；修法：`materialize_chip.py 400 --overwrite` ✓")
+            bad += 1
+    else:
+        print("  ⚠ 无法计算筹码展开比（有效样本不足）⇒ 无法排除塌缩 ✗")
+        bad += 1
 
     print("结论：%s" % ("✅ 物化数据完整且一致" if bad == 0 else "❌ 有问题（见上）"))
     return 0 if bad == 0 else 1

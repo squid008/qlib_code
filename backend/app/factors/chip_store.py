@@ -19,10 +19,21 @@
 - 与面板派生字段**同一份计算**（直接复用它：`PanelEvaluator.field("$chip_…")`）⇒ 两条路数值一致 ✓；
 - `read_start`（预热起点）可以早于 `start_time`：筹码是**递推**状态，起点越早越准
   （落盘只覆盖 `[start_time, end_time]`，但状态从 `read_start` 起算）。
-- **只在文件不存在时写入**（不覆盖任何既有字段；`chip_*` 是本项目自造名，安全）。
+- **默认只在文件不存在时写入** ✓；`overwrite=True`（`materialize_chip.py --overwrite`）⇒
+  **全池重算** ✓（★ v1.20.44 起支持 —— 修了筹码口径后**必须**这样重跑一次 ✗，
+  否则"没有 `chip_cost_95` 才处理"的过滤会让它**什么都不做** ✗，慎漏 ✓）。
+- ★★ v1.20.45 **物化口径语义戳**（`_chip_meta.json` + `CHIP_SEMANTICS` ✓）：筹码口径
+  （换手率单位 / 衰减 / 网格 / 预热 ✗）**一改就必须重算 bin** ✗，而"拿旧口径物化的 bin"
+  是**静默错误** ✗（数值看着合理，只是分布塌缩/偏移 ✗ —— 2026-09-21 那次"换手率放大 100 倍"
+  就是这种 ✗，且**四档依然单调** ✗，常规检查查不出 ✓）。⇒ 物化时写戳 ✓、加载/启动时比对 ✓
+  ⇒ 一旦不一致就**响亮报错** ✓（见 `chip_meta_state()`，`/api/version` 与
+  `tools/verify_materialized.py` 都会报 ✓）。
 """
 from __future__ import annotations
 
+import json
+import os
+import time
 from typing import Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
@@ -33,6 +44,92 @@ from .panel_expr import _CHIP_BASE_FIELDS, PanelEvaluator, _calendar, chip_turn_
 # 默认物化清单（覆盖用户公式用到的档位；要更多档位加进这个元组即可）
 DEFAULT_FIELDS = ("chip_cost_5", "chip_cost_30", "chip_cost_75", "chip_cost_95",
                   "chip_win_close", "chip_win_high", "chip_win_low")
+
+# ★★ v1.20.45：**物化口径语义版本** —— 只要"筹码怎么算"变了就必须**递增** ✗ 并重跑物化 ✓。
+#   语义清单（改任一项都要递增 + 重物化 ✗）：
+#     · 换手率单位/来源（`chip_turn_of` 的 `/100`、手/股校准 ✓）
+#     · `chip_run` 的网格 / 衰减 / 峰值注入 / `turn_unit` 判据 ✓
+#     · 预热窗口 `read_start` ✓
+#   历史：`1.20.44` = 换手率单位修正（`turn` 百分数 `/100` ✓ + auto 判据 `max>1` ✓）
+#         + 反推路径逐股手/股校准 ✓。**此前的任何物化都视为过期** ✗（没有戳 = 过期 ✓）。
+CHIP_SEMANTICS = "1.20.44"
+CHIP_META_NAME = "_chip_meta.json"
+
+
+def chip_meta_path() -> str:
+    from ..config import QLIB_PROVIDER_URI
+    return str(QLIB_PROVIDER_URI).rstrip("/\\") + "/features/" + CHIP_META_NAME
+
+
+def write_chip_meta(payload: Dict) -> None:
+    """写物化口径戳（物化结束时调用 ✓）。失败不抛（只影响"可发现性" ✗，不影响数据 ✓）。"""
+    try:
+        p = chip_meta_path()
+        payload = dict(payload or {})
+        payload["chip_semantics"] = CHIP_SEMANTICS
+        payload["written_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+    except Exception:                                     # noqa: BLE001
+        pass
+
+
+def chip_meta_state() -> Dict:
+    """`chip_*` 物化戳是否与当前代码口径一致 ✓ —— **给"换机器 / 拉代码"用** ✓。
+
+    返回 `{ok, state, message, ...}`：
+      · `state="ok"`      ⇒ 物化口径与代码一致 ✓；
+      · `state="missing"` ⇒ **没有戳** ✗ ⇒ 要么没物化过、要么戳是 v1.20.45 之前的老版本 ✓
+        ⇒ **必须跑** `python backend/tools/materialize_chip.py 400 --overwrite` ✗；
+      · `state="stale"`   ⇒ 戳在、但口径版本不同 ✗ ⇒ 同样必须重物化 ✓。
+    ⚠ 为什么值得这么麻烦：旧口径的 bin **不会报错、也查不出异常** ✗（分布塌缩但单调 ✓）
+      ⇒ 只能靠"戳"来发现 ✓（另有 `/verify_materialized.py` 的**展开比体检**做经验兜底 ✓）。
+    """
+    import numpy as _np
+    info: Dict = {"ok": False, "state": "missing", "expected": CHIP_SEMANTICS,
+                  "path": "", "message": ""}
+    try:
+        from ..config import QLIB_PROVIDER_URI
+        fdir = str(QLIB_PROVIDER_URI).rstrip("/\\") + "/features"
+        info["path"] = fdir + "/" + CHIP_META_NAME
+        n_chip = 0
+        try:                                              # 覆盖度（顺带报出来 ✓）
+            for n in os.listdir(fdir):
+                if os.path.exists(os.path.join(fdir, n, "chip_cost_95.day.bin")):
+                    n_chip += 1
+        except Exception:                                 # noqa: BLE001
+            pass
+        info["n_chip_cost_95"] = n_chip
+        p = chip_meta_path()
+        if not os.path.exists(p):
+            info["message"] = (
+                "⚠ chip_* 物化戳缺失（%s）⇒ **无法确认筹码是用当前口径物化的** ✗。"
+                "若是 pull 了新代码/换了机器，必须重物化一次："
+                "`python backend/tools/materialize_chip.py 400 --overwrite`，"
+                "再跑 `python backend/tools/verify_materialized.py` 核对 ✓。"
+                % (CHIP_META_NAME,))
+            return info
+        with open(p, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        info["meta"] = meta
+        got = str(meta.get("chip_semantics", "") or "")
+        if got != CHIP_SEMANTICS:
+            info["state"] = "stale"
+            info["message"] = (
+                "⚠ chip_* 物化口径过期 ✗：bin 是 `%s` 物化的，当前代码口径是 `%s` "
+                "⇒ 筹码数值与公式口径**不一致**（静默偏差 ✗，不报错 ✓）"
+                "⇒ 必须重跑：`python backend/tools/materialize_chip.py 400 --overwrite` ✓。"
+                % (got or "<空>", CHIP_SEMANTICS))
+            return info
+        info["ok"] = True
+        info["state"] = "ok"
+        info["message"] = ("chip_* 物化口径与代码一致 ✓（%s；覆盖 %d 只）"
+                           % (CHIP_SEMANTICS, n_chip))
+        return info
+    except Exception as e:                                # noqa: BLE001
+        info["message"] = "chip_* 物化戳检查失败：%r" % (e,)
+        return info
 
 
 def _write_bin(path, first_idx: int, vals: np.ndarray) -> None:
@@ -152,4 +249,13 @@ def materialize(codes: Sequence[str], start_time: str, end_time: str,
         out[name] = n_ok
         if progress_cb:
             progress_cb("物化 %s：%d 只" % (name, n_ok))
+    # ★ v1.20.45：写**物化口径戳** ✓ —— 让"换机器 / pull 新代码后没重物化"能被**自动发现** ✗
+    #   （旧口径 bin 是静默偏差 ✗：不报错、数值看着合理、连"四档单调"都成立 ✗）
+    write_chip_meta({
+        "overwrite": bool(overwrite),
+        "n_codes": len(list(codes)),
+        "fields": list(want),
+        "counts": dict(out),
+        "turn_meta": dict(getattr(ev, "_chip_turn_meta", {}) or {}),
+    })
     return out

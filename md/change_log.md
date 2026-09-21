@@ -3,6 +3,45 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.45] - 2026-09-21
+
+### Added（**让"筹码口径过期"能被自动发现** —— 同事 `git pull` 后的必做项不再靠人记 ✗）
+
+- **用户提问**：「同事那边 pull 了之后，那边 AI 会发现并提示他重新物化吗？物化后他那边就没问题了？」
+  ⇒ 答案（改之前）：**不会自动发现，而且是静默的** ✗。
+  **为什么静默**：旧口径物化出来的 `chip_*` bin —— 不报错 ✓、数值看着合理 ✓、
+  连 `COST(5) ≤ COST(95)` **单调都成立** ✓ ⇒ 现有 `verify_materialized.py` 的检查项
+  （覆盖率 / 同轴 / NaN / 单调 / WINNER 值域 ✓）**一条都抓不到** ✗。
+  `md/deploy.md` 里虽然写了"每台机器必须各做一次 + 缺了不报错会静默失效" ✓，
+  但那只对**主动去读部署文档**的人生效 ✗。
+- **物化口径语义戳**（`chip_store.CHIP_SEMANTICS` + `features/_chip_meta.json` ✓）：
+  - `materialize()` 结束时写戳 ✓（含 `chip_semantics` / `overwrite` / 覆盖数 /
+    **`turn_meta`**（本次实际用的换手率口径：`mode=turn|proxy`、`scale=100|1`、
+    `turn_max/turn_median` ✓）⇒ "这次到底是按什么单位算的"**有留痕** ✓）；
+  - `chip_meta_state()` 比对"戳 vs 当前代码口径" ⇒ 返回 `ok/missing/stale` +
+    **一句可直接照做的中文提示** ✓（`state="missing"` = 没物化过或戳是 v1.20.45 之前的老版本 ✓）；
+  - ⚠ **任何筹码口径改动都必须递增 `CHIP_SEMANTICS`** ✗（换手率单位/来源、`chip_run` 的
+    网格/衰减/峰值注入/`turn_unit` 判据、预热窗口 ✓）—— 已在模块注释里列成清单 ✓。
+- **三处出口**（覆盖"人 / AI / 脚本"三路 ✓）：
+  1. **后端启动日志**：`[chip-meta] …` ✓，不一致时是 **WARNING** ✗（最容易被 AI 读到 ✓）；
+  2. **`GET /api/version`** 返回 **`chip_meta`** ✓（`ok=false` ⇒ 立刻重物化 ✓）；
+  3. **`tools/verify_materialized.py`** 新增两项检查，**退出码 1** ✗ ✓：
+     · **物化口径戳**是否一致 ✓；
+     · ★ **筹码展开比 `COST(95)/COST(5)`** ✓ —— 这是**经验判据**（不依赖戳 ✓），
+       专治"单调但塌缩"这类静默错误 ✗（期望：有 `$turn` 组 p50 ≈1.58、反推组 ≈2.41；
+       `p50 < 1.15` 判塌缩 ✗）。
+- **`md/deploy.md`** 增补：`materialize_chip.py 400 --overwrite` 的用法 ✓ +
+  ⚠「**不加 `--overwrite` 时对已有 `chip_cost_95` 的股票一律跳过** ✗ ⇒ 修了口径后直接跑它
+  等于什么都没做 ✗（会打印"无需物化（都已有）"✓）」+ 「怎么看本机要不要重物化」三步 ✓。
+- **实测**（本机 live 演示 ✓）：加戳前跑核对 ⇒
+  `物化口径戳：⚠ 缺失 ⇒ …必须重物化一次` ✗、`展开比 p50 1.838 / <1.05 占比 0.0%` ✓、
+  **`结论：❌ 有问题` / `exit=1`** ✓ ⇒ 检测闭环成立 ✓；重物化写戳后转为 ✅ ✓。
+- **⚠ 给同事（及任何换机器/拉代码的人）的操作顺序** ✗：
+  `git pull` → `curl /api/version` 看 `chip_meta.ok`（或看启动日志 ✓）⇒
+  为 `false` 就 `python backend/tools/materialize_chip.py 400 --overwrite`（约 6 分钟 ✓）⇒
+  `python backend/tools/verify_materialized.py`（退出码 0 ✓）⇒
+  重启后端 ✓。**旧的回测产物仍与过去不可比** ✗（筹码数值变了 ✓），要新结论得重跑 ✓。
+
 ## [1.20.44] - 2026-09-21
 
 ### Fixed（**筹码换手率被放大 100 倍 ⇒ 成本分布塌缩** —— 单位口径两层都错，互相掩盖）
