@@ -219,7 +219,20 @@ def _compute_layers(pred_label, N: int = 5, benchmark_ret: Optional[dict] = None
             t_df = pd.DataFrame.from_dict(recs, orient="index")
             t_df = t_df.dropna(how="all")
             t_df["long_short"] = t_df["Group1"] - t_df["Group%d" % N]
-            t_df["long_average"] = t_df["Group1"] - df.groupby(level="datetime", group_keys=False)["label"].mean()
+            # ⚠⚠⚠ v1.20.42 **修 BUG**（用户 2026-09-21 在「分层跑不过基准」的追问里暴露 ✓）：
+            #   本分支的 `Group1..N` 来自**每日 `ret`**（调仓日分组、中间持仓不动、逐日累加 ✓），
+            #   而 `long_average` 原来写成 `Group1 - df[...]["label"].mean()` ✗ ——
+            #   **`label` 是 N 日远期收益**（= 模型 label_horizon，本例 **20 日** ✗）
+            #   ⇒ **被减项与 Group1 根本不是同一口径** ✗✗ ⇒ 结果无意义 ✓。
+            #   实测（任务 `5e1f338dc34e` 段1）：首点 `long_average = +8.50%` ✗（一天之内不可能 ✗）、
+            #   20 个交易日累计 **+23.79%** ✗，而同一窗口 `Group1 − Group5` 才 **+13.0pp** ✓
+            #   ⇒ 明显是"减错了一个 20 日量纲的数" ✓。
+            #   ⇒ 改为**与被减项同源**：当日**全样本 `ret` 的等权均值** ✓
+            #     （写法与上方"每日重排"分支同构 ✓，只是数据源换成本分支真正使用的 `ret` ✓）。
+            #   口径说明：`long_average` = 组1 相对**池内等权**的超额 ✓（复利 ✓）。
+            _uni_ret = df.groupby(level="datetime", group_keys=False)["ret"].mean()
+            t_df["long_average"] = t_df["Group1"] - _uni_ret
+
             cum = (1.0 + t_df).cumprod() - 1.0      # 复利（v1.19.5，原 cumsum）
             rows = cum.iterrows()
     except Exception:
