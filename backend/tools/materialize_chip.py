@@ -22,7 +22,13 @@
 用法（cwd 任意）：
     python backend/tools/materialize_chip.py            # 默认 400 只/批
     python backend/tools/materialize_chip.py 1000        # 自定义批大小
+    python backend/tools/materialize_chip.py --overwrite # ★ v1.20.44：**全池重算**（含已有）
 之后跑 `python backend/tools/verify_materialized.py` 核对。
+
+⚠ v1.20.44 为什么必须加 `--overwrite`（2026-09-21）：原来的 `todo` 过滤是
+「**没有** `chip_cost_95.day.bin` 才处理」✗ ⇒ 修了 `turn` 单位（`panel_expr.chip_turn_of`
+/100 ✓ + `chip_dist` 的 auto 判据 ✓）之后，**已物化的那批仍然是旧的错值** ✗
+⇒ 直接跑本脚本**什么都不会重算** ✗（"无需物化（都已有）" ✓）—— 这是很容易漏掉的一步 ✗。
 """
 import os
 import sys
@@ -33,7 +39,10 @@ sys.path.insert(0, _BACKEND)
 
 
 def main() -> int:
-    batch = int(sys.argv[1]) if len(sys.argv) > 1 else 400
+    argv = [a for a in sys.argv[1:]]
+    overwrite = "--overwrite" in argv                    # ★ v1.20.44：全池重算（含已有）✓
+    rest = [a for a in argv if not a.startswith("--")]
+    batch = int(rest[0]) if rest else 400
 
     from app.services.qlib_runtime import ensure_qlib_init   # ⚠ 必须走统一入口（带 custom_ops）
 
@@ -47,11 +56,16 @@ def main() -> int:
         return 2
 
     allinst = sorted(n for n in os.listdir(fdir) if os.path.isdir(os.path.join(fdir, n)))
-    todo = [n for n in allinst
-            if os.path.exists(os.path.join(fdir, n, "close.day.bin"))
-            and not os.path.exists(os.path.join(fdir, n, "chip_cost_95.day.bin"))]
+    if overwrite:
+        todo = [n for n in allinst
+                if os.path.exists(os.path.join(fdir, n, "close.day.bin"))]
+    else:
+        todo = [n for n in allinst
+                if os.path.exists(os.path.join(fdir, n, "close.day.bin"))
+                and not os.path.exists(os.path.join(fdir, n, "chip_cost_95.day.bin"))]
     print("数据目录 %s" % fdir, flush=True)
-    print("股票 %d 只 | 待物化 %d 只 | 批大小 %d" % (len(allinst), len(todo), batch), flush=True)
+    print("股票 %d 只 | 待物化 %d 只 | 批大小 %d | overwrite=%s"
+          % (len(allinst), len(todo), batch, overwrite), flush=True)
     if not todo:
         print("无需物化（都已有）", flush=True)
         return 0
@@ -63,7 +77,7 @@ def main() -> int:
         t0 = time.time()
         # start_time 取日历起点：避免"2010 之前静默 NaN"；落盘前会对齐到各股 `$close` 的轴。
         r = materialize(chunk, start_time="2000-01-04", end_time="2026-12-31",
-                        fields=DEFAULT_FIELDS, read_start="1999-01-01", overwrite=False,
+                        fields=DEFAULT_FIELDS, read_start="1999-01-01", overwrite=overwrite,
                         progress_cb=None)
         n_files = sum(1 for n in chunk
                       if os.path.exists(os.path.join(fdir, n, "chip_cost_95.day.bin")))

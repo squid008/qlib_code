@@ -945,13 +945,42 @@ def chip_turn_of(ev) -> "pd.Series":
     except Exception:                             # noqa: BLE001
         _turn_field = None
     if _turn_field is not None:
+        # ⚠⚠⚠ v1.20.44 **单位自适应（修 100 倍 BUG ✗，2026-09-21 实测确认）**：
+        #   本仓 `turn.day.bin` 存的是**百分数**而不是小数 ✗ —— 实测（164 只 / 48 万个值）：
+        #     `p5=0.070  p50=0.8957  p90=3.6675  p99=10.50  max=43.91`
+        #   只有"百分数"解释在物理上成立 ✓（若当**小数** ⇒ 日换手 89.6%、p99 超 1000% ✗
+        #   **不可能** ✓；当百分数 ⇒ 0.90% / 3.67% / 10.5% ✓ 正是 A 股全市场中位量级 ✓）。
+        #   而 `chip_dist.chip_run` 的契约是**小数**（`0.03` ✓ 见其 docstring 与本文件 `_chip_field` ✓）
+        #   ⇒ **这里必须 /100** ✗。旧实现 `return _turn_field.where(...)` **原样返回** ✗
+        #   ⇒ **有 turn 的那批股票换手率被放大 100 倍** ✗✗ ⇒ 筹码衰减快 100 倍 ⇒
+        #     分布**塌缩到最近几天** ✗；⚠ 而且**单调性检查抓不到** ✗（COST(5)<COST(30)<… 仍成立 ✓）
+        #     —— 这就是 v1.20.44 之前那次"数值看起来合理"的检查漏掉它的原因 ✓。
+        #   判据用 **`max > 1`** ✓（而不是 `median > 1` ✗）：换手率若为"小数"**不可能超过 1** ✓，
+        #   实测该字段 `max=43.91` ✗ ⇒ 判为百分数 ✓；将来数据源若改成小数 ⇒ `max ≤ 1` ⇒ **不缩放** ✓
+        #   ⇒ **两个方向都自洽** ✓（不会因为换源而误除 ✓）。
+        _tv = _turn_field.to_numpy(dtype=float)
+        if np.isfinite(_tv).any() and float(np.nanmax(_tv)) > 1.0:
+            return (_turn_field / 100.0).where(_turn_field > 0)
         return _turn_field.where(_turn_field > 0)
     _vol_sh = _vol
     try:
         _amt = ev.field("$amount")
-        _r = float(np.nanmedian((_amt / _vol)._values / _px_raw._values))
-        if np.isfinite(_r) and _r < 0.1:
-            _vol_sh = _vol * 100.0                # 手 → 股
+        # ★★ v1.20.44 **逐股**手/股判据（原来全池取**一个**中位数 ✗）——
+        #   判据 `(成交额/成交量)/真实价`：≈1 ⇒ volume 是"股" ✓；≈0.01 ⇒ 是"手"（×100 ✓）。
+        #   实测（400 只抽样）：**p50=0.0105、<0.1 的占 99.4%** ✓ ⇒ 全池单标量**大体**够用 ✓，
+        #   但**边缘个股**（新股 / 低流动性 / 北交所 ✗）会落到另一侧 ⇒ 池级标量把它们
+        #   **整只判错** ✗（换手率差 100 倍 ✗）。⇒ 改**按 `instrument` 取中位数** ✓
+        #   （每只股票自己定标 ✓；成本 = 一次 `groupby.transform` ✓，与筹码递推同量级 ✓）。
+        #   ⚠ 对齐：`_rs` 的 index 可能与 `_vol` 不完全一致 ⇒ 用 `Series.where` **按标签对齐** ✓。
+        _ratio = (_amt / _vol) / _px_raw
+        _rs = _ratio
+        try:
+            _lv = ("instrument" if "instrument" in _ratio.index.names
+                   else _ratio.index.names[0])
+            _rs = _ratio.groupby(level=_lv).transform("median")
+        except Exception:                         # noqa: BLE001 —— 分组失败就用原值（退化为池级行为 ✓）
+            _rs = _ratio
+        _vol_sh = (_vol * 100.0).where(_rs < 0.1, _vol)   # 判为"手"⇒×100 ✓，否则原样（"股" ✓）
     except Exception:                             # noqa: BLE001 —— 无 amount 就按"股"处理
         pass
     return (_vol_sh * _px_raw / _mc).where(_mc > 0)

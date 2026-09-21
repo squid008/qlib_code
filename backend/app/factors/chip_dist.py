@@ -161,10 +161,17 @@ def chip_run(close: np.ndarray, high: np.ndarray, low: np.ndarray,
     if high.shape != close.shape or low.shape != close.shape or turn.shape != close.shape:
         raise ValueError("close/high/low/turn 形状必须一致")
     # 换手率单位自适应（`turn_unit="auto"`）：有的数据源给小数（0.03）、有的给百分数（3.0）。
-    # 判据：有效正值的中位数 > 1.5 ⇒ 按百分数处理（A 股日换手率中位数极少超过 1.5 倍）。
+    # ⚠⚠⚠ v1.20.44 **修判据**（2026-09-21 实测 ✗）：旧判据是 **`中位数 > 1.5`** ✗，
+    #   而本仓 `turn.day.bin` 是**百分数**且中位数只有 **0.896**（= 0.90% ✓，A 股全市场中位量级 ✓）
+    #   ⇒ `0.896 < 1.5` ⇒ 被误判成"小数" ✗✗ ⇒ **换手率被放大 100 倍** ⇒ 筹码衰减快 100 倍 ⇒
+    #   分布**塌缩到最近几天** ✗。⚠ 而 `chip_turn_of` 那侧**也没有 /100** ✗ ⇒ **两层都错、互相掩盖** ✓
+    #   （所以"旧 vs 新"曾经跑出一模一样的结果 ✗ —— 两条路都被这个坏判据吞掉了 ✓）。
+    #   ⇒ 判据改为 **`max > 1`** ✓ ：换手率若真是"小数"**不可能超过 1**（100% ✓），
+    #     与"中位数"无关 ⇒ **不受 A 股换手率量级影响** ✓，且数据源换成小数时也**不会误除** ✓
+    #     （两个方向都自洽 ✓）。⚠ 中位数判据对"低换手率市场/低频字段"天生脆弱 ✗，别再回去用 ✓。
     if turn_unit == "auto":
         pos = turn[np.isfinite(turn) & (turn > 0)]
-        turn_unit = "pct" if (pos.size and float(np.median(pos)) > 1.5) else "frac"
+        turn_unit = "pct" if (pos.size and float(pos.max()) > 1.0) else "frac"
     if turn_unit == "pct":
         turn = turn / 100.0
 
