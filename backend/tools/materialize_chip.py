@@ -67,6 +67,18 @@ def main() -> int:
     print("股票 %d 只 | 待物化 %d 只 | 批大小 %d | overwrite=%s"
           % (len(allinst), len(todo), batch, overwrite), flush=True)
     if not todo:
+        # ★ v1.20.45：**空跑也刷一次"汇总戳"** ✓ —— 这样只补缺失的常规跑
+        #   （`materialize_chip.py 400`，多数时候 todo 为空 ✓）也能把戳更新成
+        #   **全池汇总** ✓，而不是留着某次单批的 counts（如 141 ✗ 看着像只物化了 141 只 ✗）。
+        from app.factors.chip_store import write_chip_meta
+        _done = sum(1 for n in allinst
+                    if os.path.exists(os.path.join(fdir, n, "chip_cost_95.day.bin")))
+        write_chip_meta({
+            "overwrite": bool(overwrite),
+            "n_codes_total": len(allinst),
+            "n_codes_done": _done,
+            "note": "汇总戳（本次无需物化，仅刷新戳）",
+        })
         print("无需物化（都已有）", flush=True)
         return 0
 
@@ -87,6 +99,17 @@ def main() -> int:
 
     done = sum(1 for n in allinst
                if os.path.exists(os.path.join(fdir, n, "chip_cost_95.day.bin")))
+    # ★ v1.20.45：**覆盖戳为"全池汇总"** ✓ —— `materialize()` 每批各写一次戳 ✗，
+    #   直接留最后一批的 counts（如 141 ✗）会**误导**（看着像只物化了 141 只 ✗）。
+    from app.factors.chip_store import write_chip_meta
+    write_chip_meta({
+        "overwrite": bool(overwrite),
+        "n_codes_total": len(allinst),
+        "n_codes_done": done,
+        "n_batches": n_batch,
+        "fields": list(DEFAULT_FIELDS),
+        "note": "汇总戳（由 materialize_chip.py 覆盖，counts 是逐批累计前的全池口径）",
+    })
     print("全部完成：chip_cost_95 覆盖 %d / %d 只 | 总耗时 %.1fs"
           % (done, len(allinst), time.time() - t_all), flush=True)
     print("done", flush=True)
