@@ -1757,7 +1757,7 @@ export default function App() {
               {r ? (
                 <>
                   <MetricCards result={r} />
-                  <NavChart nav={r.nav} />
+                  <NavChart nav={r.nav} layerReturns={r.layer_returns} />
                   <LayerChart data={r.layer_returns} />
                   <ICChart data={r.ic_analysis} />
                 </>
@@ -1786,7 +1786,7 @@ export default function App() {
                       {!partialRunning && '；如需继续，可在下方历史回测中点该任务的"续测"'}
                     </span>
                   </div>
-                  <NavChart nav={partial.nav} endDate={partial.end_date} />
+                  <NavChart nav={partial.nav} endDate={partial.end_date} layerReturns={partial.layer_returns} />
                   <LayerChart data={partial.layer_returns} />
                   <ICChart data={partial.ic_analysis} />
                 </>
