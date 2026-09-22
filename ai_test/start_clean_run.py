@@ -21,8 +21,24 @@ import urllib.error
 import urllib.request
 
 API = "http://127.0.0.1:8001"
-OLD_PARAMS = (r"d:\quant\qlib_code\backend\workdir\artifacts"
-              r"\20260921-161809_LightGBM_all_2021_2026_6d1367884bad\params.json")
+# 用法（v1.20.48 起支持指定源任务 ✓）：
+#   python ai_test/start_clean_run.py                          # 默认源：09-21 那次事故的参数 ✓
+#   python ai_test/start_clean_run.py --src 4a92be3c74dd       # 指定源任务 ✓
+#   python ai_test/start_clean_run.py --src <id> --end 2021-09-30   # 顺带改区间（可选 ✓）
+DEFAULT_SRC = "6d1367884bad"
+ARTIFACTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "backend", "workdir", "artifacts")
+
+
+def _params_of(src: str) -> str:
+    """按 task_id 找产物目录里的 `params.json`（`--src` 传 task_id ✓）。"""
+    import glob
+    hits = [p for p in glob.glob(os.path.join(ARTIFACTS, "*_" + src)) if os.path.isdir(p)]
+    if not hits:
+        hits = [p for p in glob.glob(os.path.join(ARTIFACTS, src)) if os.path.isdir(p)]
+    if not hits:
+        raise SystemExit("✗ 找不到该任务的产物目录：%s" % src)
+    return os.path.join(sorted(hits)[-1], "params.json")
 
 
 def get(url, timeout=60):
@@ -40,26 +56,35 @@ def post(url, body, timeout=120):
 
 
 def main():
+    argv = sys.argv[1:]
+    src = argv[argv.index("--src") + 1] if "--src" in argv else DEFAULT_SRC
+    end_override = argv[argv.index("--end") + 1] if "--end" in argv else None
+
     spec = get(API + "/openapi.json")
     schema = spec["components"]["schemas"].get("BacktestRequest")
     if not schema:
         print("✗ 取不到 BacktestRequest schema")
         return 2
     allowed = set(schema.get("properties", {}))
-    p = json.load(open(OLD_PARAMS, encoding="utf-8"))
+    src_params = _params_of(src)
+    print("  源参数：%s" % src_params)
+    p = json.load(open(src_params, encoding="utf-8"))
     dropped = sorted(k for k in p if k not in allowed)
 
     body = {k: v for k, v in p.items() if k in allowed}
-    body["resume_task_id"] = None
-    body["end_date"] = "2021-09-30"
+    body["resume_task_id"] = None        # ★ 开新产物目录（绝不复用被污染的旧目录 ✓）
+    # ★★ **不复用模型权重** ⇒ 真训练 ✓（v1.20.48 起，旧模型也会被"训练口径戳"拒绝 ✓ ——
+    #    但**不要**依赖它兜底 ✗：显式清空才是正确姿势 ✓）
     body["load_model_task_id"] = None
+    if end_override:
+        body["end_date"] = end_override
 
     print("  BacktestRequest 接受 %d 个字段；旧 params 里被丢弃 %d 个（多为运行时回填 ✓）：" % (len(allowed), len(dropped)))
     for k in dropped:
         print("      - %s" % k)
     print("")
-    print("  ★ 本次关键三项：resume_task_id=None、end_date=%s、load_model_task_id=None"
-          % body["end_date"])
+    print("  ★ 本次关键三项：resume_task_id=None、end_date=%s、load_model_task_id=None（真训练 ✓）"
+          % body.get("end_date"))
     print("    区间 %s ~ %s | 池子 %s | 模型 %s | topk=%s hold=%s | meta_gate=%s"
           % (body.get("start_date"), body.get("end_date"), body.get("universe"),
              body.get("model"), body.get("topk"), body.get("n_days_hold"),
