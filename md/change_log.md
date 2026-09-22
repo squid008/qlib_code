@@ -3,6 +3,39 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.49] - 2026-09-22
+
+### Fixed（**续测任务运行期间"看不到产物"** —— 所有产物接口 404）
+
+- **用户提问**：「训练过程中，我不能看产物？看不了每段的特征分数？」
+- **实测矩阵**（`5ba830bf332a` = 运行中的**续测** vs `094b63ee17d6` = 源任务）：
+
+  | 接口 | 续测（在跑） | 源任务 |
+  |---|---|---|
+  | `GET /api/backtest/{id}` | **200**（带 `partial_result` ✓） | 200 |
+  | `/partial` `/artifacts` `/features` `/snapshot` `/image/*` | **全 404** ✗ | 全 200 ✓ |
+
+  ⇒ 表现为「**曲线一直在动、但产物点不开**」—— 正是用户遇到的现象。
+- **根因**：**断点续跑复用源任务目录**（目录名后缀是**源** task_id），而
+  `services/artifacts_service.find_artifact_dir()` **只按 `task_id` 找目录** ⇒ 落空 ⇒ 404。
+  ⚠ `routers/backtest.py` 的 `/backtest/{id}` **早就单独做了 `resume_task_id` 回退** ⇒
+  **两处不一致**（同一个任务：状态接口能读、产物接口 404）。
+- **修复**（在 `find_artifact_dir` 补齐回退，**一次修好所有产物接口** —— 它们都走这一个函数）：
+  1. **内存态**：`TaskManager.get_req(id).resume_task_id` ⇒ 用源 id 再找
+     （⚠ **惰性 import**：模块级 import `task_manager` 会形成循环依赖）；
+  2. **磁盘标记** `resume_tasks.json`（新增 `note_resume_task()`，`qlib_engine` 在解析到续测源目录时写入）
+     ⇒ **backend 重启后依然有效**（内存态会丢）；
+  3. **续测可套续测**（链式回退，带环检测 ✓）。
+- **实测**：新增 `tests/test_artifact_resume_dir.py`（**6 例**：直接/旧命名、磁盘标记、内存态、
+  链与环保护、标记两种格式）。⚠ 单测当场抓到一个**真逻辑漏洞**：最初把"磁盘标记"只挂在**内存链**上查
+  ⇒ 内存态一重启就查不到 ⇒ 已改为**直接对查询 id 查标记**。`ruff` **All checks passed**。
+- **顺带说明"每段的特征分数"三种**（用户问的三件事）：① **模型预测分数**在每段
+  `segment_N/test_pl.pkl`（列 `score/label/ret`，MultiIndex `(datetime, instrument)`）
+  —— ⚠ **暂无 API/界面**，只能读文件；② **特征重要性** ⇒ `model_artifacts.json` ⇒ `/artifacts`；
+  ③ **特征名 ↔ 公式** ⇒ `/features`。
+- **⚠ 不追溯**：`1.20.49` 之前跑的续测任务没有标记（`5ba830bf332a` 已手工补标记）；
+  **新起的续测**会自动带上。
+
 ## [1.20.48] - 2026-09-22
 
 ### Fixed（**"复用模型权重 / 断点续跑"会静默沿用旧训练口径的产物** —— 光比对特征顺序是不够的）

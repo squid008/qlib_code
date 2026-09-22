@@ -30,13 +30,118 @@ def artifacts_root() -> str:
     return os.path.join(config.WORK_DIR, "artifacts")
 
 
-def find_artifact_dir(task_id: str) -> Optional[str]:
-    """根据 task_id 找到产物目录（新目录名以 *_task_id 结尾；兼容旧版直接用 task_id 命名）。"""
+def _direct_artifact_dir(task_id: str) -> Optional[str]:
+    """只按任务 id **直接**找目录（新命名 `*_<id>` ✓ / 旧命名 `<id>` ✓）。"""
     dirs = glob.glob(os.path.join(artifacts_root(), "*_" + task_id))
     if dirs:
         return dirs[0]
     old = os.path.join(artifacts_root(), task_id)
     return old if os.path.isdir(old) else None
+
+
+def _resume_of(task_id: str) -> Optional[str]:
+    """若该任务是"续测"⇒ 返回它复用的**源** task_id（读内存态 ✓，取不到返回 None ✓）。"""
+    try:
+        # ⚠ 惰性 import ✗：模块级 import task_manager 会形成循环依赖（task_manager → 本模块的调用链）
+        from ..engine.task_manager import get_task_manager
+        req = get_task_manager(config.WORK_DIR).get_req(task_id)
+        rid = getattr(req, "resume_task_id", None) if req else None
+        return str(rid) if rid else None
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
+def _resume_chain(task_id: str, depth: int = 3) -> list:
+    """该任务的"续测源"链条（最多 depth 层 ✓，带环检测 ✓；续测可以套续测 ✓）。"""
+    out, seen, cur = [], {str(task_id)}, str(task_id)
+    for _ in range(max(1, int(depth))):
+        nxt = _resume_of(cur)
+        if not nxt or nxt in seen:
+            break
+        out.append(nxt)
+        seen.add(nxt)
+        cur = nxt
+    return out
+
+
+def _dir_with_resume_marker(task_id: str) -> Optional[str]:
+    """扫 `artifacts/*/resume_tasks.json` ⇒ 找"记录过该续测任务"的目录 ✓（**跨重启有效** ✓）。"""
+    try:
+        for d in glob.glob(os.path.join(artifacts_root(), "*")):
+            if not os.path.isdir(d):
+                continue
+            p = os.path.join(d, "resume_tasks.json")
+            if not os.path.exists(p):
+                continue
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:                                  # noqa: BLE001
+                continue
+            ids = data.get("task_ids") if isinstance(data, dict) else data
+            if isinstance(ids, list) and str(task_id) in [str(x) for x in ids]:
+                return d
+    except Exception:                                          # noqa: BLE001
+        pass
+    return None
+
+
+def note_resume_task(src_dir: str, task_id: str) -> None:
+    """记下"某续测任务复用了本目录" ⇒ 写 `<src_dir>/resume_tasks.json` ✓（失败不抛 ✓）。
+
+    为什么需要落盘 ✗：内存态（`TaskManager._reqs`）**重启就没了** ✓ ⇒ 只靠内存回退的话，
+    重启后再查续测任务的产物又会 404 ✗。落一个极小的标记文件即可跨重启 ✓（只写几个 id ✓）。
+    """
+    import time as _time
+    if not src_dir or not task_id:
+        return
+    p = os.path.join(src_dir, "resume_tasks.json")
+    try:
+        data = {}
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+            except Exception:                                  # noqa: BLE001
+                data = {}
+        ids = data.get("task_ids") if isinstance(data, dict) else None
+        ids = list(ids) if isinstance(ids, list) else []
+        if str(task_id) not in [str(x) for x in ids]:
+            ids.append(str(task_id))
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"task_ids": ids, "updated_at": _time.strftime("%Y-%m-%d %H:%M:%S")},
+                      f, ensure_ascii=False, indent=1)
+    except Exception:                                          # noqa: BLE001
+        logger.warning("写 resume_tasks.json 失败: %s", p)
+
+
+def find_artifact_dir(task_id: str) -> Optional[str]:
+    """根据 task_id 找到产物目录（新目录名以 `*_task_id` 结尾；兼容旧版直接用 task_id 命名）。
+
+    ★★ v1.20.49 **续测回退** ✗：**断点续跑（resume）复用源任务目录**（目录名后缀是**源** task_id ✓）
+    ⇒ 用**续测任务自己的 id** 查目录必然落空 ✗ ⇒ 于是 `/artifacts`、`/features`、`/snapshot`、
+    `/result`、`/image/*` 这些产物接口在**续测任务运行期间全部 404** ✗（2026-09-22 实测 ✓：
+    `/backtest/{id}` 200 且带 partial ✓，其余全 404 ✗ —— 用户问"训练中看不了产物？"就是这个 ✓）。
+    ⚠ `routers/backtest.py` 的 `/backtest/{id}` **早就单独做了 `resume_task_id` 回退** ✓
+    ⇒ 两处不一致 ✗ ⇒ 在本函数补齐，**一次修好所有产物接口** ✓（它们都走这里 ✓）。
+    回退顺序（均在"直接找不到"之后 ✓）：
+      a. **内存**：`TaskManager` 里该任务 req 的 `resume_task_id` ⇒ 用源 id 再找 ✓；
+      b. **磁盘**：`artifacts/*/resume_tasks.json`（运行期由 `qlib_engine` 写 ✓）⇒ **重启后也有效** ✓。
+    """
+    base = _direct_artifact_dir(task_id)
+    if base:
+        return base
+    # ★ **先直接查磁盘标记** ✓ —— 它是"这个 id 的产物在哪个目录"的**权威答案** ✓
+    #   ⚠ 不能只把它挂在内存链上 ✗：内存态一重启就没了 ✓（单测就是这么抓出来的 ✓
+    #   2026-09-22：`test_resume_marker_fallback` 失败 ⇒ 标记根本没被查到 ✗）。
+    hit = _dir_with_resume_marker(task_id)
+    if hit:
+        return hit
+    for rid in _resume_chain(task_id):
+        hit = _direct_artifact_dir(rid) or _dir_with_resume_marker(rid)
+        if hit:
+            return hit
+    return None
 
 
 def load_model_artifacts(task_id: str) -> dict:

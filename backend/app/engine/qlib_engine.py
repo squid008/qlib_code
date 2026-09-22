@@ -207,6 +207,13 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
                 src_dir = None
             if src_dir and os.path.isdir(src_dir):
                 art_dir = src_dir
+                # ★ v1.20.49：把"本续测任务复用了这个目录"**落盘** ✓
+                #   ⇒ 否则只有内存态可用 ✗，backend 重启后 `find_artifact_dir(续测id)` 又会 404 ✗
+                #   （用户 2026-09-22 实测：续测运行期间 /artifacts、/features、/snapshot 全 404 ✗）。
+                try:
+                    _art_svc.note_resume_task(art_dir, task_id)
+                except Exception:                              # noqa: BLE001
+                    pass
             else:
                 art_dir = _make_artifact_dir(work_dir, task_id, req)
         else:
