@@ -1771,14 +1771,18 @@ export default function App() {
                           : 'text-amber-600 dark:text-amber-400 font-medium'
                       }
                     >
+                      {/* ⚠ v1.20.47（用户 2026-09-22）：**段数必须并进标签** ✗ ——
+                          原来段数写在右侧小字里（`已跑 8/67 段` ✓），而 partial 的**净值曲线画得
+                          跟完整回测一模一样** ✗ ⇒ 用户扫一眼图就会以为"其实跑完了、是标签错了" ✗。
+                          ⇒ 把 `x/y 段` 提到状态标签内 ✓，三个状态都带 ✓，一眼可辨 ✓。 */}
                       {partialRunning
-                        ? '⏳ 滚动训练进行中'
+                        ? `⏳ 滚动训练进行中 ${partial.segments_done}/${partial.segments_total} 段`
                         : partialStatus === 'cancelling'
-                          ? '⏹ 正在停止…'
-                          : '⏸ 回测未完成（已停止/中断）'}
+                          ? `⏹ 正在停止…（已跑 ${partial.segments_done}/${partial.segments_total} 段）`
+                          : `⏸ 回测未完成 ${partial.segments_done}/${partial.segments_total} 段（已停止/中断）`}
                     </span>
                     <span className="ml-2 text-slate-500 dark:text-slate-300">
-                      已跑 {partial.segments_done}/{partial.segments_total} 段，以下为已完成部分的结果
+                      以下为已完成部分的结果（非完整回测结果）
                       {!partialRunning && '；如需继续，可在下方历史回测中点该任务的"续测"'}
                     </span>
                   </div>
