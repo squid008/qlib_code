@@ -14,6 +14,28 @@ import numpy as np
 import pandas as pd
 
 
+# ★★ v1.20.46（用户 2026-09-22 审计 ✓）：**"静默降级"必须叫出声** ✗
+#   本模块 `_daily_member_mask` 的契约是"返回 None ⇒ 调用方**不筛**" ✓ ——
+#   而"不筛"正是 v1.18.50 修掉的**股票池未来函数/幸存者偏差**旧口径 ✗✗。
+#   ⚠ 触发条件很隐蔽 ✗：`_inst_spans_path` 只认 `_default_qlib_uri()` ✓ ⇒
+#   一旦**运行时的 provider_uri 与它不一致**（如用 `data_source_provider_uri` 指向别处 ✓）
+#   或**文件缺失**（换机器/只拷了 features 没拷 instruments ✓）⇒ 静默退回旧口径 ✗，
+#   偏差**无声回归**且无任何提示 ✗。⇒ 这里进程内**只告警一次** ✓（不刷屏 ✓，不阻塞 ✓）。
+_WARN_ONCE: set = set()
+
+
+def _warn_once(key: str, msg: str) -> None:
+    """进程内只告警一次（惰性 import logger，保持本模块"不触发 qlib.init"的约束 ✓）。"""
+    if key in _WARN_ONCE:
+        return
+    _WARN_ONCE.add(key)
+    try:
+        from ..logger import get_logger
+        get_logger(__name__).warning(msg)
+    except Exception:                                     # noqa: BLE001
+        pass
+
+
 def _inst_spans_path(universe: str) -> Optional[str]:
     """qlib instruments 区间文件路径（`<provider_uri>/instruments/<universe>.txt`）。"""
     import os
@@ -22,12 +44,24 @@ def _inst_spans_path(universe: str) -> Optional[str]:
 
     try:
         uri = _default_qlib_uri()
-    except Exception:
+    except Exception as e:                                # noqa: BLE001
+        _warn_once("uri-exc",
+                   "[inst_mask] 取默认 qlib uri 失败（%r）⇒ 池掩码无法生效 ✗，"
+                   "将退回「全期并集」旧口径（幸存者偏差 ✗）。" % (e,))
         return None
     if not uri:
+        _warn_once("uri-empty",
+                   "[inst_mask] 默认 qlib uri 为空 ⇒ 池掩码无法生效 ✗，将退回「全期并集」旧口径 ✗。")
         return None
     p = os.path.join(str(uri), "instruments", "%s.txt" % universe)
-    return p if os.path.isfile(p) else None
+    if not os.path.isfile(p):
+        _warn_once("miss-" + str(universe),
+                   "[inst_mask] 找不到成分文件 %s ⇒ 池 %r 的成分掩码**无法生效** ✗，"
+                   "将退回「全期并集」旧口径（**幸存者偏差**，系统性高估 ✗）。"
+                   "请确认运行时的 provider_uri 与 `_default_qlib_uri()` 一致 ✓，"
+                   "并已把 `instruments/` 一并同步到该数据目录 ✓。" % (p, universe))
+        return None
+    return p
 
 
 def _daily_member_mask(universe: str, index: pd.MultiIndex) -> Optional[np.ndarray]:

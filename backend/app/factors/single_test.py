@@ -431,7 +431,13 @@ def _test_one(
                   "T1_IS_ST", "LIMIT_UP", "T1_LIMIT_UP", "IS_ST")
         if c in df.columns
     }
+    # ★ v1.20.46（用户 2026-09-22 审计 ✓）：把"**因未来收益为空而丢弃的样本数**"显式报出来 ✓。
+    #   动机：停牌有 ffill 兜底 ✓，但**真退市**的样本没有未来收益 ⇒ 被 `LABEL` 非空条件静默丢掉 ✗
+    #   ⇒ 候选池被系统性收窄 ⇒ 结果**轻微乐观** ✗（不改变口径 ✓，只让它**可见** ✓）。
+    #   ⚠ 两种丢弃要分开报 ✓：分子为空（因子没值 ✓ 合理）与**无未来收益**（退市/末端窗口 ✓ 需警惕）。
+    _n_factor_ok = int(np.count_nonzero(~pd.isna(_NR[col])))
     _sub_pos = np.nonzero((~pd.isna(_NR[col])) & (~pd.isna(_NR["LABEL"])))[0]
+    result["n_dropped_no_label"] = int(_n_factor_ok - len(_sub_pos))
 
     def _frame(pos, cols):
         """按 df 行位置取列构造小 DataFrame（index 与等价的 df.loc[...] 一致）。"""

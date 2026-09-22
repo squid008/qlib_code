@@ -419,8 +419,14 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     np.fromiter(sh.values(), dtype=np.int64, count=_n).tolist(),
                     pxr.take(_ai).tolist())
 
-        i_start = min([max(0, min(bk["buys"], default=0) - 1)] +
-                      [max(0, min(bk["exits"], default=0) - 1)] + [0])
+        # ★ v1.20.46 修 BUG（用户 2026-09-22 审计 ✓，真问题 ✓）：
+        #   原式末尾多了个**常量 `[0]`** ✗ —— `min([a, b, 0])` 在 a, b ≥ 0 时**恒为 0** ✗
+        #   ⇒ `i_start` 永远是 0 ⇒ 净值**恒从 `cal[0]` 起画** ✗（把事件前的空转天数也算进
+        #   年化分母 ✓、曲线开头挂一段无意义的平段 ✓）。
+        #   原意显然是"取**最早**事件的前一天" ✓ ⇒ 去掉那个 `[0]` 即可 ✓（`min` 本身就是下界 ✓），
+        #   外层 `max(0, …)` 兜住"完全没有事件"（`default=0` ⇒ −1 ⇒ 0 ✓）的情况 ✓。
+        i_start = max(0, min([min(bk["buys"], default=0) - 1,
+                              min(bk["exits"], default=0) - 1]))
         for i in range(i_start, n_row):
             # 取消检查点（v1.20.4）：每 20 天一次 ⇒ 取消响应 ≤ 20 个交易日的计算量 ✓
             #   （⚠ 不能每天都调：回调本身有开销，而本循环要跑数千天 ✓）

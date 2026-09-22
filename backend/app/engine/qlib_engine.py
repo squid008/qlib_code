@@ -85,6 +85,23 @@ from ..factors.ops_ext import ensure_ops_registered as _ensure_ops_registered
 warnings.filterwarnings("ignore")
 
 
+# ★ v1.20.46：**"影响可信度但不会报错"的东西必须吭一声** ✓（用户 2026-09-22 审计 ✓）。
+#   设计同 `chip_store.chip_meta_state` ✓：进程内**只告警一次** ✓ —— 既让问题可见 ✓
+#   （AI/人都能在 `backend.log` 里看到 ✓），又不会按段刷屏 ✓。
+_WARNED_ONCE: set = set()
+
+
+def _once_log(key: str, msg: str, level: str = "warning") -> None:
+    if key in _WARNED_ONCE:
+        return
+    _WARNED_ONCE.add(key)
+    try:
+        _lg = _get_logger(__name__)
+        (_lg.warning if level == "warning" else _lg.info)(msg)
+    except Exception:                                     # noqa: BLE001
+        pass
+
+
 def _ensure_qlib_init(provider_uri):
     """线程安全的 qlib.init：只在第一次调用时真正初始化，后续线程直接跳过。
 
@@ -362,6 +379,31 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg,
     # 丢失）—— handler 转交给 CachedQlibDataLoader，按「当日真实成分」过滤训练/推理样本，
     # 修「全期并集」带来的未来函数（见 feature_cache.CachedQlibDataLoader._apply_pool_filter）。
     handler_kwargs["universe"] = getattr(req, "universe", None)
+
+    # ★★ v1.20.46 **拆出独立验证集**（用户 2026-09-22 审计 ✓：原先 `valid == train` ✗）：
+    #   原配置 `"valid": [train_start, train_end]` ✗ ⇒ LightGBM 的 `early_stopping` 在
+    #   **训练集自身上**做 ⇒ ① 模型选择失真（"最优轮数"其实是"训练集最优"✗）；
+    #   ② 过拟合**无任何约束**（没有留出集给它踩刹车 ✗）⇒ 对最终收益影响可能是**最大的一条** ✓。
+    #   ⇒ 取训练窗口**最后 ~20%** 作验证集 ✓，并把它从 `train` 里**剔除** ✓（否则仍被污染 ✗）。
+    #   ⚠ 训练窗太短（<40 天）时**退回旧行为**（valid == train ✓）并在日志说明 ✓ ——
+    #     宁可退化也不让 LightGBM 因验证集过小而训不出来 ✓（护住"能跑"这条底线 ✓）。
+    import pandas as _pd                                # ⚠ 本模块不全局 import pandas，按需引入 ✓
+    _ts_, _te_ = _pd.Timestamp(str(train_start)), _pd.Timestamp(str(train_end))
+    _vdays_ = int(max(0, (_te_ - _ts_).days) * 0.2)
+    if _vdays_ >= 27:                       # ≥27 个自然日 ≈ 20 个交易日 ✓
+        valid_start = (_te_ - _pd.Timedelta(days=_vdays_)).strftime("%Y-%m-%d")
+        train_fit_end = (_te_ - _pd.Timedelta(days=_vdays_ + 1)).strftime("%Y-%m-%d")
+        _once_log("valid-split",
+                  "[dataset] 独立验证集已启用 ✓：train=%s~%s | valid=%s~%s"
+                  "（原先 valid == train ✗ ⇒ early_stopping 在训练集上做，模型选择失真 ✓）"
+                  % (train_start, train_fit_end, valid_start, train_end))
+    else:
+        valid_start, train_fit_end = train_start, train_end
+        _once_log("valid-nosplit",
+                  "[dataset] ⚠ 训练窗过短（%s~%s）⇒ **退回 valid == train** ✗"
+                  "（early_stopping 仍在训练集上做，模型选择失真 ✓）"
+                  % (train_start, train_end))
+
     return {
         "class": "DatasetH",
         "module_path": "qlib.data.dataset",
@@ -372,9 +414,14 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg,
                 "kwargs": handler_kwargs,
             },
             "segments": {
-                "train": [train_start, train_end],
-                "valid": [train_start, train_end],
+                "train": [train_start, train_fit_end],
+                "valid": [valid_start, train_end],
                 # 预测窗口：预热时从 predict_start（更早）起，回测窗口仍以 test_start 为准
+                # ⚠ v1.20.46 已知残留（用户审计 #3 ✓）：`predict_start < test_start` 时，
+                #   首段的 test 段会**伸进训练窗口** ⇒ 回测**首日调仓**用的是模型在
+                #   **训练样本行**上的预测（轻度泄露 ✓）。IC/分层已被 `clip_start` 裁掉 ✓，
+                #   但回测首日没有裁 ✓。⇒ 保留现状并在此**显式标注** ✓（改它要动调仓网格，
+                #   风险大于收益 ✓）；若要彻底消除，应让首日"无 T-1 信号时空仓" ✓。
                 "test": [predict_start or test_start, test_end],
             },
         },
@@ -393,6 +440,20 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
     """
     # 成交量限制：None=不限量理想成交；传入比例则限制单笔成交不超过"当日成交量 * 比例"
     volume_threshold = None
+    # ★★ v1.20.46（用户 2026-09-22 审计 #1 ✓）：**把"结构性偏乐观"的开关状态叫出来** ✗
+    #   `volume_threshold=None` ⇒ **无限量理想成交** ✗（大资金下不可实现 ✓）；
+    #   `limit_threshold=None` ⇒ **不设涨跌停** ✗（涨停可买、跌停可卖 ✓）；
+    #   且 `strategy.kwargs.only_tradable` 目前**硬编码 False** ✗（不按"可交易性"过滤 ✓）。
+    #   ⚠ 这些都**不会报错**、只会让曲线**系统性偏高** ✗ ⇒ 必须可见 ✓（只报一次 ✓）。
+    #   ⇒ 真要让回测"实盘可信"，应显式传 `volume_threshold`（如 0.1）并打开可交易性过滤 ✓。
+    if not req.volume_threshold:
+        _once_log("no-volume-cap",
+                  "[backtest] ⚠ volume_threshold=None ⇒ **无限量理想成交** ✗（结构性偏乐观 ✓）。"
+                  "大资金/小票场景下实际不可实现 ⇒ 解读收益时应按此打折 ✓。")
+    if not req.limit_threshold:
+        _once_log("no-limit-threshold",
+                  "[backtest] ⚠ limit_threshold=None ⇒ **不设涨跌停约束** ✗（涨停可买、跌停可卖 ✗，"
+                  "系统性偏乐观 ✓）。建议显式传如 0.095 ✓。")
     if req.volume_threshold is not None:
         volume_threshold = {"all": ("current", "%s * $volume" % float(req.volume_threshold))}
 

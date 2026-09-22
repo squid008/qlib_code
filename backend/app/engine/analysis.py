@@ -64,16 +64,33 @@ def _get_pred_label(model, dataset, instruments, segment: str, label_horizon: in
         # label：未来 n 个交易日的收益（用于 IC/分层信号评估）。
         # 信号日 t 的分数在 t+1（成交日 T）收盘买入、T+n 收盘卖出（与回测 shift=1 一致，无前视）。
         label_expr = f"Ref($close, -{n + 1}) / Ref($close, -1) - 1"
-        # ret：当日收益（用于"分层持仓周期"算法A：调仓日分组后按日收益累加持有）
-        ret_expr = "$close / Ref($close, 1) - 1"
+        # ★★★ v1.20.46 **修「分层 1 日前视错位」BUG**（用户 2026-09-22 审计 + 真数据实锤 ✓）：
+        #   原式 `ret_expr = "$close / Ref($close, 1) - 1"` = **t 日当日收益** ✗ ——
+        #   而分层是拿 **`score[t]`**（t 日收盘后才知道 ✓）去分组 ✗ ⇒
+        #   **"用今天收盘才知道的分组，认领今天已经涨完的行情"** ✗✗（两支都中：
+        #   每日重排 `_compute_layers` 上方分支 ✓、算法A 的调仓日 ✓）。
+        #   ⚠ 失真方向 = **−corr(score[t], ret[t])** ⇒ 反转倾向模型（高分=当日跌得多 ✓）
+        #     会把**最弱组**做成最大的赢家 ✗（实测真数据：Group5 虚高 +415pp ✗、
+        #     多空从 +2.51% 变 −89.14% ✗）；动量倾向模型则相反（强组虚高 ✓）。
+        #   ⇒ 改为 **「t+1 → t+2」收益** ✓ —— 与本仓 label/成交口径**逐日对齐** ✓：
+        #     label = `Ref(close,-(n+1))/Ref(close,-1)-1` ✓（信号 t ⇒ 从 **t+1 收盘**算起 ✓）
+        #     ＋ 策略 `shift=1` + `deal_price="close"` ✓（信号 t ⇒ **t+1 收盘成交** ✓）
+        #     ⇒ 信号 t 真正赚到的**第一个日收益 = t+1 → t+2** ✓ ⇒ `Ref($close,-2)/Ref($close,-1)-1` ✓。
+        #   ⚠ 为什么不是 `Ref($close,-1)/$close-1`（t→t+1 ✓）：那会**少一天滞后** ✗ ——
+        #     它等于"在 t 收盘就能按 t+1 收盘价成交" ✗，与本仓回测不同口径 ✓（做纯因子诊断够用 ✓，
+        #     但与净值/IC 对齐就该用 t+1→t+2 ✓）。
+        ret_expr = "Ref($close, -2) / Ref($close, -1) - 1"
+        # ⚠ 末端多取 ~12 个自然日（≥2 个交易日 ✓）：`ret` 用到 t+2、`label` 用到 t+n+1 ✓
+        #   否则最后 2 天的 `ret` 恒 NaN ⇒ 分层曲线会**少画尾巴** ✗（旧式 t 日收益不需要 ✓）。
+        _end_fetch = (pd.Timestamp(end) + pd.Timedelta(days=12)).strftime("%Y-%m-%d")
         # 用进程内共享缓存包裹 D.features：相同股票池/表达式/区间 复用，避免重复 I/O+计算
         from .data_cache import SHARED_CACHE
 
         feat_df = SHARED_CACHE.get_or_load(
-            instruments, [label_expr, ret_expr], start, end,
+            instruments, [label_expr, ret_expr], start, _end_fetch,
             lambda: D.features(
                 instruments, [label_expr, ret_expr],
-                start_time=start, end_time=end,
+                start_time=start, end_time=_end_fetch,
             ),
         )
         if feat_df is None:
