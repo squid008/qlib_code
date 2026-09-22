@@ -3,6 +3,18 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.52] - 2026-09-22
+
+### Changed（**可点图例的鼠标手型** —— 让"点图例隐藏曲线"能被发现）
+
+- **用户提出**：「鼠标放在图里上，那个鼠标能变成手么，这样就知道可以点它隐藏曲线了」。
+- **现状复核**：`EventStudyModal` / `TopkCurveModal` / `SignalTestPanel` 的图例**早就有**
+  `wrapperStyle={{ cursor: 'pointer' }}`；**只有 `NavChart`（收益曲线）与 `LayerChart`（分层回测）
+  漏了** ⇒ 这次补上。
+- ⚠ **只给"有 `onClick` 的图例"加**：`ICChart` 的图例**不可点** ⇒ **刻意不加**
+  （加了会变成"看着能点、点了没反应"，比不加更糟）。复核已确认全仓仅 `ICChart` 一处无可点图例。
+- `npx tsc --noEmit` **exit 0**。
+
 ## [1.20.51] - 2026-09-22
 
 ### Added（**收益曲线上加「池内等权」地板线**）

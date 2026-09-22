@@ -217,7 +217,14 @@ export default function NavChart({
                 typeof label === 'number' ? toDateStr(label) : String(label)
               }
             />
-            <Legend onClick={handleLegendClick} payload={legendPayload} />
+            {/* ★ v1.20.52：图例可点隐藏曲线 ⇒ 鼠标变**手型** ✓（用户 2026-09-22 提：
+                可点却没提示 = 隐蔽操作 ✓）。⚠ 只给**有 onClick** 的图例加 ✓ ——
+                `ICChart` 的图例不可点，那里加了会误导 ✗。 */}
+            <Legend
+              onClick={handleLegendClick}
+              payload={legendPayload}
+              wrapperStyle={{ cursor: 'pointer' }}
+            />
             <Line
               type="monotone"
               dataKey="value"

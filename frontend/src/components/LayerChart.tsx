@@ -177,7 +177,12 @@ export default function LayerChart({ data }: { data?: LayerReturns | null }) {
                   补一条 0 基准线，否则"从 0 开始"在图上不明显（用户反馈分组图看不出 0 基准）。 */}
               <ReferenceLine y={0} stroke="#94a3b8" strokeDasharray="3 3" />
               <Tooltip />
-              <Legend onClick={handleLegendClick} payload={legendPayload} />
+              {/* ★ v1.20.52：图例可点隐藏曲线 ⇒ 鼠标变**手型** ✓（与 NavChart 一致 ✓） */}
+              <Legend
+                onClick={handleLegendClick}
+                payload={legendPayload}
+                wrapperStyle={{ cursor: 'pointer' }}
+              />
               {[1, 2, 3, 4, 5].map((i) => {
                 const key = `Group${i}` as LineKey
                 return (
