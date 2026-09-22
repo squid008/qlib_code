@@ -47,10 +47,26 @@
 - **审计 #5：单因子候选池被"未来收益非空"静默收窄** ✗ → 已加**计数**（`factors/single_test.py`）：
   新增 `result["n_dropped_no_label"]` ✓ —— 退市样本没有未来收益 ⇒ 被丢掉 ⇒ 结果**轻微乐观** ✓
   （不改口径 ✓，只让它**可见** ✓）。
-- **审计 #1：成交量/涨跌停约束默认全关** ✗ → 已加**启动告警**（`engine/qlib_engine.py`）：
-  `volume_threshold=None`（无限量理想成交 ✗）、`limit_threshold=None`（不设涨跌停 ✗）、
-  `strategy.kwargs.only_tradable` **硬编码 False** ✗ ⇒ 三者都**不会报错、只会让曲线系统性偏高** ✗
-  ⇒ 新增 `_once_log` ✓ 在每次回测里**明示** ✓（建议显式传 `volume_threshold`（如 0.1）✓）。
+- **审计 #1：成交量/涨跌停约束 —— ⚠ 用户随后纠正，口径要收窄** ✓✓：
+  - ✗ **不是**"涨跌停默认全关"、**更不是**"前端没有开关" ✗ —— 实际是：
+    · 前端 **有**「**封板不可交易**」开关 ✓（`frontend/src/App.tsx:1347-1359` ✓，
+      **默认就是开** ⇒ `limit_threshold=0.095` ✓）＋「**成交量限制(比例)**」输入 ✓（`:1332` ✓，
+      默认留空 ✗）＋ 剔除 ST/创业板/科创板 三个勾选 ✓（`:1383-1399` ✓，默认 false ✗）；
+    · 后端 `BoardAwareExchange`（`engine/board_exchange.py` ✓）**买卖双向**都管 ✓：
+      `limit_buy` 禁买 ✓ / **`limit_sell` 禁卖（跌停卖不出 ✓ 并不缺！）** ✓，
+      按**板块前缀** 10%/20%/30% ✓，并**优先用 `tools/dump_states.py` dump 的交易所涨跌停价标签** ✓
+      ⇒ **ST 5% / 退市整理 10% / 涨跌停新规自动正确** ✓（用户判断正确 ✓）；
+    · `qlib_engine.py` 同时订阅 `$limit_up` **与** `$limit_down` ✓（`:490-495` ✓）。
+  - ⇒ **真正剩下的"偏乐观"只有两条** ✓：① **成交量限制默认留空** ✗（= 无限量理想成交 ✓，
+    前端**可填** ✓）；② `exclude_st/gem/kcb` 默认 false ✗（**可勾** ✓）。
+    `strategy.kwargs.only_tradable` 硬编码 False ✗ **不是功能缺失** ✓ —— 交易所 `check_order`
+    已用 `limit_buy/limit_sell` 拦单 ✓，它只是"下单前先筛"的省事层 ✓。
+  - **我 v1.20.46 初版把告警写成"涨停可买、跌停可卖"** ✗ ⇒ 已改文案 ✓（`_once_log` ✓），
+    并保留告警：`volume_threshold=None` ✓ / `limit_threshold=None`（仅 API 直调才会遇到 ✓）。
+  - ⚠ **另一条链路的真实限制（别混淆 ✓）**：**单因子/持仓曲线**那条**简化**链路
+    （`TopkCurveModal` ✓ / `single_test._exclude` ✓）只剔**买入端**涨停/停牌 ✓，
+    **确实未模拟"跌停卖不出"** ✗（页面已显著标注 ✓）—— 那是**简化估算**的限制 ✓，
+    **不是 qlib 回测**的限制 ✓。
 - **审计 #3：首段预热伸进训练段** 🟡 **保留现状 + 显式标注** ✓：`predict_start < test_start` 时
   首段 test 段覆盖训练窗 ⇒ 回测**首日调仓**用到模型在**训练样本行**上的预测（轻度 ✗）。
   改它要动调仓网格（风险 > 收益 ✗）⇒ 在 `_build_dataset` 处**写清残留与彻底修法** ✓。

@@ -440,20 +440,29 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
     """
     # 成交量限制：None=不限量理想成交；传入比例则限制单笔成交不超过"当日成交量 * 比例"
     volume_threshold = None
-    # ★★ v1.20.46（用户 2026-09-22 审计 #1 ✓）：**把"结构性偏乐观"的开关状态叫出来** ✗
-    #   `volume_threshold=None` ⇒ **无限量理想成交** ✗（大资金下不可实现 ✓）；
-    #   `limit_threshold=None` ⇒ **不设涨跌停** ✗（涨停可买、跌停可卖 ✓）；
-    #   且 `strategy.kwargs.only_tradable` 目前**硬编码 False** ✗（不按"可交易性"过滤 ✓）。
-    #   ⚠ 这些都**不会报错**、只会让曲线**系统性偏高** ✗ ⇒ 必须可见 ✓（只报一次 ✓）。
-    #   ⇒ 真要让回测"实盘可信"，应显式传 `volume_threshold`（如 0.1）并打开可交易性过滤 ✓。
+    # ★★ v1.20.46（用户 2026-09-22 审计 #1 ✓，用户随后**纠正**了措辞 ✓）：把"结构性偏乐观"的
+    #   开关状态**如实**叫出来 ✗ ⇒ 只报一次 ✓。
+    #   ⚠ **别再说"涨停可买、跌停可卖"** ✗（我 v1.20.46 初版就写错了 ✓）——真相是：
+    #     · 只要 `limit_threshold` **非 None**，`BoardAwareExchange` 就**买卖双向**都管 ✓
+    #       （`limit_buy` 禁买 ✓ / `limit_sell` 禁卖 ✓，且按**板块前缀**区分 10%/20%/30% ✓，
+    #        并优先用 `tools/dump_states.py` dump 的交易所**涨跌停价标签** ✓
+    #        ⇒ ST 5% / 退市整理 10% / 新规自动正确 ✓）；
+    #     · **前端默认就打开了** ✓（`App.tsx` 的「封板不可交易」勾选 ⇒ `limit_threshold=0.095` ✓）
+    #       ⇒ 从 UI 建的任务**默认有涨跌停约束** ✓；只有**直接调 API** 才会拿到 None ✗。
+    #   ⇒ 所以真正的"偏乐观"只剩两条 ✓：
+    #     ① **成交量限制默认留空** ✗（= 无限量理想成交 ✓，前端**可以**填 0.25 之类 ✓）；
+    #     ② `exclude_st / exclude_stock_gem / exclude_stock_kcb` 默认 **false** ✗（前端可勾 ✓）。
+    #   `only_tradable=False`（硬编码 ✗）**不是功能缺失** ✗ —— 交易所自身已在
+    #     `check_order` 里用 `limit_buy/limit_sell` 拦单 ✓；它只是"下单前先筛一遍"的省事层 ✓。
     if not req.volume_threshold:
         _once_log("no-volume-cap",
-                  "[backtest] ⚠ volume_threshold=None ⇒ **无限量理想成交** ✗（结构性偏乐观 ✓）。"
-                  "大资金/小票场景下实际不可实现 ⇒ 解读收益时应按此打折 ✓。")
-    if not req.limit_threshold:
+                  "[backtest] ⚠ volume_threshold=None ⇒ **无限量理想成交** ✗（结构性偏乐观 ✓，"
+                  "大资金/小票场景实际不可实现 ✓）。如需贴近实盘，前端「成交量限制(比例)」填 0.25 之类 ✓。")
+    if req.limit_threshold is None:
         _once_log("no-limit-threshold",
-                  "[backtest] ⚠ limit_threshold=None ⇒ **不设涨跌停约束** ✗（涨停可买、跌停可卖 ✗，"
-                  "系统性偏乐观 ✓）。建议显式传如 0.095 ✓。")
+                  "[backtest] ⚠ limit_threshold=None ⇒ **不设涨跌停约束** ✗（买卖都不受限 ✓，"
+                  "系统性偏乐观 ✓）。⚠ 前端「封板不可交易」默认是**开**的 ✓；"
+                  "只有直接调 API 才会走到这里 ⇒ 建议显式传 0.095/0.1 ✓。")
     if req.volume_threshold is not None:
         volume_threshold = {"all": ("current", "%s * $volume" % float(req.volume_threshold))}
 
