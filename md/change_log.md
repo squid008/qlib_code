@@ -3,6 +3,33 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.50] - 2026-09-22
+
+### Fixed（**训练产物：段号错乱** + **运行中点任务卡片看不到训练产物**）
+
+- **背景**：用户反馈「训练的时候产物不可见啊？那个特征重要性我没看到啊」。
+- **先确认"数据全在"**：`/api/backtest/{id}/artifacts` 返回 **61 段**，每段都有
+  `feature_importance`（12 项 gain）、`params`（超参）、`model_info.num_trees`、
+  **`model_file`（完整 LightGBM 树文本 ~532KB）**、`train_semantics`；磁盘每段还有
+  `model.txt` / `model.pkl` / `test_pl.pkl` / `train_pl.pkl` / 三张图 ⇒ **可复现产物齐全**。
+- **界面看不到 = 两个原因（都修）**：
+  1. ★ **段号错乱**（真 bug）：后端 `load_model_artifacts` 用 `sorted(glob("segment_*"))`
+     = **字符串排序** ⇒ `segment_1, segment_10, segment_11, …, segment_2, …`；而前端段选择器
+     显示「段 {**数组下标**+1}」⇒ **下拉里的「段 3」其实是 `seg11`**。
+     ⇒ ① 后端新增 `_sorted_segment_dirs()`（按**数字段号**排）；② 前端 `ModelArtifacts.tsx`
+     段号改取**真实** `model_info.segment`（`segNoOf()`，双保险）。
+  2. **运行中点任务卡片不加载产物**（前端**刻意**如此）：`handleSelectTask` 原为
+     `if (t.status === 'success')` 才加载，其余状态 `setArtifacts(null)`；结果区又写死
+     `a = (task?.status === 'success' ? artifacts : viewArtifacts) || null`。
+     ⇒ ① 改为**任何状态都尝试加载**（后端 v1.20.49 起对运行中的续测任务也正常返回）；
+     ② 改为 `a = (task ? (artifacts ?? viewArtifacts) : viewArtifacts) || null`。
+     ⚠ 补充：**经历史列表「查看」本来就能看到**（`handleViewResult` 不看状态、总是加载产物）
+     —— 所以此前"看不到"只发生在**点任务卡片**这条路径。
+- **实测**：`tests/test_artifacts_segment_order.py`（3 例：数字排序 / `_seg_no_of_dir` /
+  `/artifacts` 返回顺序）；与 `test_artifact_resume_dir.py`（6 例）合计 **9 passed**；
+  `ruff` **All checks passed**；前端 `npx tsc --noEmit` **exit 0**。
+- **⚠ 生效方式**：前端改动由 Vite **HMR** 生效（必要时刷新页面）；后端需**重启**。
+
 ## [1.20.49] - 2026-09-22
 
 ### Fixed（**续测任务运行期间"看不到产物"** —— 所有产物接口 404）

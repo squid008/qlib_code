@@ -144,13 +144,29 @@ def find_artifact_dir(task_id: str) -> Optional[str]:
     return None
 
 
+def _seg_no_of_dir(path: str) -> int:
+    """从 `.../segment_12` 解出**数字**段号 ✓（解不出 ⇒ 返回极大值 ⇒ 排到最后 ✓）。"""
+    m = re.search(r"segment_(\d+)$", os.path.basename(str(path).rstrip("/\\")))
+    return int(m.group(1)) if m else 10 ** 9
+
+
+def _sorted_segment_dirs(base: str) -> list:
+    """按**数字段号**排序段目录 ✓（★ v1.20.50）。
+
+    ⚠ 原来用 `sorted(glob(...))` = **字符串排序** ✗ ⇒ `segment_1, segment_10, segment_11, …, segment_2,
+    segment_20, …` ✗ ⇒ 前端段选择器按**数组下标**显示「段 N」时**编号全错** ✗（用户 2026-09-22 实测：
+    "下拉里的『段 3』其实是 seg11" ✓）。数字段号也直接来自这里的顺序 ✓。
+    """
+    return sorted(glob.glob(os.path.join(base, "segment_*")), key=_seg_no_of_dir)
+
+
 def load_model_artifacts(task_id: str) -> dict:
     """返回该回测任务训练得到的模型交付物。滚动训练返回 {segments:[...]}；single 返回单段。"""
     base = find_artifact_dir(task_id)
     if base is None:
         raise ArtifactNotFoundError(f"任务 {task_id} 没有可用的模型交付物")
 
-    seg_dirs = sorted(glob.glob(os.path.join(base, "segment_*")))
+    seg_dirs = _sorted_segment_dirs(base)
     if seg_dirs:
         segments = []
         for sd in seg_dirs:

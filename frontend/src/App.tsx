@@ -646,15 +646,13 @@ export default function App() {
       setTask(t)
       setViewResult(null)
       setViewArtifacts(null)
-      // 成功任务：加载训练产物；运行中任务由结果区自动展示已跑段 partial
-      if (t.status === 'success') {
-        try {
-          const a = await getBacktestArtifacts(taskId)
-          setArtifacts(a)
-        } catch {
-          setArtifacts(null)
-        }
-      } else {
+      // ★ v1.20.50：**运行中也要加载训练产物** ✗（原先只有 `success` 才加载 ⇒ 用户"训练时
+      //   看不到特征重要性"✓）。后端 v1.20.49 起对**运行中的续测任务**也能正常返回产物 ✓；
+      //   运行中的净值/分层/IC 仍走 partial ✓（下方结果区照旧）。
+      try {
+        const a = await getBacktestArtifacts(taskId)
+        setArtifacts(a)
+      } catch {
         setArtifacts(null)
       }
     } catch (e) {
@@ -1746,7 +1744,9 @@ export default function App() {
           const shownRunning = shownStatus === 'running' || shownStatus === 'pending'
           const partialRunning = partialStatus === 'running' || partialStatus === 'pending'
           const r = (task?.status === 'success' ? task.result : viewResult?.result) || null
-          const a = (task?.status === 'success' ? artifacts : viewArtifacts) || null
+          // ★ v1.20.50：只要"当前展示的是某个实时任务"就用它的产物 ✓（原先限定 `success` ✗ ⇒
+          //   运行中点任务卡片永远看不到训练产物 ✓）；没有实时任务时才用历史查看的那份 ✓。
+          const a = (task ? (artifacts ?? viewArtifacts) : viewArtifacts) || null
           // 运行中：实时任务 partial；查看历史：viewResult 携带的 partial（任务已停止但保留已跑段）
           const partial =
             task?.status === 'running'

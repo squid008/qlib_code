@@ -40,6 +40,17 @@ export default function ModelArtifacts({ artifacts, taskId }: Props) {
   const isLinear = !!active.linear
   const featureNames = active.feature_names || []
 
+  // ★ v1.20.50：段号一律取后端给的 `model_info.segment`（如 "seg11" ⇒ 11 ✓）。
+  //   ⚠ 原先直接显示「段 {数组下标+1}」✗ —— 而后端 `segments` 的顺序曾是**字符串序**
+  //   （`seg1, seg10, seg11…` ✗）⇒ 编号会错 ✓（用户 2026-09-22 实测：下拉里的「段 3」其实是 seg11 ✓）。
+  //   后端 v1.20.50 已改为**按数字段号排序** ✓；这里再取真实段号，双保险 ✓。
+  const segNoOf = (m?: ModelArtifactsType | null, fallbackIdx?: number): string => {
+    const raw = String(m?.model_info?.segment ?? '').replace(/[^0-9]/g, '')
+    const n = Number(raw)
+    if (Number.isFinite(n) && n > 0) return String(n)
+    return fallbackIdx != null ? String(fallbackIdx + 1) : '?'
+  }
+
   const downloadModel = () => {
     if (!active.model_file) return
     const blob = new Blob([active.model_file], { type: 'text/plain;charset=utf-8' })
@@ -117,9 +128,9 @@ export default function ModelArtifacts({ artifacts, taskId }: Props) {
               onChange={(e) => setSegIdx(Number(e.target.value))}
               className="border rounded px-2 py-1 text-sm"
             >
-              {artifacts.segments!.map((_, i) => (
+              {artifacts.segments!.map((seg, i) => (
                 <option key={i} value={i}>
-                  段 {i + 1}
+                  段 {segNoOf(seg, i)}
                 </option>
               ))}
             </select>
