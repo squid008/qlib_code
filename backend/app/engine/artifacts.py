@@ -40,6 +40,14 @@ def _extract_model_artifacts(model, dataset, req: BacktestRequest, seg_label: st
         "linear": None,
         "model_file": None,
         "feature_importance": None,
+        # ★★ v1.20.48：**训练口径戳** ✓（复用权重 / 断点续跑前比对 ✓ 见 `_verify_reuse_train_semantics`）
+        #   为什么需要：`_verify_reuse_feature_order` 只比对**特征顺序** ✗ —— 训练代码改了
+        #   （v1.20.46 把 `valid` 拆独立验证集 ✓、修分层前视 ✓、改标签口径 ✓）它照样放行 ✗
+        #   ⇒ **静默吃旧口径模型** ✗（2026-09-22 实测事故：前 3 段是 `valid == train` 泄漏口径
+        #   训的模型、后 60 段是新口径现场训练 ✓ ⇒ 同一张净值图混两套训练口径 ✗，而净值
+        #   **累乘** ⇒ 整条曲线被抬高 ✗）。
+        "train_semantics": _current_train_semantics(),
+        "train_semantics_info": _train_semantics_info(req),
     }
 
     # 1) 特征列表（从 handler 取特征列名）
@@ -282,6 +290,120 @@ def _dataset_feature_names(dataset) -> Optional[list]:
     except Exception:
         pass
     return None
+
+
+def _find_artifact_base(task_id: str) -> Optional[str]:
+    """定位某次回测的 artifacts 目录（`*_<task_id>` 优先；不存在 ⇒ None ✓）。"""
+    import glob
+    try:
+        from ..config import WORK_DIR
+        artifacts_root = os.path.join(WORK_DIR, "artifacts")
+    except Exception:                                      # noqa: BLE001
+        artifacts_root = os.path.join(os.path.abspath("."), "artifacts")
+    dirs = glob.glob(os.path.join(artifacts_root, "*_" + task_id))
+    if not dirs:
+        dirs = glob.glob(os.path.join(artifacts_root, task_id))
+    return dirs[-1] if dirs else None
+
+
+def _current_train_semantics() -> str:
+    """当前**训练口径**语义版本（★ v1.20.48 ✓）。
+
+    ⚠ 惰性导入 ✓：`qlib_engine` 在模块级 import 本模块 ✓ ⇒ 这里不能在模块级反向 import
+    （会形成循环依赖 ✗）。真值定义在 `qlib_engine.TRAIN_SEMANTICS` ✓（改训练口径时在那里递增 ✓）。
+    """
+    try:
+        from .qlib_engine import TRAIN_SEMANTICS
+        return str(TRAIN_SEMANTICS)
+    except Exception:                                      # noqa: BLE001
+        return "unknown"
+
+
+def _train_semantics_info(req) -> dict:
+    """训练口径的**可读明细**（写进 `model_artifacts.json` ✓，便于事后比对"到底哪里变了" ✓）。"""
+    def _g(name):
+        v = getattr(req, name, None)
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            return v
+        return str(v)
+
+    return {
+        "semantics": _current_train_semantics(),
+        "model": _g("model"),
+        "feature": _g("feature"),
+        "split_mode": _g("split_mode"),
+        "label_horizon": _g("label_horizon"),
+        "price_adjust": _g("price_adjust"),
+        "universe": _g("universe"),
+        "n_selected_features": len(getattr(req, "selected_features", None) or []),
+        "n_custom_formulas": len(getattr(req, "custom_formulas", None) or []),
+    }
+
+
+def _read_train_semantics(task_id: str, seg_no=None) -> Optional[str]:
+    """读某次回测训练时的**训练口径戳**（`model_artifacts.json` 的 `train_semantics` ✓）。
+
+    v1.20.48 之前的产物没有这个字段 ⇒ 返回 None ✓（= "无法证明口径一致" ✓ 见调用方）。
+    """
+    import json
+    base = _find_artifact_base(task_id)
+    if not base:
+        return None
+    candidates = []
+    if seg_no is not None:
+        candidates.append(os.path.join(base, "segment_%s" % seg_no, "model_artifacts.json"))
+    candidates.append(os.path.join(base, "model_artifacts.json"))
+    for cp in candidates:
+        if os.path.exists(cp):
+            try:
+                with open(cp, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                v = d.get("train_semantics")
+                if v:
+                    return str(v)
+            except Exception:                              # noqa: BLE001
+                continue
+    return None
+
+
+def _verify_reuse_train_semantics(load_from: str, seg_no=None) -> None:
+    """复用模型前校验**训练口径**一致性（★ v1.20.48 ✓）。
+
+    和 `chip_store.chip_meta_state` 同一套思路 ✓：**宁可挡住，也别静默复用旧口径** ✗。
+      · 戳在且与当前一致 ⇒ 放行 ✓；
+      · 戳不一致 ⇒ 报错 ✗；
+      · **没有戳**（v1.20.48 之前的产物 ✓）⇒ 也报错 ✗（无法证明一致 ✓）。
+    ⚠ 源任务目录都找不到时**不报错** ✓ —— 交给 `_load_model_object` 走"未找到可复用权重" ✓
+      （避免把"任务被删了"误报成"口径不一致" ✗）。
+    """
+    if _find_artifact_base(load_from) is None:
+        return
+    got = _read_train_semantics(load_from, seg_no)
+    want = _current_train_semantics()
+    if got and got == want:
+        return
+    where = ("task %s" % load_from) if seg_no is None else ("task %s·段%s" % (load_from, seg_no))
+    if not got:
+        raise ValueError(
+            "复用模型失败：源模型（%s）**没有训练口径戳** ✗\n\n"
+            "它是 v1.20.48 之前训练的产物 ⇒ 无法确认与当前训练口径（%s）一致。\n"
+            "为什么必须挡住：v1.20.46 已把 `valid` 改成**独立验证集**（原先 `valid == train` ✗\n"
+            "⇒ early_stopping 在训练集上做、模型选择失真），并修了分层 1 日前视。\n"
+            "旧口径模型混进新回测 ⇒ 同一张净值图混两套训练口径，而净值是**累乘**的\n"
+            "⇒ 整条曲线被抬高 ✗（2026-09-22 就是这么出事的）。\n\n"
+            "处理：把【复用模型权重】关掉（刷新页面后重填参数，或走 API 提交）⇒ 重新训练 ✓。"
+            % (where, want)
+        )
+    raise ValueError(
+        "复用模型失败：训练口径不一致 ✗\n"
+        "  源模型（%s）训练口径 = %s\n"
+        "  当前代码训练口径   = %s\n\n"
+        "口径包含：训练/验证拆分、标签（label_horizon/对齐）、特征集/自定义公式/复权方式、\n"
+        "股票池过滤口径、以及筹码等物化字段的口径。\n"
+        "口径变过就不能复用（会混口径，且净值累乘 ⇒ 结果失真 ✗）。\n\n"
+        "处理：关掉【复用模型权重】重新训练 ✓（确要复用，就必须与源口径一致）。"
+        % (where, got, want)
+    )
 
 
 def _verify_reuse_feature_order(current_names: Optional[list], load_from: str, seg_no=None) -> None:

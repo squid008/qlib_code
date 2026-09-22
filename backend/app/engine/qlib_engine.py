@@ -67,6 +67,7 @@ from .artifacts import (
     _read_train_feature_names,
     _dataset_feature_names,
     _verify_reuse_feature_order,
+    _verify_reuse_train_semantics,
     _load_model_object,
     _task_has_segment_models,
     _sanitize_json,
@@ -316,6 +317,26 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
 
     _report(100, "完成")
     return result
+
+
+# ★★ v1.20.48：**训练口径语义版本** —— 只要"模型是怎么训出来的"变了，就必须**递增** ✗。
+#   用途：写进每段的 `model_artifacts.json`（`train_semantics` ✓）与 `seg_result.json` ✓，
+#   复用权重 / 断点续跑前比对 ✓ ⇒ 不一致就**响亮报错 / 重算** ✗（而不是静默吃旧口径产物 ✗）。
+#   ⚠⚠ **语义清单（改任一项都要递增 ✓ 并让旧产物作废 ✗）**：
+#     · **训练/验证拆分**（`valid` 是否独立 ✓、比例 ✓）—— 即下面 `_build_dataset` 的 valid-split ✓
+#     · **标签口径**（`label_horizon`、标签表达式、分层收益 t+k 对齐 ✓）
+#     · **特征口径**（特征集 / 自定义公式 / 复权方式 / 因子计算实现 ✓）
+#     · **股票池过滤口径**（当日真实成分 / 池掩码 ✓）
+#     · **数据口径**（`chip_*` 等物化字段的 `chip_semantics` ✓ 变了也在这里递增 ✓）
+#   历史：`1.20.46` = **valid 拆独立验证集**（原先 `valid == train` ✗ ⇒ early_stopping 在训练集
+#         自身上做、模型选择失真 ✓）+ 分层 1 日前视修正（ret t+1 → t+2 ✓）+ signals `i_start` 恒 0 ✓。
+#         ⇒ **此前的任何模型产物 / 段结果缓存都视为过期** ✗（没有戳 = 过期 ✓）。
+#         ⚠ 2026-09-22 实测事故：`878742f5a733`（07:13 训练 ⇒ 早于 08:27 的修复 ✗）的 3 段模型被
+#           10:38 那次回测直接复用 ✗ ⇒ 前 3 段是**泄漏口径**、后 60 段是新口径 ✓ ⇒ 净值**累乘** ⇒
+#           整条曲线被抬高 ✗ —— 所以**只比对特征顺序是不够的** ✗✓。
+#   ⚠ 本常量跟的是**口径**而不是发版号 ✓（同 `chip_store.CHIP_SEMANTICS` ✓）⇒ 单纯加日志/UI
+#     之类改动**不要**动它 ✓，否则每个已有产物都会白作废一次 ✗。
+TRAIN_SEMANTICS = "1.20.46"
 
 
 def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg,
@@ -674,6 +695,8 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
             raise ValueError("未找到可复用的模型权重（task %s）" % load_from)
         # 方案B：校验特征顺序一致性，防止因子库顺序变化导致静默错位
         _verify_reuse_feature_order(_dataset_feature_names(dataset), load_from)
+        # ★ v1.20.48：再校验**训练口径**（特征顺序一致 ≠ 训练口径一致 ✗；详见 TRAIN_SEMANTICS）
+        _verify_reuse_train_semantics(load_from)
 
     _report(40, "开始训练与预测...")
     exp_name = "backtest_web"
@@ -802,6 +825,9 @@ def _save_segment_result(art_dir, seg_no, nav_points, trades, total_return, end_
             "layers": analysis.get("layers") if analysis else None,
             "ic_train": analysis.get("ic_train") if analysis else None,
             "ic_test": analysis.get("ic_test") if analysis else None,
+            # ★ v1.20.48：**训练口径戳** ✓ —— 段结果缓存（断点续跑/续测用）同样会"静默沿用旧口径" ✗
+            #   （2026-09-21 夜事故：同一张图混两套筹码/训练口径 ✓）⇒ 见 `_load_segment_result` 的校验 ✓
+            "train_semantics": TRAIN_SEMANTICS,
         }
         with open(_seg_result_path(art_dir, seg_no), "w", encoding="utf-8") as f:
             _json.dump(data, f, ensure_ascii=False, default=str)
@@ -830,6 +856,16 @@ def _load_segment_result(art_dir, seg_no):
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = _json.load(f)
+        # ★★ v1.20.48：段缓存也要校验**训练口径** ✗ —— 否则"续测/断点续跑"会静默沿用旧口径的段
+        #   （2026-09-21 夜：前几段旧筹码 + 后几段新筹码 ⇒ 净值虚高且不可信 ✗）。不一致（含**无戳**
+        #   的 v1.20.48 之前产物 ✓）⇒ 视作**缓存无效** ✓ ⇒ 调用方**重算该段** ✓（宁可慢，也别造假 ✓）。
+        #   ⚠ 重算是安全的 ✓：`_run_rolling` 逐段顺序推进 ✓，重算段的 `global_nav` 由上一段结果推出 ✓
+        #     （前段若也无效同样被重算 ⇒ 链条不会被截断 ✓）。
+        if str(data.get("train_semantics") or "") != TRAIN_SEMANTICS:
+            _once_log("seg-cache-stale",
+                      "[resume] ⚠ 段%s 的缓存是旧训练口径（缓存=%s / 当前=%s）⇒ **重算该段** ✗"
+                      % (seg_no, data.get("train_semantics") or "<无戳>", TRAIN_SEMANTICS))
+            return None
         test_pl = None
         p = os.path.join(os.path.dirname(path), "test_pl.pkl")
         if os.path.exists(p):
@@ -1093,6 +1129,10 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             if model is not None:
                 # 方案B：校验特征顺序一致性，防止因子库顺序变化导致静默错位
                 _verify_reuse_feature_order(_dataset_feature_names(dataset), load_from, seg_no=seg_no)
+                # ★ v1.20.48：再校验**训练口径**（特征顺序一致 ≠ 训练口径一致 ✗）——
+                #   ⚠ 若源任务只有前 k 段，第 k+1 段起 `_load_model_object` 返回 None ⇒ 本段
+                #   现场训练 ✓；只要戳一致就合法 ✓（rolling 是 point-in-time，复用的是同窗模型 ✓）。
+                _verify_reuse_train_semantics(load_from, seg_no=seg_no)
                 reuse_model = True
         if model is None:
             model = init_instance_by_config(_model_config(req.model, req))
