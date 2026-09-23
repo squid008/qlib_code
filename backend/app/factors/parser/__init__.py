@@ -18,7 +18,7 @@ from .parser import parse_formula, ParseError
 from .lexer import LexerError
 from .semantic import resolve, SemanticError
 from .codegen import generate, CodeGenError
-from .macros import expand_calls, build_library, extract_params
+from .macros import expand_calls, build_library, extract_params, apply_param_defaults
 
 # ---------------------------------------------------------------------------
 # 粘贴文本归一化（2026-09-16：用户贴「二浪加强」报"语法错误"，查实是**看不见/全角的字符**）
@@ -133,8 +133,14 @@ def translate_formula(text: str, patchable: bool = False,
     try:
         # 公式间调用（v1.19.87）：先摘掉 `参数 K=1;` 声明行（它不是合法语句，必须在解析前剥离），
         # 再把"命中已保存公式名"的 Var/FuncCall 换成被调公式的输出树（见 parser/macros.py）。
-        body, _params = extract_params(src)
+        body, params = extract_params(src)
         formula = parse_formula(body)
+        # ★★ v1.20.57：**顶层公式自己声明的 `参数 K=1;` 默认值必须代入** ✗→✓
+        #   原先这里把 `params` **丢掉**了 ✗（只摘掉声明行 ✓）⇒ 凡引用参数名的地方都变成
+        #   "未定义变量" ✗（用户 2026-09-23 误以为是"名字里带数字不行" ✗，实测纯中文同样失败 ✓）。
+        #   ⚠ 必须在 `resolve`（变量内联）与 `expand_calls` **之前**做 ✓ —— 否则参数名会被
+        #     判成"未定义变量"或误当成"公式库调用" ✗（与 `_callee_tree` 的顺序一致 ✓）。
+        formula = apply_param_defaults(formula, params)
         if library:
             formula = expand_calls(formula, library)
         expr = resolve(formula)          # 校验单输出 + 变量内联

@@ -141,6 +141,31 @@ def _subst(expr: Expr, binding: Dict[str, Expr], locals_: set) -> Expr:
     return expr
 
 
+def apply_param_defaults(formula: Formula, params: Dict[str, str]) -> Formula:
+    """★ v1.20.57：把**顶层公式自己声明的** `参数 K=1;` 默认值代入 AST ✓。
+
+    为什么必须做（2026-09-23 用户报「`深跌10` 这种**带数字的**名不能做输出变量吗？这不科学吧，
+    通达信都支持啊」✓ —— 实测与数字**毫无关系** ✗，纯中文名一样报错 ✓）：
+    `translate_formula` 原先只把声明行**摘掉**、把 `params` **整个丢掉** ✗ ⇒ 顶层公式里凡引用参数名
+    的地方都变成"未定义变量" ✗ —— 有公式库时报「引用了未定义的变量或函数：X」✓，
+    没库时报「未展开的变量引用：X」✗ ⇒ **两条文案不同，极易误判成"某个名字不被允许"** ✗✓。
+    （⚠ `参数` 的**跨公式传参**一直是好的 ✓ —— 那是 `_callee_tree` 的绑定路径 ✓；
+     漏的只有"本公式自己用默认值"这一条 ✗。）
+
+    口径与 `_callee_tree` **完全一致** ✓：① 逐个解析默认值表达式 ✓；② **局部优先** ——
+    本公式自己的变量名/输出名若与参数同名，则**不替换**（保持"同名遮蔽"既有语义 ✓，
+    不额外报错 ✗ —— 否则会打断"参数声明了但实际用局部同名变量"的历史公式 ✓）。
+    """
+    if not params:
+        return formula
+    binding: Dict[str, Expr] = {k: parse_param_expr(v) for k, v in params.items()}
+    locals_ = {a.name.upper() for a in formula.assigns} | {o.name.upper() for o in formula.outputs}
+    return Formula(
+        assigns=[Assign(a.name, _subst(a.value, binding, locals_)) for a in formula.assigns],
+        outputs=[Output(o.name, _subst(o.value, binding, locals_)) for o in formula.outputs],
+    )
+
+
 def _callee_tree(name: str, args: List[Expr], library: Dict[str, str],
                  stack: Tuple[str, ...]) -> Expr:
     """编译被调公式 ⇒ 返回它的**输出表达式单棵树**（参数已绑定、内部调用已展开）。"""
@@ -204,4 +229,5 @@ def expand_calls(formula: Formula, library: Dict[str, str],
                    outputs=[Output(o.name, walk(o.value)) for o in formula.outputs])
 
 
-__all__ = ["extract_params", "parse_param_expr", "build_library", "expand_calls", "MAX_DEPTH"]
+__all__ = ["extract_params", "parse_param_expr", "build_library", "expand_calls",
+           "apply_param_defaults", "MAX_DEPTH"]

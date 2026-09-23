@@ -329,6 +329,19 @@ IGNORED_OPS = {
 }
 
 
+def _is_const_int_expr(e: Expr) -> bool:
+    """`e` 能否**常量折叠成整数** ✓（`Num` ✓，或纯常量算术如 `2*3` ✓、参数代入后的表达式 ✓）。
+
+    用途：① 决定"滚动算子走 qlib 内建还是 `DYN_*`"；② `_CONST_WINDOW_ONLY` 的常量窗口守卫。
+    ⚠ **不能只看 `isinstance(e, Num)`** ✗（2026-09-23 实测）：`参数 N=2*3;` 代入后窗口的 AST 是
+    `BinOp` ✗（但值确实是常量 ✓）⇒ 只看类型会 ① 白白走慢路径（生成 `DYN_MEAN($close,6)` 而不是
+    `Mean($close,6)` ✓ 数值相同但慢 ✓）；② 在 `EMA/WMA/...` 上**误报**"周期必须是常量整数" ✗
+    （用户明明写的就是常量 ✓）。
+    """
+    v = _const_fold(e, allow_div=True)
+    return v is not None and math.isfinite(v) and float(v).is_integer()
+
+
 class CodeGen:
     def __init__(self, patchable: bool = False):
         # patchable=True 时，遇到外挂算子返回特殊占位（形如 PATCH:FILTER(...)），供后续 M3 接入
@@ -486,14 +499,17 @@ class CodeGen:
             if len(e.args) != 2:
                 raise CodeGenError(f"{name} 需要 2 个参数：{name}(X, 周期)")
             # 常量窗口用标准 qlib 算子（性能好）；变量窗口逐位置计算
-            q = _DYN_WINDOW_OPS[name] if not isinstance(e.args[1], Num) else FUNC_QLIB[name]
+            # ⚠ v1.20.57：用 `_is_const_int_expr`（**常量折叠**后判断 ✓）而不是 `isinstance(Num)` ✗
+            #   —— 参数代入后的常量表达式（`参数 N=2*3;` ⇒ AST 是 BinOp ✓）也能走内建快路径 ✓。
+            q = (_DYN_WINDOW_OPS[name] if not _is_const_int_expr(e.args[1])
+                 else FUNC_QLIB[name])
             inner = ",".join(self._g(a) for a in e.args)
             return f"{q}({inner})"
         # ★ v1.20.55：**只能是常量窗口**的滚动算子 —— 变量窗口在这里就报清楚 ✗
         #   否则会生成 `Mean(X, 表达式)` 之类 ⇒ 运行期被 pandas 顶回来，报
         #   `window must be an integer 0 or greater` ✗（用户 2026-09-23 就是被这句难住的 ✓：
         #   既没说是哪个函数、也没说哪一行的周期写错了 ✓）。
-        if name in _CONST_WINDOW_ONLY and len(e.args) >= 2 and not isinstance(e.args[-1], Num):
+        if name in _CONST_WINDOW_ONLY and len(e.args) >= 2 and not _is_const_int_expr(e.args[-1]):
             raise CodeGenError(
                 "%s 的周期必须是**常量整数** ✗（当前写成了表达式）\n"
                 "  · 想按位置用不同窗口 ⇒ 用 MA/MEAN（已支持动态窗口 ✓）或 HHV/LLV/COUNT/REF/SUM ✓；\n"

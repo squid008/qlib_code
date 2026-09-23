@@ -100,3 +100,56 @@ def test_without_library_behaviour_unchanged():
     """不给 library ⇒ 与以前完全一致（老调用点不受影响）。"""
     t = translate_formula("A:MA(CLOSE,5);")
     assert t.name == "A" and "Mean($close,5)" in t.expression
+
+
+# ---------------- ★ v1.20.57：**顶层公式自己的 `参数` 默认值也要代入** ----------------
+# 用户 2026-09-23：「`深跌10` 这种**带数字的**名不能做输出变量吗？这不科学吧，通达信都支持啊」✓
+# 实测结论：**与数字毫无关系** ✗ —— `translate_formula` 原先只把 `参数 …;` 声明行**摘掉**、
+# 把 `params` **整个丢掉** ✗ ⇒ 顶层公式凡引用参数名处都成"未定义变量" ✗（纯中文名同样失败 ✓）。
+
+def test_toplevel_param_default_is_substituted():
+    """用户原案：带数字的中文参数名 ⇒ 默认值必须代入 ✓。"""
+    t = translate_formula("参数 深跌10=5;\n输出:CLOSE>MA(CLOSE,深跌10);")
+    assert t.name == "输出"
+    assert "Mean($close,5)" in t.expression
+    assert "深跌10" not in t.expression
+
+
+def test_toplevel_param_chinese_name_also_works():
+    """对照组：**纯中文**参数名 ✓（证明原报错与"数字"无关 ✗）。"""
+    t = translate_formula("参数 深跌=5;\n输出:CLOSE>MA(CLOSE,深跌);")
+    assert "Mean($close,5)" in t.expression
+
+
+def test_multiple_param_defaults_and_expression_default():
+    """多个参数 + 默认值是**表达式**（`_split_top_commas` 支持 `B=MA(CLOSE,5)` 这类）。
+
+    ⚠ `参数 N=2*3;` 代入后 AST 是 `BinOp` ✗ ⇒ v1.20.57 起用**常量折叠**判窗口 ✓
+      ⇒ 仍走内建 `Mean($close,6)`（而不是慢路径 `DYN_MEAN` ✓）。
+    """
+    t = translate_formula("参数 A=3, B=5;\n输出:A*CLOSE+MA(CLOSE,B);")
+    assert "Mul(3,$close)" in t.expression and "Mean($close,5)" in t.expression
+    t2 = translate_formula("参数 N=2*3;\n输出:MA(CLOSE,N);")
+    assert "Mean($close,6)" in t2.expression and "DYN_MEAN" not in t2.expression
+
+
+def test_param_used_in_output_name_position_and_assign():
+    """参数既能用在中间变量里、也能用在输出表达式里 ✓（且输出名可与参数无关 ✓）。"""
+    t = translate_formula("参数 K=2;\n中期:=MA(CLOSE,K);\n强势:CLOSE>中期*K;")
+    assert "Mean($close,2)" in t.expression and "Mul(Mean($close,2),2)" in t.expression
+
+
+def test_local_variable_still_shadows_param():
+    """⚠ 局部优先语义**不变** ✓：本公式里同名的 `:=` 变量仍然是它自己（不替换成参数默认值）✓。
+
+    口径与 `macros._callee_tree`（被调公式传参）一致 ✓ —— 见 `apply_param_defaults` 的 `locals_` ✓。
+    """
+    t = translate_formula("参数 K=1;\nK:=99;\n用:K+CLOSE;")
+    assert "99" in t.expression and "$close" in t.expression
+
+
+def test_param_defaults_also_apply_when_library_present():
+    """带公式库时同样要代入 ✓（原先会误报"引用了未定义的变量或函数"✗）。"""
+    lib = build_library(["M:MA(CLOSE,5);"])
+    t = translate_formula("参数 K=2;\n输出:CLOSE+M*K;", library=lib)
+    assert "Mean($close,5)" in t.expression and "Mul(Mean($close,5),2)" in t.expression
