@@ -3,6 +3,41 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.59] - 2026-09-23
+
+### Fixed（**公式库缓存的 `expression` 陈旧** —— "代码修好了，单因子测试照旧报错"）
+
+- **用户报障**：「还是报错啊：深跌10（周期 2 天）/ 深跌2（周期 2 天）：特征计算失败:
+  'numpy.bool' object has no attribute 'name'」（发生在 v1.20.58 修完之后 ✓）。
+- **根因（真机定位 ✓ —— 与 v1.20.58 的代码无关 ✗）**：公式库里存的 `expression` 是**编译产物（缓存）** ✓，
+  把它单独拿去求值 ⇒ **一字不差复现**用户报错 ✓：
+  `If(Lt(10,3),Div(Count(...),20),Mean(...))` ⇒ `'numpy.bool' object has no attribute 'name'` ✓。
+  ⚠ **两条链的口径不同**（这正是"修好了还报错"的原因 ✓）：
+  · **回测** ⇒ 请求传的是**原文** ✓（`custom_formulas: List[str]` = 文本 ✓）⇒ 引擎**重译** ✓ ⇒ 早已正常 ✓；
+  · **单因子测试** ⇒ 前端把库里的 **`expression`** 直接塞进 `SingleFactorTestFactor.expression` ✗ ⇒
+    **吃的是缓存** ✗ ⇒ 修复前的旧串继续报错 ✓✓。
+  ⚠ 上一版写的"不需要重新保存公式"是**错的** ✗（对回测成立 ✓、对单因子测试**不成立** ✗）—— 此处更正 ✓。
+- **修复（一劳永逸 ✓，与 `TRAIN_SEMANTICS` / `CHIP_SEMANTICS` 同一套路 ✓）**：
+  1. `parser/codegen.`**`CODEGEN_SEMANTICS = "1.20.58"`** ✓ —— **代码生成语义版本**
+     （值取"**生成结果最后变化的版本**" ✓，不是发版号 ✗；单纯加注释/日志/性能重构**不要**动它 ✓，
+     否则 60+ 条公式会白重编一次 ✓）。
+  2. `services/custom_formulas.`**`refresh_stale_expressions(items)`** ✓ —— 戳过期（**含没有戳**的旧条目 ✓）
+     就按 `text` **重新编译** ✓；库按**全部**条目原文构建 ✓（公式间调用可见 ✓，与
+     `handler._translate_all` 同口径 ✓）；**编译失败保留旧串、且不推进戳** ✓（下次重试 ✓；
+     绝不能让整个列表接口 500 ✗）。它是**纯函数式**的（只动传入列表、不碰磁盘 ✓）⇒ 便于单测 ✓。
+  3. `list_custom_formulas()` 读到时**自动刷新并写回** ✓ —— 该 GET 会写盘 ✗，但性质是**缓存刷新**
+     （`expression` 完全由 `text` 决定 ✓、不改任何用户语义 ✓）⇒ 换来"**永远不必手动重存公式**" ✓；
+     `create_custom_formula` / `update_custom_formula` 也都会打上当前戳 ✓。
+- **实测（真机 ✓）**：先备份公式库（`custom_formulas.json.bak_before_recompile` ✓）再执行刷新 ⇒
+  `↻ 深跌10 / 深跌2 / 深跌20 / 深跌60 / 深跌30 的 expression 已按原文重编` ✓；62 条**全部带戳** ✓；
+  · `深跌10` ⇒ `Mean(Div(Sub($close,Min($close,10)),…),20)` ⇒ **qlib 求值成功** ✓（末值 0.4075 ✓）
+  · `深跌2` ⇒ `Div(Count(Le($close,Mean($close,2)),20),20)` ⇒ **求值成功** ✓（末值 1.0 ✓）
+  · **批量扫描全部 62 条**：疑似"纯常量子树"的 = **0 条** ✓（无同类地雷 ✓）。
+- **测试**：新增 `tests/test_formula_cache_refresh.py`（4 例：陈旧重编 ✓ / 幂等 ✓ /
+  坏公式保留旧串且不推进戳 ✓ / 重编时库可见 ✓）；**全量 493 passed** ✓；`ruff` **All checks passed** ✓。
+- **⚠ 结论**：以后代码生成逻辑再变，只需把 `CODEGEN_SEMANTICS` 递增一次 ⇒ 所有公式**自动重编** ✓，
+  用户**不必**逐条重存 ✓（本轮 5 条 `深跌*` 已自动修好 ✓）。
+
 ## [1.20.58] - 2026-09-23
 
 ### Fixed（**纯常量的「比较 / 逻辑」子树没被折叠** —— `'numpy.bool' object has no attribute 'name'`）

@@ -51,6 +51,25 @@ class CodeGenError(Exception):
     pass
 
 
+# ★★ v1.20.59：**代码生成语义版本** —— 只要"同一段原文会生成**不同的** qlib 表达式"，就必须递增 ✗。
+#
+# 为什么需要（2026-09-23 实测，用户「还是报错啊」✓）：
+#   公式库里存的 `expression` 是**编译产物**（缓存 ✓）；生成逻辑一改，它就是**陈旧缓存** ✗ ——
+#   而 **单因子测试** 这条链是**直接拿缓存里的 `expression` 去求值**的 ✗
+#   （`SingleFactorTestFactor.expression` ✓ 前端从 `/api/factors/custom-formulas` 取 ✓）；
+#   回测那条链传的是**原文** ✓（`custom_formulas: List[str]` = 文本 ✓）会重译 ✓。
+#   ⇒ 于是出现最误导的现象：**代码已经修好、回测能用，但单因子测试照旧报错** ✗✓
+#   （`深跌10` 修完 v1.20.58 后仍报 `'numpy.bool' object has no attribute 'name'` ✓
+#    —— 因为库里存的还是修复前编译的串 ✓）。
+# ⇒ 处理（与 `qlib_engine.TRAIN_SEMANTICS` / `chip_store.CHIP_SEMANTICS` 同一套路 ✓）：
+#   `services/custom_formulas.list_custom_formulas()` 读到条目时比对本戳 ✓，
+#   **不一致（含没有戳的旧条目）⇒ 按 `text` 重新编译并写回** ✓✓。
+# ⚠ 值取「**生成结果最后变化的版本**」✓（不是发版号 ✗）—— 单纯加注释/日志/性能重构**不要**动它 ✓，
+#   否则 60+ 条公式会白重编一次 ✓（无害但没必要 ✓）。
+# 历史：`1.20.58` = 纯常量**比较 / 逻辑**折叠 + `IF(恒定条件,…)` 整棵选支 ✓（会改变生成结果 ✓）。
+CODEGEN_SEMANTICS = "1.20.58"
+
+
 # ---- 行情字段映射（大写 → qlib $field）----
 FIELD_MAP = {
     "CLOSE": "$close", "C": "$close",
