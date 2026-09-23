@@ -300,6 +300,7 @@ export default function FormulaEditor({
     //   实现：拖动改的是**外层的内联 `height`**（浏览器直接写 style），而 `bodyHeight` 在 React 里
     //   是**常量**、不参与 diff ⇒ 之后的重渲染**不会**把用户拖出来的高度冲掉 ✓。
     //   ✗ 千万别把 height 改成随 state 变化的动态值（那样每次渲染都会弹回默认高度）。
+    <>
     <div
       className="flex flex-col border rounded bg-white dark:bg-slate-800 overflow-hidden resize-y"
       style={{ height: bodyHeight, minHeight: M.lineHeight * 3 + 12 }}
@@ -419,9 +420,13 @@ export default function FormulaEditor({
           />
         </div>
       </div>
-      {/* Ctrl+F 查找条（textarea 只能高亮一处 ⇒ 用选区跳转 + 计数提示） */}
+      </div>
+      {/* ★ v1.20.54：查找条移到编辑框**外面** ✓
+          原来它是编辑框（固定 `height` + `overflow-hidden` ✗）的**内部子元素** ⇒ 一出现就要么
+          挤掉编辑区一行、要么溢出到下方提示文字上 ⇒ 用户 2026-09-23 截图报"搜索的时候重叠了" ✗。
+          移到外部后：① 绝不会被裁切/挤压 ✓；② 查找时编辑区**保持原高度** ✓；③ 与下方提示各自成行 ✓。 */}
       {findOpen && (
-        <div className="shrink-0 flex items-center gap-1 px-2 py-1 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-[11px]">
+        <div className="mt-1 flex items-center gap-1 px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-[11px]">
           <input
             ref={findInputRef}
             value={query}
@@ -476,6 +481,6 @@ export default function FormulaEditor({
           </button>
         </div>
       )}
-    </div>
+    </>
   )
 }

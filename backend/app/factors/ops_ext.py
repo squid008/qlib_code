@@ -1672,6 +1672,78 @@ class FACTOR_END(ExpressionOps):
         return np.full(len(s), last, dtype=np.float64)
 
 
+# ---------------- Sqrt / Mod：qlib **没有**这两个算子（v1.20.54 补） ----------------
+#
+# ⚠ 为什么必须自己实现 ✗（2026-09-23 用户报障「强龙起势：The operator [Sqrt] is not registered」✓）：
+#   `parser/codegen.py` 的 `SQRT → "Sqrt"` / `MOD → "Mod"` 这两个映射**一直指向不存在的算子** ✗
+#   —— 本机 qlib（源码版）注册表里**没有** `Sqrt`/`Mod`（实测：`hasattr(Operators,'Sqrt')` = False ✓；
+#   而 `Exp`/`Log`/`Power`/`Not` 等在 ✓）。用户一写 `SQRT(...)`/`MOD(...)` 就在面板求值阶段
+#   报 `is not registered` ✗（**编译能过、只在算的时候炸** ✗，所以之前没被发觉 ✓）。
+#
+# ★ 性能口径（用户明确要求 ✓）：直接用 **`np.sqrt` / `np.fmod`** 单次向量化 ✓
+#   —— **不**走 `Power(X,0.5)`（多一层通用幂运算 ✗ 更慢、且负值/0 的边界行为不如 sqrt 直观 ✓）；
+#   也不做逐元素 Python 循环 ✓。结构完全照抄同文件里已在生产使用的 `SGN`/`TRUNC`（单参 elementwise ✓、
+#   返回 `pd.Series(index=…)` 与它们**同型** ✓ —— 注意 `FACTOR_END` 那处"必须返回 ndarray"的教训是针对
+#   **广播成整段常量**的场景 ✓，本类是逐点运算，与 SGN/TRUNC 同类 ✓）。
+
+class Sqrt(ExpressionOps):
+    """SQRT(X)：平方根（`np.sqrt` ✓）。负值 ⇒ NaN（与 numpy/通达信一致 ✓）；NaN（停牌）保持 NaN ✓。"""
+
+    def __init__(self, feature):
+        self.feature = feature
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        return pd.Series(np.sqrt(series.to_numpy(dtype=float)), index=series.index)
+
+    def __str__(self):
+        return "Sqrt({})".format(self.feature)
+
+    def get_longest_back_rolling(self):
+        return self.feature.get_longest_back_rolling()
+
+    def get_extended_window_size(self):
+        return self.feature.get_extended_window_size()
+
+
+class Mod(ExpressionOps):
+    """MOD(A,B)：A 除以 B 的**余数**，**符号随 A**（= 通达信/益盟口径 ✓，用 `np.fmod` ✓）。
+
+    ⚠ 别用 `np.mod`/`%` ✗ —— 那是"符号随 B"（Python/C 风格 ✓），与通达信不一致 ✗：
+    例如 `MOD(-7,3)`：通达信/`fmod` ⇒ **-1** ✓；`np.mod` ⇒ 2 ✗。手册里写的也是"符号随 A" ✓。
+    B=0 ⇒ NaN（不抛异常 ✓）；任一 NaN ⇒ NaN ✓。
+    """
+
+    def __init__(self, feature_left, feature_right):
+        self.feature_left = feature_left
+        self.feature_right = feature_right
+        super().__init__()
+
+    def __str__(self):
+        return "Mod({},{})".format(self.feature_left, self.feature_right)
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        left = self.feature_left.load(instrument, start_index, end_index, *args)
+        right = self.feature_right.load(instrument, start_index, end_index, *args)
+        return pd.Series(np.fmod(np.asarray(left, dtype=float), np.asarray(right, dtype=float)),
+                         index=left.index)
+
+    def get_longest_back_rolling(self):
+        def _lbr(f):
+            return f.get_longest_back_rolling() if isinstance(f, Expression) else 0
+
+        return max(_lbr(self.feature_left), _lbr(self.feature_right))
+
+    def get_extended_window_size(self):
+        def _ext(f):
+            return f.get_extended_window_size() if isinstance(f, Expression) else (0, 0)
+
+        ll, lr = _ext(self.feature_left)
+        rl, rr = _ext(self.feature_right)
+        return max(ll, rl), max(lr, rr)
+
+
 _ALL_OPS = [
     FACTOR_END,          # v1.19.97：前复权用（$close / FACTOR_END($factor)）
     BARSLAST, BARSCOUNT, BARSSINCEN,
@@ -1683,6 +1755,7 @@ _ALL_OPS = [
     SGN, TRUNC, BETWEEN,
     Pow,
     Exp,              # v1.20.34：EXP(X)=e^X（向量化 `np.exp`，与 Sqrt/Log 同路径 ✓）
+    Sqrt, Mod,        # v1.20.54：qlib **没有** Sqrt/Mod（`SQRT`/`MOD` 之前一用就炸 ✓）
     ROUND,
     FILTER, SMA, BARSSINCE, HHVBARS, LLVBARS,
 ]

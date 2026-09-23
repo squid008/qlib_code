@@ -3,6 +3,38 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.54] - 2026-09-23
+
+### Fixed（**`SQRT`/`MOD` 一用就炸**＋**公式编辑器查找条与提示文字重叠**）
+
+- **用户报障两件事**：①「搜索的时候重叠了」；②「强龙起势（周期 60 天）：特征计算失败:
+  The operator [Sqrt] is not registered」。
+- **① `Sqrt`/`Mod` 根本不存在**（真 bug，**藏得很深**）：`codegen` 的 `SQRT → "Sqrt"` /
+  `MOD → "Mod"` 一直指向**不存在的算子** —— 本机 qlib 注册表里**没有** `Sqrt`/`Mod`
+  （`Exp`/`Log`/`Power`/`Not` 都在）。⚠ **隐蔽性**：**编译期完全正常**（公式能保存、`/translate` 也 200），
+  只有**求值**时才抛 `is not registered` ⇒ 用户是在跑特征/回测时才发现。
+  ⇒ 在 `ops_ext.py` 新增两个外挂算子并注册进 `_ALL_OPS`：
+  - **`Sqrt(X)`** = `np.sqrt`（负值 ⇒ NaN，与 numpy/通达信一致；NaN 保持 NaN）；
+  - **`Mod(A,B)`** = **`np.fmod`** ⇒ **符号随被除数**（= 通达信/益盟口径；⚠ 若用 `np.mod`/`%`
+    则符号随除数，例如 `MOD(-7,3)`：fmod ⇒ **-1** / np.mod ⇒ 2 —— 手册写的正是"符号随 A"）。
+  ★ **性能（用户明确要求）**：直接单次向量化 `np.sqrt`/`np.fmod` —— **不**走 `Power(X,0.5)`
+  （多一层通用幂运算、更慢，边界语义也更绕），**无**逐元素 Python 循环；结构照抄同文件里
+  已在生产的 `SGN`/`TRUNC`（同型返回）。
+- **② 顺手清理 `Neg`**：`UNARY_MAP = {"NEG": "Neg"}` 里的 `Neg` **qlib 也不存在**，
+  但 codegen **从来不会生成它**（负数走字面量或 `Mul(-1,X)`）⇒ 改为在 `_g` 里显式处理 `NEG`，
+  把 `UNARY_MAP` 清空（留着只会让下面的守卫误报）。
+- **③ 新增「算子名守卫测试」** `tests/test_operator_names_registered.py`（**防复发**）：
+  断言 `codegen` 映射出的**每个**算子名都在 qlib 注册表里（这类错误以后**立刻红**）；
+  另含 `Sqrt`/`Mod` 的**翻译**与**求值**测试（把 `fmod` vs `np.mod` 的口径差异钉死）。
+  ⚠ 测试写法上**踩过两个坑，别改回去**：① 不能用 `dir(qlib.data.ops)` 判断（本项目外挂算子
+  不在那个模块的属性里 ⇒ 会把 `Exp` 误判成不存在）；② 不能只 `ensure_ops_registered()`
+  （`Operators` 注册表在 `register_all_ops` 之前是**空的** ⇒ 连 `Add`/`Gt` 都会被误判）。
+- **④ 编辑器查找条重叠**（`FormulaEditor.tsx`）：查找条原本是**编辑框内部**的子元素，
+  而编辑框是**固定 `height` + `overflow-hidden`**（为了可拖拽）⇒ 一出现就**挤掉/溢出**到下方
+  提示文字上 ⇒ 移到编辑框**外面**（查找时编辑区也保持原高度）。
+- **测试**：66 passed（守卫 + `NOT` + 公式翻译）；全量见本次提交记录；`ruff` **All checks passed**；
+  前端 `npx tsc --noEmit` **exit 0**。
+
 ## [1.20.53] - 2026-09-23
 
 ### Added（**通达信/益盟/同花顺 `NOT` 逻辑非**）

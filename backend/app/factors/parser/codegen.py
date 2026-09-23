@@ -109,8 +109,12 @@ BINOP_MAP = {
 }
 
 # ---- 一元运算 ----
-# ⚠ `NOT` **不在这里** ✗：它不是"同名的 qlib 算子" ✓，而是展开成 `Eq(X,0)` ⇒ 在 `_g` 里单独分支 ✓。
-UNARY_MAP = {"NEG": "Neg"}
+# ⚠ 这里**故意为空** ✗（v1.20.54 清理）：
+#   · `NOT` ⇒ 展开成 `Eq(X,0)` ✓（在 `_g` 里单独分支 ✓）；
+#   · `NEG` ⇒ 数字字面量直接写负数、复杂表达式写 `Mul(-1,X)` ✓（`_g` 里单独分支 ✓）；
+#   —— 原表里那个 `"NEG": "Neg"` **从来没被生成过** ✗，而 qlib 注册表里也**没有 `Neg`** ✗
+#   （实测 `hasattr(Operators,'Neg')` = False ✓）⇒ 留着只会误导，且会让"算子名守卫测试"误报 ✓。
+UNARY_MAP: dict = {}
 
 
 def _const_fold(e: Expr, allow_div: bool = False):
@@ -313,16 +317,19 @@ class CodeGen:
             #     ④ 语义边界：`X` 为 NaN（停牌）时 `Eq(NaN,0)` ⇒ 0 ✓（"非 X 不成立" ✓，可接受 ✓）。
             if e.op == "NOT":
                 return f"Eq({self._g(e.operand)},0)"
-            op = UNARY_MAP.get(e.op)
-            if op is None:
-                raise CodeGenError(f"不支持的一元运算：{e.op}")
-            if op == "Neg":
+            if e.op == "NEG":
+                # ★ v1.20.54：`NEG` 由 `UNARY_MAP` 改为**本处显式处理** ✓ ——
+                #   原先走 `UNARY_MAP["NEG"]="Neg"`，但 qlib **没有 `Neg`** ✗
+                #   （其实从来不会生成它 ✓：下面两种情况都覆盖了 ✓）⇒ 现在不再依赖那张表 ✓。
                 # 负数：若作用于数字字面量 → 直接输出负数常量（如 -100）；
                 # 作用于复杂表达式 → 用 Mul(-1, expr)（不能用 Sub(0,expr)，裸 0 常量 qlib 无法加载）
                 if isinstance(e.operand, Num):
                     v = -e.operand.value
                     return str(int(v)) if float(v).is_integer() else repr(v)
                 return f"Mul(-1,{self._g(e.operand)})"
+            op = UNARY_MAP.get(e.op)
+            if op is None:
+                raise CodeGenError(f"不支持的一元运算：{e.op}")
             return f"{op}({self._g(e.operand)})"
         if isinstance(e, BinOp):
             op = BINOP_MAP.get(e.op)
