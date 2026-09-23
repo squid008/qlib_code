@@ -1694,6 +1694,10 @@ class Sqrt(ExpressionOps):
         super().__init__()
 
     def _load_internal(self, instrument, start_index, end_index, *args):
+        # ⚠⚠ 必须容忍**裸数字**参数 ✗（`SQRT(4)` 这种 ✓）—— 2026-09-23 真机求值验证抓到的：
+        #   若直接 `self.feature.load(...)`，常量参数会 `AttributeError: 'int' object has no attribute 'load'` ✗。
+        if not isinstance(self.feature, Expression):
+            return np.sqrt(np.asarray(self.feature, dtype=float))
         series = self.feature.load(instrument, start_index, end_index, *args)
         return pd.Series(np.sqrt(series.to_numpy(dtype=float)), index=series.index)
 
@@ -1724,10 +1728,23 @@ class Mod(ExpressionOps):
         return "Mod({},{})".format(self.feature_left, self.feature_right)
 
     def _load_internal(self, instrument, start_index, end_index, *args):
-        left = self.feature_left.load(instrument, start_index, end_index, *args)
-        right = self.feature_right.load(instrument, start_index, end_index, *args)
-        return pd.Series(np.fmod(np.asarray(left, dtype=float), np.asarray(right, dtype=float)),
-                         index=left.index)
+        # ⚠⚠ 容忍**裸数字**参数 ✗（`MOD(CLOSE,5)` 的第二参就是 int ✓）—— 2026-09-23 真机求值验证抓到的：
+        #   原先无条件 `.load()` ⇒ `AttributeError: 'int' object has no attribute 'load'` ✗。
+        #   qlib 自带的二元算子（`Greater/Less/Power` …）都支持裸原始值（文档：`Max($high,34)` ✓）⇒ 照它做 ✓。
+        def _load(f):
+            if isinstance(f, Expression):
+                return f.load(instrument, start_index, end_index, *args)
+            return f                                   # 裸数字：交给 numpy 广播 ✓
+
+        left, right = _load(self.feature_left), _load(self.feature_right)
+        # 索引取"是表达式的那一侧"（两侧都是表达式时取左侧 ✓）；两侧都是常量时无索引 ⇒ 返回 ndarray ✓
+        idx = None
+        for v in (left, right):
+            if hasattr(v, "index"):
+                idx = v.index
+                break
+        out = np.fmod(np.asarray(left, dtype=float), np.asarray(right, dtype=float))
+        return pd.Series(out, index=idx) if idx is not None else out
 
     def get_longest_back_rolling(self):
         def _lbr(f):

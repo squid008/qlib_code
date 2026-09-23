@@ -17,6 +17,7 @@
 """
 import numpy as np
 import pandas as pd
+from qlib.data.base import Expression
 
 from app.factors.parser import codegen as CG
 
@@ -40,13 +41,23 @@ def _prepare_registry():
     _ops.register_all_ops(_ops)
 
 
-class _FakeExpr:
-    """给算子做**单元求值**用的最小桩（只需 `.load()` 与 `get_*` ✓）。"""
+class _FakeExpr(Expression):
+    """给算子做**单元求值**用的最小桩。
+
+    ⚠ 必须**继承 `Expression`** ✗：新算子（`Sqrt`/`Mod`）用 `isinstance(f, Expression)` 区分
+    "表达式 / 裸数字" ✓（2026-09-23 真机验证抓到 `MOD(CLOSE,5)` 的第二参是 int ✗）——
+    桩若不继承，就会被当成"裸数字"✗ ⇒ 单测反而失败 ✓。
+    ⚠ 且要**直接覆写 `load`**（绕开 qlib 的日历/对齐逻辑 ✓）⇒ 单测无需真实行情数据 ✓。
+    """
 
     def __init__(self, arr):
         self.arr = np.asarray(arr, dtype=float)
+        super().__init__()
 
     def load(self, *_a, **_k):
+        return pd.Series(self.arr)
+
+    def _load_internal(self, *_a, **_k):
         return pd.Series(self.arr)
 
     def get_longest_back_rolling(self):
@@ -54,6 +65,9 @@ class _FakeExpr:
 
     def get_extended_window_size(self):
         return (0, 0)
+
+    def __str__(self):
+        return "FAKE"
 
 
 # ---------------- ① 名字层：映射必须全部已注册 ----------------
@@ -116,6 +130,26 @@ def test_sqrt_op_values():
     assert out.iloc[1] == 3.0
     assert np.isnan(out.iloc[2]), "NaN（停牌）必须保持 NaN ✓"
     assert np.isnan(out.iloc[3]), "负值 ⇒ NaN（与 numpy/通达信一致 ✓）"
+
+
+def test_bare_number_args_supported():
+    """★ 回归（2026-09-23 真机求值验证抓到）：**裸数字参数**必须支持 ✓。
+
+    `MOD(CLOSE,5)` / `SQRT(4)` 这类写法里，qlib 传进来的第二参/唯一参是**普通 int** ✗
+    ⇒ 若无条件 `.load()` 就 `AttributeError: 'int' object has no attribute 'load'` ✗。
+    （qlib 自带二元算子支持裸原始值 ✓ 文档：`Max($high,34)` ✓ ⇒ 照它做 ✓。）
+    """
+    from app.factors.ops_ext import Mod, Sqrt
+
+    out = Mod(_FakeExpr([6.2, -7.0]), 5)._load_internal("x", 0, 2)
+    assert abs(out.iloc[0] - 1.2) < 1e-9
+    assert abs(out.iloc[1] - (-2.0)) < 1e-9          # -7 mod 5 ⇒ -2（符号随被除数 ✓）
+
+    out2 = Mod(5, _FakeExpr([3.0, 4.0]))._load_internal("x", 0, 2)   # 常量在左 ✓
+    assert abs(out2.iloc[0] - 2.0) < 1e-9
+
+    # 常量参数 ⇒ 不走 Expression.load，直接 np.sqrt 标量 ✓
+    assert abs(float(Sqrt(4)._load_internal("x", 0, 1)) - 2.0) < 1e-12
 
 
 def test_mod_sign_follows_dividend():

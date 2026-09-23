@@ -17,6 +17,16 @@
   - **`Sqrt(X)`** = `np.sqrt`（负值 ⇒ NaN，与 numpy/通达信一致；NaN 保持 NaN）；
   - **`Mod(A,B)`** = **`np.fmod`** ⇒ **符号随被除数**（= 通达信/益盟口径；⚠ 若用 `np.mod`/`%`
     则符号随除数，例如 `MOD(-7,3)`：fmod ⇒ **-1** / np.mod ⇒ 2 —— 手册写的正是"符号随 A"）。
+  - ⚠⚠ **真机求值验证当场抓到的第二个 bug**：新算子起初**没处理"裸数字参数"** ✗ ——
+    `MOD(CLOSE,5)` 的第二参是**普通 int**，无条件 `.load()` ⇒ `AttributeError: 'int' object has no
+    attribute 'load'` ✗（qlib 自带二元算子支持裸原始值，文档里就有 `Max($high,34)` ✓）。
+    ⇒ 两边都改成"表达式就 `.load()`、否则直接交给 numpy 广播" ✓，并补单测 `test_bare_number_args_supported` ✓。
+    ★ **教训**：光测"注册了"不够 ✗ —— **必须真跑一次求值** ✓（`ai_test/check_ops_eval.py` ✓）；
+    实测结果：`Sqrt($close)` ≈ 2.4896、`Mod($close,5)` ≈ 1.1985（close≈6.2 ⇒ 6.2 mod 5 = 1.2 ✓）、
+    `Mod($close,-3)` ≈ 0.1985（符号随被除数 ✓）✓。
+  - ⚠ **已知残留（本次未做，属既有问题）**：`_const_fold` **不折叠函数调用** ⇒
+    `SQRT(2)*CLOSE` 这种"常量参数的函数"仍会生成 `Mul(Sqrt(2),$close)` ⇒ 触发 qlib 对
+    "没有 `$字段` 的子树"的敏感（v1.19.90 记录 ✗）。规避：直接写数字（`1.4142*CLOSE` ✓）。
   ★ **性能（用户明确要求）**：直接单次向量化 `np.sqrt`/`np.fmod` —— **不**走 `Power(X,0.5)`
   （多一层通用幂运算、更慢，边界语义也更绕），**无**逐元素 Python 循环；结构照抄同文件里
   已在生产的 `SGN`/`TRUNC`（同型返回）。
