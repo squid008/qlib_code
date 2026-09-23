@@ -32,6 +32,20 @@ _CONST_FOLD_FUNCS = {
     "ROUND": round,
 }
 
+# ---- ★ v1.20.58：**比较 / 逻辑**（`GT/GE/LT/LE/EQ/NE/AND/OR`）也必须参与常量折叠 ----
+# ⚠ 它们**不是 `FuncCall`** ✗ —— 源码里的 `<` `>=` `AND` 经词法/语法后是 **`BinOp`** ✓
+#   （`BINOP_MAP` 的键就是这些 op ✓）；`Lt(...)` 那种写法只在**生成阶段**才出现 ✓。
+#   ⇒ 折叠代码必须写在 `_const_fold` 的 **`BinOp` 分支**里 ✗（曾把表加到 FuncCall 分支 ⇒ 打空靶 ✓，
+#     真机复现实测仍然崩 `'numpy.bool' object has no attribute 'name'` ✗）。
+# 为什么必须折（用户 2026-09-23 报「深跌10（周期 60 天）：特征计算失败: 'numpy.bool' object has no
+# attribute 'name'」✗）：`IF(n<3, …)` 里 n 是**常量** ⇒ 生成 `Lt(10,3)` ✗ —— 一个"**没有任何
+# `$字段` 的算子子树**" ✗ ⇒ qlib 求值即崩 ✓（v1.19.90 治过 `numpy.int64` 那一版 ✓、
+# v1.20.53 治过 `NOT(1)` ⇒ `Eq(1,0)` 那一版 ✓ —— 这是**同一个坑的第三次** ✗）。
+# ⚠ 折成 `1.0 / 0.0` 与运行期的 `True/False` **逐位等价** ✓（bool 是 int 的子类型 ✓，
+#   `If`/`Gt`/`Mul` 等下游算子对二者一视同仁 ✓）。
+# ⚠ 逻辑必须照抄**运行期口径**（`ops_ext.And/Or` = `(a!=0)&(b!=0)` ✓「非 0 即真」✓），
+#   **不能**用 Python 的 `and/or` ✗ —— 后者返回的是**操作数本身**（`0.5 and 2` ⇒ 2 ✗ 语义不同 ✓）。
+
 
 class CodeGenError(Exception):
     pass
@@ -153,8 +167,17 @@ def _const_fold(e: Expr, allow_div: bool = False):
     #   原先会生成 `Mul(Sqrt(2),$close)` ✗，而 qlib 对"**没有任何 `$字段` 的子树**"敏感
     #   ⇒ 触发 v1.19.90 记录的那个崩（`'numpy.int64' object has no attribute 'name'` ✗）。
     if isinstance(e, FuncCall):
-        fn = _CONST_FOLD_FUNCS.get(e.name.upper())
+        name = e.name.upper()
+        fn = _CONST_FOLD_FUNCS.get(name)
         if fn is None:
+            # ★ v1.20.58：`IF(常量条件, 常量A, 常量B)` —— 三个参数**全是常量** ⇒ 折成被选中的分支 ✓
+            #   （两边都是常量 ⇒ 丢掉一边**不会掩盖**任何"依赖于数据"的错误 ✓；也顺手让 `IF(n<3,…)`
+            #    这种"参数写死的开关"直接消失 ✓）。⚠ 只在**条件与两个分支都常量**时才折 ✗ ——
+            #    只折条件、留下 `If(0, A, B)` 也行 ✓（见下方真机验证 ✓），但那样仍留一个常量节点 ✓。
+            if name == "IF" and len(e.args) == 3:
+                c = _const_fold(e.args[0], allow_div)
+                if c is not None:
+                    return _const_fold(e.args[1] if c != 0 else e.args[2], allow_div)
             return None
         vals = []
         for a in e.args:
@@ -163,9 +186,10 @@ def _const_fold(e: Expr, allow_div: bool = False):
                 return None
             vals.append(v)
         try:
-            r = float(fn(*vals))
+            r = fn(*vals)
         except Exception:                                      # noqa: BLE001
             return None                     # 参数越界/类型不合（如 SQRT(-1)）⇒ 不折 ✓
+        r = float(r)
         # ⚠ 非有限值（NaN/inf）也**不折** ✗ —— 否则表达式里会出现 `nan` 字面量，qlib 解析不了 ✓
         return r if math.isfinite(r) else None
     if isinstance(e, UnaryOp):
@@ -199,6 +223,26 @@ def _const_fold(e: Expr, allow_div: bool = False):
                 # 除法结果继续折叠会传播 inf/nan，这里直接返回 None 交给外层除零检测
                 return None
             return None if rv == 0 else lv / rv      # 除零 ⇒ None（外层会报「除数为 0」）
+        # ★ v1.20.58：**比较 / 逻辑**（源码里的 `<`、`>=`、`AND` … 在 AST 里是 BinOp ✓）
+        #   —— 必须折成 1.0/0.0 ✗→✓，否则留下"没有任何 `$字段` 的算子子树" ⇒ qlib 崩 ✗
+        #   （`'numpy.bool' object has no attribute 'name'` ✓，真机复现一致 ✓；详见文件顶部说明 ✓）。
+        if e.op == "GT":
+            return 1.0 if lv > rv else 0.0
+        if e.op == "GE":
+            return 1.0 if lv >= rv else 0.0
+        if e.op == "LT":
+            return 1.0 if lv < rv else 0.0
+        if e.op == "LE":
+            return 1.0 if lv <= rv else 0.0
+        if e.op == "EQ":
+            return 1.0 if lv == rv else 0.0
+        if e.op == "NE":
+            return 1.0 if lv != rv else 0.0
+        if e.op == "AND":
+            # ⚠ 运行期口径「非 0 即真」（`ops_ext.And` = `(a!=0)&(b!=0)` ✓），不是 Python 的 `and` ✗
+            return 1.0 if (lv != 0 and rv != 0) else 0.0
+        if e.op == "OR":
+            return 1.0 if (lv != 0 or rv != 0) else 0.0
         return None
     return None
 
@@ -378,6 +422,18 @@ class CodeGen:
             v = _const_fold(e, allow_div=True)
             if v is not None:
                 return str(int(v)) if float(v).is_integer() else repr(v)
+        # ★★ v1.20.58：`IF(恒定条件, A, B)` ⇒ **直接生成被选中的那一支** ✓✗
+        #   为什么不能只折条件 ✗（真机实测 ✓）：`Lt(10,3)` 折成 `0` 后剩 `If(0,A,B)` ⇒ qlib 报
+        #   **`'int' object has no attribute 'load'`** ✗ —— 它要求条件本身是**可 `load` 的表达式** ✗，
+        #   纯字面量不行 ✓。⇒ 唯一出路是让这棵 `If` **整个消失** ✓（`If` 与 `Div`/`Mean` 不同：
+        #   它的"参数"里有分支语义 ✓，必须由我们替它选 ✓）。
+        #   ⚠ 代价（如实记录 ✗）：**未被选中的那支会被丢掉** ⇒ 死支里的错误不再被报出 ✓。
+        #     可接受 ✓ —— 条件由**常量**决定 ⇒ 那支本来就是死代码 ✓（等价于通达信里"参数写死的
+        #     开关" ✓；用户 `n=10` 时 `IF(n<3, 原始值, MA(...))` 本来就只该走 MA 那支 ✓）。
+        if isinstance(e, FuncCall) and e.name.upper() == "IF" and len(e.args) == 3:
+            _c = _const_fold(e.args[0], allow_div=True)
+            if _c is not None:
+                return self._g(e.args[1] if _c != 0 else e.args[2])
         if isinstance(e, UnaryOp):
             # ★★ v1.20.53：益盟/同花顺/通达信 `NOT(X)` = **逻辑非**（官方口径：`X=0` ⇒ 1，否则 ⇒ 0 ✓）
             #   ⇒ 直接生成 qlib 内建 **`Eq(X,0)`** ✓（不新增外挂算子 ✗）。
