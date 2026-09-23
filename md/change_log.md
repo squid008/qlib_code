@@ -3,6 +3,38 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.62] - 2026-09-23
+
+### Fixed（**比较类算子遇到 `SR` 删行会崩** —— `Can only compare identically-labeled Series objects`）
+
+- **用户报障**（并问"是不是缓存问题" —— **不是** ✓）：任务 `20260923-181226_…_855ab520c96e`
+  「失败: Can only compare identically-labeled Series objects. Loading SH600007:
+  `Gt(SR($close,250),$chip_cost_95)`; … The length of series_left and series_right is different:
+  **(5054, 5110)**, series_left is SR($close,250), series_right is $chip_cost_95」
+- **根因（与 `And/Or`（v1.20.60）、`If`（v1.20.61）**同源** ✓ —— 这是同一根因的**第三条腿** ✗）**：
+  `SR(X)` 是**停牌删行**语义 ✓ ⇒ 返回**删行后的短序列** ✗（本例少 56 行 = 该股停牌天数 ✓）；
+  而 qlib 的比较类算子走 `NpPairOperator` ⇒ `np.greater(left, right)` ✗ ——
+  **pandas 的比较运算符要求两侧标签完全一致** ✗ ⇒ 直接抛 ✓。
+  ⚠ **为什么只有比较类炸** ✗：**算术** ufunc（`np.add`/`np.subtract`…）会**自动按标签对齐** ✓。
+  ⚠ 同文件 **`Corr` 早在 2026-09-18 就为完全相同的病因**做过容错 ✓（其注释写着"容忍 SR 删行导致的
+  左右不等长" ✓）—— **比较类漏了** ✗✓。
+- **修复（与 `Corr`/`And`/`Or`/`If` 同一套路 ✓）**：新增 `ops_ext.`**`_align_pair()`** ✓，
+  并覆盖 **`Gt / Ge / Lt / Le / Eq / Ne`** 六个比较算子 ✓：
+  · 两侧索引不同 ⇒ 按**并集**对齐 ✓；
+  · **因对齐而新增的行**（= 被 `SR` 删掉的停牌日 ✓）结果置 **NaN** ✓ —— 与 `panel_expr` 声明的
+    SR 语义（"停牌日结果 = NaN"）**完全一致** ✓（**不是** False ✗：缺数据的日子不该给出 0 ✓）；
+  · ⚠ **索引本来就相同时逐位照旧** ✓：不引 NaN ✓、**保持 bool dtype** ✓ —— 转 `float` 只在
+    "确实新增了行"的分支里做 ✗（否则给 bool 序列塞 NaN 会让 pandas 升成 **object** ✗，
+    下游 `Mul/Add` 会炸 ✓；这一点**自测时发现并规避** ✓）。
+- **实测（真机 ✓）**：
+  · **复现用户的同一表达式 + 同一长窗口**：`SH600007 / 2005-01-01~2026-08-10` ⇒
+    `Gt(SR($close,250),$chip_cost_95)` ⇒ **求值成功** ✓（5246 行；`mean=0.0813` ⇒ **有值、非全 NaN** ✓✓）；
+  · 新增 `tests/test_ops_align.py` **4 例**（`Gt` 容忍 SR 短索引 ✓ / 新增行 = NaN 且 dtype=float ✓ /
+    索引相同时**逐位不变**（bool ✓）/ 六个比较算子都在注册清单 ✓）；
+  · **全量 504 passed** ✓；`ruff` All checks passed ✓。
+- **⚠ 使用者须知**：本次只改**运行期算子** ✓（**未动 codegen** ⇒ `CODEGEN_SEMANTICS` 不变 ✓）⇒
+  **不需要重存/重编任何公式** ✓ —— 直接**重新发起回测**即可 ✓。
+
 ## [1.20.61] - 2026-09-23
 
 ### Fixed（**`If`：qlib 唯一的"三参"算子，三个输入不做索引对齐** —— `… shapes (4992,) () (5110,)`）

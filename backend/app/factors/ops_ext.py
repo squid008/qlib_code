@@ -39,6 +39,7 @@ __all__ = [
     "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM", "DYN_MEAN",
     "DYN_HHVBARS", "DYN_LLVBARS",
     "And", "Or", "If",
+    "Gt", "Ge", "Lt", "Le", "Eq", "Ne",
     "SR",
     "EMA_TDX",
     "SGN", "TRUNC", "BETWEEN",
@@ -723,6 +724,111 @@ class And(_LogicalAndOr):
 class Or(_LogicalAndOr):
     def _op(self, a, b):
         return (a != 0) | (b != 0)
+
+
+def _align_pair(left, right):
+    """★ v1.20.62：把两侧按**索引并集**对齐，并返回"**因对齐而新增**的行"掩码 ✓。
+
+    动机（2026-09-23 用户报任务 `855ab520c96e`）：
+        `Can only compare identically-labeled Series objects. Loading SH600007:
+         Gt(SR($close,250),$chip_cost_95); … length of series_left and series_right
+         is different: (5054, 5110)`
+      ⇒ `SR(X)`（**停牌删行**语义 ✓）返回**短序列** ✗；而 **pandas 的比较运算符要求两侧标签
+      **完全一致** ✗（**算术** ufunc 会自动对齐 ✓ ⇒ 所以只有比较类会炸 ✗✓）。
+      ⚠ 同文件 `Corr` 早在 2026-09-18 就为**同一病因**做过容错 ✓ —— 比较类漏了 ✗。
+
+    返回 `(left2, right2, missing)`：两侧已同索引 ✓；`missing` 为 `None` 表示**本来就同索引**
+    （此时调用方必须**逐位照旧**输出 ✗ 不得引入任何 NaN ✓）；否则它是一个**布尔数组**，
+    标记"因对齐才出现的行"（= 被 `SR` 删掉的停牌日 ✓）⇒ 调用方把这些行的结果置 **NaN** ✓，
+    与 `panel_expr` 声明的 SR 语义（"停牌日结果 = NaN" ✓）**完全一致** ✓。
+    """
+    if (isinstance(left, pd.Series) and isinstance(right, pd.Series)
+            and not left.index.equals(right.index)):
+        idx = left.index.union(right.index)
+        common = idx.isin(left.index) & idx.isin(right.index)
+        return left.reindex(idx), right.reindex(idx), ~common
+    return left, right, None
+
+
+class _CmpPair(ExpressionOps):
+    """★ v1.20.62：比较类算子（`Gt/Ge/Lt/Le/Eq/Ne`）**容忍 SR 删行导致的两侧不等长** ✓。
+
+    qlib 内建这些算子走 `NpPairOperator` ⇒ `np.greater(left, right)` 等 ✗ —— 两侧标签不一致时
+    **pandas 直接抛** `Can only compare identically-labeled Series objects` ✗（见 `_align_pair` ✓）。
+    修法：`_align_pair` 对齐 ✓ + 新增行置 NaN ✓（缺数据的日子不该给出 `0/False` ✓）。
+    ⚠ **索引本来就相同**（绝大多数公式 ✓，含全部非 SR 公式 ✓）⇒ `_align_pair` 返回 `missing=None`
+    ⇒ 输出与改前**逐位相同** ✓（不引 NaN ✓、不改 dtype ✗）✓✓。
+    """
+
+    def __init__(self, feature_left, feature_right):
+        self.feature_left = feature_left
+        self.feature_right = feature_right
+        super().__init__()
+
+    def __str__(self):
+        return "{}({},{})".format(type(self).__name__, self.feature_left, self.feature_right)
+
+    def _load(self, instrument, start_index, end_index, *args, f=None):
+        # 非 Expression 的一侧 = 常量 ✓（qlib `NpPairOperator` 也允许 `Gt($close, 10)` ✓）
+        if hasattr(f, "load"):
+            return f.load(instrument, start_index, end_index, *args)
+        return f
+
+    def get_longest_back_rolling(self):
+        def _lbr(o):
+            return o.get_longest_back_rolling() if hasattr(o, "get_longest_back_rolling") else 0
+        return max(_lbr(self.feature_left), _lbr(self.feature_right))
+
+    def get_extended_window_size(self):
+        # 与 qlib `NpPairOperator` 同口径：逐步取 max ✓（`DYN_*` 的 (inf,0) 必须透传 ✓）
+        exts = [(o.get_extended_window_size() if hasattr(o, "get_extended_window_size") else (0, 0))
+                for o in (self.feature_left, self.feature_right)]
+        return max(e[0] for e in exts), max(e[1] for e in exts)
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        l = self._load(instrument, start_index, end_index, *args, f=self.feature_left)
+        r = self._load(instrument, start_index, end_index, *args, f=self.feature_right)
+        l, r, missing = _align_pair(l, r)
+        res = self._op(l, r)
+        if missing is not None and isinstance(res, pd.Series) and missing.any():
+            # ⚠ 必须先 `astype(float)` 再写 NaN ✗——直接往 **bool** 序列里塞 NaN 会让 pandas 把
+            #   dtype 升成 **object** ✗ ⇒ 下游 `Mul/Add` 之类的算术会炸 ✓（2026-09-23 自测时想到 ✓）。
+            #   ⚠ 只在这条"确实新增了行"的分支里转 ✗——索引本来就相同的情况**保持原 dtype** ✓。
+            res = res.astype(float).copy()
+            res[missing] = np.nan
+        return res
+
+
+class Gt(_CmpPair):
+    """`>`（覆盖 qlib 内建：**索引不对齐时会崩** ✗ ⇒ 先对齐 ✓）。"""
+
+    def _op(self, a, b):
+        return np.greater(a, b)
+
+
+class Ge(_CmpPair):
+    def _op(self, a, b):
+        return np.greater_equal(a, b)
+
+
+class Lt(_CmpPair):
+    def _op(self, a, b):
+        return np.less(a, b)
+
+
+class Le(_CmpPair):
+    def _op(self, a, b):
+        return np.less_equal(a, b)
+
+
+class Eq(_CmpPair):
+    def _op(self, a, b):
+        return np.equal(a, b)
+
+
+class Ne(_CmpPair):
+    def _op(self, a, b):
+        return np.not_equal(a, b)
 
 
 class If(ExpressionOps):
@@ -1909,6 +2015,8 @@ _ALL_OPS = [
     DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM, DYN_MEAN, DYN_HHVBARS, DYN_LLVBARS,
     And, Or,          # 覆盖 qlib 内建：np.bitwise_and 对 float&bool 混输脆弱
     If,               # ★ v1.20.61：qlib 唯一的 Triple-wise 算子，np.where **不做索引对齐** ✗
+    Gt, Ge, Lt, Le, Eq, Ne,   # ★ v1.20.62：比较类——两侧标签不一致时 pandas **直接抛** ✗
+
     Corr,             # v1.19.99：覆盖 qlib 内建，容忍 SR 删行导致的左右不等长（406 vs 400 ✗）
     SR,
     EMA_TDX,
