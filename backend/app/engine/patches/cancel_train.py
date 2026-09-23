@@ -34,19 +34,26 @@ _APPLIED = False
 CHECK_EVERY_N_ITER = int(os.environ.get("QLIB_CANCEL_CHECK_ITER", "10"))
 
 
-def _make_cancel_callback(check_cancel_fn):
-    """构造 LightGBM 训练回调：每 N 轮调用 check_cancel_fn。普通函数即可。"""
+def _make_cancel_callback(check_cancel_fn, heartbeat_fn=None):
+    """构造 LightGBM 训练回调：每 N 轮调用 check_cancel_fn（+ ★ v1.20.64 顺带刷进度 ✓）。
+
+    ⚠ 为什么在这里刷进度：实测 `信号合成 → gate 训练` 单段要 **211 秒** ✗，而那期间
+      `report()` 只在阶段首尾各调一次 ⇒ 前端 **3.5 分钟纹丝不动** ⇒ 用户判断为"卡死" ✗✓
+      （2026-09-23 排障时间黑洞 ✓）。训练循环里本来就有这个每 N 轮的钩子 ⇒ 零成本复用 ✓。
+    """
     def _cb(env):
         try:
             iter_no = int(getattr(env, "iteration", 0))
         except Exception:
             iter_no = 0
         if iter_no % CHECK_EVERY_N_ITER == 0:
+            if heartbeat_fn is not None:                     # ★ 原地刷新消息（百分数不变 ✓）
+                heartbeat_fn("训练中 第 %d 轮" % iter_no)
             check_cancel_fn()
     return _cb
 
 
-def _make_xgb_cancel_callback(check_cancel_fn):
+def _make_xgb_cancel_callback(check_cancel_fn, heartbeat_fn=None):
     """构造 XGBoost 训练回调：必须继承 TrainingCallback，实现 before_iteration。"""
     import xgboost as xgb
     from xgboost.callback import TrainingCallback
@@ -55,6 +62,8 @@ def _make_xgb_cancel_callback(check_cancel_fn):
         def before_iteration(self, model, epoch, evals_log):
             # epoch 从 0 开始，每隔 CHECK_EVERY_N_ITER 轮检查一次
             if (epoch + 1) % CHECK_EVERY_N_ITER == 0:
+                if heartbeat_fn is not None:                 # ★ v1.20.64：原地刷进度 ✓
+                    heartbeat_fn("训练中 第 %d 轮" % (epoch + 1))
                 check_cancel_fn()
             return False  # 不主动停止（由异常中断）
 
@@ -68,15 +77,16 @@ def patch_cancel_callbacks():
         if _APPLIED:
             return
 
-        # 从引擎取 check_cancel（延迟导入避免循环；context 在 engine 包，非 patches 包内）
-        from ..context import check_cancel
+        # 从引擎取 check_cancel / heartbeat（延迟导入避免循环；context 在 engine 包，非 patches 包内）
+        # ★ v1.20.64：顺带取 `heartbeat` ⇒ 训练期间**原地刷新进度消息** ✓（用户据此区分"在算"与"卡死" ✓）
+        from ..context import check_cancel, heartbeat
 
         # ---- LightGBM（普通函数 callback 即可）----
         try:
             import lightgbm as lgb
 
             _orig_lgb_train = lgb.train
-            cancel_cb_lgb = _make_cancel_callback(check_cancel)
+            cancel_cb_lgb = _make_cancel_callback(check_cancel, heartbeat)
 
             @functools.wraps(_orig_lgb_train)
             def _patched_lgb_train(params, train_set, num_boost_round=100, *args, **kwargs):
@@ -94,7 +104,7 @@ def patch_cancel_callbacks():
             import xgboost as xgb
 
             _orig_xgb_train = xgb.train
-            cancel_cb_xgb = _make_xgb_cancel_callback(check_cancel)
+            cancel_cb_xgb = _make_xgb_cancel_callback(check_cancel, heartbeat)
 
             @functools.wraps(_orig_xgb_train)
             def _patched_xgb_train(params, dtrain, num_boost_round=10, *args, **kwargs):

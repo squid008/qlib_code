@@ -112,8 +112,11 @@ export default function EventDistChart({ edges, counts, k, stat }: Props) {
   return (
     <div>
       <ResponsiveContainer width="100%" height={190}>
-        {/* barCategoryGap=0 ⇒ 桶与桶贴合，才像直方图而不是柱状图 */}
-        <BarChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 2 }} barCategoryGap={0}>
+        {/* ★ v1.20.64（用户 2026-09-23）：`barCategoryGap` 由 **0 → "6%"** ——
+            原先写死 0 = 桶与桶**完全贴合**，用户反馈"红蓝柱子都贴起来了"⇒ 每档之间留**一丢丢**空隙 ✓。
+            为什么用百分比而不是像素：带内百分比 ⇒ 桶数多少都保持同比例的细缝 ✓（40 个桶时约 1~2px ✓，
+            仍是直方图的形貌 ✓，不会退化成柱状图 ✗）。 */}
+        <BarChart data={rows} margin={{ top: 8, right: 12, left: 0, bottom: 2 }} barCategoryGap="6%">
           <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
           <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={4} />
           <YAxis
@@ -122,10 +125,6 @@ export default function EventDistChart({ edges, counts, k, stat }: Props) {
             unit="%"
             domain={[0, Math.ceil(peak * 1.18)]}
             allowDecimals={false}
-          />
-          <Tooltip
-            formatter={(v: number | string) => (typeof v === 'number' ? `${v.toFixed(2)}%` : v)}
-            labelFormatter={(l) => `持有 ${k ?? '-'} 日、收益落在 ${l} 的事件占比`}
           />
           <Bar dataKey="p" name="事件占比" maxBarSize={20}>
             {rows.map((r) => (
@@ -140,6 +139,19 @@ export default function EventDistChart({ edges, counts, k, stat }: Props) {
           {p95 && <ReferenceLine x={p95} stroke={C_TAIL} strokeWidth={1} strokeDasharray="2 2" />}
           {med && <ReferenceLine x={med} stroke={C_MED} strokeWidth={2} />}
           {mean && <ReferenceLine x={mean} stroke={C_MEAN} strokeWidth={2} strokeDasharray="5 3" />}
+          {/* ★★ v1.20.64（用户 2026-09-23）：「鼠标放上去时灰色柱子在后面，要在前面，但透明一点」 ✓
+              ⚠ 机制（读 recharts 源码确认 ✓，`generateCategoricalChart.js:1978`）：
+                图表按 **JSX 子元素顺序** 分层绘制（`renderByOrder(children, renderMap)` ✓），
+                而 hover 的灰色高亮带（cursor ✓）是 **`<Tooltip>` 渲染出来的** ⇒
+                它原来排在 `<Bar>` **之前** ⇒ 被柱子压住（只在缝里露一点）✗✓。
+              ⇒ 修法有两条，都做：① **把 `<Tooltip>` 挪到所有图形之后** ⇒ 灰带到**最前面** ✓；
+                ② 给 cursor 一个**半透明**灰（`fillOpacity` 语义写在 rgba 里 ✓）⇒ 压在柱子上仍看得见原色 ✓。
+              ⚠ 别改成不透明：那样 hover 时整根柱子会被灰盖死、看不出原本是红还是蓝 ✗。 */}
+          <Tooltip
+            cursor={{ fill: 'rgba(148,163,184,0.22)' }}
+            formatter={(v: number | string) => (typeof v === 'number' ? `${v.toFixed(2)}%` : v)}
+            labelFormatter={(l) => `持有 ${k ?? '-'} 日、收益落在 ${l} 的事件占比`}
+          />
         </BarChart>
       </ResponsiveContainer>
 

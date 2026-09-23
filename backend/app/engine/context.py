@@ -18,6 +18,9 @@ _artifact_dir: contextvars.ContextVar = contextvars.ContextVar("_artifact_dir", 
 _cancel_check: contextvars.ContextVar = contextvars.ContextVar("_cancel_check", default=None)
 # 记录本任务已上报的最大进度，保证进度条单调递增（不倒退）
 _max_progress: contextvars.ContextVar = contextvars.ContextVar("_max_progress", default=0.0)
+# 最近一次**正式**上报的 (进度, 消息) —— 供 `heartbeat()` 原地刷新（见其 docstring ✓）。
+# ⚠ 只有 `report()` 会写它 ✗（`heartbeat()` 不写）⇒ 反复心跳不会套娃 ✓✓。
+_last_report: contextvars.ContextVar = contextvars.ContextVar("_last_report", default=None)
 
 
 def set_progress_callback(cb):
@@ -64,7 +67,34 @@ def report(p, msg):
         if p < max_p:
             return  # 进度倒退，忽略（避免多段滚动时各段公式区间导致的回调）
         _max_progress.set(p)
+        _last_report.set((p, msg))
         cb(p, msg)
+    except Exception:
+        pass
+
+
+def heartbeat(suffix: str = ""):
+    """★ v1.20.64：**原地刷新**最近一次进度消息（百分数不变 ✓，消息更新 ✓）。
+
+    动机（2026-09-23 用户报「进度还是没动啊」）：修好日志后第一次看清真实耗时 ——
+        `段1/7 分阶段耗时：建数据集+训练+预测 11.1s | 信号合成 216.1s | 分层与IC 25.3s | 合计 284.0s`
+        而 `信号合成分阶段：预测 0.1s | **gate 训练 211.1s** ✗ | …`
+      ⇒ 这 3.5 分钟里 `report()` 只在**阶段开始/结束**各调一次 ✗ ⇒ 前端进度与消息
+      **整整 211 秒纹丝不动** ✗ ⇒ 用户只能判断为"卡死" ✓（本次排障最大的时间黑洞就是这个假象 ✗）。
+
+    现在：`patches/cancel_train.py` 注入的 LightGBM/XGBoost 取消回调（每 N 轮一次 ✓）顺带调本函数 ✓
+    ⇒ 消息变成「…（训练中 第 120 轮）」✓✓ —— **一眼分清"在算"与"卡死"** ✓。
+
+    ⚠ 只发**同一个**进度值 ⇒ 不违反"单调递增"（`report` 里只有 `p < max_p` 才丢弃 ✓）；
+    ⚠ **不写** `_last_report` ⇒ 连续心跳都基于同一条正式消息 ⇒ 不会出现"（…）（…）"套娃 ✓。
+    """
+    last = _last_report.get()
+    cb = _progress_cb.get()
+    if last is None or cb is None:
+        return
+    p, msg = last
+    try:
+        cb(p, msg + ("（%s）" % suffix if suffix else ""))
     except Exception:
         pass
 

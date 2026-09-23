@@ -309,9 +309,41 @@ export default function ZoomableLineChart({
       const dd = v / peak - 1
       if (dd < mdd) mdd = dd
     }
+    // ★ v1.20.64（用户 2026-09-23）：「除了累计收益，再显示年化、卡玛、夏普」✓
+    // ⚠⚠ 口径必须与**后端一致** —— 照抄 `backend/app/engine/perf_metrics.py`，否则角标的数
+    //    会和回测汇总/持仓期曲线弹窗对不上（用户一眼就看得出来 ✗）：
+    //      · 年化 = (末值 / 基点)^(1/years) − 1，years = **点数 / 252** ✓
+    //        （与 `metrics.py` 用 `n = len(df)` 的算法一致 ✓，非 `n-1` ✓）；
+    //      · 夏普 = 日收益均值 / 日收益标准差(**ddof=1**) × √252 ✓（rf = 0 ✓）；
+    //      · 卡玛 = 年化 / |最大回撤| ✓。
+    // ⚠ 日收益由**相邻净值点**推得 ⇒ 日频曲线上与后端严格等价 ✓；缩放后属于"窗口内"口径 ✓
+    //    （与现有"区间收益/最大回撤"同性质，故角标文案已标注「自建仓起 / 当前区间」✓）。
+    // ⚠ 性能：仍是**一次 O(点数) 扫描**（与上面算最大回撤同一个量级 ⇒ 微秒级 ✓），
+    //    且整个 `stat` 由 `useMemo([view, statKey, xKey, win])` 缓存 ⇒ 不会随鼠标移动重算 ✓
+    //    （鼠标移动只换下方读数行 ✓）。真正的开销始终是 Recharts 重绘本身 ✓。
+    const last = vals[vals.length - 1]
+    const years = vals.length / 252
+    const ann = years > 0 && base > 0 && last > 0 ? (last / base) ** (1 / years) - 1 : null
+    let sharpe: number | null = null
+    if (vals.length >= 3) {
+      const rets: number[] = []
+      for (let i = 1; i < vals.length; i++) {
+        const p = vals[i - 1]
+        if (p > 0) rets.push(vals[i] / p - 1)
+      }
+      if (rets.length >= 2) {
+        const m = rets.reduce((a, b) => a + b, 0) / rets.length
+        const sd = Math.sqrt(rets.reduce((a, b) => a + (b - m) ** 2, 0) / (rets.length - 1))
+        if (sd > 0) sharpe = (m / sd) * Math.sqrt(252)
+      }
+    }
+    const calmar = ann != null && mdd < 0 ? ann / Math.abs(mdd) : null
     return {
-      ret: vals[vals.length - 1] / base - 1,
+      ret: last / base - 1,
       mdd,
+      ann,
+      sharpe,
+      calmar,
       n: vals.length,
       fromStart,
       from: String(view[0]?.[xKey] ?? ''),
@@ -457,6 +489,29 @@ export default function ZoomableLineChart({
             </div>
             <div>
               最大回撤 <b className="text-slate-700 dark:text-slate-200">{(stat.mdd * 100).toFixed(2)}%</b>
+            </div>
+            {/* ★ v1.20.64（用户 2026-09-23）：「除了累计收益，再显示年化、卡玛、夏普」✓
+                ⚠ 口径与后端 `perf_metrics.py` 完全一致 ✓（算法见上方 `stat` 的 useMemo 注释 ✓），
+                  所以这一行与回测汇总卡、持仓期曲线弹窗的数是**同一个** ✓ —— 不会出现两处对不上 ✗。 */}
+            <div className="flex flex-wrap gap-x-3">
+              <span>
+                年化{' '}
+                <b className={stat.ann != null && stat.ann >= 0 ? 'text-red-600' : 'text-emerald-600'}>
+                  {stat.ann == null ? '-' : `${stat.ann >= 0 ? '+' : ''}${(stat.ann * 100).toFixed(2)}%`}
+                </b>
+              </span>
+              <span>
+                夏普{' '}
+                <b className="text-slate-700 dark:text-slate-200">
+                  {stat.sharpe == null ? '-' : stat.sharpe.toFixed(2)}
+                </b>
+              </span>
+              <span>
+                卡玛{' '}
+                <b className="text-slate-700 dark:text-slate-200">
+                  {stat.calmar == null ? '-' : stat.calmar.toFixed(2)}
+                </b>
+              </span>
             </div>
             <div className="text-slate-400">
               {stat.from} ~ {stat.to}（{stat.n} 点）
