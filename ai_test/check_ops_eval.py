@@ -27,7 +27,11 @@ def main() -> int:
     code = sys.argv[1] if len(sys.argv) > 1 else "SH600000"
     start = sys.argv[2] if len(sys.argv) > 2 else "2026-08-10"
     end = sys.argv[3] if len(sys.argv) > 3 else "2026-08-21"
+    # ★ 追加参数（`sys.argv[4:]`）可传**任意表达式** ✓ —— 免得在 PowerShell 里跟 `$close` 转义打架 ✗
     fields = ["Sqrt($close)", "Mod($close,5)", "Sqrt($close)*Mod($close,3)", "Mod($close,-3)"]
+    extra = sys.argv[4:]
+    if extra:
+        fields = list(extra)
     try:
         df = D.features([code], fields, start_time=start, end_time=end)
     except Exception as e:                                  # noqa: BLE001
