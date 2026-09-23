@@ -59,6 +59,7 @@ const RAW_HANDBOOK: HandbookEntry[] = [
   // ---------------- 逻辑/条件函数 ----------------
   { name: 'IF', abbr: '条件取值', kind: 'func', desc: '条件分支。\n用法:\n IF(条件,A,B)\n 条件真取 A，假取 B。\n例:\n IF(CLOSE>OPEN,1,0)' },
   { name: 'IFS', abbr: '多重条件', kind: 'func', desc: '多条件分支（同 IF 的链式写法的别名）。\n用法:\n IFS(条件1,A1,条件2,A2,...,默认)' },
+  { name: 'NOT', abbr: '逻辑非', kind: 'func', desc: '求逻辑非（益盟/同花顺/通达信同义）。\n用法:\n NOT(X) 或 NOT X\n X=0 时返回 1，否则返回 0。\n例:\n NOT(CLOSE>OPEN)   平盘或收阴\n COUNT(量王条件,BARSLAST(NOT(量王条件))+1)   统计"量王条件"连续成立的根数' },
   { name: 'CROSS', abbr: '上穿', kind: 'func', desc: '上穿信号。\n用法:\n CROSS(A,B)\n A 从下向上穿过 B 的时刻为真(=前一日 A<=B 且当日 A>B)。\n例:\n CROSS(MA(CLOSE,5),MA(CLOSE,20))' },
   { name: 'BETWEEN', abbr: '介于区间', kind: 'func', desc: 'X 是否介于 A、B 之间。\n用法:\n BETWEEN(X,A,B)\n 含边界；A、B 大小任意(内部取 min/max)。\n条件成立=1，否则=0；X 停牌(NaN)时输出 NaN。\n例:\n BETWEEN(CLOSE,LLV(LOW,20),HHV(HIGH,20))' },
   { name: 'SGN', abbr: '取符号', kind: 'func', desc: '取符号。\n用法:\n SGN(X)（别名 SIGN）\n X>0→1，X<0→-1，X=0→0。' },

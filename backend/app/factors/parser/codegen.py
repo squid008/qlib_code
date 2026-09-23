@@ -109,6 +109,7 @@ BINOP_MAP = {
 }
 
 # ---- 一元运算 ----
+# ⚠ `NOT` **不在这里** ✗：它不是"同名的 qlib 算子" ✓，而是展开成 `Eq(X,0)` ⇒ 在 `_g` 里单独分支 ✓。
 UNARY_MAP = {"NEG": "Neg"}
 
 
@@ -128,7 +129,15 @@ def _const_fold(e: Expr, allow_div: bool = False):
         v = _const_fold(e.operand, allow_div)
         if v is None:
             return None
-        return -v if e.op == "NEG" else None
+        if e.op == "NEG":
+            return -v
+        if e.op == "NOT":
+            # ★ v1.20.53：常量逻辑非（益盟/同花顺口径 ✓：X==0 ⇒ 1，否则 ⇒ 0）——
+            #   ⚠ 必须在这里折叠 ✗：否则 `NOT(1)` 会生成 `Eq(1,0)`，那是一棵**没有任何
+            #   `$字段` 的子树** ⇒ qlib 加载时会崩（`'numpy.int64' object has no attribute 'name'`
+            #   ✗，见 `_g` 里 v1.19.90 的详细记录 ✓）。
+            return 1.0 if v == 0 else 0.0
+        return None
     if isinstance(e, BinOp):
         lv = _const_fold(e.left, allow_div)
         rv = _const_fold(e.right, allow_div)
@@ -293,6 +302,17 @@ class CodeGen:
             if v is not None:
                 return str(int(v)) if float(v).is_integer() else repr(v)
         if isinstance(e, UnaryOp):
+            # ★★ v1.20.53：益盟/同花顺/通达信 `NOT(X)` = **逻辑非**（官方口径：`X=0` ⇒ 1，否则 ⇒ 0 ✓）
+            #   ⇒ 直接生成 qlib 内建 **`Eq(X,0)`** ✓（不新增外挂算子 ✗）。
+            #   ⚠ **性能说明（用户特别要求 ✓）**：
+            #     ① 只有**一个** elementwise 算子 ✓ —— 与手写 `X=0` **完全同路径、同开销** ✓
+            #        （没用 `If(Eq(X,0),1,0)` 那种两步写法 ✗，也没注册新算子 ⇒ 无查找/派发开销 ✓）；
+            #     ② 表达式照旧**按字段求值一次并进缓存** ✓（`panel_expr` 的字段缓存 ✓）⇒ NOT 不引入额外扫描 ✓；
+            #     ③ 纯常量子树（`NOT(1)` 之类）被上面的 `_const_fold` 折掉 ✓ ⇒ 不会产生
+            #        "没有任何 `$字段` 的子树"（qlib 会崩 ✗）；
+            #     ④ 语义边界：`X` 为 NaN（停牌）时 `Eq(NaN,0)` ⇒ 0 ✓（"非 X 不成立" ✓，可接受 ✓）。
+            if e.op == "NOT":
+                return f"Eq({self._g(e.operand)},0)"
             op = UNARY_MAP.get(e.op)
             if op is None:
                 raise CodeGenError(f"不支持的一元运算：{e.op}")

@@ -4,7 +4,8 @@
 把 token 流解析成 AST。支持：
 - 赋值语句：变量 := 表达式 ;  或  变量 = 表达式 ;
 - 输出线：  因子名 : 表达式 ;
-- 表达式优先级：or < and < 比较 < 加减 < 乘除 < 一元
+- 表达式优先级：or < and < **not** < 比较 < 加减 < 乘除 < 一元
+  （★ v1.20.53：`NOT` 是**一元逻辑**，位置在 and 与比较**之间** ⇒ `NOT A=B` ≡ `NOT(A=B)` ✓）
 """
 from __future__ import annotations
 
@@ -174,12 +175,27 @@ class Parser:
         return left
 
     def _parse_and(self) -> Expr:
-        left = self._parse_comparison()
+        left = self._parse_not()
         while self.peek().type == TT_OP and self.peek().value == "AND":
             self.advance()
-            right = self._parse_comparison()
+            right = self._parse_not()
             left = BinOp("AND", left, right)
         return left
+
+    def _parse_not(self) -> Expr:
+        """★ v1.20.53 逻辑非（益盟/同花顺/通达信 `NOT(X)` ✓）。
+
+        ⚠ **优先级位置是刻意的** ✗：放在「比较**之下**、AND **之上**」——
+        · `NOT A=B` ⇒ `NOT(A=B)` ✓（与通达信一致 ✓）；
+        · 若把它放进 `_parse_unary`（比比较**更紧** ✗），会变成 `(NOT A)=B` ✗ ⇒ **静默错值** ✗✗
+          （不报错、结果却是另一个意思 ✓ —— 这类最危险 ✓）。
+        ⚠ `NOT(X)` 走的也是这一支 ✓：`NOT` 后跟 `(...)` ⇒ 括号表达式 ✓（不是函数调用 ✓）。
+        """
+        t = self.peek()
+        if t.type == TT_OP and t.value == "NOT":
+            self.advance()
+            return UnaryOp("NOT", self._parse_not())
+        return self._parse_comparison()
 
     def _parse_comparison(self) -> Expr:
         left = self._parse_addsub()
@@ -211,6 +227,15 @@ class Parser:
         if t.type == TT_OP and t.value == "SUB":
             self.advance()
             return UnaryOp("NEG", self._parse_unary())
+        # ★ v1.20.53：`NOT` 在**操作数位置**也要认 ✗ —— 例如 `CLOSE+NOT(条件)`、
+        #   `2*NOT(A>B)`（单测抓出来的：只放在 `_parse_not` 那一层时，这类写法会
+        #   `ParseError: 期望数字、字段、变量或函数` ✗）。
+        #   ⚠ 两处都留是**刻意**的 ✓：语句/实参位置由 `_parse_not`（比较之下 ✓ ⇒ `NOT A=B` ≡ `NOT(A=B)` ✓）
+        #     先接住 ✓；只有在"算术算子的操作数"这种必须解析出值的场景，才落到这里 ✓
+        #     （此处绑定更紧 ⇒ `2*NOT(X)` = `Mul(2,NOT X)` ✓，符合直觉 ✓）。
+        if t.type == TT_OP and t.value == "NOT":
+            self.advance()
+            return UnaryOp("NOT", self._parse_unary())
         return self._parse_atom()
 
     def _parse_atom(self) -> Expr:

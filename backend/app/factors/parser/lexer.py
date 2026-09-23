@@ -33,6 +33,13 @@ OPS = {
 # 逻辑关键字（映射到二元逻辑运算，Parser 层再决定合并方式）
 LOGIC_OPS = {"AND": "AND", "OR": "OR"}
 
+# ★ v1.20.53 **一元逻辑关键字**：益盟/同花顺/通达信 `NOT(X)` = 逻辑非
+#   （官方口径：`X=0` ⇒ 返回 1，否则 ⇒ 返回 0 ✓）。
+#   ⚠ 放在**词法层**（变成 `TT_OP` ✓）是关键 ✗：这样 `NOT(X)` 与 `NOT X` **两种写法都自然支持** ✓
+#     （`NOT(...)` 会解析成「一元 NOT + 括号表达式」✓，而**不是**函数调用 ✓ ⇒ 不必进 `BUILTIN_FUNCS` ✓）；
+#     优先级由 `parser._parse_not` 控制（**比较之下、AND 之上** ✓，保证 `NOT A=B` ≡ `NOT(A=B)` ✓）。
+UNARY_OPS = {"NOT": "NOT"}
+
 
 @dataclass
 class Token:
@@ -104,9 +111,11 @@ class Lexer:
             if self._is_ident_start(c):
                 raw = self._read_ident()
                 upper = raw.upper()
-                # 逻辑关键字
+                # 逻辑关键字（二元） / 一元逻辑关键字（★ v1.20.53：NOT）
                 if upper in LOGIC_OPS:
                     tokens.append(Token(TT_OP, LOGIC_OPS[upper], raw, start))
+                elif upper in UNARY_OPS:
+                    tokens.append(Token(TT_OP, UNARY_OPS[upper], raw, start))
                 else:
                     tokens.append(Token(TT_IDENT, upper, raw, start))
                 continue
