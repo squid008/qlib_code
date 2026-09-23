@@ -85,3 +85,45 @@ def test_dyn_op_accepts_plain_int_window():
     feat = pd.Series([1.0, 2.0, 3.0, 4.0], index=IDX)
     out = DYN_MEAN(_S(feat), 2)._load_internal("SH600000", 0, 4)
     np.testing.assert_allclose(out.to_numpy(), [1.0, 1.5, 2.5, 3.5])
+
+
+# ---------------- ★ v1.20.61：`If`（qlib 唯一的 Triple-wise）也要对齐 ----------------
+# 用户 2026-09-23 第二次报：任务 `4e8e5fe991d3`
+#     operands could not be broadcast together with shapes (4992,) () (5110,)
+# 这是 qlib `ops.py:670` 那行 `np.where(series_cond, series_left, series_right)` 的形态：
+# **三个输入只取条件的索引、不做对齐** ✗（`()` 是常量分支，如 `IF(cond, 比值, 0)` ✓）。
+
+IDX5 = pd.date_range("2026-01-01", periods=5, freq="D")
+
+
+def test_if_aligns_three_inputs():
+    """条件 4 天、分支 5 天、另一分支是常量 ⇒ 原来 `np.where` 直接崩 ✓，现在必须对齐 ✓。"""
+    from app.factors.ops_ext import If
+
+    cond = pd.Series([1.0, 0.0, 1.0, 0.0], index=IDX)
+    left = pd.Series([10.0, 11.0, 12.0, 13.0, 14.0], index=IDX5)
+    out = If(_S(cond), _S(left), 0.0)._load_internal("SH600000", 0, 5)
+    assert isinstance(out, pd.Series) and len(out) == 5
+    # 第 5 天条件缺失 ⇒ 视作假 ⇒ 取右支 0 ✓（其余按条件取值 ✓）
+    assert out.tolist() == [10.0, 0.0, 12.0, 0.0, 0.0]
+
+
+def test_if_all_scalar_still_works():
+    """三分支都是常量 ⇒ 仍按 `np.where` 语义（非 0 即真 ✓）。"""
+    from app.factors.ops_ext import If
+
+    out = If(1, 7.0, 0.0)._load_internal("SH600000", 0, 1)
+    assert float(out.iloc[0]) == 7.0
+
+
+def test_if_override_is_registered():
+    """⚠ 覆盖必须**真的生效** ✗ —— 光定义类不够：qlib 解析表达式时是从**注册表**取 `If` 的 ✓。
+
+    ⚠ 这里**不自己猜 qlib 的私有 API** ✗ —— "注册表里有没有这个算子"由仓库既有的守卫测试
+      `tests/test_operator_names_registered.py` 负责 ✓（它按 `_ALL_OPS` / `__all__` 核对 ✓）
+      ⇒ 本测试只为"类本身可用"提供一条直连断言 ✓。
+    """
+    from app.factors.ops_ext import If, _ALL_OPS, ensure_ops_registered
+
+    ensure_ops_registered()
+    assert If in tuple(_ALL_OPS)          # 已进注册清单 ⇒ 会被 Operators.register 注册 ✓

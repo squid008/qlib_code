@@ -38,7 +38,7 @@ __all__ = [
     "BARSLAST", "BARSCOUNT", "BARSSINCEN",
     "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM", "DYN_MEAN",
     "DYN_HHVBARS", "DYN_LLVBARS",
-    "And", "Or",
+    "And", "Or", "If",
     "SR",
     "EMA_TDX",
     "SGN", "TRUNC", "BETWEEN",
@@ -723,6 +723,76 @@ class And(_LogicalAndOr):
 class Or(_LogicalAndOr):
     def _op(self, a, b):
         return (a != 0) | (b != 0)
+
+
+class If(ExpressionOps):
+    """★ v1.20.61：覆盖 qlib 内建 `If` —— 三个输入**先按索引对齐**再取值 ✓。
+
+    动机（2026-09-23 任务 `4e8e5fe991d3` 用 v1.20.60 仍然崩 ✓）：
+        operands could not be broadcast together with shapes (4992,) () (5110,)
+      这正是 qlib `ops.py:670` 那行的报错形态 ✓：
+        `pd.Series(np.where(series_cond, series_left, series_right), index=series_cond.index)`
+      —— **三个输入只取"条件的索引"、完全不做对齐** ✗（中间那个 `()` 是**常量分支** ✓，
+      例如公式里的 `IF(NH有效, 成本最高/成本最低, 0)` ✓）。成因与 `And/Or` 完全相同：
+      `DYN_*` 把扩展窗口拉到 **inf**（全历史 ✓）后，同一棵树里各子式的**有效期轴不同** ✗。
+      qlib 自己的注释也写明 `If` 是**唯一的 Triple-wise 算子** ✓ ⇒ 二参的 `And/Or`（v1.20.60 已修 ✓）
+      之后，**它就是这一类里最后一个** ✓。
+
+    ⚠ 语义**逐位照抄** qlib ✓：`np.where(cond, left, right)`（**非 0 即真** ✓ —— 不是 `cond > 0` ✗）、
+      非 Expression 的分支按常量直接参与 ✓、非 Expression 的 condition 也允许 ✓。
+    ⚠ 唯一**有意**的差异 ✓：对齐后**条件侧缺失（NaN）视为假** ✓（与 `And/Or` 的「NaN→0」同口径 ✓）——
+      否则 `np.where(NaN, …)` 会把 NaN 当**真** ✗（unlikely 且更反直觉 ✓）。
+    """
+
+    def __init__(self, condition, feature_left, feature_right):
+        self.condition = condition
+        self.feature_left = feature_left
+        self.feature_right = feature_right
+        super().__init__()
+
+    def __str__(self):
+        return "If({},{},{})".format(self.condition, self.feature_left, self.feature_right)
+
+    def _load(self, instrument, start_index, end_index, *args, f=None):
+        if hasattr(f, "load"):
+            return f.load(instrument, start_index, end_index, *args)
+        return f
+
+    @staticmethod
+    def _arr(o):
+        return o.to_numpy(dtype=float) if isinstance(o, pd.Series) else np.asarray(o, dtype=float)
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        c = self._load(instrument, start_index, end_index, *args, f=self.condition)
+        l = self._load(instrument, start_index, end_index, *args, f=self.feature_left)
+        r = self._load(instrument, start_index, end_index, *args, f=self.feature_right)
+        # ① 三个输入归到**同一索引**（各 Series 索引的**并集** ✓；非 Series 的常量按标量参与 ✓）
+        idx = None
+        for o in (c, l, r):
+            if isinstance(o, pd.Series):
+                idx = o.index if idx is None else idx.union(o.index)
+        if idx is not None:
+            c = c.reindex(idx) if isinstance(c, pd.Series) else c
+            l = l.reindex(idx) if isinstance(l, pd.Series) else l
+            r = r.reindex(idx) if isinstance(r, pd.Series) else r
+        # ② 条件缺失 ⇒ 假 ✓（见类注释里"唯一有意的差异"✓）
+        if isinstance(c, pd.Series):
+            c = c.fillna(0.0)
+        res = np.where(self._arr(c), self._arr(l), self._arr(r))
+        return pd.Series(res, index=idx)
+
+    def get_longest_back_rolling(self):
+        return max(
+            [(o.get_longest_back_rolling() if hasattr(o, "get_longest_back_rolling") else 0)
+             for o in (self.condition, self.feature_left, self.feature_right)] or [0]
+        )
+
+    def get_extended_window_size(self):
+        # ⚠ 必须**透传**三者的扩展窗口（取 max ✓）—— 否则条件/分支里 `DYN_*` 的 `(inf, 0)` 会被吃掉 ✗，
+        #   那正是"长度不一致"的来源 ✓（与 `_LogicalAndOr` 同处理 ✓）。
+        exts = [(o.get_extended_window_size() if hasattr(o, "get_extended_window_size") else (0, 0))
+                for o in (self.condition, self.feature_left, self.feature_right)]
+        return max(e[0] for e in exts), max(e[1] for e in exts)
 
 
 # ---------------- SR：益盟"删停牌行"语义包装 ----------------
@@ -1838,6 +1908,7 @@ _ALL_OPS = [
     BARSLAST, BARSCOUNT, BARSSINCEN,
     DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM, DYN_MEAN, DYN_HHVBARS, DYN_LLVBARS,
     And, Or,          # 覆盖 qlib 内建：np.bitwise_and 对 float&bool 混输脆弱
+    If,               # ★ v1.20.61：qlib 唯一的 Triple-wise 算子，np.where **不做索引对齐** ✗
     Corr,             # v1.19.99：覆盖 qlib 内建，容忍 SR 删行导致的左右不等长（406 vs 400 ✗）
     SR,
     EMA_TDX,

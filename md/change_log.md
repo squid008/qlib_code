@@ -3,6 +3,47 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.61] - 2026-09-23
+
+### Fixed（**`If`：qlib 唯一的"三参"算子，三个输入不做索引对齐** —— `… shapes (4992,) () (5110,)`）
+
+- **用户报障**（v1.20.60 之后仍失败）：任务 `20260923-162913_…_4e8e5fe991d3`
+  「100.0% - 失败: operands could not be broadcast together with shapes (4992,) **()** (5110,)」
+  —— ⚠ 这次是**三个**形状 ✓，中间那个 `()` 是**标量** ✓（v1.20.60 那次是两个 ✓）。
+- **定位（源码级 ✓）**：栈为 `ops_ext.py:422 DYN_COUNT._load_internal` → `:377 _load_both` →
+  一串嵌套 `And` ✓，**真正抛错的帧在 qlib 内部** ✗。三形状 + `()` 的组合**唯一**对应
+  `np.where(cond, A, B)` ✓，而 qlib 里**唯一的三参算子就是 `If`** ✓
+  （qlib 源码自己的分节注释：`#################### Triple-wise Operator ####################` ✓）：
+
+  ```660:671:D:\quant\qlib\qlib\data\ops.py
+      def _load_internal(self, instrument, start_index, end_index, *args):
+          series_cond = self.condition.load(...)
+          series_left = ...                      # 非常量分支 ⇒ 直接取常量本身（⇒ 形状 `()` ✓）
+          series_right = ...
+          series = pd.Series(np.where(series_cond, series_left, series_right), index=series_cond.index)
+          return series     # ★ **只取"条件的索引"**，三个输入完全不对齐 ✗
+  ```
+
+  ⇒ 成因与 v1.20.60 修的 `And/Or` **同源** ✓：`DYN_*` 把扩展窗口拉到 **inf**（全历史 ✓）后，
+  同一棵树里各子式的**有效期轴不同** ✗ ⇒ 条件与分支长短不一 ⇒ 崩 ✓。
+  典型触发形态正是公式里的 `IF(NH有效, 成本最高/成本最低, 0)` ✓（第三支是常量 ⇒ `()` ✓）。
+- **修复**：新增 `ops_ext.`**`If`**（覆盖 qlib 内建 ✓，与 `And/Or` / `Corr` 同一套路 ✓）：
+  ① 三个输入先归到**同一索引**（各 Series 索引的**并集** ✓、缺侧 NaN ✓）；
+  ② 语义**逐位照抄** qlib ✓（`np.where` 的「**非 0 即真**」✓ —— **不是** `cond > 0` ✗）；
+  ③ 唯一**有意**的差异 ✓：**条件侧缺失（NaN）视为假** ✓（与 `And/Or` 的「NaN→0」同口径 ✓；
+     否则 `np.where(NaN, …)` 会把 NaN 当**真** ✗，更反直觉 ✓）；
+  ④ 透传三者的 `get_extended_window_size`（取 **max** ✓）—— 否则条件/分支里 `DYN_*` 的
+     `(inf, 0)` 会被吃掉 ✗，而那正是"长度不一致"的来源 ✓。
+- **测试**：`tests/test_ops_align.py` 增 **3 例**（`If` 三输入对齐 ✓——含「条件 4 天 / 分支 5 天 /
+  常量支」这条**你报错形态的最小复现** ✓ / 全常量支 ✓ / 已进注册清单 ✓）；
+  **全量 501 passed** ✓；`ruff` All checks passed ✓。
+- **⚠ 如实记录：本次未能本地复现 ✗** —— `ai_test/dbg_broadcast.py` 对这条任务
+  **逐条加载 0 失败** ✓、**整组一次加载也 OK** ✓、新增的 `--sweep` 扫了 **7 个区间全部 OK** ✓
+  ⇒ 触发还依赖**引擎侧的完整标的集合 / 段窗口 / inst_processors** ✓。
+  ⇒ 本次修复依据是**源码 + 报错形态**（`np.where` 的三形状唯一性 ✓），**不是**端到端复现 ✓；
+  已请用户**重新发起**做最终验证 ✓。
+  ⚠ 若仍失败：请把新任务的报错与形状发我 ✓ —— 下一步应往「引擎段窗口 / `inst_processors`」那条线查 ✓。
+
 ## [1.20.60] - 2026-09-23
 
 ### Fixed（`And/Or` **两侧不等长** 崩溃 ＋ `DYN_*` **常量窗口**崩溃 —— `operands could not be broadcast`）
