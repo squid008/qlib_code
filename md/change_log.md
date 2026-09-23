@@ -3,6 +3,51 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.63] - 2026-09-23
+
+### Fixed / Added（**公式库自动进 git** ＋ **日志不再哑** ＋ **并发内存估算按实测自校正**）
+
+- **用户报障两件**：① 「咱们的公式不会 push 上去吗？我家里 Pull 怎么公式没更新」；
+  ② 「啥情况，卡住了？很久都没有进度…你又没轮询」（两个回测都停在**段 1 的并行取数**、
+  CPU/磁盘 0% ✗）。
+- **① 公式库没同步 —— 不是"没纳入版本控制"，是"没人提交"** ✗：
+  `.gitignore` **早就**为它开了口子（`!backend/workdir/custom_formulas.json` ✓，"用户资产"✓），
+  但提交**靠人记** ✗ ⇒ 实测本地 **65 条** vs 仓库 HEAD **35 条**（**30 条从未推送** ✗）
+  ⇒ 家里 pull 自然没有 ✓。**修复**：新增 `services/formula_git_sync.py` ✓ ——
+  挂在 `custom_formulas._save()`（新建/更新/删除/陈旧重编**全都**经过它 ✓）⇒ **去抖**
+  （默认 5s ✓）后台线程执行 `git add --force` → **有差异才** `commit -- <该文件>`（绝不夹带别的改动 ✓，
+  无差异不造空提交 ✓）→ 尽力 `push`（直连 → 失败换本地代理 ✓；仍失败就**只留本地**、
+  下次任何 push 都会带走 ✓）。⚠ 全程**静默、不抛、不影响保存** ✓；`GIT_TERMINAL_PROMPT=0`
+  防凭据缺失时挂住线程 ✓。开关：`FORMULA_GIT_SYNC=0` / `FORMULA_GIT_SYNC_PUSH=0` /
+  `FORMULA_GIT_SYNC_DEBOUNCE` / `FORMULA_GIT_SYNC_PROXY` ✓。**当下已先把 30 条补推** ✓（`0f8bc19` ✓）。
+- **② 卡死的第一半原因：引擎日志**全是哑的** ✗ ——**`logger.py` 用 `StreamHandler(sys.stdout)`，
+  而后端由 `restart_backend.ps1` 以重定向启动 ⇒ Windows 下 `sys.stdout.encoding` 是 **GBK** ✗
+  ⇒ 日志里只要有 `✓ ✗ →`（**本项目到处都是** ✓）就抛
+  `UnicodeEncodeError: 'gbk' codec can't encode character '\u2713'` ✗ ⇒ `--- Logging error ---`
+  ⇒ **日志整条整条地丢** ✗✓（实测 `backend_err.log` 末条正是 `qlib_engine.py:424 _once_log` 那句 ✓）。
+  **修复**：`logger._Utf8SafeStream`（把文本按 UTF-8 写底层 buffer ✓，**不 detach** `sys.stdout`
+  ⇒ 不影响 uvicorn ✓；**永不抛** ✓）+ 启动脚本设 `PYTHONIOENCODING=utf-8` / `PYTHONUTF8=1` ✓（根治 ✓）。
+- **② 卡死的第二半原因：并发内存估算与实际脱节** ✗：估算长期写死 `3.0GB/任务`（2026 年经验值 ✓），
+  实测却会发现机器上另有**别的项目**占着 ~18GB（`envs\rqdata\loop_engine.py` 3 个进程 5~7GB ✓）
+  ⇒ 可用内存只剩 13GB，却仍放行 3 个并发 ⇒ 内存被吃穿 ⇒ 取数阶段卡死 ✓。
+  ⚠⚠ **纪律**：那 5~7GB 是**别的项目**的数字 ✗ ⇒ **不能拿来当我们任务的估算** ✗（那是猜 ✓）。
+  **修复**：改为**让程序自己测** ✓ —— `resource.start_peak_sampler()` 在任务执行期间用 psutil
+  采样"**后端进程树**"RSS 峰值（含 loky / multiprocessing 子进程 ✓），任务收尾时上报
+  `note_task_peak_memory()`（按峰值时刻的活跃任务数平摊 ✓）⇒ **只上调、不自动下调** ✗（下调会让
+  并发上限虚高、重新踩内存 ✓；要下调用 `QLIB_TASK_MEM_GB` 显式指定 ✓，**env 优先级最高** ✓）。
+  `_max_by_memory()` / `estimate_memory_for()` 改用 `effective_task_memory_gb()` ✓；
+  `capacity` 接口新增 `task_mem_source`（`env`/`measured`/`default` ✓）与 `task_mem_measured_gb` ✓。
+- **孤儿清理范围扩大**：`restart_backend.ps1` 原先只清 `*popen_loky*` ✗ ⇒ **漏掉**
+  `joblib...resource_tracker`（2026-09-23 实测抓到一个父进程早已不在的 ✓）与
+  `multiprocessing` 的 `spawn_main`（`panel_features` 走这条 ✓，`serial_load.py` 明说它**不经
+  joblib 闸门** ✗）⇒ 匹配条件放宽为 `loky` / `spawn_main` / `resource_tracker` ✓（仍只清**父进程已死**的 ✓）。
+- **⚠ 已知未修（下次）**：多任务共享 loky 池的死锁，闸门只覆盖 joblib（`patches/serial_load.py` ✓），
+  **面板取数（multiprocessing）那条路仍未串行化** ✗。
+- **实测**：新增 `tests/test_resource_mem_estimate.py`（**9 例**：默认/实测上调/★只上调不下调/env 优先/
+  配置值语义不变/★并发上限跟着实测走（32GB 可用：3GB 口径 7 个 vs 实测 10GB 口径 **2 个** ✓）/
+  摘要字段/采样器/脏输入不炸 ✓）+ `tests/test_formula_git_sync.py`（**13 例**：全部在 `_run` 打桩 ⇒
+  **绝不真跑 git** ✓；含 `conftest.py` 全局熔断 ✓）；**全量 524 passed / 2 skipped** ✓；ruff ✓。
+
 ## [1.20.62] - 2026-09-23
 
 ### Fixed（**比较类算子遇到 `SR` 删行会崩** —— `Can only compare identically-labeled Series objects`）

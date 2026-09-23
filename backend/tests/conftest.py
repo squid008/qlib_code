@@ -11,6 +11,20 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 
+# ★ v1.20.63：**测试期间彻底关闭「公式库 → git 自动同步」** ✗
+#   原因：该机制挂在 `custom_formulas._save()` 上 ✓（保存公式的副作用 ✓），
+#   任何走到 `_save()` 的用例都会在**去抖几秒后真的** `git add/commit/push` 本仓库 ✗
+#   ⇒ 会凭空产生提交、甚至把测试造的假公式推上去 ✗。单测里要验证同步逻辑，
+#   请在 `formula_git_sync._run` 上打桩 ✓（见 `tests/test_formula_git_sync.py` ✓）。
+try:
+    from app.services import formula_git_sync as _formula_git_sync
+
+    _formula_git_sync.ENABLED = False
+    _formula_git_sync.PUSH = False
+except Exception:  # pragma: no cover —— 仅为测试安全，失败也不该拦住 pytest
+    pass
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",

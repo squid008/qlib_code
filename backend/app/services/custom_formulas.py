@@ -19,6 +19,7 @@ from typing import List, Optional
 
 from ..config import WORK_DIR
 from ..factors.parser.codegen import CODEGEN_SEMANTICS
+from . import formula_git_sync as _formula_git_sync      # ★ v1.20.63：写盘后自动提交+推送 ✓
 
 _CUSTOM_FORMULAS_PATH = os.path.join(WORK_DIR, "custom_formulas.json")
 _lock = threading.Lock()
@@ -76,6 +77,11 @@ def _save(items: List[dict]) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=False, indent=2)
     os.replace(tmp, _CUSTOM_FORMULAS_PATH)
+    # ★ v1.20.63：公式库是**用户资产且纳入版本控制** ✓ ⇒ 每次写盘后自动提交+推送 ✓
+    #   动机（2026-09-23 用户报「我家里 Pull 怎么公式没更新」）：本地 65 条 vs 仓库 35 条 ✗
+    #   —— 提交原先**靠人记** ✗ ⇒ 家里永远拿不到 ✓。挂在 `_save` 上 ⇒ 新建/更新/删除/
+    #   陈旧重编**全部**覆盖 ✓。⚠ 非阻塞 + 不抛 ✓（同步失败绝不影响保存本身 ✓）。
+    _formula_git_sync.schedule("保存公式库")
 
 
 def _now() -> str:

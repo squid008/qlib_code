@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import threading
+from datetime import datetime
 from typing import Optional
 
 logger = None
@@ -110,16 +111,133 @@ def memory_available_gb() -> float:
 DEFAULT_TASK_MEM_GB = 3.0
 _TASK_MEM_GB = float(os.environ.get("QLIB_TASK_MEM_GB", str(DEFAULT_TASK_MEM_GB)))
 
+# ----------------------------------------------------------------------
+# ★ v1.20.63：**实测自校正**（不再只靠 2026 年的经验值 3GB ✗）
+#
+# 动机（2026-09-23 用户报「两个回测都卡在段 1 的并行取数、CPU/磁盘双 0」）：当时机器上
+# 另有 `envs\rqdata` 的 `loop_engine` 占着 ~18GB ✗ ⇒ 可用内存只剩 13GB，
+# 而本模块按 **3.0GB/任务** 估 ⇒ 仍放行 3 个并发 ⇒ 3×真实峰值 ⇒ 内存被吃穿 ⇒
+# 取数阶段抢不到内存、任务看起来"卡死" ✓。
+# ⚠⚠ 关键教训：那 5~7GB 是**别的项目**的数字 ✗，**不能**拿来改我们的估算 ✗
+#   （那是猜 ✓）。所以这里改成：**让程序自己测我们的任务** ✓ ——
+#   回测结束时用 psutil 采"后端进程树"RSS 峰值（含 loky / multiprocessing 子进程 ✓），
+#   上报到本模块 ⇒ 估算**自我校正** ✓✓。
+# 语义：★ 只**上调**、不自动下调 ✗（下调会让并发上限虚高、重新踩内存 ✗）；
+#   要下调请显式给 `QLIB_TASK_MEM_GB` ✓（**优先级最高** ✓）。
+# ----------------------------------------------------------------------
+_measured_lock = threading.Lock()
+_measured_peak_gb = 0.0
+_measured_at: Optional[str] = None
+
+
+def measured_task_memory_gb() -> float:
+    """历史**实测**的单任务峰值内存（GB）；从未测到过 ⇒ 0.0 ✓。"""
+    with _measured_lock:
+        return round(_measured_peak_gb, 2)
+
+
+def measured_task_memory_at() -> Optional[str]:
+    """最近一次"上调实测峰值"的时间（便于排查 ✓）；没测到过 ⇒ None ✓。"""
+    with _measured_lock:
+        return _measured_at
+
+
+def note_task_peak_memory(peak_gb: float, task_id: str = "") -> float:
+    """回测结束时上报**实测峰值**（GB，已含子进程 ✓）⇒ 校正后续并发估算 ✓。
+
+    返回校正后的"**生效估算**" ✓（便于调用方直接打日志 ✓）。⚠ 只会上调 ✓（见上方说明 ✓）。
+    """
+    global _measured_peak_gb, _measured_at
+    try:
+        peak = float(peak_gb)
+    except (TypeError, ValueError):
+        return effective_task_memory_gb()
+    if peak <= 0:
+        return effective_task_memory_gb()
+    changed = False
+    with _measured_lock:
+        if peak > _measured_peak_gb:
+            _measured_peak_gb = peak
+            _measured_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            changed = True
+    if changed:
+        _log().info(
+            "单任务峰值内存实测 %.2fGB（task %s）⇒ 单任务估算上调为 %.2fGB，并发上限随之重算",
+            peak, task_id or "-", effective_task_memory_gb(),
+        )
+    return effective_task_memory_gb()
+
 
 def estimated_task_memory_gb() -> float:
-    """单个回测任务的峰值内存估算（GB）。"""
+    """**配置值**的单任务峰值内存估算（GB）—— 供展示/单测 ✓；并发估算请用 `effective_...` ✓。"""
     return _TASK_MEM_GB
+
+
+def effective_task_memory_gb() -> float:
+    """并发估算**真正使用**的单任务内存（GB）：**环境变量 > 实测峰值 > 默认值** ✓。"""
+    env = os.environ.get("QLIB_TASK_MEM_GB")
+    if env:
+        try:
+            return max(0.1, float(env))
+        except ValueError:
+            pass
+    m = measured_task_memory_gb()
+    if m > 0:
+        return max(0.1, m)
+    return max(0.1, _TASK_MEM_GB)
 
 
 def set_task_memory_gb(gb: float):
     """运行时覆盖单任务内存估算（测试/调优用）。"""
     global _TASK_MEM_GB
     _TASK_MEM_GB = max(0.1, float(gb))
+
+
+def start_peak_sampler(interval: float = 2.0):
+    """后台采样"后端**进程树**"的 RSS 峰值 ⇒ 回测结束时归因单任务内存 ✓。
+
+    返回 `stop()`（无 psutil 时返回 `None` ✓ 不影响回测 ✓）：`stop()` ⇒ `(单任务峰值GB, 采样次数)` ✓。
+    ⚠ 归因是**近似**（进程树是并发任务**共享**的 ✗）：按"**峰值出现时**的活跃任务数"平摊 ✓；
+      单任务运行时就是精确值 ✓✓（这也是最常见的场景 ✓）。
+    """
+    try:
+        import psutil
+    except Exception:                                            # noqa: BLE001
+        return None
+    stop_flag = threading.Event()
+    state = {"peak_gb": 0.0, "active_at_peak": 1, "samples": 0}
+
+    def _loop():
+        try:
+            me = psutil.Process(os.getpid())
+        except Exception:                                        # noqa: BLE001
+            return
+        while not stop_flag.is_set():
+            try:
+                total = me.memory_info().rss
+                for ch in me.children(recursive=True):
+                    try:
+                        total += ch.memory_info().rss
+                    except Exception:                            # noqa: BLE001
+                        pass
+                gb = total / 1024 ** 3
+                if gb > state["peak_gb"]:
+                    state["peak_gb"] = gb
+                    state["active_at_peak"] = max(1, _active_jobs)
+                state["samples"] += 1
+            except Exception:                                    # noqa: BLE001
+                pass
+            stop_flag.wait(interval)
+
+    th = threading.Thread(target=_loop, daemon=True, name="task-mem-sampler")
+    th.start()
+
+    def _stop():
+        stop_flag.set()
+        th.join(timeout=interval + 1.0)
+        return round(state["peak_gb"] / max(1, state["active_at_peak"]), 2), state["samples"]
+
+    return _stop
 
 
 # ----------------------------------------------------------------------
@@ -130,10 +248,14 @@ SYSTEM_HEADROOM_RATIO = float(os.environ.get("QLIB_MEM_HEADROOM", "0.3"))
 
 
 def _max_by_memory() -> int:
-    """按可用内存能容纳的并发任务数（留出系统余量后）。"""
+    """按可用内存能容纳的并发任务数（留出系统余量后）。
+
+    ★ v1.20.63：用 `effective_task_memory_gb()`（**实测优先** ✓）而不是配置值 ✗
+    —— 3.0GB 的旧经验值在"机器上还有别的项目占内存"时会严重高估并发 ✗。
+    """
     avail = memory_available_gb()
     usable = avail * (1.0 - SYSTEM_HEADROOM_RATIO)
-    mem_per_task = estimated_task_memory_gb()
+    mem_per_task = effective_task_memory_gb()
     if mem_per_task <= 0:
         return 1
     n = int(usable // mem_per_task)
@@ -155,7 +277,7 @@ def max_concurrent() -> int:
 
 def estimate_memory_for(n: int) -> float:
     """并发 n 个回测任务需要的总内存（含系统余量）。"""
-    return round(n * estimated_task_memory_gb() / (1.0 - SYSTEM_HEADROOM_RATIO), 1)
+    return round(n * effective_task_memory_gb() / (1.0 - SYSTEM_HEADROOM_RATIO), 1)
 
 
 def resource_summary() -> dict:
@@ -164,12 +286,24 @@ def resource_summary() -> dict:
         "cpu_logical": cpu_logical(),
         "memory_total_gb": memory_total_gb(),
         "memory_available_gb": memory_available_gb(),
-        "task_mem_gb": estimated_task_memory_gb(),
+        # ⚠ 保留旧字段名（前端/单测在用 ✓）：★ v1.20.63 起它报的是**生效值**（实测优先 ✓）
+        "task_mem_gb": effective_task_memory_gb(),
+        "task_mem_source": _task_mem_source(),
+        "task_mem_measured_gb": measured_task_memory_gb(),
         "max_concurrent": max_concurrent(),
         "estimated_total_mem_for_max_gb": estimate_memory_for(max_concurrent()),
         "memory_headroom_ratio": SYSTEM_HEADROOM_RATIO,
         "task_jobs": task_jobs_for_active(1),
     }
+
+
+def _task_mem_source() -> str:
+    """当前单任务内存估算的来源（`env` / `measured` / `default` ✓）—— 排查时一眼看清 ✓。"""
+    if os.environ.get("QLIB_TASK_MEM_GB"):
+        return "env"
+    if measured_task_memory_gb() > 0:
+        return "measured"
+    return "default"
 
 
 # ----------------------------------------------------------------------

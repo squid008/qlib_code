@@ -255,9 +255,13 @@ class TaskManager:
             # 排队期间被取消
             self._update(task_id, status="cancelled", progress=100.0, message="已停止")
             return
+        _stop_mem_sampler = None
         try:
             # 按当前并发任务数分配 qlib 并行核数（每任务 = 逻辑核/运行任务数）
             resource.acquire_task_jobs()
+            # ★ v1.20.63：起**内存采样器**（后端进程树 RSS 峰值 ✓）—— 任务结束时用它校正
+            #   "单任务内存估算"，让并发上限跟着**实测**走 ✓（不再只靠 2026 年的 3GB 经验值 ✗）
+            _stop_mem_sampler = resource.start_peak_sampler()
             task = self._get(task_id)
             if task is None:
                 return
@@ -266,6 +270,17 @@ class TaskManager:
                 return
             self._execute(task_id, req)
         finally:
+            # ★ v1.20.63：先收采样 ⇒ 用**实测**峰值校正单任务内存估算 ✓
+            #   ⚠ 只上报"上调"（见 `resource.note_task_peak_memory` ✓）；失败绝不影响收尾 ✗
+            if _stop_mem_sampler is not None:
+                try:
+                    _peak_gb, _samples = _stop_mem_sampler()
+                    if _samples:
+                        logger.info("任务 %s 内存采样：进程树峰值归因 %.2fGB/任务（%d 次采样）",
+                                    task_id, _peak_gb, _samples)
+                        resource.note_task_peak_memory(_peak_gb, task_id)
+                except Exception:                                # noqa: BLE001
+                    pass
             resource.release_task_jobs()
             # 按任务归还（幂等）：强制停止可能已代本任务归还过（线程永久卡死时）
             self._release_hold_if_held(task_id)
