@@ -3,6 +3,41 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.60] - 2026-09-23
+
+### Fixed（`And/Or` **两侧不等长** 崩溃 ＋ `DYN_*` **常量窗口**崩溃 —— `operands could not be broadcast`）
+
+- **用户报障**：任务 `20260923-162044_LightGBM_all_2021_2026_07bf2c5ba41e`
+  「100.0% - 失败: operands could not be broadcast together with shapes (4992,) (5110,)」。
+- **定位（真机、逐条，不猜 ✓）**：栈指向 `ops_ext.py:657 _LogicalAndOr._load_internal` →
+  `:681 And._op` ✓。新增 `ai_test/dbg_broadcast.py`（按任务 `params.json` **逐条真机加载** ✓）⇒
+  49 条公式里**第 35 条 `强龙起势`** 崩 ✓（`(5246,) (6446,)`：**同一支股票、两个天数** ✗），
+  其余 48 条正常 ✓。再用 `ai_test/dbg_and_len.py`（逐个缩小嫌疑 ✓）抓到**第二个 bug** ✗：
+  · `Gt(DYN_MEAN($close,5),0)` ⇒ `'int' object has no attribute 'load'` ✗
+  · `DYN_COUNT(And(...),5)` ⇒ 同上 ✗
+  ⇒ qlib 把**字面量窗口**解析成 **plain int** ✗，而 `DYN_*` 直接当表达式去 `.load(...)` ✗。
+- **根因（两个，都在 `ops_ext.py` ✓）**：
+  1. **`And/Or` 没做「两侧长度对齐」** ✗：它只处理了「**常量 vs 序列**」（`ndim==0` 广播 ✓），
+     两侧都是序列但**日期轴不同**时直接 `(a!=0)&(b!=0)` ⇒ 崩 ✓。
+     为何会不等长：`DYN_*` 把扩展窗口拉到 **inf**（全历史 ✓）后，同一棵树里有的子式覆盖全历史、
+     有的只覆盖部分（`BARSCOUNT` 自上市首日起算 ✓、停牌删行的 `SR` 包装 ✓）⇒ 长度天然不同 ✓。
+     ⚠ 同文件的 **`Corr` 早就**为「SR 删行导致的左右不等长」做过容错 ✓ —— **`And/Or` 漏了** ✗✓。
+  2. **`DYN_*` 只接受表达式窗口** ✗（窗口写成字面量 ⇒ 崩 ✓）。
+- **修复**：
+  · 新增 `ops_ext.`**`_align_series()`** ✓：两个 Series **按索引并集对齐**（缺侧补 NaN ✓；
+    各算子既有的 NaN 口径自然生效 —— 逻辑运算里 NaN 视为 0/False ✓，与 `_b` 的「NaN→0」一致 ✓）；
+    在 `_LogicalAndOr._load_internal` ✓ 与 `_DynWindowOp._load_both` ✓ 两处调用 ✓。
+  · `_load_both` 支持**常量窗口** ✓：`hasattr(N_expr, "load")` 才当表达式 ✓，否则铺成同索引常量序列 ✓。
+    ⚠ 判据用**鸭子类型**而**不是** `isinstance(..., Expression)` ✗ —— 既有单测的桩对象并不继承
+    `Expression` ✓（改成 isinstance 会让 **16 个 DYN 测试全挂** ✗，当场实测后改回 ✓）。
+- **实测（真机 ✓）**：
+  · `ai_test/dbg_and_len.py`：8 个用例**全 OK** ✓（含原先崩的两条 DYN ✓）；
+  · `ai_test/dbg_broadcast.py 07bf2c5ba41e`：**49 条公式失败 0 条** ✓（原先第 35 条崩 ✓）；
+  · 新增 `tests/test_ops_align.py`（**5 例**：并集对齐 ✓ / `And` 不等长 ✓ / `Or` 不等长 ✓ /
+    **一侧是常量时不能退化** ✓ / `DYN` 常量窗口 ✓）；**全量 498 passed** ✓；`ruff` All checks passed ✓。
+- **⚠ 补充**：该任务的产物目录 **0 段** ⇒ 失败发生在**第 1 段建数据时** ✓，**没有浪费计算** ✓；
+  修好后**直接重新发起**即可 ✓（无需删任何东西 ✓）。
+
 ## [1.20.59] - 2026-09-23
 
 ### Fixed（**公式库缓存的 `expression` 陈旧** —— "代码修好了，单因子测试照旧报错"）

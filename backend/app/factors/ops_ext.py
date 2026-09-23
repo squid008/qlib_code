@@ -330,6 +330,31 @@ def barsincen_vec(vals: np.ndarray, N: int) -> np.ndarray:
     return out
 
 
+def _align_series(a, b):
+    """★ v1.20.60：把两个 Series 按**索引对齐**（并集 ⇒ 缺侧补 NaN ✓）。
+
+    为什么必须做（2026-09-23 任务 `07bf2c5ba41e` 失败 ✓，逐条加载 49 条公式定位到第 35 条
+    `强龙起势` ✓）：
+      ```text
+      File "app/factors/ops_ext.py", line 657, in _load_internal
+      File "app/factors/ops_ext.py", line 681, in _op
+      ValueError: operands could not be broadcast together with shapes (4992,) (5110,)   ← 同一支股票、两个天数 ✗
+      ```
+      `And/Or` 原先只处理了"**常量 vs 序列**"（`ndim==0` 时广播 ✓），**两侧都是序列但长度不同**
+      时直接 `(a!=0)&(b!=0)` ⇒ 崩 ✗。
+      ⚠ 为什么会不等长：`DYN_*` 把扩展窗口拉到 **inf**（全历史 ✓）后，同一棵树里有的子式覆盖
+      全历史、有的只覆盖部分（如 `BARSCOUNT` 从上市首日起算 ✓、停牌删行的 `SR` 包装 ✓）
+      ⇒ 长度天然不同 ✗。
+      ⚠ 同文件的 `Corr` **早就**为「SR 删行导致的左右不等长」做过容错 ✓ —— **`And/Or` 漏了** ✗✓。
+
+    对齐语义：**并集索引**、缺侧补 **NaN** ✓ ⇒ 各算子既有的 NaN 口径自然生效
+      （逻辑运算里 NaN 视为 0/False ✓，与 `_b` 的「NaN→0」一致 ✓）。
+    """
+    if isinstance(a, pd.Series) and isinstance(b, pd.Series) and not a.index.equals(b.index):
+        a, b = a.align(b, join="outer")
+    return a, b
+
+
 class _DynWindowOp(ExpressionOps):
     """动态窗口算子基类：窗口大小 N 是序列（每个位置用该位置的 N 值）。
 
@@ -350,7 +375,17 @@ class _DynWindowOp(ExpressionOps):
 
     def _load_both(self, instrument, start_index, end_index, *args):
         series = self.feature.load(instrument, start_index, end_index, *args)
-        ns = self.N_expr.load(instrument, start_index, end_index, *args)
+        # ★ v1.20.60：窗口参数允许是**常量字面量** ✓ —— 表达式写成 `DYN_MEAN($close,5)` 时，qlib 解析
+        #   出来的是 **plain int** ✗ ⇒ 原来直接 `self.N_expr.load(...)` 会崩
+        #   `'int' object has no attribute 'load'` ✗（2026-09-23 真机实测 ✓：`Gt(DYN_MEAN($close,5),0)`
+        #   与 `DYN_COUNT(And(...),5)` 都崩 ✓）。常量 ⇒ 直接铺成同索引的常量序列 ✓。
+        #   ⚠ 判据用**鸭子类型**（有没有 `load` ✓）而**不是** `isinstance(..., Expression)` ✗ ——
+        #   既有单测用的桩对象不继承 `Expression` ✓（改成 isinstance 会让 16 个 DYN 测试全挂 ✗，实测 ✓）。
+        if hasattr(self.N_expr, "load"):
+            ns = self.N_expr.load(instrument, start_index, end_index, *args)
+        else:
+            ns = pd.Series(float(self.N_expr), index=series.index)
+        series, ns = _align_series(series, ns)      # ★ 两侧日期轴可能不等长（见 `_align_series`）✗→✓
         return series.to_numpy(dtype=float), ns.to_numpy(dtype=float), series.index
 
     # 逐元素窗口规整语义（NaN→1、<1→1、int 截断）已向量化为 _win_lens_vec；
@@ -630,6 +665,10 @@ class _LogicalAndOr(ExpressionOps):
     def _load_internal(self, instrument, start_index, end_index, *args):
         l = self._load(instrument, start_index, end_index, *args, f=self.feature_left)
         r = self._load(instrument, start_index, end_index, *args, f=self.feature_right)
+        # ★★ v1.20.60：**两侧都是序列但日期轴不等长**时先对齐 ✓（原先只处理了"常量 vs 序列"✗）
+        #   —— 否则 `(a!=0)&(b!=0)` 直接抛 `operands could not be broadcast together (4992,) (5110,)` ✗
+        #   （详见 `_align_series` 的说明 ✓）
+        l, r = _align_series(l, r)
 
         def _b(v):
             if isinstance(v, pd.Series):
