@@ -3,6 +3,36 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.55] - 2026-09-23
+
+### Fixed（**`MA(X, 变量周期)` 直接崩** —— `window must be an integer 0 or greater`；＋函数常量折叠）
+
+- **用户报障**：「强龙起势（周期 60 天）：特征计算失败: window must be an integer 0 or greater」，
+  并问"公式里哪里错了"。
+- **根因（实测定位，不猜）**：该公式（公式库 `id=baf1276c349b`）大量使用
+  `MA5:=MA(C,MIN(BARNUM,5))`（窗口不超过已上市天数 —— **通达信里完全合法**）；而 `MIN` 是"两值取小"
+  ⇒ 映射成 **`Less`**（逐元素）⇒ 生成 `Mean($close,Less(BARSCOUNT($close),5))` ⇒ qlib 的 `Rolling`
+  把**序列**当窗口交给 `pandas.rolling` ⇒ 抛那句英文错。
+  ⚠ **为什么只有 `MA` 中招**：`HHV/LLV/COUNT/REF/SUM/HHVBARS/LLVBARS` **早就有"动态窗口"分支**
+  （变量周期自动转 `DYN_*` 外挂算子），**`MA` 一直不在名单里** ⇒ 只剩它崩。
+- **修复**：
+  1. 新增外挂算子 **`DYN_MEAN`**（动态窗口均值，前缀和全向量化；口径 = `rolling(N,min_periods=1).mean()`
+     ⇒ 跳过 NaN / 窗口不足按可用天数 / 全 NaN ⇒ NaN）；**`MA` 与 `MEAN` 的变量周期**接入它
+     （**常量周期仍走 qlib 内建 `Mean`** ⇒ 性能不变、行为不变）；`panel_expr` 面板快路径三处同步
+     （白名单 ✓、`kind` 映射 ✓、内核 ✓；段感知返回 `None` ⇒ 与 `sum/count` 一致回退逐段循环，
+     保证逐位一致）。
+  2. **编译期守卫**：`EMA/WMA/STD/VAR/SLOPE/MED/DELTA` 的周期若写成表达式 ⇒ 在**翻译阶段**就报清楚
+     （并给出可操作改法），不再等到运行期被 pandas 一句英文顶回来。
+  3. **常量折叠支持函数调用**（用户同一次要求：`SQRT(2)*CLOSE` 这类）⇒ 新增 `_CONST_FOLD_FUNCS`
+     白名单（只放**无状态纯数学函数**：`ABS/SQRT/LOG/LN/EXP/POW/POWER/MAX/MIN/MOD/INT/SGN/SIGN/ROUND`），
+     并给 `_g` 的折叠入口补上 `FuncCall`（⚠ 实测：不补则"表里有、却永远走不到"）；`MOD` 用
+     `math.fmod`（**符号随被除数**，与 `Mod` 算子同口径）；参数越界（`SQRT(-1)`）或结果非有限 ⇒ **不折**
+     （避免写出 `nan` 字面量）。
+- **实测**：新增 `tests/test_dyn_mean.py`（**20 例**：翻译 4 / 求值 3（与 pandas 逐位对拍）/ 折叠 5 /
+  守卫 8）；**全量 478 passed**；`ruff` **All checks passed**。
+- **⚠ 使用者须知**：这条公式需**重新保存一次**才会按新逻辑重新编译；另外 `MA(X, N)` 现在**天然**等价于
+  `MA(X, MIN(BARNUM, N))`（逐位置取 `min(已上市天数, N)`）⇒ 以后直接写 `MA(X, N)` 即可。
+
 ## [1.20.54] - 2026-09-23
 
 ### Fixed（**`SQRT`/`MOD` 一用就炸**＋**公式编辑器查找条与提示文字重叠**）

@@ -1448,7 +1448,7 @@ class PanelEvaluator:
             m = (ma & mb) if op == "And" else (ma | mb)
             return pd.Series(m.astype(np.float64), index=idx)
         if op in ("BARSLAST", "BARSSINCEN", "HHVBARS", "LLVBARS",
-                  "DYN_REF", "DYN_MIN", "DYN_MAX", "DYN_SUM", "DYN_COUNT",
+                  "DYN_REF", "DYN_MIN", "DYN_MAX", "DYN_SUM", "DYN_COUNT", "DYN_MEAN",
                   "DYN_HHVBARS", "DYN_LLVBARS"):
             return _panel_dyn(op, args, self)
         raise ValueError(f"panel_expr 不支持算子 {op}")
@@ -1622,7 +1622,7 @@ def _panel_dyn(op: str, args, ev: PanelEvaluator) -> pd.Series:
     if not isinstance(s, pd.Series) or not isinstance(ns, pd.Series):
         raise ValueError(f"{op} 参数须为序列")
     kind = {"DYN_REF": "ref", "DYN_MIN": "min", "DYN_MAX": "max",
-            "DYN_SUM": "sum", "DYN_COUNT": "count",
+            "DYN_SUM": "sum", "DYN_COUNT": "count", "DYN_MEAN": "mean",
             "DYN_HHVBARS": "hhvbars", "DYN_LLVBARS": "llvbars"}[op]
     return _by_group(s, ns, lambda v, w: _dyn_kernel(kind, v, w, ops_ext),
                      lambda v, w, ss, se: _dyn_kernel_seg(kind, v, w, ss, se, ops_ext))
@@ -1639,6 +1639,8 @@ def _dyn_kernel(kind, vals, nvals, ops_ext):
         return ops_ext.dyn_window_sum_vec(vals, nvals)
     if kind == "count":
         return ops_ext.dyn_window_count_vec(vals, nvals)
+    if kind == "mean":                      # ★ v1.20.55：MA/MEAN 的变量周期 ✓
+        return ops_ext.dyn_window_mean_vec(vals, nvals)
     if kind == "hhvbars":
         return ops_ext.dyn_bars_vec(vals, nvals, True)
     if kind == "llvbars":
@@ -1660,7 +1662,9 @@ def _dyn_kernel_seg(kind, vals, nvals, seg_start, seg_end, ops_ext):
         return ops_ext._dyn_rmq_vec_seg(vals, nvals, np.fmin, seg_start)
     if kind == "max":
         return ops_ext._dyn_rmq_vec_seg(vals, nvals, np.fmax, seg_start)
-    if kind in ("sum", "count"):
+    if kind in ("sum", "count", "mean"):
+        # ★ v1.20.55：mean 同 sum/count —— 内部都是 cumsum 前缀和相减 ⇒ 全局前缀和的浮点累加顺序
+        #   与逐段前缀和不同（差 1 ULP ✗）⇒ 返回 None 让 `_by_group` 回退逐段循环 ✓（与既有取舍一致 ✓）
         return None
     if kind == "hhvbars":
         return ops_ext.dyn_bars_vec_seg(vals, nvals, True, seg_start)

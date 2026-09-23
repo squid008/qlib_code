@@ -36,7 +36,7 @@ from qlib.data.ops import EMA as _QLIB_EMA
 
 __all__ = [
     "BARSLAST", "BARSCOUNT", "BARSSINCEN",
-    "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM",
+    "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM", "DYN_MEAN",
     "DYN_HHVBARS", "DYN_LLVBARS",
     "And", "Or",
     "SR",
@@ -296,6 +296,23 @@ def dyn_window_count_vec(vals: np.ndarray, nvals: np.ndarray) -> np.ndarray:
     return _dyn_window_prefix(vals, nvals, w)
 
 
+def dyn_window_mean_vec(vals: np.ndarray, nvals: np.ndarray) -> np.ndarray:
+    """★ v1.20.55 DYN_MEAN 全向量化：窗口内**非 NaN** 的均值 ✓。
+
+    口径 = **pandas `rolling(N, min_periods=1).mean()`**（qlib `Mean` 的底层 ✓）：
+      · 分子：`Σ(nan→0)` ✓（复用 `dyn_window_sum_vec` ✓）；
+      · 分母：窗口内**非 NaN 的个数** ✓（注意 ≠ `DYN_COUNT` ✗ —— 后者数的是"非 0 且非 NaN" ✓）；
+      · 窗口全 NaN ⇒ 结果 NaN ✓（用 `np.divide(..., where=den>0)` 避免 0/0 报警 ✓）；
+      · 开头窗口不足 ⇒ 按**可用天数**取均值 ✓（等价 `min_periods=1` ✓）。
+    """
+    num = dyn_window_sum_vec(vals, nvals)
+    valid = np.where(np.isnan(vals), 0.0, 1.0)          # 非 NaN 记 1 ⇒ count 就是有效个数 ✓
+    den = dyn_window_count_vec(valid, nvals)
+    out = np.full(len(num), np.nan, dtype=float)
+    np.divide(num, den, out=out, where=den > 0)
+    return out
+
+
 def barsincen_vec(vals: np.ndarray, N: int) -> np.ndarray:
     """BARSSINCEN 全向量化：N 窗内最早满足距当前周期数（无则 0）。"""
     N = max(1, int(N))
@@ -385,6 +402,22 @@ class DYN_SUM(_DynWindowOp):
     def _load_internal(self, instrument, start_index, end_index, *args):
         vals, nvals, idx = self._load_both(instrument, start_index, end_index, *args)
         return pd.Series(dyn_window_sum_vec(vals, nvals), index=idx)
+
+
+class DYN_MEAN(_DynWindowOp):
+    """★ v1.20.55 动态窗口均值（MA/MEAN 的**变量周期**写法 ✓）：前缀和，全向量化 ✓。
+
+    动机（2026-09-23 用户报「强龙起势（周期 60 天）：特征计算失败:
+    window must be an integer 0 or greater」）：通达信/益盟公式里
+        `MA5:=MA(C,MIN(BARNUM,5))`（= 窗口不超过"已上市天数" ✓）
+    **完全合法** ✓，但 `MA` 原先**不在动态窗口白名单**里 ✗ ⇒ 生成 `Mean($close, Less(BARSCOUNT($close),5))`
+    ✗ ⇒ qlib `Rolling` 把"序列"当窗口交给 `pandas.rolling` ⇒ 直接崩 ✗。
+    ⇒ 本算子让这类写法与 HHV/LLV/COUNT/REF/SUM 一样**逐位置取窗口** ✓（语义同通达信 ✓）。
+    """
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        vals, nvals, idx = self._load_both(instrument, start_index, end_index, *args)
+        return pd.Series(dyn_window_mean_vec(vals, nvals), index=idx)
 
 
 def _dyn_best_idx(ai: np.ndarray, bi: np.ndarray, vals: np.ndarray, is_max: bool) -> np.ndarray:
@@ -1764,7 +1797,7 @@ class Mod(ExpressionOps):
 _ALL_OPS = [
     FACTOR_END,          # v1.19.97：前复权用（$close / FACTOR_END($factor)）
     BARSLAST, BARSCOUNT, BARSSINCEN,
-    DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM, DYN_HHVBARS, DYN_LLVBARS,
+    DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM, DYN_MEAN, DYN_HHVBARS, DYN_LLVBARS,
     And, Or,          # 覆盖 qlib 内建：np.bitwise_and 对 float&bool 混输脆弱
     Corr,             # v1.19.99：覆盖 qlib 内建，容忍 SR 删行导致的左右不等长（406 vs 400 ✗）
     SR,

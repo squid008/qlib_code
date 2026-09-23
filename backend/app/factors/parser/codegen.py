@@ -6,10 +6,31 @@
 """
 from __future__ import annotations
 
+import math
 from typing import List
 
 from .ast import Expr, Num, Field, Var, BinOp, UnaryOp, FuncCall
 from .lexer import LexerError
+
+
+# ---- ★ v1.20.55：可**常量折叠**的纯数学函数表 ----
+# 只放"**无状态、逐元素、纯函数**"的 ✓（结果只依赖参数值 ⇒ 常量参数必有常量答案 ✓）。
+# ⚠ 绝不放 `REF/MA/HHV/LLV/SUM/COUNT/BARSLAST/SMA/FILTER` 这类**依赖历史序列**的 ✗ ——
+#   它们没有"常量答案" ✓，塞进来会让常量折叠算出错误结果 ✗。
+# 语义必须与 `codegen`/`ops_ext` 里对应算子**逐位一致** ✓（例如 `MOD` 用 `math.fmod` ✓
+# —— 符号随被除数 ✓，与我们的 `Mod` 算子同口径 ✓，而 Python 的 `%` 是符号随除数 ✗）。
+_CONST_FOLD_FUNCS = {
+    "ABS": abs,
+    "SQRT": math.sqrt,                     # 负值 ⇒ ValueError ⇒ **不折** ✓
+    "LOG": math.log, "LN": math.log,       # ≤0 ⇒ ValueError ⇒ 不折 ✓
+    "EXP": math.exp,
+    "POW": lambda a, b: a ** b, "POWER": lambda a, b: a ** b,
+    "MAX": max, "MIN": min,                # 两值取大/小（与 Greater/Less 同义 ✓）
+    "MOD": math.fmod,
+    "INT": math.trunc,
+    "SGN": lambda v: (v > 0) - (v < 0), "SIGN": lambda v: (v > 0) - (v < 0),
+    "ROUND": round,
+}
 
 
 class CodeGenError(Exception):
@@ -127,6 +148,26 @@ def _const_fold(e: Expr, allow_div: bool = False):
     """
     if isinstance(e, Num):
         return float(e.value)
+    # ★ v1.20.55：**纯数学函数**且参数全是常量 ⇒ 折成字面量 ✓
+    #   用户 2026-09-23 要求：「`SQRT(2)*CLOSE` 这种常量参数的函数也修掉吧」✓ ——
+    #   原先会生成 `Mul(Sqrt(2),$close)` ✗，而 qlib 对"**没有任何 `$字段` 的子树**"敏感
+    #   ⇒ 触发 v1.19.90 记录的那个崩（`'numpy.int64' object has no attribute 'name'` ✗）。
+    if isinstance(e, FuncCall):
+        fn = _CONST_FOLD_FUNCS.get(e.name.upper())
+        if fn is None:
+            return None
+        vals = []
+        for a in e.args:
+            v = _const_fold(a, allow_div)
+            if v is None:
+                return None
+            vals.append(v)
+        try:
+            r = float(fn(*vals))
+        except Exception:                                      # noqa: BLE001
+            return None                     # 参数越界/类型不合（如 SQRT(-1)）⇒ 不折 ✓
+        # ⚠ 非有限值（NaN/inf）也**不折** ✗ —— 否则表达式里会出现 `nan` 字面量，qlib 解析不了 ✓
+        return r if math.isfinite(r) else None
     if isinstance(e, UnaryOp):
         # ⚠ 递归必须把 `allow_div` **传下去**（v1.19.90 踩坑）：否则"含除法"的父节点永远折不动 ✗
         #   ⇒ 表现成"只有最内层 `Div` 折了、外层原样输出"（LLT 的 W0 整块就是被这个卡住的）。
@@ -231,7 +272,22 @@ _DYN_WINDOW_OPS = {
     "SUM": "DYN_SUM",
     "HHVBARS": "DYN_HHVBARS",
     "LLVBARS": "DYN_LLVBARS",
+    # ★ v1.20.55：**MA / MEAN 也允许变量周期** ✓（通达信语义 ✓）
+    #   动机（2026-09-23 用户报「强龙起势：window must be an integer 0 or greater」✗）：
+    #   益盟公式里 `MA5:=MA(C,MIN(BARNUM,5))`（窗口不超过已上市天数）**完全合法** ✓，
+    #   而 `MA` 原来不在本表 ⇒ 生成 `Mean($close,Less(BARSCOUNT($close),5))` ✗
+    #   ⇒ qlib `Rolling` 把**序列**当窗口 ⇒ `pandas.rolling(序列)` ⇒ 崩 ✗。
+    #   ⚠ 常量窗口仍走 qlib 内建 `Mean`（性能更好 ✓）—— 见下方分支的 `isinstance(..., Num)` 判断 ✓。
+    "MA": "DYN_MEAN",
+    "MEAN": "DYN_MEAN",
 }
+
+# ★ v1.20.55：**窗口只能是整数常量**的滚动算子 —— 变量窗口在**编译期**就报清楚 ✗。
+#   为什么必须挡（而不是让它跑到运行期 ✗）：qlib 会把窗口原样交给 `pandas.rolling`，
+#   报的是 `window must be an integer 0 or greater`（用户 2026-09-23 就是被这句难住的 ✓
+#   —— 完全看不出是"哪个函数、哪一行的周期写错了" ✓）。
+#   ⚠ `MA/MEAN` 不在此列 ✓（它们已支持动态窗口 ✓）；`EMA_TDX/SMA` 另有常量校验 ✓。
+_CONST_WINDOW_ONLY = {"EMA", "WMA", "STD", "VAR", "SLOPE", "MED", "DELTA"}
 
 # ---- 函数 → 组合表达式（用已有算子展开）----
 def _expand_cross(args: List[Expr], code) -> str:
@@ -301,7 +357,11 @@ class CodeGen:
         #     `Add(2,3)` / `Div(2,Add(30,1))` ❌      而 `Add($close,1)` / `Mul(2,$close)` ✅
         #   LLT 正好含 `Div(2,Add(30,1))`、`Mul(3,…)`、`Mul(Sub(1,…),Sub(1,…))` 这类纯常数子树 ⇒ 中招。
         #   ⇒ 折叠后统一是**单个数字字面量**，作为算子操作数完全没问题 ✓（顺带表达式更短 ✓）。
-        if isinstance(e, (BinOp, UnaryOp)):
+        # ★ v1.20.55：`FuncCall` 也纳入常量折叠入口 ✓ —— 否则"表里有纯数学函数、却永远走不到" ✗
+        #   （实测：`CLOSE+ABS(-3)` 仍生成 `Add($close,Abs(-3))` ✗）。安全 ✓：真正能折什么
+        #   由 `_const_fold` 内部的 `_CONST_FOLD_FUNCS` 白名单决定 ✓（`Mean/Ref/BARSLAST` 等
+        #   依赖历史序列的**不在表里** ⇒ 永远不会被折 ✓）。
+        if isinstance(e, (BinOp, UnaryOp, FuncCall)):
             v = _const_fold(e, allow_div=True)
             if v is not None:
                 return str(int(v)) if float(v).is_integer() else repr(v)
@@ -429,6 +489,19 @@ class CodeGen:
             q = _DYN_WINDOW_OPS[name] if not isinstance(e.args[1], Num) else FUNC_QLIB[name]
             inner = ",".join(self._g(a) for a in e.args)
             return f"{q}({inner})"
+        # ★ v1.20.55：**只能是常量窗口**的滚动算子 —— 变量窗口在这里就报清楚 ✗
+        #   否则会生成 `Mean(X, 表达式)` 之类 ⇒ 运行期被 pandas 顶回来，报
+        #   `window must be an integer 0 or greater` ✗（用户 2026-09-23 就是被这句难住的 ✓：
+        #   既没说是哪个函数、也没说哪一行的周期写错了 ✓）。
+        if name in _CONST_WINDOW_ONLY and len(e.args) >= 2 and not isinstance(e.args[-1], Num):
+            raise CodeGenError(
+                "%s 的周期必须是**常量整数** ✗（当前写成了表达式）\n"
+                "  · 想按位置用不同窗口 ⇒ 用 MA/MEAN（已支持动态窗口 ✓）或 HHV/LLV/COUNT/REF/SUM ✓；\n"
+                "  · 想让窗口不超过已上市天数 ⇒ 直接写 MA(X, N) 就行 ✓\n"
+                "    （MA 会逐位置取 min(已上市天数, N) ✓，等价于你写的 MIN(BARNUM,N) ✓）；\n"
+                "  · 例：`%s(C, MIN(BARNUM, 20))` ⇒ 改成 `MA(C, MIN(BARNUM, 20))` ✓。"
+                % (name, name)
+            )
         # MAX/MIN：通达信语义是两值取大/小（Greater/Less）
         if name in ("MAX", "MIN"):
             if len(e.args) != 2:
