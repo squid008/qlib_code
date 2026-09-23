@@ -3,6 +3,36 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.56] - 2026-09-23
+
+### Fixed（公式编辑器：**滚动时字符重叠** ＋ **「插入函数」后光标跳到文档末尾**）
+
+- **用户报障**（附截图）：「我移动滚动条的时候，字符也重叠了」；
+  「我插入 `TURNOVERRATE` 后它怎么滚动到最后一行去了」。
+- **① 滚动重叠（同类问题第 6 次，这次去掉病根）**：编辑器是「行号槽 + `<pre>` 高亮层 + 透明
+  `<textarea>`」三层；旧实现（v1.19.103 起）**只有 textarea 自己滚** ✓，另两层 `overflow:hidden` +
+  **JS `transform` 反向位移跟随** ✗。病根：滚动发生在**合成器线程**，而 `transform` 要等**主线程**跑完 JS
+  ⇒ 快速拖动滚动条时两者**差至少一帧** ⇒ 行号/彩色文字与正文错位 ⇒ 看上去就是"字符重叠/重影" ✗
+  （靠调整 JS 时序永远治不完 ✗）。
+  **修法**：★ **只保留一个滚动宿主**（`hostRef`）✓ —— 行号槽与 `<pre>`/`<textarea>` 都是它的普通子元素
+  ⇒ 由浏览器**原生一起滚动** ⇒ **JS 同步整个删掉** ✓✓；行号槽改 `position: sticky; left: 0` ✓
+  ⇒ 横向滚动时钉住 ✓、纵向随宿主自然滚 ✓；`<pre>` 放在正常流里定宽高 ✓，`<textarea>` 绝对覆盖
+  且 `overflow:hidden`（**自己永不滚动** ✓）。只保留"把光标/查找命中滚进可视区"的 JS ✓
+  （滚的是宿主 ✓；并顺手把 textarea 被浏览器"露光标"偷滚出的偏移归零 ✓）。
+- **② 插入后光标跳末尾**：父组件 `onChange` + `requestAnimationFrame(setSelectionRange)` ✗
+  抢不过 React 对**受控** textarea 的 `value` 重设（浏览器会把选区**塌到值末尾** ✗，视图随之滚到最后
+  一行 ✗）。**修法**：编辑器自带 `FormulaEditorHandle.insertText()` ✓ —— 插入时记下目标光标位 ✓，
+  在 `useLayoutEffect([value])`（**DOM 更新后、绘制前** ✓）恢复选区并滚到插入点 ✓ ⇒ 时序自洽 ✓
+  （`FormulaPanel` 改用句柄 ✓，不再自己猜光标 ✗；`innerRef` 相应废弃 ✓）。
+- **实测（Edge + playwright-cli，真机断言 ✓ 非"看代码觉得对"）**：
+  · 滚动对位：`gutterMinusPreTop = 0`、`preMinusTaTop = 0`、`preMinusTaSize = [0, 0]`、
+    textarea 自身 `scrollTop = 0` ✓；横向滚 260px 后 `gutterLeftVsHost = 0`（行号槽钉住 ✓）；
+  · 插入光标：120 行文本、光标在第 15 行、视图在顶部 ⇒ 双击插入 `TURNOVERRATE` 后
+    `selectionStart = 262`（= 插入点 + 13 ✓；旧版会等于文档末尾 ✗）、`caretLine = 15` ✓、
+    `hostScrollTop = 240`（只滚到让第 15 行可见 ✓）、`isAtBottom = false`（`maxScroll = 2012` ✗）✓✓；
+  · `npx tsc --noEmit` 通过 ✓。
+- **注**：本版为**纯前端**改动 ⇒ 后端无需重启 ✓（刷新页面即生效 ✓）。
+
 ## [1.20.55] - 2026-09-23
 
 ### Fixed（**`MA(X, 变量周期)` 直接崩** —— `window must be an integer 0 or greater`；＋函数常量折叠）

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import type { CustomFormula } from '../api'
 import FormulaHandbookModal from './FormulaHandbookModal'
 import FormulaEditor from './FormulaEditor'
+import type { FormulaEditorHandle } from './FormulaEditor'
 
 interface FormulaPanelProps {
   customFormulas: CustomFormula[]
@@ -44,28 +45,22 @@ export default function FormulaPanel({
   // 函数手册弹窗（弹窗开关/选中均为本组件局部 UI 状态，不进 App）
   const [handbookOpen, setHandbookOpen] = useState(false)
   const [listQuery, setListQuery] = useState('')
-  const newAreaRef = useRef<HTMLTextAreaElement | null>(null)
-  const editAreaRef = useRef<HTMLTextAreaElement | null>(null)
+  const newHandleRef = useRef<FormulaEditorHandle | null>(null)
+  const editHandleRef = useRef<FormulaEditorHandle | null>(null)
   const lastFocusRef = useRef<'new' | 'edit'>('new')
 
   // 双击手册函数/字段 → 插入到最近聚焦的公式编辑框光标处（编辑中默认插编辑框）
+  // ★ v1.20.56：**插入 + 光标恢复全交回编辑器** ✓（`FormulaEditorHandle.insertText`）。
+  //   旧实现由本组件 `onChange` + `requestAnimationFrame(setSelectionRange)` 抢着补选区 ✗ ——
+  //   抢不过 React 对**受控** textarea 的 `value` 重设（浏览器会把选区塌到**末尾** ✗）
+  //   ⇒ 用户 2026-09-23 实测"插入 TURNOVERRATE 后光标/视图跳到最后一行" ✗。
   const insertToken = (token: string) => {
     const target: 'new' | 'edit' =
       editingId != null && lastFocusRef.current === 'edit' ? 'edit' : 'new'
-    const area = target === 'edit' ? editAreaRef.current : newAreaRef.current
-    const cur = target === 'edit' ? editingText : formulaInput
-    const onChange = target === 'edit' ? onEditingTextChange : onInputChange
-    const start = area?.selectionStart ?? cur.length
-    const end = area?.selectionEnd ?? start
-    onChange(cur.slice(0, start) + token + cur.slice(end))
-    // 恢复焦点与光标到插入点之后
-    requestAnimationFrame(() => {
-      if (!area) return
-      area.focus()
-      lastFocusRef.current = target
-      const pos = start + token.length
-      area.setSelectionRange(pos, pos)
-    })
+    const h = target === 'edit' ? editHandleRef.current : newHandleRef.current
+    if (!h) return                       // 句柄未就位（未挂载）⇒ 不猜光标位置 ✗
+    h.insertText(token)
+    lastFocusRef.current = target
   }
 
   return (
@@ -89,8 +84,8 @@ export default function FormulaPanel({
               lastFocusRef.current = 'new'
             }}
             rows={8}
-            innerRef={(el) => {
-              newAreaRef.current = el
+            handleRef={(h) => {
+              newHandleRef.current = h
             }}
             placeholder="如：A:=MA(CLOSE,5); 长期线:A+100;   {这段是注释}"
           />
@@ -166,8 +161,8 @@ export default function FormulaPanel({
                             lastFocusRef.current = 'edit'
                           }}
                           rows={8}
-                          innerRef={(el) => {
-                            editAreaRef.current = el
+                          handleRef={(h) => {
+                            editHandleRef.current = h
                           }}
                         />
                         <div className="flex items-center gap-2 mt-1">
