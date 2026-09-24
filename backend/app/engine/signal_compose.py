@@ -318,6 +318,17 @@ def gate_z(dataset, bst, p_test: pd.Series, opts=None, universe=None, span=None)
 
 
 def compose_gate_tail(score: pd.Series, z: pd.Series, topk: int, reject_ratio: float) -> pd.Series:
+    """闸门拒尾：**候选集 = 主分 topk**；候选内按 z 从低到高拒掉 `reject_ratio` ✗。
+
+    ★★ v1.20.66（用户 2026-09-24 决策 ✓）：「**拒尾之后就不补了**」——
+        「因为补进来的可能也是垃圾啊；topK=50，拒尾后还剩 37、38 只，那就买这么多」✓
+      ⚠ 旧实现的**漏洞** ✗：只把**被拒的**置 `-inf` ✓，而**候选集之外**（主分第 51 名往后 ✓）
+        分数**原封不动** ✗ ⇒ 策略按分数降序取 `topk=50` 时，**必然会从第 51 名往后补满** ✗✓
+        （实测：买入排名中位 70、51~100 名连续 ✓ —— 正是这个补票行为 ✓）。
+      ⇒ 现在**连候选集之外也一并置 `-inf`** ✓ ⇒ 只有"候选 ∩ 存活"有有限分数 ✓
+        ⇒ 策略最多只买这么多 ✓（配合 `PeriodicTopKStrategy` 丢弃非有限分 ✓ 才彻底 ✓）。
+    ⚠ 只在**开了闸门**时调用本函数 ✓ ⇒ 不开闸门的行为完全不变 ✓。
+    """
     out = score.copy().astype(float)
     df = pd.DataFrame({"score": score, "z": z.reindex(score.index)}).dropna()
     if not len(df):
@@ -329,7 +340,8 @@ def compose_gate_tail(score: pd.Series, z: pd.Series, topk: int, reject_ratio: f
     zr = sub["z"].groupby(level="datetime").rank(ascending=False, method="first")
     cnt = sub["z"].groupby(level="datetime").transform("size")
     keep_n = (cnt * (1.0 - reject_ratio)).round().clip(lower=1)
-    out.loc[sub[zr > keep_n].index] = -np.inf
+    out.loc[sub[zr > keep_n].index] = -np.inf          # ① 候选内：被拒 ✓
+    out.loc[df[rk > topk].index] = -np.inf             # ② 候选外：**不留后路** ✓（v1.20.66 ✓）
     return out
 
 

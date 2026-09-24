@@ -16,6 +16,8 @@ export interface BacktestRequest {
   feature: string
   selected_features?: string[] | null
   custom_formulas?: string[] | null
+  // ★ v1.20.66：按**百分比**选股（0~1，如 0.01=1% ✓）；非空则忽略 `topk` ✓
+  topk_ratio?: number | null
   // 交易成本与成交设置
   deal_price: string
   price_adjust?: string // 复权方式：none/forward/backward（缺省=不复权）

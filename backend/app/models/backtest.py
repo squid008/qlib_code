@@ -22,6 +22,10 @@ class BacktestRequest(BaseModel):
         None, description="模型超参（LightGBM/XGBoost 等）。未填的键使用 Qlib 默认值。例：{num_leaves: 210, max_depth: 8, min_child_samples: 20, learning_rate: 0.0421}"
     )
     topk: int = Field(50, description="TopK 选股数量")
+    # ★ v1.20.66（用户 2026-09-24 ✓）：按**百分比**选股（0<p≤1，如 0.01=1% ✓）；与 `topk` 互斥 ✓。
+    #   口径 = 当日**可交易候选只数** × p（候选已剔禁买/ST ✓）⇒ 池子变大时宽度不漂移 ✓。
+    topk_ratio: Optional[float] = Field(
+        None, description="按百分比选股（0~1，如 0.01=1%）；给了它则忽略 topk。口径=当日可交易候选只数×比例")
     n_days_hold: int = Field(10, description="持仓周期（天）：每 N 个交易日调仓一次，1=每日调仓")
     label_horizon: int = Field(2, description="预测周期（天）：模型预测未来 N 个交易日的收益（label），与分层/IC 的收益口径一致")
     layer_rebalance: int = Field(1, description="分层持仓周期（天，算法A）：1=每日重排分层（因子诊断）；>1=调仓日分组并持有到下一调仓日（评估实盘，建议与 n_days_hold 对齐）")

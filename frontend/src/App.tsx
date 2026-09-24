@@ -46,6 +46,7 @@ export default function App() {
     model: 'LightGBM',
     model_params: {},
     topk: 50,
+    topk_ratio: null,          // ★ v1.20.66：非空 ⇒ 按百分比选股（忽略 topk ✓）
     n_days_hold: 10,
     label_horizon: 2,
     layer_rebalance: 1,
@@ -1093,13 +1094,44 @@ export default function App() {
             </label>
 
             <label className="block">
-              <span className="text-sm text-slate-500">TopK 选股数</span>
-              <input
-                type="number"
-                className="mt-1 w-full border rounded px-2 py-1"
-                value={form.topk}
-                onChange={(e) => update('topk', Number(e.target.value))}
-              />
+              <span className="text-sm text-slate-500">选股方式</span>
+              {/* ★ v1.20.66（用户 2026-09-24 要求 ✓）：除**固定只数**，还可切**按百分比**（1% 也行 ✓）。
+                  ⚠ 百分比口径 = **当日可交易候选只数 × 比例**（候选已剔禁买/ST ✓）⇒ 池子变大时
+                    选股宽度**不会悄悄漂移** ✓（早年全 A ~2000 只时 50 只=2.5%、现在 ~5400 只=0.9% ✗）。 */}
+              <div className="mt-1 flex gap-2">
+                <select
+                  className="border rounded px-1 py-1 text-sm shrink-0"
+                  value={form.topk_ratio == null ? 'count' : 'ratio'}
+                  onChange={(e) => update('topk_ratio', e.target.value === 'ratio' ? 0.05 : null)}
+                  title="固定只数：按当日可交易候选取前 N 只；按百分比：取前 N%（如 0.01=1%、0.05=5%）"
+                >
+                  <option value="count">固定只数</option>
+                  <option value="ratio">按百分比</option>
+                </select>
+                {form.topk_ratio == null ? (
+                  <input
+                    type="number"
+                    className="w-full border rounded px-2 py-1"
+                    value={form.topk}
+                    onChange={(e) => update('topk', Number(e.target.value))}
+                    title="当日持有的股票只数"
+                  />
+                ) : (
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.0001"
+                    max="1"
+                    className="w-full border rounded px-2 py-1"
+                    value={form.topk_ratio}
+                    onChange={(e) => update('topk_ratio', Number(e.target.value))}
+                    title="0~1 的小数：0.01 = 1%、0.05 = 5%、1 = 全池"
+                  />
+                )}
+              </div>
+              <span className="text-[11px] text-slate-400">
+                {form.topk_ratio == null ? '前 N 只（按当日可交易候选）' : '比例（0~1；0.01 = 1%，按当日可交易候选只数算）'}
+              </span>
             </label>
 
             {/* 第 4 列：3 个 button（row-span-2 跨两行，不撑高输入框行高） */}

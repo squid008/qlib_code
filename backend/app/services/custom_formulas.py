@@ -102,14 +102,37 @@ def _key(it: dict) -> str:
     return "id:" + it["id"] if it.get("id") else "name:" + (it.get("name") or "")
 
 
+def ensure_migrated() -> None:
+    """★ v1.20.65：**平滑迁移** —— 自己还没有文件、但老共享单文件里有公式 ⇒ 搬一份到自己的文件 ✓。
+
+    为什么要搬（而不只是"读得到就行" ✓）：
+      · 老单文件**已从 git 停止跟踪** ✗（否则我推送的老文件会覆盖同事本地的 ✗✓）⇒ 它只在**本机**存在 ✓；
+      · 搬进自己的文件后，**后续编辑只动自己的文件** ✓ ⇒ 与同事彻底隔离 ✓✓。
+    ⚠ 幂等 ✓：自己的文件一旦存在就**不再搬**（避免把人家的东西反复合并进来 ✗）。
+    """
+    try:
+        if os.path.exists(_MY_FILE):
+            return
+        legacy = _read_items(_CUSTOM_FORMULAS_PATH)
+        if not legacy:
+            return
+        _save_my([x for x in legacy if isinstance(x, dict) and not x.get("deleted")])
+        print("[formulas] ⇢ 已把老公式库（%d 条）迁入 %s ✓" % (len(legacy), _MY_FILE), flush=True)
+    except Exception as e:                                       # noqa: BLE001
+        print("[formulas] ⚠ 迁移老公式库失败（已忽略）：%r" % (e,), flush=True)
+
+
 def load_merged() -> List[dict]:
     """★ 合并所有来源（**删标记生效** ✓、同 id 高优先级胜出 ✓）⇒ 去重后的条目列表 ✓。
+
+    ⚠ 首次调用会先做一次**平滑迁移**（老单文件 → 自己的文件 ✓，见 `ensure_migrated` ✓）。
 
     胜负规则（**确定性、可测** ✓）：
       · 优先级小的胜（自己 0 > 别人 1 > 老共享单文件 2 ✓）；
       · **同优先级**（= 不同人的文件之间 ✓）⇒ `updated_at` **较新**的胜 ✓
         （它比"文件 mtime"更语义化 ✓ —— mtime 会被 checkout / 编辑器触碰改变 ✗）。
     """
+    ensure_migrated()
     best: Dict[str, Tuple[int, str, dict]] = {}
     tomb: Dict[str, Tuple[int, str]] = {}
     for _path, items, prio in _sources():

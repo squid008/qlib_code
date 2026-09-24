@@ -11,6 +11,8 @@
 """
 import copy
 
+import numpy as np
+
 from qlib.backtest.decision import Order, TradeDecisionWO
 from qlib.contrib.strategy.signal_strategy import BaseSignalStrategy
 from qlib.log import get_module_logger
@@ -39,6 +41,7 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
         forbid_all_trade_at_limit=True,
         rebalance_base=None,
         weight_col=None,
+        topk_ratio=None,
         **kwargs,
     ):
         super().__init__(risk_degree=risk_degree, **kwargs)
@@ -46,6 +49,12 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
         # 逐日已归一≈1）。None=旧路径（等权 topk）。weight_col 非 None 且 signal 含该列时启用。
         self.weight_col = weight_col
         self.topk = int(topk)
+        # ★ v1.20.66（用户 2026-09-24 要求 ✓）：**按百分比选股**（0<p≤1 ✓），与固定只数二选一 ✓。
+        #   取值 = 当日**可交易候选只数** × p（候选 = 信号里分数有限的那些，已剔除禁买/ST 等 ✓）
+        #   ⇒ 池子大小随时间变化时，选股宽度**不会悄悄漂移** ✓
+        #   （早年全 A ~2000 只时 50 只 = 2.5% ✓、现在 ~5400 只 = 0.9% ✗ ⇒ 性格全变了 ✓）。
+        # ⚠ 与 `topk` **互斥**：给了 ratio 就按 ratio 算 ✓（`_k_of()` 里决定 ✓）；1% 也允许 ✓。
+        self.topk_ratio = None if topk_ratio in (None, "") else float(topk_ratio)
         self.n_days_hold = max(1, int(n_days_hold))
         self.only_tradable = only_tradable
         self.forbid_all_trade_at_limit = forbid_all_trade_at_limit
@@ -57,6 +66,18 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
         self._rebalance_base = rebalance_base
         # 上一次调仓的 step（时间步），旧逻辑用；rebalance_base 传入时忽略
         self._last_rebalance_step = None
+
+    def _k_of(self, n_cand: int) -> int:
+        """当日**目标持仓只数** K：按百分比（`topk_ratio` ✓）或固定只数（`topk` ✓）二选一 ✓。
+
+        ★ v1.20.66：`n_cand` = **当日可交易候选只数**（已剔禁买/ST ✓、且已丢弃非有限分 ✓）
+          ⇒ 百分比是"当日池子的比例" ✓，而不是对全市场固定只数 ✓（消除池子变大的漂移 ✓）。
+        ⚠ 下限 1 只 ✓（避免 0 只 ⇒ 空仓 ✓）；上限 = 候选数 ✓（不会越界 ✓）。
+        """
+        if self.topk_ratio is not None:
+            k = int(round(max(0.0, min(1.0, self.topk_ratio)) * max(0, n_cand)))
+            return max(1, min(n_cand, k)) if n_cand > 0 else 0
+        return max(1, min(n_cand, self.topk)) if n_cand > 0 else 0
 
     def generate_trade_decision(self, execute_result=None):
         trade_step = self.trade_calendar.get_trade_step()
@@ -112,8 +133,16 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
                         trade_step, orig_cnt, forbid_cnt)
             return TradeDecisionWO([], self)
 
-        # 目标组合：信号分数最高的 topk 只
-        target_topk = list(pred_score.sort_values(ascending=False).index[: self.topk])
+        # ★ v1.20.66：丢弃**非有限分数**（闸门拒尾/候选外被置 `-inf` ✓）——
+        #   ⚠ 否则 `-inf` 会参与排序并**占满 topk 名额** ✗（"拒尾后不补"就落不了地 ✓）。
+        pred_score = pred_score.replace([np.inf, -np.inf], np.nan).dropna()
+        if pred_score is None or len(pred_score) == 0:
+            logger.info("Rebalance %s: 空仓-有效分数全为空", trade_step)
+            return TradeDecisionWO([], self)
+
+        # 目标组合：信号分数最高的 K 只（K 由固定只数或百分比决定 ✓）
+        k = self._k_of(len(pred_score))
+        target_topk = list(pred_score.sort_values(ascending=False).index[:k])
 
         # 卖出：当前持仓中不在目标 topk 的（整体卖出）
         sell_order_list = []

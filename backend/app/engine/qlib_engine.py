@@ -570,6 +570,9 @@ def _build_port_config(req: BacktestRequest, benchmark: str, start_time: str, en
             "kwargs": {
                 "signal": "<PRED>",
                 "topk": req.topk,
+                # ★ v1.20.66（用户 2026-09-24 ✓）：`topk_ratio` 非空 ⇒ **按当日可交易只数的百分比选股** ✓
+                #   （与 `topk` 互斥；1% 也允许 ✓ —— 池子变大时选股宽度不再悄悄漂移 ✓）
+                "topk_ratio": getattr(req, "topk_ratio", None),
                 "n_days_hold": req.n_days_hold,
                 "only_tradable": False,
                 # 权重目标（S2 叠加）：pred 无 target_w 列时策略自动回退等权 topk，恒传安全
