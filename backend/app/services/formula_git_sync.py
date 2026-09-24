@@ -2,11 +2,15 @@
 """★ v1.20.63：公式库 → git **自动同步**（每次写盘后去抖提交，并尽力推送）。
 
 动机（2026-09-23 用户报：「咱们的公式不会 push 上去吗？我家里 Pull 怎么公式没更新」）：
-    `backend/workdir/custom_formulas.json`（用户公式资产 ✓）**早就纳入版本控制** ✓
-    （`.gitignore` 里专门开了 `!backend/workdir/custom_formulas.json` ✓），
-    但**提交靠人记** ✗ —— 本地已有 **65 条**、仓库 HEAD 只有 **35 条** ✗（30 条从未推送 ✗），
-    用户"以为会跟着 git 走" ✗ ⇒ 家里 pull 拿不到 ✓。
+    公式库（用户资产 ✓）**早就纳入版本控制** ✓，但**提交靠人记** ✗ —— 当时本地已有 **65 条**、
+    仓库 HEAD 只有 **35 条** ✗（30 条从未推送 ✗），用户"以为会跟着 git 走" ✗ ⇒ 家里 pull 拿不到 ✓。
     ⇒ 本模块把"提交+推送"变成**保存公式的副作用** ✓，不再依赖任何人记得 ✓。
+⚠ v1.20.69（2026-09-24）：修本机制的**整体失效** —— v1.20.66 把老单文件
+    `workdir/custom_formulas.json` 从 git 移除后，`sync_now` 里那条
+    `git add --force -- <老文件> <公式目录>` 因**路径不存在**而 `fatal`（exit 128）
+    并**中止整条 add** ⇒ 什么都没 stage ⇒ **公式再也不会被自动提交/推送** ✗（静默不同步 ✗✗）。
+    现在改为**只 stage 存在的目标、且逐个 add** ✓（并在 `.gitignore` 里修好被 `workdir/`
+    盖掉的 `!formulas/*.json` 例外 ✓）。
 
 设计取舍（重要 ✓）：
 · **挂载点**：`services/custom_formulas._save()` 末尾 ✓ —— 新建/更新/删除/陈旧重编**全部**经过它 ✓
@@ -38,11 +42,13 @@ import threading
 
 # d:\quant\qlib_code（本文件在 backend/app/services/ 下 ⇒ 上溯三级 ✓）
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-# 老的单文件（v1.20.65 起**只读**，但仍要提交 ⇒ 两端保持一致 ✓）
+# 老的单文件：v1.20.66 起**已停止 git 跟踪**、新环境里**大概率不存在** ⇒ 只在存在时才 stage ✓
+# （⚠ 它的"存在与否"曾让整条 add 失败 ⇒ 见 `sync_now` 里 v1.20.69 的逐个 add 修复 ✓）
 _REL_PATH = os.path.join("backend", "workdir", "custom_formulas.json")
-# ★ v1.20.65：**按人分文件**的公式目录（每人一个 `.json` ✓ ⇒ git 层面只新增文件 ⇒ 永不冲突 ✓✓）
+# ★ v1.20.65 按人分文件 → ★ v1.20.69 起按**装机**分文件（`<install_id>.json` ✓，
+#   与用户名无关 ⇒ 两台机器永不共用文件 ⇒ git 层面只新增/改自己的文件 ⇒ 永不冲突 ✓✓）
 _REL_DIR = os.path.join("backend", "workdir", "formulas")
-# 每次同步都一起 stage 的目标（顺序无关 ✓）
+# 每次同步都一起 stage 的目标（顺序无关 ✓；**逐个 add** ✓ —— 见 `sync_now` ✓）
 _TARGETS = (_REL_PATH, _REL_DIR)
 
 
@@ -111,17 +117,28 @@ def sync_now(reason: str = "") -> "tuple[bool, str]":
     if not ENABLED:
         return False, "FORMULA_GIT_SYNC=0 ⇒ 已关闭自动同步"
     try:
-        add = _run(["add", "--force", "--", *_TARGETS])
-        if add.returncode != 0:
-            return False, "git add 失败: %s" % ((add.stderr or add.stdout).strip()[:200] or "未知")
+        # ⚠⚠ v1.20.69 修：**必须逐个 add** —— `git add --force -- A B` 在 A **不存在**时会
+        #   `fatal: pathspec 'A' did not match any files`（exit 128）并**中止整条 add**
+        #   （其余路径被静默丢弃 ✗）⇒ v1.20.66 停跟踪老单文件之后，本机制就**整个失效**了 ✗：
+        #   2026-09-24 实测（老文件已不在）⇒ add 失败、**什么都没 stage**、公式库再也不会被
+        #   自动提交推送（而且**不报错给用户**，只是静默不同步 ✗✗）。
+        #   ⇒ 只 stage **实际存在**的目标 ✓（老单文件不在就跳过 ✓），并逐个 add 以便定位失败项 ✓。
+        staged = [rel for rel in _TARGETS if os.path.exists(os.path.join(_REPO_ROOT, rel))]
+        if not staged:
+            return True, "公式库路径都不存在，跳过"
+        for rel in staged:
+            add = _run(["add", "--force", "--", rel])
+            if add.returncode != 0:
+                return False, "git add %s 失败: %s" % (
+                    rel, (add.stderr or add.stdout).strip()[:200] or "未知")
 
         # 无差异 ⇒ 直接结束 ✓（避免每次启动/自动重编都造空提交 ✗）
-        if _run(["diff", "--cached", "--quiet", "--", *_TARGETS]).returncode == 0:
+        if _run(["diff", "--cached", "--quiet", "--", *staged]).returncode == 0:
             return True, "无变化，跳过"
 
         n = _count()
         msg = "chore(formulas): 自动同步用户公式库（%d 条）%s" % (n, ("　" + reason) if reason else "")
-        com = _run(["commit", "-q", "-m", msg, "--", *_TARGETS])
+        com = _run(["commit", "-q", "-m", msg, "--", *staged])
         if com.returncode != 0:
             return False, "git commit 失败: %s" % ((com.stderr or com.stdout).strip()[:200] or "未知")
 

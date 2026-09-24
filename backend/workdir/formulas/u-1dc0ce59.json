@@ -1,0 +1,11 @@
+[
+  {
+    "id": "18c9e6b7b5ff",
+    "name": "ALPHA143_S4",
+    "text": "UP:=IF(C>REF(C,1),LOG(C/REF(C,1)),0);\nALPHA143_S4:SUM(UP,20);",
+    "expression": "Sum(If(Gt($close,Ref($close,1)),Log(Div($close,Ref($close,1))),0),20)",
+    "created_at": "2026-09-20 14:34:37",
+    "updated_at": "2026-09-20 14:34:37",
+    "codegen": "1.20.58"
+  }
+]

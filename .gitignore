@@ -21,11 +21,18 @@ backend/workdir/*
 # ⚠ 老的单文件 `custom_formulas.json` **不再跟踪** ✗（它曾是所有人的共享文件：一旦推送，
 #   `pull` 就会把别人本地的公式覆盖掉 ✗）。它仍在本机存在、仍被**只读兜底**读取 ✓，
 #   并在首次运行时把内容**迁移**进自己的 `formulas/<user>.json` ✓（见 `ensure_migrated` ✓）。
+# ★★ v1.20.69 起改为 `formulas/<装机ID>.json`（与用户名无关 ✓）—— ⚠ 装机 ID 文件
+#   `backend/workdir/.install_id` **绝不能入库** ✗✗：一旦随 git 传到另一台机器，
+#   两台机器就会写**同一个文件**，又回到"整文件 JSON 冲突"✗。它被上面的
+#   `backend/workdir/*` 排除 ✓（下面不再放任何 `!` 例外 ✓）。
 **/mlflow.db
 *.db
 
-# AI 临时探查文件（根目录 workdir 与覆盖率产物）
-workdir/
+# AI 临时探查文件（覆盖率产物；⚠ v1.20.69 起**锚定根目录** `/workdir/` ——
+# 原先写成不锚定的 `workdir/`，会**连带**匹配 `backend/workdir/` 并盖掉上面
+# `!backend/workdir/formulas/*.json` 的例外（gitignore「最后匹配者胜」）
+# ⇒ 按装机分文件的公式实际**不会被跟踪** ✗（2026-09-24 实测 ✓）
+/workdir/
 .coverage
 
 # 日志

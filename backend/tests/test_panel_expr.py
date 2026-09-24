@@ -83,7 +83,6 @@ def test_panel_matches_qlib_cwh():
     判定：全部样本 |panel-qlib| <= 1e-5（float32 读入 vs float64 运算的精度余量）；
     允许 label 尾部未来 Ref 用扩展 end 加载后截断。
     """
-    import json
     from qlib.config import C
     from qlib.data import D
 
@@ -94,13 +93,16 @@ def test_panel_matches_qlib_cwh():
     C["joblib_backend"] = "loky"
     C["kernels"] = 8
 
-    import os
+    # ★ 2026-09-24 修（v1.20.66 引入的回归）：公式库自 v1.20.65 起改「按人分文件」
+    #   （`workdir/formulas/<user>.json`，读时合并），老的共享单文件
+    #   `workdir/custom_formulas.json` **已停止 git 跟踪** ⇒ 在新环境里**不存在**
+    #   ⇒ 直接读它会 FileNotFoundError（本用例曾必失败 ✗）。
+    #   ⇒ 改走**生产合并视图** `list_custom_formulas()`（与运行时同一套合并规则：
+    #     自己 > 别人 > 老单文件）⇒ 既修好，又**不再耦合具体存储布局**（以后再怎么改
+    #     分文件方式，本用例都不会再碎）。
+    from app.services.custom_formulas import list_custom_formulas
 
-    # 仓库根 = tests 文件向上三级（本机可能在 E:\ 或 D:\，不能用写死盘符）
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    j = json.load(
-        open(os.path.join(root, "backend", "workdir", "custom_formulas.json"), encoding="utf-8")
-    )
+    j = list_custom_formulas()
 
     def find(o, name):
         if isinstance(o, dict):

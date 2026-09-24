@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from app.services import custom_formulas, formula_git_sync
@@ -48,8 +50,6 @@ def _no_real_git(monkeypatch):
 
 def test_repo_root_points_to_repo():
     """`_REPO_ROOT` 必须是**仓库根** ✓（含 .git ✓ / 含 `backend/workdir` ✓）—— 路径算错就全盘失效 ✗。"""
-    import os
-
     assert os.path.isdir(os.path.join(formula_git_sync._REPO_ROOT, ".git"))
     assert os.path.isdir(os.path.join(formula_git_sync._REPO_ROOT, "backend", "workdir"))
     assert formula_git_sync._REL_PATH.replace("\\", "/") == "backend/workdir/custom_formulas.json"
@@ -72,9 +72,34 @@ def test_commit_then_push(monkeypatch):
     assert ok and msg == "已提交并推送"
     assert fake.cmds() == ["add", "diff", "commit", "push"]
     commit = [c for c in fake.calls if c[0] == "commit"][0]
-    # ⚠ 只提交这一个文件 ✗ 绝不夹带其它改动 ✓
-    assert commit[-2:] == ["--", formula_git_sync._REL_PATH] or formula_git_sync._REL_PATH in commit
+    # ⚠ 只提交**公式库路径** ✗ 绝不夹带其它改动 ✓（★ v1.20.69：只为**存在**的目标 stage ⇒
+    #   老单文件若已不在（v1.20.66 起就是常态 ✓）则不应出现在 add/commit 里 ✓）
+    staged = [rel for rel in formula_git_sync._TARGETS
+              if os.path.exists(os.path.join(formula_git_sync._REPO_ROOT, rel))]
+    assert staged, "仓库里至少应存在按装机分文件的公式目录 ✓"
+    assert commit[-len(staged):] == staged, commit
     assert "自动同步用户公式库" in " ".join(commit)
+
+
+def test_missing_legacy_path_does_not_kill_sync(monkeypatch):
+    """★★ v1.20.69 修的关键回归：**老单文件不存在时绝不能整条 add 失败** ✓。
+
+    ⚠ 旧实现 `git add --force -- <老文件> <目录>` 在 `<老文件>` 不存在时会
+      `fatal: pathspec ... did not match any files`（exit 128）并**中止整条 add**
+      ⇒ 什么都没 stage ⇒ **公式库再也不被自动提交推送** ✗（而且静默不报错 ✗✗）。
+      2026-09-24 实测确认（v1.20.66 移除老文件后本机制整体失效 ✓）。
+    ⇒ 本用例把老路径换成**确定不存在**的路径 ✓：同步**必须**照常只 add 存在的目录 ✓。
+    """
+    fake = _FakeGit({"add": 0, "diff": 1, "commit": 0, "push": 0})
+    monkeypatch.setattr(formula_git_sync, "_run", fake)
+    monkeypatch.setattr(formula_git_sync, "_TARGETS",
+                        ("backend/workdir/__this_path_is_gone__.json",
+                         formula_git_sync._REL_DIR))
+    ok, msg = formula_git_sync.sync_now("t")
+    assert ok and msg == "已提交并推送"
+    adds = [c for c in fake.calls if c[0] == "add"]
+    assert len(adds) == 1 and adds[0][-1] == formula_git_sync._REL_DIR       # 只为存在的目标 add ✓
+    assert fake.cmds() == ["add", "diff", "commit", "push"]                 # 流程没被打断 ✓
 
 
 def test_add_uses_force_and_prompt_disabled():
