@@ -160,6 +160,8 @@ def test_save_hook_triggers_schedule(tmp_path, monkeypatch):
     """★ 挂钩验证：`custom_formulas._save()`（新建/更新/删除**共用** ✓）必须触发同步调度 ✓。"""
     calls = []
     monkeypatch.setattr(custom_formulas, "_CUSTOM_FORMULAS_PATH", str(tmp_path / "cf.json"))
+    # ★ v1.20.65：写操作改为**只写自己的文件**（`formulas/<user>.json` ✓）⇒ 单测一并指过去 ✓
+    monkeypatch.setattr(custom_formulas, "_MY_FILE", str(tmp_path / "cf.json"))
     monkeypatch.setattr(custom_formulas, "_formula_git_sync",
                         type("F", (), {"schedule": staticmethod(lambda reason="": calls.append(reason))})())
     item = custom_formulas.create_custom_formula("测试", "OUT:CLOSE;", "Close($close)")
@@ -186,6 +188,8 @@ def test_real_save_path_writes_file_even_if_sync_fails(tmp_path, monkeypatch):
     """★ 端到端（真实 `_save` + 真实 `schedule`，git 被打桩成**必失败** ✓）：
     文件照常落盘 ✓、接口不抛 ✓ —— 这正是"同步是副作用"的定义 ✓。"""
     monkeypatch.setattr(custom_formulas, "_CUSTOM_FORMULAS_PATH", str(tmp_path / "cf.json"))
+    # ★ v1.20.65：写操作改为**只写自己的文件**（`formulas/<user>.json` ✓）⇒ 单测一并指过去 ✓
+    monkeypatch.setattr(custom_formulas, "_MY_FILE", str(tmp_path / "cf.json"))
     monkeypatch.setattr(formula_git_sync, "DEBOUNCE", 3600.0)     # 别让定时器真触发 ✓
     monkeypatch.setattr(formula_git_sync, "_timer", None)
     item = custom_formulas.create_custom_formula("测试3", "OUT:CLOSE;", "Close($close)")

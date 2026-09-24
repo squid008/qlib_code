@@ -16,6 +16,10 @@ backend/mlruns/
 backend/workdir/*
 # 自定义公式是用户资产，纳入版本控制（公司/本地共享），其余 workdir 内容（特征缓存等）仍忽略
 !backend/workdir/custom_formulas.json
+# ★ v1.20.65：公式库改为**按人分文件**（`formulas/<user>.json` ✓）⇒ git 层面只新增文件、
+#   天然无冲突 ✓✓（原先所有人共用 `custom_formulas.json`，两人各存一次就必然 JSON 冲突 ✗）
+!backend/workdir/formulas/
+!backend/workdir/formulas/*.json
 **/mlflow.db
 *.db
 

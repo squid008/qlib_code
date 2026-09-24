@@ -38,7 +38,12 @@ import threading
 
 # d:\quant\qlib_code（本文件在 backend/app/services/ 下 ⇒ 上溯三级 ✓）
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+# 老的单文件（v1.20.65 起**只读**，但仍要提交 ⇒ 两端保持一致 ✓）
 _REL_PATH = os.path.join("backend", "workdir", "custom_formulas.json")
+# ★ v1.20.65：**按人分文件**的公式目录（每人一个 `.json` ✓ ⇒ git 层面只新增文件 ⇒ 永不冲突 ✓✓）
+_REL_DIR = os.path.join("backend", "workdir", "formulas")
+# 每次同步都一起 stage 的目标（顺序无关 ✓）
+_TARGETS = (_REL_PATH, _REL_DIR)
 
 
 def _env(name: str, default: str) -> str:
@@ -70,13 +75,31 @@ def _run(args, timeout: float = 60.0):
 
 
 def _count() -> int:
-    """当前公式条数（只用于提交信息 ✓；读不到就给 -1 ✓ 不影响流程 ✓）。"""
+    """当前公式条数（只用于提交信息 ✓；读不到就给 -1 ✓ 不影响流程 ✓）。
+
+    ★ v1.20.65：把 `formulas/*.json`（按人分文件 ✓）与老单文件**一起**数 ✓
+      （取最大者作为条目数近似 ✓ —— 只影响提交信息文案 ✓）。
+    """
+    best = -1
+    for rel in (_REL_PATH,):
+        try:
+            with open(os.path.join(_REPO_ROOT, rel), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                best = max(best, len([x for x in data if not (isinstance(x, dict) and x.get("deleted"))]))
+        except Exception:                                        # noqa: BLE001
+            pass
     try:
-        with open(os.path.join(_REPO_ROOT, _REL_PATH), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return len(data) if isinstance(data, list) else -1
+        for fn in os.listdir(os.path.join(_REPO_ROOT, _REL_DIR)):
+            if not fn.endswith(".json"):
+                continue
+            with open(os.path.join(_REPO_ROOT, _REL_DIR, fn), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                best = max(best, len([x for x in data if not (isinstance(x, dict) and x.get("deleted"))]))
     except Exception:                                            # noqa: BLE001
-        return -1
+        pass
+    return best
 
 
 def sync_now(reason: str = "") -> "tuple[bool, str]":
@@ -88,17 +111,17 @@ def sync_now(reason: str = "") -> "tuple[bool, str]":
     if not ENABLED:
         return False, "FORMULA_GIT_SYNC=0 ⇒ 已关闭自动同步"
     try:
-        add = _run(["add", "--force", "--", _REL_PATH])
+        add = _run(["add", "--force", "--", *_TARGETS])
         if add.returncode != 0:
             return False, "git add 失败: %s" % ((add.stderr or add.stdout).strip()[:200] or "未知")
 
         # 无差异 ⇒ 直接结束 ✓（避免每次启动/自动重编都造空提交 ✗）
-        if _run(["diff", "--cached", "--quiet", "--", _REL_PATH]).returncode == 0:
+        if _run(["diff", "--cached", "--quiet", "--", *_TARGETS]).returncode == 0:
             return True, "无变化，跳过"
 
         n = _count()
         msg = "chore(formulas): 自动同步用户公式库（%d 条）%s" % (n, ("　" + reason) if reason else "")
-        com = _run(["commit", "-q", "-m", msg, "--", _REL_PATH])
+        com = _run(["commit", "-q", "-m", msg, "--", *_TARGETS])
         if com.returncode != 0:
             return False, "git commit 失败: %s" % ((com.stderr or com.stdout).strip()[:200] or "未知")
 

@@ -3,6 +3,32 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.65] - 2026-09-24
+
+### Fixed / Changed（公式库改**按人分文件**：`git pull` 不再互相覆盖/冲突）
+
+- **用户报障**：「我这边上传的公式，同事那边 pull 下来会把它本地的覆盖吗？如果会的话那就比较麻烦了」。
+- **现状核实（代码为准 ✓）**：`.gitignore:16-18` 早已把 `workdir/custom_formulas.json` 纳入版本控制 ✓，
+  **没有** `.gitattributes`（⇒ 逐行合并 ⇒ 对 JSON 几乎必然冲突 ✗），且 `custom_formulas.py` **无任何合并逻辑** ✗。
+  ⇒ 实际后果分三种 ✓：① 同事**没动过**该文件 ⇒ pull 直接换成远端（无损失 ✓）；
+  ② 有**未提交**改动 ⇒ git **中止 pull** ✓（不会静默丢 ✓）；
+  ③ 他**保存过**公式（v1.20.63 起会自动提交 ✓）⇒ 两边都改了同一文件 ⇒ **JSON 冲突** ✗ ⇒ **这一步才会丢东西** ✗✓。
+  ⚠ 隐蔽坑：`refresh_stale_expressions`（v1.20.59 ✓）会在**只读浏览**时按原文重编并写回 ✗
+  ⇒ 「只有一个人写公式」的约定**守不住** ✗（实测：3 分钟内两次自动提交 `8ad02d6`/`eecd429` ✓）。
+- **方案（用户拍板 ✓）**：`workdir/formulas/<user>.json` —— **每人一份** ✓ ⇒ git 只新增文件 ✓ ⇒
+  **天然无冲突** ✓✓；读取时**合并所有文件** ✓：身份 = `id`（无 id 时退化用 `name` ✓）；
+  胜负 = **自己 > 别人 > 老共享单文件** ✓，别人之间取 `updated_at` **较新**者 ✓（刻意不用文件 mtime ✗）；
+  **写操作只写自己的文件** ✓：新建追加 ✓；改**别人的**条目 ⇒ 存**覆盖副本** ✓；
+  删**别人的**条目 ⇒ 写 **tombstone（`deleted: true`）** ⇒ 合并时隐藏 ✓；
+  老单文件**只读** ✓（最低优先级 ⇒ 平滑迁移、历史公式不丢 ✓）；
+  用户名 = `QUANT_FORMULA_USER` > `USERNAME` > `USER` > `default` ✓。
+- **配套**：`formula_git_sync` 一次 stage **`formulas/` 目录 + 老单文件** ✓；`.gitignore` 增开
+  `!backend/workdir/formulas/` 与 `!backend/workdir/formulas/*.json` ✓。
+- **迁移**：现有 **66 条**已写入 `workdir/formulas/Administrator.json` ✓（读回校验 66 条 ✓）。
+- **实测**：新增 `tests/test_formula_store_users.py` **10 例** ✓（合并读取 ✓ / 同 id 我胜 ✓ / 别人之间取新 ✓ /
+  tombstone 隐藏且**不动他人文件** ✓ / 新建只写自己 ✓ / 改他人写覆盖副本 ✓ / 删自己直接移除 ✓ /
+  老文件只读 ✓ / 我压过老文件 ✓）；**全量 542 passed** ✓；ruff ✓。
+
 ## [1.20.64] - 2026-09-23
 
 ### Added / Fixed（**长阶段进度不再"纹丝不动"** ＋ 收益分布留缝与 hover 灰带置前 ＋ 净值角标加年化/夏普/卡玛）
