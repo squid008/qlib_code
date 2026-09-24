@@ -549,7 +549,20 @@ def compose_final_signal(dataset, model, req, universe=None, span=None,
         frame["target_w"] = w.reindex(score.index)
         if trig_col is not None:
             frame["trig"] = trig_col.reindex(score.index)
-    # gate 拒尾 / 硬规则过滤：被拒(-inf)行直接从候选剔除，策略对余下行按 score topk（旧等权路径）
-    if gate_on or rule_on:
-        frame = frame.loc[frame["score"] != -np.inf]
+    # ★★ v1.20.68（用户 2026-09-24 实测事故 ✓）：**不许在这里删行** ✗ —— 只把被拒的置 `-inf` ✓。
+    #
+    #   动机（任务 `c4eaaf7ff738` 段1 "净值断崖" ✗，用户 2026-09-24 要求查到底 ✓）：
+    #     `topk_ratio` 的分母 = 当日**全池**可交易只数 ✓（见 `periodic_strategy._k_of` ✓），
+    #     而旧实现 `frame = frame.loc[frame["score"] != -np.inf]` **删行** ✗ ⇒ 策略拿到的
+    #     `pred_score` 只剩"候选∩存活" ~38 行 ✗ ⇒ `1% × 38 = 0.38` ⇒ 四舍五入 0 ⇒ 兜底 **1 只** ✗✓
+    #     ⇒ 每 20 天**只押 1 只**✗ ⇒ 那 1 笔 ≈ 8.55M = 当日成交量的 **5~10 倍** ✗ ⇒ qlib 的
+    #     **二次冲击成本**爆炸（买 2.64% / 卖 10.07% ✓ 与记录逐位吻合 ✓）⇒ 段1 **−20%** ✗
+    #     （而按信号表复算"选中那批票"本身 ≈ **+0.2%** ✓ ⇒ 断崖压根不是股票跌出来的 ✓）。
+    #
+    #   ⚠ 为什么删行现在可以不要了：策略自 **v1.20.66** 起**显式丢弃非有限分数** ✓
+    #     （`pred_score.replace([inf, -inf], nan).dropna()` ✓）⇒ 保留 `-inf` 行**行为等价** ✓；
+    #     且降序排序时 `-inf` 天然排最后 ✓ ⇒ 对"买入排名"之类的统计无影响 ✓。
+    #   ⚠ 硬规则（`hard_filters`）同理：被剔的票置 `-inf` ✓ —— 它们**仍计入"全池"分母** ✓
+    #     （这正是用户要的口径："当日全池可交易只数 × 比例" ✓，规则外的票由策略丢弃 ✓）。
+    #   ⚠ 本文件别处（`apply_hard_filters` ✓）本来就是"置 -inf 不删行" ✓，这里是唯一例外 ✗ —— 已消除 ✓。
     return frame, info
