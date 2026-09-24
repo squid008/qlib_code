@@ -382,6 +382,11 @@ export default function App() {
     if (params.selected_features?.length) {
       setCustomFeatures(params.selected_features)
       setShowFeaturePanel(true)
+    } else if (params.selected_features && params.selected_features.length === 0) {
+      // ★ v1.20.67：历史任务是**空数组 = 一个都不要** ✓（≠ null = 该特征集全量 ✗）
+      //   ⇒ 面板要显示"全不选"✓，否则一"复用参数"就把全量勾回来、结果与历史不符 ✗。
+      setCustomFeatures([])
+      setShowFeaturePanel(true)
     } else if (catalog) {
       setCustomFeatures(catalog.flat.map((f) => f.name))
     }
@@ -517,8 +522,11 @@ export default function App() {
   const toggleFeature = (name: string) => {
     setCustomFeatures((prev) => {
       const next = prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name]
-      // 同步到 form.selected_features：为空则置 null（使用全量）
-      setForm((f) => ({ ...f, selected_features: next.length > 0 ? next : null }))
+      // ★ v1.20.67（用户 2026-09-24 确认 ✓）：**全不勾 = 真的一个都不要** ✓
+      //   ⚠ 旧的"空则置 null"= 后端理解成**该特征集全量** ✗ ⇒ 取消勾选后 A158 会悄悄全回来 ✗
+      //   （实测：mixed 模式仍算出 562 列 ✓）。现在空数组**原样提交** ✓
+      //   （⚠ 若同时一个自定义公式都没勾，后端会直接给出明确报错 ✓，不是静默全量 ✓）。
+      setForm((f) => ({ ...f, selected_features: next }))
       return next
     })
   }
@@ -528,7 +536,7 @@ export default function App() {
     if (!factorCatalog) return
     const next = select ? factorCatalog.flat.map((f) => f.name) : []
     setCustomFeatures(next)
-    setForm((f) => ({ ...f, selected_features: next.length > 0 ? next : null }))
+    setForm((f) => ({ ...f, selected_features: next }))    // ★ v1.20.67：空数组 = 一个都不要 ✓
   }
 
   // 复现模式：用历史回测的参数填充表单（万元资金换算），定位到开始回测按钮
@@ -1129,9 +1137,10 @@ export default function App() {
                   />
                 )}
               </div>
-              <span className="text-[11px] text-slate-400">
-                {form.topk_ratio == null ? '前 N 只（按当日可交易候选）' : '比例（0~1；0.01 = 1%，按当日可交易候选只数算）'}
-              </span>
+              {/* ★ 用户 2026-09-24 要求：**两种模式的提示文案都去掉** ✓
+                  （"比例（0~1；0.01 = 1%，按当日可交易候选只数算）"✗ 与
+                    "前 N 只（按当日可交易候选）"✗）—— 输入框自身的 `title`
+                  （"当日持有的股票只数" / "0~1 的小数：0.01 = 1%…"）已够说明 ✓，不再占行 ✓ */}
             </label>
 
             {/* 第 4 列：3 个 button（row-span-2 跨两行，不撑高输入框行高） */}

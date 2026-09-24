@@ -81,7 +81,10 @@ class SelectedAlpha158(DataHandlerLP):
         infer_processors = check_transform_proc(infer_processors, fit_start_time, fit_end_time)
         learn_processors = check_transform_proc(learn_processors, fit_start_time, fit_end_time)
 
-        self._selected = set(fields) if fields else None
+        # ★ v1.20.67（用户 2026-09-24 确认 ✓）：⚠ 判空必须用 `is not None` ✗→✓ ——
+        #   旧写法 `if fields` 会把**空数组**（= 用户"一个都不要"✓）当成 `None`（= 该来源**全量** ✗）
+        #   ⇒ 用户取消勾选全部 A158 因子后，A158 会**悄悄全量回来** ✗（实测 mixed 仍算出 562 列 ✓）。
+        self._selected = set(fields) if fields is not None else None
         self._label_horizon = max(1, int(label_horizon or 2))
         self._price_adjust = normalize_mode(price_adjust)
 
@@ -122,7 +125,7 @@ class SelectedAlpha158(DataHandlerLP):
             "rolling": {},
         }
         fields, names = Alpha158DL.get_feature_config(conf)
-        if self._selected:
+        if self._selected is not None:      # ★ v1.20.67：空集合 ⇒ 一个都不要（≠ None=全量 ✓）
             keep = [(f, n) for f, n in zip(fields, names) if n in self._selected]
             fields, names = ([f for f, _ in keep], [n for _, n in keep])
         # 复权：none → 价格字段转真实价($close/$factor)；forward/backward → 原生后复权价
@@ -173,7 +176,10 @@ class SelectedAlpha360(DataHandlerLP):
         infer_processors = check_transform_proc(infer_processors, fit_start_time, fit_end_time)
         learn_processors = check_transform_proc(learn_processors, fit_start_time, fit_end_time)
 
-        self._selected = set(fields) if fields else None
+        # ★ v1.20.67（用户 2026-09-24 确认 ✓）：⚠ 判空必须用 `is not None` ✗→✓ ——
+        #   旧写法 `if fields` 会把**空数组**（= 用户"一个都不要"✓）当成 `None`（= 该来源**全量** ✗）
+        #   ⇒ 用户取消勾选全部 A158 因子后，A158 会**悄悄全量回来** ✗（实测 mixed 仍算出 562 列 ✓）。
+        self._selected = set(fields) if fields is not None else None
         self._label_horizon = max(1, int(label_horizon or 2))
         self._price_adjust = normalize_mode(price_adjust)
 
@@ -208,7 +214,7 @@ class SelectedAlpha360(DataHandlerLP):
 
     def get_feature_config(self):
         fields, names = Alpha360DL.get_feature_config()
-        if self._selected:
+        if self._selected is not None:      # ★ v1.20.67：空集合 ⇒ 一个都不要（≠ None=全量 ✓）
             keep = [(f, n) for f, n in zip(fields, names) if n in self._selected]
             fields, names = ([f for f, _ in keep], [n for _, n in keep])
         # 复权：none → 价格字段转真实价($close/$factor)；forward/backward → 原生后复权价
@@ -392,7 +398,10 @@ class MixedHandler(DataHandlerLP):
         infer_processors = check_transform_proc(infer_processors, fit_start_time, fit_end_time)
         learn_processors = check_transform_proc(learn_processors, fit_start_time, fit_end_time)
 
-        self._selected = set(fields) if fields else None
+        # ★ v1.20.67（用户 2026-09-24 确认 ✓）：⚠ 判空必须用 `is not None` ✗→✓ ——
+        #   旧写法 `if fields` 会把**空数组**（= 用户"一个都不要"✓）当成 `None`（= 该来源**全量** ✗）
+        #   ⇒ 用户取消勾选全部 A158 因子后，A158 会**悄悄全量回来** ✗（实测 mixed 仍算出 562 列 ✓）。
+        self._selected = set(fields) if fields is not None else None
         self._formulas = list(formulas or [])
         self._label_horizon = max(1, int(label_horizon or 2))
         self._price_adjust = normalize_mode(price_adjust)

@@ -615,6 +615,10 @@ def _save_backtest_params(dir_path: str, req: BacktestRequest):
             "模型": req.model,
             "特征": req.feature,
             "TopK": req.topk,
+            # ★ v1.20.67：把**选股方式**写进人工快照 ✓ —— 复现/审计时一眼看清
+            #   （固定只数 vs 全池比例 ✓；后者口径见 periodic_strategy._k_of ✓）
+            "选股方式": (("前 %g%%（全池可交易只数 × 比例）" % (float(req.topk_ratio) * 100))
+                         if getattr(req, "topk_ratio", None) else ("固定 %d 只" % int(req.topk))),
             "持仓周期(天)": req.n_days_hold,
             "划分方式": "滚动训练" if (req.split_mode or "").lower() == "custom" else "一次性训练",
             "成交价基准": req.deal_price,
@@ -695,7 +699,11 @@ def _save_train_signature(dir_path: str, req) -> None:
     def _feature_fingerprint() -> str:
         parts = [
             "feature=" + str(getattr(req, "feature", "") or "Alpha158"),
-            "selected=" + ",".join(sorted(getattr(req, "selected_features", None) or [])),
+            # ★ v1.20.67：`None`（= 该特征集**全量** ✓）与 `[]`（= **一个都不要** ✓）必须
+            #   **指纹不同** ✗ —— 否则"复用模型权重"的守卫会把两者当成同一次训练 ✗
+            #   ⇒ 可能拿"全量模型"去跑"空特征/只用公式"的任务（口径不符 ✗）。
+            "selected=" + ("__ALL__" if getattr(req, "selected_features", None) is None
+                           else ",".join(sorted(req.selected_features))),
             "formulas=" + "|".join(getattr(req, "custom_formulas", None) or []),
             "label_horizon=" + str(getattr(req, "label_horizon", "") or ""),
             "model=" + str(getattr(req, "model", "") or ""),

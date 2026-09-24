@@ -10,6 +10,7 @@
 用法：在 _build_port_config 的 strategy 配置里指定本类。
 """
 import copy
+from typing import Optional
 
 import numpy as np
 
@@ -50,8 +51,13 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
         self.weight_col = weight_col
         self.topk = int(topk)
         # ★ v1.20.66（用户 2026-09-24 要求 ✓）：**按百分比选股**（0<p≤1 ✓），与固定只数二选一 ✓。
-        #   取值 = 当日**可交易候选只数** × p（候选 = 信号里分数有限的那些，已剔除禁买/ST 等 ✓）
-        #   ⇒ 池子大小随时间变化时，选股宽度**不会悄悄漂移** ✓
+        #   ⚠⚠ v1.20.67 **口径校正**（用户 2026-09-24 明确 ✓）：分母 = 当日**全池**可交易只数 ✓
+        #   （= 信号当天全部标的、已剔禁买/ST ✓，**不是**"闸门合成后还剩有限分的只数" ✗）。
+        #   原口径的坑 ✗：开闸门时候选集被压到几十只（主分 topK=50 − 拒尾 25% ≈ 38 ✓）
+        #   ⇒ 1% × 38 = 0.38 ⇒ 四舍五入 0 ⇒ 兜底 **1 只** ✗✓（实测：两次调仓各买 1 只、
+        #   且都是买不进的连板新股 ⇒ **全程空仓、净值恒 1** ✗）。
+        #   新口径：1% × 全池 ~5400 ≈ **54 只** ✓，再封顶到闸门后的可用只数 ⇒ 实际买 ~38 只 ✓
+        #   （正是用户预期 ✓）。池子大小随时间变化时选股宽度**不会悄悄漂移** ✓
         #   （早年全 A ~2000 只时 50 只 = 2.5% ✓、现在 ~5400 只 = 0.9% ✗ ⇒ 性格全变了 ✓）。
         # ⚠ 与 `topk` **互斥**：给了 ratio 就按 ratio 算 ✓（`_k_of()` 里决定 ✓）；1% 也允许 ✓。
         self.topk_ratio = None if topk_ratio in (None, "") else float(topk_ratio)
@@ -67,17 +73,28 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
         # 上一次调仓的 step（时间步），旧逻辑用；rebalance_base 传入时忽略
         self._last_rebalance_step = None
 
-    def _k_of(self, n_cand: int) -> int:
+    def _k_of(self, n_pool: int, n_avail: Optional[int] = None) -> int:
         """当日**目标持仓只数** K：按百分比（`topk_ratio` ✓）或固定只数（`topk` ✓）二选一 ✓。
 
-        ★ v1.20.66：`n_cand` = **当日可交易候选只数**（已剔禁买/ST ✓、且已丢弃非有限分 ✓）
-          ⇒ 百分比是"当日池子的比例" ✓，而不是对全市场固定只数 ✓（消除池子变大的漂移 ✓）。
-        ⚠ 下限 1 只 ✓（避免 0 只 ⇒ 空仓 ✓）；上限 = 候选数 ✓（不会越界 ✓）。
+        ★★ v1.20.67（用户 2026-09-24 校正口径 ✓）：
+          · `n_pool`  = 当日**全池**可交易只数 ✓（信号里当天的全部标的，已剔禁买/ST ✓，
+                        **未**经闸门/合成把候选外置 `-inf` ✓）—— 这是**百分比的分母** ✓；
+          · `n_avail` = **实际还能买的只数** ✓（合成后仍是有限分的那些 ✓，即闸门拒尾后的 ~38 只 ✓）
+                        ⇒ 只用来**封顶** ✓。
+        ⇒ 口径 = `比例 × n_pool`，再封顶到 `n_avail` ✓：
+            1% × 全池 ~5400 ≈ **54 只** ✓；闸门剔 25% ⇒ 实际买 **~38 只** ✓（= 用户预期 ✓）。
+        ⚠ 旧口径（v1.20.66 ✗）拿"信号里**分数有限**的只数"当分母 ✗ ⇒ 开闸门时该数被压到几十 ✗
+          ⇒ `1% × 38 = 0.38` ⇒ 四舍五入 0 ⇒ 兜底 **1 只** ✗✓（实测正是如此：两次调仓各买 1 只 ✓，
+          且都是买不进的连板新股 ⇒ **全程空仓、净值恒 1** ✗）。
+        ⚠ 下限 1 只 ✓（避免 0 只 ⇒ 空仓 ✓）；上限 = `n_avail` ✓（不会越界 ✓）。
         """
+        if n_pool <= 0 or (n_avail is not None and n_avail <= 0):
+            return 0
+        cap = n_pool if n_avail is None else n_avail
         if self.topk_ratio is not None:
-            k = int(round(max(0.0, min(1.0, self.topk_ratio)) * max(0, n_cand)))
-            return max(1, min(n_cand, k)) if n_cand > 0 else 0
-        return max(1, min(n_cand, self.topk)) if n_cand > 0 else 0
+            k = int(round(max(0.0, min(1.0, self.topk_ratio)) * n_pool))
+            return max(1, min(cap, k))
+        return max(1, min(cap, self.topk))
 
     def generate_trade_decision(self, execute_result=None):
         trade_step = self.trade_calendar.get_trade_step()
@@ -133,15 +150,26 @@ class PeriodicTopKStrategy(BaseSignalStrategy):
                         trade_step, orig_cnt, forbid_cnt)
             return TradeDecisionWO([], self)
 
+        # ★ v1.20.67：先记下**当日全池可交易只数** = 禁买/ST 剔除之后的全部候选 ✓
+        #   ⚠ 必须**早于**下面那句"丢弃非有限分"✗ —— 那一步会把闸门置 `-inf` 的候选取掉 ✓，
+        #   而百分比的分母要的是**全池** ✓（见 `_k_of` ✓）；否则开闸门时 1% 会退化成 1 只 ✗✓。
+        n_pool = len(pred_score)
+
         # ★ v1.20.66：丢弃**非有限分数**（闸门拒尾/候选外被置 `-inf` ✓）——
         #   ⚠ 否则 `-inf` 会参与排序并**占满 topk 名额** ✗（"拒尾后不补"就落不了地 ✓）。
         pred_score = pred_score.replace([np.inf, -np.inf], np.nan).dropna()
         if pred_score is None or len(pred_score) == 0:
-            logger.info("Rebalance %s: 空仓-有效分数全为空", trade_step)
+            logger.info("Rebalance %s: 空仓-有效分数全为空（全池 %d 只 ⇒ 合成后一只不剩 ✗）",
+                        trade_step, n_pool)
             return TradeDecisionWO([], self)
 
         # 目标组合：信号分数最高的 K 只（K 由固定只数或百分比决定 ✓）
-        k = self._k_of(len(pred_score))
+        n_avail = len(pred_score)
+        k = self._k_of(n_pool, n_avail)
+        logger.info("Rebalance %s: 目标 %d 只（全池可交易 %d ｜合成后可用 %d ｜%s）",
+                    trade_step, k, n_pool, n_avail,
+                    ("比例 %.4g%%" % (self.topk_ratio * 100)) if self.topk_ratio is not None
+                    else ("固定 %d 只" % self.topk))
         target_topk = list(pred_score.sort_values(ascending=False).index[:k])
 
         # 卖出：当前持仓中不在目标 topk 的（整体卖出）

@@ -382,7 +382,10 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg,
     if feature == "mixed":
         handler_cls = "MixedHandler"
         handler_module = "app.factors.handler"
-        if req.selected_features:
+        # ★ v1.20.67：⚠ 判空用 `is not None` ✗→✓ —— **空数组 = 真的一个都不要** ✓
+        #   （用户 2026-09-24 确认 ✓）；旧写法 `if req.selected_features` 会把 `[]` 当"没传"✗
+        #   ⇒ 直接落回"该特征集全量" ✗（实测：取消勾选全部 A158 后模型仍用 562 列 ✓）。
+        if req.selected_features is not None:
             handler_kwargs["fields"] = list(req.selected_features)
         if custom_formulas:
             handler_kwargs["formulas"] = list(custom_formulas)
@@ -394,13 +397,26 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg,
     elif feature == "alpha360":
         handler_cls = "SelectedAlpha360"
         handler_module = "app.factors.handler"
-        if req.selected_features:
+        # ★ v1.20.67：⚠ 判空用 `is not None` ✗→✓ —— **空数组 = 真的一个都不要** ✓
+        #   （用户 2026-09-24 确认 ✓）；旧写法 `if req.selected_features` 会把 `[]` 当"没传"✗
+        #   ⇒ 直接落回"该特征集全量" ✗（实测：取消勾选全部 A158 后模型仍用 562 列 ✓）。
+        if req.selected_features is not None:
             handler_kwargs["fields"] = list(req.selected_features)
     else:
         handler_cls = "SelectedAlpha158"
         handler_module = "app.factors.handler"
-        if req.selected_features:
+        # ★ v1.20.67：⚠ 判空用 `is not None` ✗→✓ —— **空数组 = 真的一个都不要** ✓
+        #   （用户 2026-09-24 确认 ✓）；旧写法 `if req.selected_features` 会把 `[]` 当"没传"✗
+        #   ⇒ 直接落回"该特征集全量" ✗（实测：取消勾选全部 A158 后模型仍用 562 列 ✓）。
+        if req.selected_features is not None:
             handler_kwargs["fields"] = list(req.selected_features)
+    # ★ v1.20.67：**空数组 = 真的一个都不要** ✓ ⇒ 前提是"至少还剩自定义公式" ✗
+    #   ⚠ 否则就是**零特征** ⇒ 训练/预测必然失败（且报错会很难懂 ✗）⇒ 这里给一句人话 ✓
+    if req.selected_features is not None and not req.selected_features and not custom_formulas:
+        raise ValueError(
+            "已取消勾选全部特征、且没有勾选任何自定义公式 ⇒ 没有任何特征可训练。"
+            "请至少勾选一个特征；或把「特征选择」恢复为全量（不逐项勾选）。"
+        )
     # 预测周期：模型预测未来 N 日收益（label），与分层/IC 口径一致
     handler_kwargs["label_horizon"] = getattr(req, "label_horizon", None) or 2
     # v1.18.51：把**股票池名**传进 handler（上面的 `instruments` 是展开后的静态 list，池名会
