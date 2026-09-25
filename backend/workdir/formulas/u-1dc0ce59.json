@@ -16,20 +16,6 @@
     "author_user": "admin"
   },
   {
-    "id": "6ba47d63d40a",
-    "deleted": true,
-    "updated_at": "2026-09-25 09:52:39",
-    "author": "u-1dc0ce59",
-    "author_user": "admin"
-  },
-  {
-    "id": "586d0f987b97",
-    "deleted": true,
-    "updated_at": "2026-09-25 09:52:41",
-    "author": "u-1dc0ce59",
-    "author_user": "admin"
-  },
-  {
     "id": "43fc64eb9a77",
     "name": "深跌3",
     "text": "n=30;\n条件:=CLOSE <= MA(CLOSE, N);\n原始值:=COUNT(条件,20)/20;\n深跌3:IF(n<3,原始值,MA((C-LLV(C,N))/(HHV(C,N)-LLV(C,N)),20));",
