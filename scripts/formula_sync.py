@@ -91,13 +91,26 @@ def cmd_pull(_args):
     _backup()
     dropped = st["tomb_unpushed"]
     if dropped:
-        keep = [x for x in json.load(open(st["my_file"], encoding="utf-8"))
-                if not (x.get("deleted") and x.get("id") in {y.get("id") for y in dropped})]
+        # ★ v1.20.73：回滚必须**连 body 一起还回来** ✓ —— App 删除时是把活体条目整条换成 tombstone ✗
+        #   ⇒ 只删 tombstone 的话公式**恢复不了** ✗（2026-09-25 实测：本机独有的「深跌2」pull 后消失 ✗）。
+        #   body 的正确来源 = **已推送的副本**（删除没推送过 ⇒ 那边仍是活体 ✓）。
+        loc = json.load(open(st["my_file"], encoding="utf-8"))
+        pushed = state._remote_items(st["rel"], st["repo"]) or []
+        name_of = {x.get("id"): x.get("name") for x in pushed if x.get("name")}
+        name_of.update({k: v for k, v in st["others"].items() if v})
+        keep, restored = cf.rollback_unpushed_deletes(loc, pushed, [x.get("id") for x in dropped])
         _write_items(st["my_file"], keep)
-        print("[回滚] 已撤销 %d 条**未推送的删标记**（被删公式恢复显示 ✓；文件其它条目一律不动 ✓）"
+        print("[回滚] 已撤销 %d 条**未推送的删标记**（未推送的删除不算数 ⇒ 公式恢复显示 ✓）"
               % len(dropped))
         for x in dropped:
-            print("       x %s（id=%s）" % (st["others"].get(x.get("id")), x.get("id")))
+            print("       x %s（id=%s）" % (name_of.get(x.get("id")) or "?", x.get("id")))
+        if restored:
+            for it in restored:
+                print("       + %s 已按「已推送副本」**还原条目本体**（id=%s, updated_at=%s）✓"
+                      % (it.get("name"), it.get("id"), it.get("updated_at")))
+        else:
+            print("       ⓘ 无需还原本体：这些 id 在已推送副本里没有活体条目（本机独有且从未推送过 ⇒ "
+                  "删了就等于没建过 ✓）")
         if _git(["add", "--", st["rel"]]).returncode == 0:
             _git(["commit", "-q", "-m",
                   "chore(formulas): 撤销未推送的删标记（pull 约定：未推送的删除不算数）",

@@ -28,6 +28,13 @@
   删（无论谁的）⇒ 自己文件里写一条 **tombstone `{"id":..., "deleted": true, "updated_at": ...}`** ✓。
   ⚠ 老的单文件 `workdir/custom_formulas.json` **只读、不再写** ✓（平滑迁移，见 `ensure_migrated` ✓）。
 
+★ v1.20.73：`pull` 撤销"未推送的删除"时必须**连正文一起还原** ✓ —— 见 `rollback_unpushed_deletes()`：
+  删除的实现是「从本机文件里**移除活体条目** + 追加 tombstone」✗ ⇒ **只删 tombstone 恢复不出公式** ✗
+  （2026-09-25 实测事故：本机独有的 `深跌2` 在 pull 后消失 ✗）；正文的正确来源 = **已推送副本**
+  （`origin/main:<本装机文件>` —— 删除既然没推送过，那边同 id 条目**仍是活体** ✓）。
+  ⚠ 身份始终是 **`id`**：**同名不同 id 的两条并列共存、`name` 从不参与裁决** ✗ ——
+  用户 2026-09-25 定稿："我改了一堆公式但忘了 push，pull 一下不能把我改过的覆盖掉" ✓。
+
 ★ v1.20.59：`expression` 是**编译产物（缓存）** ✓ ⇒ 生成逻辑变了它就陈旧 ✗（**单因子测试**直接求值这个缓存 ✗，
   回测则按 `text` 重译 ✓，见 `parser/codegen.CODEGEN_SEMANTICS` 的长注释 ✓）⇒ `list_custom_formulas()`
   读到时**自动按原文重编** ✓✓，用户不必手动重存 ✓；但重编结果**只回写"自己文件里已有的"条目** ✓
@@ -394,6 +401,49 @@ def delete_custom_formula(formula_id: str) -> bool:
                      "author": _AUTHOR, "author_user": _USER})
         _save_my(mine)
         return True
+
+
+def rollback_unpushed_deletes(my_items: List[dict], pushed_items: Optional[List[dict]],
+                              tombstone_ids) -> Tuple[List[dict], List[dict]]:
+    """★ v1.20.73：回滚「**未推送的删除**」时，把被删掉的**活体条目一起还回来** ✓（纯函数 ✓，不碰磁盘 ✓）。
+
+    【为什么必须有它】`delete_custom_formula` 的做法是「**从本机文件里移除活体条目** + 追加一条
+      tombstone」⇒ 只把 tombstone 删掉**并不能**让公式"恢复显示" ✗（body 已经不在了 ✗）——
+      而 pull 的约定「未推送的删除不算数 ⇒ 被删公式恢复显示」**必然要求连 body 一起还回来** ✓。
+      （2026-09-25 实测踩到 ✓：用户本机独有的 `深跌2` 在 pull 后**消失**，本机可见条数比远端视角少 1 ✗。）
+
+    【body 从哪来】**已推送的那份副本**（`origin/main:<本装机文件>`）✓ —— 删除既然**没推送过**，
+      那边的同 id 条目**仍然是活体** ✓（这正是"没 push 就不算数"在 git 层的体现 ✓）。
+
+    【同名公式】**身份 = `id`，`name` 从不参与裁决** ✓ ⇒ 同名不同 id 的两条会**并列共存**，
+      本机改过的那条**绝不会**因为"远端有个同名公式"被覆盖 ✓（用户 2026-09-25 定稿的语义 ✓）。
+
+    返回 `(新的本机条目, 实际还原的活体条目)` ✓：
+      · `tombstone_ids` 里的 tombstone ⇒ **去掉**（撤销这次删除 ✓）；
+      · 该 id 在 `pushed_items` 里是活体 ⇒ **原样插回**（按 `updated_at` 归位 ⇒ 文件顺序稳定 ✓）；
+      · **已推送的删除**、本机**新增/编辑** ⇒ **一律不动** ✓（⚠ 已推送的删除**绝不**回滚 ✓）。
+    """
+    ids = {i for i in (tombstone_ids or []) if i}
+    if not ids:
+        return list(my_items), []
+    keep = [x for x in my_items if not (x.get("deleted") and x.get("id") in ids)]
+    have = {_key(x) for x in keep}
+    restored: List[dict] = []
+    for it in (pushed_items or []):
+        if it.get("deleted") or it.get("id") not in ids or _key(it) in have:
+            continue
+        restored.append(it)
+        have.add(_key(it))
+    out = list(keep)
+    for it in restored:                      # 按 updated_at 插回原位（保持文件顺序稳定 ✓）
+        ts = str(it.get("updated_at") or "")
+        pos = len(out)
+        for idx, x in enumerate(out):
+            if str(x.get("updated_at") or "") > ts:
+                pos = idx
+                break
+        out.insert(pos, it)
+    return out, restored
 
 
 def save_as_my(items: List[dict]) -> None:
