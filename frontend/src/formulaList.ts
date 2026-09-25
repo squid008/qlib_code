@@ -126,18 +126,23 @@ function compareKey<T extends NameText>(a: Row<T>, b: Row<T>): number {
  *
  * · 无查询 + `key` 模式 ⇒ 全量按名称键 A→Z（中英文混排 ✓）；
  * · 有查询 ⇒ 只留命中的，**前缀命中优先** ✓，其次按当前模式（`key` ⇒ 键序，`original` ⇒ 保存序 ✓）；
- * · 无查询 + `original` ⇒ **原样返回**（点"恢复原序"就是它 ✓）。
+ * · 无查询 + `original` ⇒ **原样返回**（点"恢复原序"就是它 ✓）；
+ * · ★ `nameOnly = true`（用户 2026-09-25 要的开关 ✓）⇒ **只认名称/拼音首字母命中** ✓，
+ *   把"只在公式原文里出现"的（如 `CLOSE` 里的 `l` ✓）**排除掉** ⇒ 敲 `l` 不再命中一大片 ✓。
+ *   ⚠ 关掉它才搜得到原文（`close`、`ma(close,5)` 这类 ✓）—— 两种口味各有用，所以做成开关 ✓。
  */
 export function arrangeFormulas<T extends NameText>(
   list: readonly T[],
   query: string,
   mode: SortMode,
+  nameOnly = false,
 ): T[] {
   const q = query.trim().toLowerCase()
+  const maxRank = nameOnly ? 2 : 3          // 2 = 仅原文命中（要被 nameOnly 排除的那一档 ✓）
   // 键只算一次（不放进比较函数里 ✗）⇒ 单遍 O(n) + 排序 O(n log n) ✓
   let rows: Row<T>[] = list.map((f, i) => ({ f, i, key: formulaKey(f.name) }))
   if (q) {
-    rows = rows.filter((r) => matchRank(r.f, q) < 3)
+    rows = rows.filter((r) => matchRank(r.f, q) < maxRank)
     rows.sort((a, b) => {
       const r = matchRank(a.f, q) - matchRank(b.f, q)
       if (r !== 0) return r

@@ -121,4 +121,27 @@ eq(matchRank(item('CCC', 'MA(CLOSE,5)'), 'l'), 2, '只出现在原文里 = 2（�
 eq(matchRank(item('CCC', 'MA(CLOSE,5)'), 'zzz'), 3, '不命中 = 3')
 eq(names(arrangeFormulas([item('CCC', 'MA(CLOSE,5)')], 'close', 'key')), ['CCC'], '仍支持按原文搜索 ✓')
 
+// ── ⑥ 开关：仅名称/拼音（nameOnly ✓ 用户 2026-09-25 追加）──────────────────
+// 三条样例的**原文各不相同** ✓：只有 CCC 的原文含 CLOSE、LLT 含 HIGH ⇒ 能区分"名称命中/原文命中" ✓
+const withText = [
+  item('CCC', 'MA(CLOSE,5)'),
+  item('龙腾四海8', 'OUT:LOW;'),
+  item('LLT', 'OUT:HIGH;'),
+]
+eq(names(arrangeFormulas(withText, 'l', 'key', false)), ['LLT', '龙腾四海8', 'CCC'],
+  '关：l 命中 3 条（含只在原文 CLOSE 里出现的 CCC ✓，排在最后 ✓）')
+eq(names(arrangeFormulas(withText, 'l', 'key', true)), ['LLT', '龙腾四海8'],
+  '开「仅名称/拼音」：l 只留名称/拼音命中的（CCC 被排除 ✓）')
+eq(names(arrangeFormulas(withText, 'close', 'key', true)), [], '开：纯原文查询 → 无命中（提示用户关开关 ✓）')
+eq(names(arrangeFormulas(withText, 'close', 'key', false)), ['CCC'], '关：纯原文查询正常 ✓')
+eq(names(arrangeFormulas(withText, 'high', 'key', false)), ['LLT'], '关：按原文 high 也能搜到 LLT ✓')
+// 真实名单：开开关后敲 l ⇒ 排最后的"仅原文命中"整组消失，且 **l 开头的 4 条排最前** ✓
+//   （注：仍会保留"拼音首字母里含 l"的，如 冰火两重天=bhlzt、倍量=bl ✓ —— 这正是缩写搜索的语义 ✓）
+const lOn = names(arrangeFormulas(items, 'l', 'key', true))
+const lOff = names(arrangeFormulas(items, 'l', 'key', false))
+eq(lOn.slice(0, 4), ['LLT', '量能系数', '龙腾四海8', '量王'], '开：l ⇒ 最前面就是 4 条 l 开头的 ✓')
+ok(lOn.length < lOff.length, `开：命中数变少（${lOn.length} < ${lOff.length}，原文命中被排除 ✓）`)
+ok(lOn.every((n) => matchRank({ name: n, text: 'OUT:CLOSE;' }, 'l') < 2),
+  '开：结果里没有"仅原文命中"的条目 ✓')
+
 console.log(`✓ formulaList 自检全部通过（${passed} 条断言，样例 = 线上 68 条真实公式名）`)

@@ -51,9 +51,12 @@ export default function FormulaPanel({
   //   · `sortMode`：`original` = 后端保存顺序；`key` = 按名称键 A→Z（汉字取拼音首字母、中英混排 ✓）
   //   · `listItems`：过滤 + 排序的结果（纯计算 ⇒ 缓存住；敲键只跑一遍 O(n log n)，68 条量级无感 ✓）
   const [sortMode, setSortMode] = useState<SortMode>('original')
+  // ★ 用户 2026-09-25 追加：搜索框旁边的「仅名称/拼音」开关（开关放在搜索框右侧 ✓）
+  //   关（默认）= 名称/拼音 + 公式原文都搜 ✓；开 = 只认名称/拼音首字母（敲 l 不再被原文里的 CLOSE 刷屏 ✓）
+  const [nameOnly, setNameOnly] = useState(false)
   const listItems = useMemo(
-    () => arrangeFormulas(customFormulas, listQuery, sortMode),
-    [customFormulas, listQuery, sortMode],
+    () => arrangeFormulas(customFormulas, listQuery, sortMode, nameOnly),
+    [customFormulas, listQuery, sortMode, nameOnly],
   )
   const newHandleRef = useRef<FormulaEditorHandle | null>(null)
   const editHandleRef = useRef<FormulaEditorHandle | null>(null)
@@ -154,17 +157,42 @@ export default function FormulaPanel({
                   </button>
                 </span>
               </div>
-              <input
-                type="text"
-                value={listQuery}
-                onChange={(e) => setListQuery(e.target.value)}
-                placeholder="搜索公式名/原文…（也支持拼音首字母：ltsh → 龙腾四海）"
-                className="w-full mb-1 border rounded px-2 py-1 text-xs bg-white dark:bg-slate-800"
-              />
+              {/* 搜索框（用户 2026-09-25：做短一点 ✓）+ 右侧「仅名称/拼音」开关 ✓ */}
+              <div className="flex items-center gap-2 mb-1">
+                <input
+                  type="text"
+                  value={listQuery}
+                  onChange={(e) => setListQuery(e.target.value)}
+                  placeholder={nameOnly ? '搜公式名/拼音（ltsh → 龙腾四海）' : '搜索公式名/原文…（ltsh → 龙腾四海）'}
+                  className="w-48 border rounded px-2 py-1 text-xs bg-white dark:bg-slate-800"
+                />
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={nameOnly}
+                  onClick={() => setNameOnly((v) => !v)}
+                  title="开：只按公式名/拼音首字母匹配（更干净：敲 l / ltsh 只在名称里找）；关：连公式原文一起搜（如 close、ma(close,5)）"
+                  className="flex items-center gap-1 shrink-0 text-[11px] text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                >
+                  <span className="whitespace-nowrap">仅名称/拼音</span>
+                  <span
+                    className={`relative inline-block w-7 h-4 rounded-full transition-colors ${
+                      nameOnly ? 'bg-emerald-600' : 'bg-slate-300 dark:bg-slate-600'
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-all ${
+                        nameOnly ? 'left-3.5' : 'left-0.5'
+                      }`}
+                    />
+                  </span>
+                </button>
+              </div>
               <ul className="space-y-1 max-h-72 overflow-y-auto pr-1">
                 {listItems.length === 0 && (
                   <li className="text-slate-400 italic px-2 py-1">
-                    没有匹配的公式（可试拼音首字母：ltsh → 龙腾四海）
+                    没有匹配的公式（可试拼音首字母：ltsh → 龙腾四海
+                    {nameOnly ? '；或关掉「仅名称/拼音」去搜公式原文' : ''}）
                   </li>
                 )}
                 {listItems.map((f) => (
