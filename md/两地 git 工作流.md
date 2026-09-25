@@ -158,3 +158,22 @@ git push --force-with-lease origin main   # 覆盖自己最近一次提交（比
 
 **通用规律**：凡是在 grid 某列里加高内容、又不想影响同行其他列高度，优先考虑
 合并相邻行 + `row-span-*` 跨行，而不是把内容硬塞进单行或挪到别的行。
+
+---
+
+## 八、公式库（自定义公式）的两地同步约定
+
+> 完整说明见 **`md/formulas_sync.md`**（唯一权威 ✓）；工具在 `scripts/` ✓。要点：
+
+- 公式库按 **装机** 分文件（`backend/workdir/formulas/<install_id>.json`，`install_id` 见 `backend/workdir/.install_id`）
+  ⇒ **两台机器永不共用文件** ⇒ `pull` 不会产生"整文件 JSON 冲突"；读取时**合并所有文件** ✓。
+- **保存/删除公式只在本机生效**：本地会自动提交，但 **默认不自动推送** ⇒ 未推送期间另一端 `pull` **看不到** ✓。
+- **`pull` 的语义**：本机**新增/编辑一律保留** ✓；本机**未推送的删除会被撤销**（被删公式恢复显示）✓
+  —— 也就是"**没 push 就不算数**"；**要让改动真正同步给另一地，必须显式 push** ✓。
+- 操作（仓库根任意位置）：
+  ```powershell
+  python scripts/formula_sync.py status   # 现状
+  python scripts/formula_sync.py pull     # 备份 → 撤销未推送的删除 → git pull --ff-only（带代理）
+  python scripts/formula_sync.py push     # 打印将推送的提交 → 备份 → git push（带代理）
+  ```
+- ⚠ 另外记住两条老规矩（本文前几节）：代码改动同样"先 pull 再 push"；中文 commit 用 `-F <UTF-8 文件>` ✓。

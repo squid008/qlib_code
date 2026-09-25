@@ -34,9 +34,9 @@ if ($SkipData) {
 if ($LASTEXITCODE -ne 0) { throw "pytest 未通过" }
 Pop-Location
 
-Write-Host "== [2/3] 后端 ruff =="
+Write-Host "== [2/3] 后端 ruff（含 scripts/ 运维脚本，v1.20.71 起）=="
 Push-Location "$root\backend"
-& $py -m ruff check app tests tools
+& $py -m ruff check app tests tools ../scripts
 if ($LASTEXITCODE -ne 0) { throw "ruff 未通过" }
 Pop-Location
 
