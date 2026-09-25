@@ -18,22 +18,23 @@
   {
     "id": "43fc64eb9a77",
     "name": "深跌3",
-    "text": "n=30;\n条件:=CLOSE <= MA(CLOSE, N);\n原始值:=COUNT(条件,20)/20;\n深跌3:IF(n<3,原始值,MA((C-LLV(C,N))/(HHV(C,N)-LLV(C,N)),20));",
-    "expression": "Mean(Div(Sub($close,Min($close,30)),Sub(Max($close,30),Min($close,30))),20)",
+    "text": "n=3;\n条件:=CLOSE <= MA(CLOSE, N);\n原始值:=COUNT(条件,20)/20;\n深跌3:IF(n<3,原始值,MA((C-LLV(C,N))/(HHV(C,N)-LLV(C,N)),20));",
+    "expression": "Mean(Div(Sub($close,Min($close,3)),Sub(Max($close,3),Min($close,3))),20)",
     "codegen": "1.20.58",
     "created_at": "2026-09-25 09:53:03",
-    "updated_at": "2026-09-25 09:53:03",
+    "updated_at": "2026-09-25 10:11:49",
     "author": "u-1dc0ce59",
-    "author_user": "admin"
+    "author_user": "admin",
+    "author_modified_by": "u-1dc0ce59"
   },
   {
     "id": "586d0f987b97",
     "name": "深跌2",
-    "text": "n=20;\n条件:=CLOSE <= MA(CLOSE, N);\n原始值:=COUNT(条件,20)/20;\n深跌2:IF(n<3,原始值,MA((C-LLV(C,N))/(HHV(C,N)-LLV(C,N)),20));",
-    "expression": "Mean(Div(Sub($close,Min($close,20)),Sub(Max($close,20),Min($close,20))),20)",
+    "text": "n=2;\n条件:=CLOSE <= MA(CLOSE, N);\n原始值:=COUNT(条件,20)/20;\n深跌2:IF(n<3,原始值,MA((C-LLV(C,N))/(HHV(C,N)-LLV(C,N)),20));",
+    "expression": "Div(Count(Le($close,Mean($close,2)),20),20)",
     "codegen": "1.20.58",
     "created_at": "2026-09-25 09:29:20",
-    "updated_at": "2026-09-25 10:10:30",
+    "updated_at": "2026-09-25 10:11:53",
     "author": "u-1dc0ce59",
     "author_user": "admin",
     "author_modified_by": "u-1dc0ce59"
