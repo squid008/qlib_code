@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { CustomFormula } from '../api'
+import { arrangeFormulas, type SortMode } from '../formulaList'
 import FormulaHandbookModal from './FormulaHandbookModal'
 import FormulaEditor from './FormulaEditor'
 import type { FormulaEditorHandle } from './FormulaEditor'
@@ -45,6 +46,15 @@ export default function FormulaPanel({
   // 函数手册弹窗（弹窗开关/选中均为本组件局部 UI 状态，不进 App）
   const [handbookOpen, setHandbookOpen] = useState(false)
   const [listQuery, setListQuery] = useState('')
+  // ★ 2026-09-25：公式列表的「排序 + 拼音首字母定位」（**逻辑全在 `formulaList.ts`** ✓ ——
+  //   纯函数、零依赖、单独小文件 ⇒ 这个组件只多一个开关 + 一个 `useMemo`，不进上帝模块 ✓）
+  //   · `sortMode`：`original` = 后端保存顺序；`key` = 按名称键 A→Z（汉字取拼音首字母、中英混排 ✓）
+  //   · `listItems`：过滤 + 排序的结果（纯计算 ⇒ 缓存住；敲键只跑一遍 O(n log n)，68 条量级无感 ✓）
+  const [sortMode, setSortMode] = useState<SortMode>('original')
+  const listItems = useMemo(
+    () => arrangeFormulas(customFormulas, listQuery, sortMode),
+    [customFormulas, listQuery, sortMode],
+  )
   const newHandleRef = useRef<FormulaEditorHandle | null>(null)
   const editHandleRef = useRef<FormulaEditorHandle | null>(null)
   const lastFocusRef = useRef<'new' | 'edit'>('new')
@@ -125,6 +135,16 @@ export default function FormulaPanel({
                   已选 {selectedFormulaIds.size} / {customFormulas.length} 个
                 </span>
                 <span className="space-x-1">
+                  {/* ★ 2026-09-25：全选左边加"排序"开关（点一下 A-Z、再点恢复原序 ✓） */}
+                  <button
+                    type="button"
+                    onClick={() => setSortMode((m) => (m === 'key' ? 'original' : 'key'))}
+                    title="按名称排序：字母/数字原样、汉字取拼音首字母，中英文混排；再点一次恢复保存顺序"
+                    className="text-blue-600 hover:underline"
+                  >
+                    {sortMode === 'key' ? '恢复原序' : '排序 A-Z'}
+                  </button>
+                  <span className="text-slate-300">|</span>
                   <button type="button" onClick={() => onToggleAll(true)} className="text-blue-600 hover:underline">
                     全选
                   </button>
@@ -138,19 +158,16 @@ export default function FormulaPanel({
                 type="text"
                 value={listQuery}
                 onChange={(e) => setListQuery(e.target.value)}
-                placeholder="搜索公式名/原文…（多因子快速定位）"
+                placeholder="搜索公式名/原文…（也支持拼音首字母：ltsh → 龙腾四海）"
                 className="w-full mb-1 border rounded px-2 py-1 text-xs bg-white dark:bg-slate-800"
               />
               <ul className="space-y-1 max-h-72 overflow-y-auto pr-1">
-                {customFormulas
-                  .filter((f) => {
-                    const q = listQuery.trim().toLowerCase()
-                    if (!q) return true
-                    return (
-                      f.name.toLowerCase().includes(q) || f.text.toLowerCase().includes(q)
-                    )
-                  })
-                  .map((f) => (
+                {listItems.length === 0 && (
+                  <li className="text-slate-400 italic px-2 py-1">
+                    没有匹配的公式（可试拼音首字母：ltsh → 龙腾四海）
+                  </li>
+                )}
+                {listItems.map((f) => (
                     <li key={f.id} className="border rounded px-2 py-1 bg-white dark:bg-slate-800">
                     {editingId === f.id ? (
                       <div>
