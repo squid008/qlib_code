@@ -81,6 +81,35 @@ def test_commit_then_push(monkeypatch):
     assert "自动同步用户公式库" in " ".join(commit)
 
 
+def test_push_default_is_off():
+    """★★ v1.20.70：**默认不自动推送** ✓（用户 2026-09-25 定：公式改动**只在本机生效**，
+    要同步给另一台机器必须由**人明确发起** ✓ ⇒ 未推送期间远端原样 ⇒ 另一端 pull 仍是旧条数 ✓）。
+
+    ⚠ 这里直接断言**源码里的默认值** ✗ 而非模块常量：`tests/conftest.py` 出于安全把
+    `ENABLED/PUSH` **全局置 False** ✓ ⇒ 运行时的 `PUSH` 无法区分"默认关闭"与"被测试关掉" ✗。
+    """
+    import inspect
+    import re
+
+    src = inspect.getsource(formula_git_sync)
+    m = re.search(r'PUSH\s*=\s*_env\(\s*"FORMULA_GIT_SYNC_PUSH"\s*,\s*"([^"]*)"', src)
+    assert m, "找不到 PUSH 默认值定义 ✗"
+    assert m.group(1) == "0", "默认必须为 0（不自动推送）⇒ 实际 %r" % m.group(1)
+
+
+def test_no_push_path_commits_locally_only(monkeypatch):
+    """`PUSH=False` ⇒ **本地提交 + 不推送** ✓（`commit` 之后**不得**出现 `push` ✓）。
+
+    这正是用户要的语义：改动落到本机（不会丢 ✓），远端保持原样 ⇒ 另一端 pull 仍是旧条数 ✓。
+    """
+    fake = _FakeGit({"add": 0, "diff": 1, "commit": 0, "push": 0})
+    monkeypatch.setattr(formula_git_sync, "_run", fake)
+    monkeypatch.setattr(formula_git_sync, "PUSH", False)
+    ok, msg = formula_git_sync.sync_now("保存公式库")
+    assert ok is True and "未推送" in msg
+    assert fake.cmds() == ["add", "diff", "commit"]          # ★ 没有 push ✓
+
+
 def test_missing_legacy_path_does_not_kill_sync(monkeypatch):
     """★★ v1.20.69 修的关键回归：**老单文件不存在时绝不能整条 add 失败** ✓。
 

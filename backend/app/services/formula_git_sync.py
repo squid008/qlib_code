@@ -24,21 +24,44 @@
   —— 之后任何一次 `git push`（我发版时 / 用户自己 / 应用下次同步 ✓）都会把它一起带走 ✓✓。
 · **`GIT_TERMINAL_PROMPT=0`** ✓：凭据缺失时**立刻失败**而不是**挂住线程** ✗（很关键 ✓）。
 
-开关（环境变量，默认全开 ✓）：
+开关（环境变量）：
 · `FORMULA_GIT_SYNC=0`        ⇒ 整个机制关闭（不 add/commit/push ✓）
-· `FORMULA_GIT_SYNC_PUSH=0`   ⇒ 只提交、不推送 ✓
+· `FORMULA_GIT_SYNC_PUSH=1`   ⇒ ★ **恢复"保存即推送"** ✓（**默认关闭** ✗ —— 见下）
 · `FORMULA_GIT_SYNC_DEBOUNCE` ⇒ 去抖秒数（默认 5 ✓）
 · `FORMULA_GIT_SYNC_PROXY`    ⇒ 直连失败后尝试的代理（默认 `http://127.0.0.1:7897` ✓）
 
-⚠ 已知边界：公式库是**单文件 JSON** ✓ ⇒ 两台机器**同时**各自保存后互相 pull/push 可能
-  产生**整文件冲突** ✗（git 无法自动合并 JSON ✗）⇒ 建议：家里编辑前先 `pull` ✓。
+★★ v1.20.70：**推送默认关闭**（只本地提交 ✓）—— 用户 2026-09-25 定：
+   公式的保存/删除**只在本机生效** ✓；"要不要给另一台机器"必须由人明确发起 ✓（手动 `git push`）
+   ⇒ **未推送期间远端保持原样** ⇒ 另一端 `pull` 仍是**改动前**的条数 ✓（"没 push 就不该影响别人" ✓）。
+   ⚠ 保留本地自动提交的原因：工作区保持干净 ⇒ `git pull --ff-only` 不会被未提交的公式改动挡住 ✓。
+
+⚠ 已知边界（v1.20.69 起已大幅缓解 ✓）：公式库现按**装机**分文件（`formulas/<install_id>.json` ✓）
+  ⇒ 两台机器**各写各的文件** ✓，`pull` 不再产生"整文件 JSON 冲突"✗；合并按 `updated_at` 裁决 ✓。
+  老的单文件 `custom_formulas.json` 只在"老环境"里存在 ✓（存在才 stage ✓，见 `sync_now` ✓）。
 """
 from __future__ import annotations
 
 import json
 import os
 import subprocess
+import sys
 import threading
+
+from ..logger import _Utf8SafeStream      # ★ v1.20.63：安全打印（GBK 下不抛 ✓）
+
+# ⚠ 本模块的日志**必须**走安全打印：后端 stdout 在 Windows 下常是 **GBK** ✗ ⇒
+#   `print("✓/✗ ...")` 会抛 `UnicodeEncodeError`（这两三个字符**不在 GBK 字符集**里 ✗✓）
+#   ⇒ 后台线程里异常 ⇒ **同步结果那行日志整条丢掉** ✗（2026-09-25 一并修 ✓）。
+_SAFE_OUT = _Utf8SafeStream(sys.stdout)
+
+
+def _log(msg: str) -> None:
+    """安全打印 ✓（按 UTF-8 写底层 buffer、永不抛 ✓ —— 日志绝不参与主流程 ✓）。"""
+    try:
+        _SAFE_OUT.write("[formula-git] " + msg + "\n")
+        _SAFE_OUT.flush()
+    except Exception:                                        # noqa: BLE001
+        pass
 
 # d:\quant\qlib_code（本文件在 backend/app/services/ 下 ⇒ 上溯三级 ✓）
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -57,7 +80,15 @@ def _env(name: str, default: str) -> str:
 
 
 ENABLED = _env("FORMULA_GIT_SYNC", "1").strip().lower() not in ("0", "false", "no", "off")
-PUSH = _env("FORMULA_GIT_SYNC_PUSH", "1").strip().lower() not in ("0", "false", "no", "off")
+# ★★ v1.20.70：**默认不自动推送** ✗（`FORMULA_GIT_SYNC_PUSH=1` 可恢复"保存即推送" ✓）。
+#   用户 2026-09-25 的要求（原话："我删了之后没有 PUSH，PULL 的话要能重新显示 67 个公式才对；
+#   我删了之后，手动让你 PUSH，然后再 PULL，这样显示 66 个才没问题"）：
+#   ⇒ **公式的改动只在本机生效** ✓（本地照常提交，改动不会丢 ✓）；**要不要同步给另一台机器，
+#     必须由人明确发起** ✓（我/用户手动 `git push`）⇒ 远端在"未推送"期间保持原样 ✓
+#     ⇒ 另一端 `pull` 仍看到**删除前**的条数 ✓（这正是"没 push 就不该影响别人"的直觉 ✓）。
+#   ⚠ 为什么**保留本地自动提交**（而不是连提交也关掉 ✗）：本地提交让工作区**保持干净** ✓
+#     ⇒ `git pull --ff-only` 不会被"未提交的公式改动"挡住/搅乱 ✓（公式文件是 git 跟踪的 ✓）。
+PUSH = _env("FORMULA_GIT_SYNC_PUSH", "0").strip().lower() not in ("0", "false", "no", "off")
 PROXY = _env("FORMULA_GIT_SYNC_PROXY", "http://127.0.0.1:7897").strip()
 try:
     DEBOUNCE = max(0.0, float(_env("FORMULA_GIT_SYNC_DEBOUNCE", "5")))
@@ -143,7 +174,8 @@ def sync_now(reason: str = "") -> "tuple[bool, str]":
             return False, "git commit 失败: %s" % ((com.stderr or com.stdout).strip()[:200] or "未知")
 
         if not PUSH:
-            return True, "已本地提交（FORMULA_GIT_SYNC_PUSH=0 ⇒ 未推送）"
+            # ★ v1.20.70：默认路径（推送要人明确发起 ✓）—— 说清"改动没丢、只是没同步" ✓
+            return True, "已本地提交（未推送：默认不自动同步；需要时手动 git push）"
 
         # 尽力推送：先直连 ✓，失败再试本地代理 ✓（公司机器常见 ✓）
         err = ""
@@ -167,7 +199,7 @@ def _fire() -> None:
         _timer = None
         reason = _reason
     ok, msg = sync_now(reason)
-    print("[formula-git] %s %s" % ("✓" if ok else "✗", msg), flush=True)
+    _log("%s %s" % ("✓" if ok else "✗", msg))
 
 
 def schedule(reason: str = "") -> None:
