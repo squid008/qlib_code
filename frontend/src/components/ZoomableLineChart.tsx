@@ -481,24 +481,31 @@ export default function ZoomableLineChart({
             <div className="text-slate-500">
               {statKey ? labelOf(statKey) : ''}（{stat.fromStart ? '自建仓起' : '当前区间'}）
             </div>
-            <div>
-              {stat.fromStart ? '累计收益' : '区间收益'}{' '}
-              <b className={stat.ret >= 0 ? 'text-red-600' : 'text-emerald-600'}>
-                {`${stat.ret >= 0 ? '+' : ''}${(stat.ret * 100).toFixed(2)}%`}
-              </b>
-            </div>
-            <div>
-              最大回撤 <b className="text-slate-700 dark:text-slate-200">{(stat.mdd * 100).toFixed(2)}%</b>
+            {/* ★ v1.20.76（用户 2026-09-25）：「**把年化放到累计收益的旁边去**」✓
+                ⇒ 第一行 = 收益类（累计收益 + 年化），第二行 = 风险类（最大回撤 + 夏普 + 卡玛）✓。
+                ⚠ 顺手把"最大回撤"从独立一行并进第二行 —— 否则会多出一行、把曲线盖得更多 ✗
+                  （角标是浮在图上的卡片，行数越少越好 ✓）。高度因此与改前一致（仍是 4 行）✓。 */}
+            <div className="flex flex-wrap gap-x-3">
+              <span>
+                {stat.fromStart ? '累计收益' : '区间收益'}{' '}
+                <b className={stat.ret >= 0 ? 'text-red-600' : 'text-emerald-600'}>
+                  {`${stat.ret >= 0 ? '+' : ''}${(stat.ret * 100).toFixed(2)}%`}
+                </b>
+              </span>
+              <span>
+                年化{' '}
+                <b className={stat.ann != null && stat.ann >= 0 ? 'text-red-600' : 'text-emerald-600'}>
+                  {stat.ann == null ? '-' : `${stat.ann >= 0 ? '+' : ''}${(stat.ann * 100).toFixed(2)}%`}
+                </b>
+              </span>
             </div>
             {/* ★ v1.20.64（用户 2026-09-23）：「除了累计收益，再显示年化、卡玛、夏普」✓
                 ⚠ 口径与后端 `perf_metrics.py` 完全一致 ✓（算法见上方 `stat` 的 useMemo 注释 ✓），
                   所以这一行与回测汇总卡、持仓期曲线弹窗的数是**同一个** ✓ —— 不会出现两处对不上 ✗。 */}
             <div className="flex flex-wrap gap-x-3">
               <span>
-                年化{' '}
-                <b className={stat.ann != null && stat.ann >= 0 ? 'text-red-600' : 'text-emerald-600'}>
-                  {stat.ann == null ? '-' : `${stat.ann >= 0 ? '+' : ''}${(stat.ann * 100).toFixed(2)}%`}
-                </b>
+                最大回撤{' '}
+                <b className="text-slate-700 dark:text-slate-200">{(stat.mdd * 100).toFixed(2)}%</b>
               </span>
               <span>
                 夏普{' '}
