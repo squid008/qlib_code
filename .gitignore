@@ -40,6 +40,9 @@ backend/workdir/*
 # 重启轮转的旧日志（server.log.20260908-234728 之类）
 server.log.*
 server_err.log.*
+# dev/build 日志：重定向产物若用 .txt 后缀，不会被上面的 *.log 覆盖 ⇒ 单列（2026-10-08）
+frontend/*.out.txt
+frontend/*.err.txt
 
 # 临时/测试文件
 test1.py
