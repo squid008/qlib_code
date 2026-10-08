@@ -149,6 +149,24 @@ python backend/tools/verify_materialized.py             # 核对覆盖率/同轴
 - 口径：`pre* = 源字段 / factor_last`（逐位；`factor_last` = `factor.day.bin` 末值，五字段共用 ⇒ 不会 `prehigh < prelow`）；
   `chip_*` 必须与 `$close` **同轴**（首值+长度一致，否则多股票一起加载会报 `identically-labeled`，见 change_log `[1.19.91]/[1.19.92]`）。
 
+### 物化字段：基本面（`fin_*` 米筐源 / `ftdx_*` 通达信源）—— **每台机器必须各做一次**
+
+`FINANCE(q)` / `FINANCE_TDX(q)` 用的是**物化出来的字段**（不在数据包里、也不在 git 里）：
+
+```bash
+python backend/tools/dump_finance.py                    # 米筐源（E:/rq/finance/pit + 市值）→ fin_*（9 字段）
+python backend/tools/dump_finance_tdx.py                # 通达信源（D:/new_tdx/vipdoc/cw）→ ftdx_*（9 字段）
+python backend/tools/dump_finance_tdx.py --verify --codes sz000001,sh600519   # 两源交叉校验
+python backend/tools/dump_finance_tdx.py --force        # 改了口径后全量重写
+```
+
+- 米筐源需要 `E:/rq/finance/pit/*.h5`（**有公告日** ⇒ 严格按公告日对齐 ✓）；
+- 通达信源需要 `D:/new_tdx/vipdoc/cw/gpcw*.zip`（会员"财务数据下载"）；
+  ⚠ 它**没有公告日** ⇒ 可用日按**法定披露截止日**推定（一季报 4/30、中报 8/31、三季报 10/31、年报次年 4/30），
+  **保守：宁晚不错** ⇒ 同一交易日两源可能差一个报告期（对比时务必对齐报告期 ✓）；
+- 两源 q 同编号（1 市盈率TTM … 9 营业利润增长率）⇒ 可直接互相交叉校验；
+  口径戳：`features/_finance_meta.json` / `features/_finance_tdx_meta.json`（重跑后自动刷新 ✓）。
+
 ### 物化字段：横向统计（`mkt_*` —— `BLOCKSETNUM` / `INSUM`）—— **每台机器必须各做一次**
 
 通达信那种"**横向**（跨股票）统计"（板块当日股数、板内某公式输出的横向聚合，例如 A 股"黄金坑纯度"）

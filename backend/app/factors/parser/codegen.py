@@ -181,6 +181,34 @@ def finance_help() -> str:
     return "\n".join("  %d = %s" % (i + 1, d) for i, (_f, d) in enumerate(FINANCE_FIELDS))
 
 
+# ---- ★ 2026-10-09：**通达信源**的基本面（`FINANCE_TDX(q)`）----
+# 与 FINANCE(q) **编号/含义完全一致**（1 市盈率TTM … 9 营业利润增长率 ✓），只是数据来自
+# **通达信财务包**（`D:\new_tdx\vipdoc\cw\gpcw*.zip`，会员下载 ✓）而非米筐 ——
+# 用户 2026-10-09：「米筐没有秘钥 ⇒ 以后只能用通达信的数据源」⇒ 两个函数并存，便于**交叉校验** ✓。
+# ⚠ 字段名由 `tools/dump_finance_tdx.py` 生成（该脚本 import 本表 ⇒ 两处不会漂移 ✓）。
+# ⚠⚠ **PIT 语义不同**（关键差异，手册里必须写清）：
+#   · 米筐 pit 有 `info_date`/`if_adjusted` ⇒ 严格"按公告日"生效 ✓；
+#   · 通达信 gpcw **没有公告日** ⇒ 只能用**法定披露截止日**推定可用日
+#     （一季报 4/30、中报 8/31、三季报 10/31、年报次年 4/30）⇒ **保守但可能晚** ✓，
+#     代价是"提前披露的公司"要等到截止日才用得上（宁晚不错 ✓）；且它没有逐次修正快照 ✗。
+FINANCE_TDX_FIELDS = [
+    ("ftdx_pe_ttm", "市盈率TTM"),
+    ("ftdx_pb", "市净率"),
+    ("ftdx_rev_yoy", "营业收入增长率"),
+    ("ftdx_np_yoy", "净利润增长率"),
+    ("ftdx_gross_margin", "销售毛利率"),
+    ("ftdx_roe", "净资产收益率ROE"),
+    ("ftdx_roa", "总资产收益率ROA"),
+    ("ftdx_eps", "每股收益(基本)"),
+    ("ftdx_op_yoy", "营业利润增长率"),
+]
+
+
+def finance_tdx_help() -> str:
+    """FINANCE_TDX(q) 的编号说明（与 FINANCE(q) 同编号 ✓）。"""
+    return "\n".join("  %d = %s" % (i + 1, d) for i, (_f, d) in enumerate(FINANCE_TDX_FIELDS))
+
+
 # ============================================================================
 # 横向统计（2026-10-09，通达信语义）—— 板块名/公式名 → **市场级物化字段**
 # ============================================================================
@@ -758,6 +786,20 @@ class CodeGen:
                     "FINANCE(q) 的 q 需在 1~%d 之间，当前为 %d：\n%s"
                     % (len(FINANCE_FIELDS), q, finance_help()))
             return "$" + FINANCE_FIELDS[q - 1][0]
+        # 基本面（通达信源，2026-10-09）：FINANCE_TDX(q) → `$ftdx_*`（编号与 FINANCE(q) 相同 ✓）
+        if name == "FINANCE_TDX":
+            if len(e.args) != 1:
+                raise CodeGenError("FINANCE_TDX 需要 1 个参数：FINANCE_TDX(q)，q 为指标编号（常量整数）：\n"
+                                   + finance_tdx_help())
+            qt = _const_fold(e.args[0], allow_div=True)
+            if qt is None or not float(qt).is_integer():
+                raise CodeGenError("FINANCE_TDX(q) 的 q 必须是**常量整数**：\n" + finance_tdx_help()
+                                   + "\n  例：`PE:=FINANCE_TDX(1); 低估:PE<20;`")
+            qt = int(qt)
+            if not (1 <= qt <= len(FINANCE_TDX_FIELDS)):
+                raise CodeGenError("FINANCE_TDX(q) 的 q 需在 1~%d 之间，当前为 %d：\n%s"
+                                   % (len(FINANCE_TDX_FIELDS), qt, finance_tdx_help()))
+            return "$" + FINANCE_TDX_FIELDS[qt - 1][0]
         # 横向统计（2026-10-09）：BLOCKSETNUM('板块') / INSUM('板块','公式',输出,类型)
         # → 市场级物化字段（见文件上方 BLOCK_KEYS 段的说明）
         if name == "BLOCKSETNUM":
