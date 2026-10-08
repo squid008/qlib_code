@@ -22,12 +22,29 @@ from qlib.data.base import Expression
 from app.factors.parser import codegen as CG
 
 
+def _is_op_table(d: dict) -> bool:
+    """该 dict 是不是"**函数名/字段名 → 算子名**"映射表？
+
+    ★ 2026-10-09 加此判据：`codegen` 里新增了**非算子表**的大写常量字典 ——
+    `BLOCK_KEYS`（板块中文名 → 股票池键，键是中文 ✗）与 `INSUM_CALC_TYPES`（int → 中文说明 ✗）
+    ⇒ 原实现"扫所有大写 dict 的值"会把 `all/csi300/累加/最大值` 误当算子名报缺失 ✗（测试红了 ✓）。
+    ⇒ 判据改为：**键必须是 ASCII 标识符**（真算子表的键长这样：`MA`/`ADD`/`HHV` ✓）。
+    ⚠ 别把它简化回"所有大写 dict" ✗；下面的 `test_operator_table_detection_still_works`
+      守着"别把真表漏掉" ✓。
+    """
+    keys = list(d.keys())
+    if not keys:
+        return False
+    return all(isinstance(k, str) and k.isascii() and (k.replace("_", "").isalnum())
+               for k in keys)
+
+
 def _mapped_names() -> set:
     """`codegen` 里可能出现在生成表达式中的算子名（字段 `$xxx` / 文档串不算 ✓）。"""
     names = set(CG.BINOP_MAP.values()) | set(CG.FUNC_QLIB.values()) | set(CG.UNARY_MAP.values())
     for attr in dir(CG):
         d = getattr(CG, attr, None)
-        if isinstance(d, dict) and attr.isupper():
+        if isinstance(d, dict) and attr.isupper() and _is_op_table(d):
             names |= {v for v in d.values() if isinstance(v, str)}
     return {n for n in names if n and not n.startswith("$") and "（" not in n}
 
@@ -83,6 +100,16 @@ def test_mapped_names_are_registered():
         "`The operator [X] is not registered`：\n  " + "、".join(missing)
         + "\n⇒ 要么改映射到已注册名，要么在 `app/factors/ops_ext.py` 注册它并加进 `_ALL_OPS`。"
     )
+
+
+def test_operator_table_detection_still_works():
+    """★ 守着 `_is_op_table` 的过滤**别把真算子表漏掉**（否则上面的守卫会被悄悄架空 ✗）。"""
+    names = _mapped_names()
+    for n in ("Add", "Mul", "Gt", "Mean", "Ref", "Sum", "If", "DYN_MAX", "SMA", "EMA_TDX"):
+        assert n in names, "真算子表被漏掉了：%s（`_is_op_table` 判据太严 ✗）" % n
+    # 非算子表（板块名/计算类型的中文说明）不得混进来 ✓
+    for bad in ("all", "csi300", "累加", "最大值"):
+        assert bad not in names, "%s 不是算子名，不该被收集 ✗" % bad
 
 
 def test_historically_broken_names_are_ok():

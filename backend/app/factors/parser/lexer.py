@@ -21,6 +21,7 @@ TT_COMMA = "COMMA"      # ,
 TT_COLON = "COLON"      # : （输出线）
 TT_ASSIGN = "ASSIGN"    # := 或 = （赋值）
 TT_EQ = "EQ"            # = 或 == （相等比较，上下文决定）
+TT_STR = "STR"          # ★ 2026-10-09：字符串字面量 '全部A股'（横向统计的板块名参数）
 TT_EOF = "EOF"
 
 # 一元/二元运算符
@@ -94,6 +95,16 @@ class Lexer:
 
             if c == "{":                    # { ... } 注释：整段跳过、不产生 token
                 self._skip_comment()
+                continue
+
+            if c in ("'", '"'):
+                # ★ 2026-10-09：字符串字面量（单引号与双引号等价）—— 横向统计函数的板块名参数：
+                #   INSUM('全部Ａ股','IS_GOLD_PIT',1,0) / BLOCKSETNUM('沪深300')
+                #   规则：读到**同种引号**为止；不支持转义（板块名/公式名里不会有引号 ✓）；
+                #         未闭合 ⇒ 明确报错（而不是悄悄吃掉后面整段公式 ✗）。
+                #   ⚠ 全角引号 `‘’“”` 会先被 normalize_source 的 NFKC 折成半角 ✓（无需特判）。
+                val = self._read_string(c)
+                tokens.append(Token(TT_STR, val, val, start))
                 continue
 
             if c.isdigit() or (c == "." and self.peek(1).isdigit()):
@@ -200,6 +211,20 @@ class Lexer:
             c = self.text[i]
             return c.isalpha() or c == "_" or ord(c) > 127
         return False
+
+    def _read_string(self, quote: str) -> str:
+        """读取字符串字面量（不含外层引号）；不闭合立刻报错。"""
+        start = self.pos
+        self.pos += 1                      # 跳过开引号
+        buf = []
+        while self.pos < self.n:
+            ch = self.text[self.pos]
+            if ch == quote:
+                self.pos += 1
+                return "".join(buf)
+            buf.append(ch)
+            self.pos += 1
+        raise LexerError("字符串未闭合：缺少配对的 %s (位置 %d)" % (quote, start))
 
     def _read_number(self) -> str:
         """读取数字字面量，支持小数和科学计数法（如 1.5、1e-12、2E3）。"""

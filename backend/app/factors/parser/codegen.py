@@ -6,10 +6,12 @@
 """
 from __future__ import annotations
 
+import hashlib
 import math
+import re
 from typing import List
 
-from .ast import Expr, Num, Field, Var, BinOp, UnaryOp, FuncCall
+from .ast import Expr, Num, Str, Field, Var, BinOp, UnaryOp, FuncCall
 from .lexer import LexerError
 
 
@@ -177,6 +179,85 @@ FINANCE_FIELDS = [
 def finance_help() -> str:
     """FINANCE(q) 的编号说明（错误提示/测试共用一份文案，避免两处漂移）。"""
     return "\n".join("  %d = %s" % (i + 1, d) for i, (_f, d) in enumerate(FINANCE_FIELDS))
+
+
+# ============================================================================
+# 横向统计（2026-10-09，通达信语义）—— 板块名/公式名 → **市场级物化字段**
+# ============================================================================
+# 通达信那两个函数是"**横向**（跨股票）"统计，而我们的求值链有两条：
+#   · 单因子/事件研究 ⇒ 面板求值器（本来就是"日期 × 股票"整块矩阵，横截面天然可做 ✓）
+#   · 回测/训练 ⇒ qlib 表达式（**逐股**时间序列，根本没有"其它股票"的概念 ✗✗）
+# ⇒ 唯一能让**两条路都成立**的形态是：**先把横向统计算好，物化成"同日全市场同值"的字段 bin**
+#   （`features/{code}/mkt_*.day.bin`）✓ —— 与筹码 COST/WINNER 物化同一套路（见 chip_store.py）✓。
+#   代价：被调公式或板块口径变了要**重跑物化**（`tools/materialize_market.py` ✓），
+#         用 `_market_meta.json` 口径戳防"拿旧口径的 bin 静默算错" ✗。
+#
+# ⚠ 字段名必须由**同一个函数**生成（codegen 与物化器共用 ⇒ 天然不会漂移 ✓）：
+#     板块名 → `blocksetnum_field(key)` / `insum_field(key, formula, out, calc)`
+
+# 板块名（NFKC 归一后）→ 股票池键（= `data/cn_data/instruments/<key>.txt`）。
+# ⚠ 键名要能在 instruments 目录里找到对应文件；'hsa'（沪深A股，剔除北交所）由物化器现算 ✓。
+BLOCK_KEYS = {
+    "全部A股": "all", "全部A股(含北交所)": "all", "所有A股": "all", "A股": "all",
+    "沪深A股": "hsa", "沪深两市A股": "hsa",
+    "沪深300": "csi300", "沪深300指数": "csi300", "中证300": "csi300",
+    "中证500": "csi500", "中证500指数": "csi500",
+    "中证800": "csi800", "中证800指数": "csi800",
+    "中证1000": "csi1000", "中证1000指数": "csi1000",
+}
+BLOCK_KEYS_HELP = "、".join(sorted(set(BLOCK_KEYS.keys())))
+
+# INSUM 的计算类型（通达信：0累加/1平均/2最大/3最小值/4最大值序号/5最小值序号）
+INSUM_CALC_TYPES = {
+    0: "累加", 1: "平均", 2: "最大值", 3: "最小值",
+    # 4/5（极值所处品种序号）返回的是"哪只股票"而不是数值 ⇒ 与"全市场同值字段"的物化形态不兼容 ✗，
+    # 首版不做（写进错误提示 ✓，别让用户猜为什么不行）
+}
+INSUM_CALC_HELP = "、".join("%d=%s" % (k, v) for k, v in INSUM_CALC_TYPES.items())
+
+
+def block_key(block_name: str) -> str:
+    """板块名 → 股票池键；不认识的板块名给出可用清单（报错要能自助 ✓）。"""
+    raw = (block_name or "").strip()
+    # NFKC 兜底：公式文本已被 normalize_source 折过，但直接调用本函数（测试/物化器）时可能没折 ✓
+    import unicodedata
+    norm = unicodedata.normalize("NFKC", raw)
+    key = BLOCK_KEYS.get(norm) or BLOCK_KEYS.get(norm.replace(" ", ""))
+    if key is None:
+        raise CodeGenError(
+            "不认识的板块名 %r。\n目前支持：%s\n"
+            "（板块成分按**当日真实成分**取，指数=当日在指数里的股票，历史变更不会穿越 ✓）"
+            % (raw, BLOCK_KEYS_HELP))
+    return key
+
+
+def formula_key(formula_name: str) -> str:
+    """被调公式名 → 可做文件名的短键（中文名也安全：保留 ASCII 部分 + 名字哈希）。"""
+    name = (formula_name or "").strip()
+    safe = re.sub(r"[^0-9a-zA-Z_]+", "", name).lower()[:24]
+    h = hashlib.md5(name.encode("utf-8")).hexdigest()[:6]
+    return (safe or "f") + "_" + h
+
+
+def blocksetnum_field(block_name: str) -> str:
+    """`BLOCKSETNUM('全部A股')` → `$mkt_num_all`（物化字段）。"""
+    return "$mkt_num_" + block_key(block_name)
+
+
+def insum_field(block_name: str, formula_name: str, out_index: int, calc_type: int) -> str:
+    """`INSUM('全部A股','IS_GOLD_PIT',1,0)` → `$mkt_insum_all_is_gold_pit_<hash>_1_0`。"""
+    return "$mkt_insum_%s_%s_%d_%d" % (
+        block_key(block_name), formula_key(formula_name), int(out_index), int(calc_type))
+
+
+def insum_help() -> str:
+    return ("INSUM(板块名, 指标名, 指标输出, 计算类型)\n"
+            "  · 板块名：%s\n"
+            "  · 指标名：**已保存的公式名**（它自己的输出名，如 IS_GOLD_PIT）\n"
+            "  · 指标输出：取该公式的第几个输出线（本平台公式都是单输出 ⇒ 只能是 1）\n"
+            "  · 计算类型：%s\n"
+            "注意：横向统计要**物化**成市场级字段后才能用 ⇒ 保存公式后跑一次\n"
+            "  `python tools/materialize_market.py`（详见公式手册）" % (BLOCK_KEYS_HELP, INSUM_CALC_HELP))
 
 
 # ---- 二元运算 → qlib 表达式 ----
@@ -677,6 +758,37 @@ class CodeGen:
                     "FINANCE(q) 的 q 需在 1~%d 之间，当前为 %d：\n%s"
                     % (len(FINANCE_FIELDS), q, finance_help()))
             return "$" + FINANCE_FIELDS[q - 1][0]
+        # 横向统计（2026-10-09）：BLOCKSETNUM('板块') / INSUM('板块','公式',输出,类型)
+        # → 市场级物化字段（见文件上方 BLOCK_KEYS 段的说明）
+        if name == "BLOCKSETNUM":
+            if len(e.args) != 1 or not isinstance(e.args[0], Str):
+                raise CodeGenError(
+                    "BLOCKSETNUM 需要 1 个**字符串**参数：BLOCKSETNUM('板块名')\n"
+                    "  可用板块：%s\n  例：BLOCKSETNUM('全部A股')" % BLOCK_KEYS_HELP)
+            return blocksetnum_field(e.args[0].value)
+        if name == "INSUM":
+            if len(e.args) != 4:
+                raise CodeGenError("INSUM 需要 4 个参数：\n" + insum_help())
+            a0, a1, a2, a3 = e.args
+            if not isinstance(a0, Str) or not isinstance(a1, Str):
+                raise CodeGenError(
+                    "INSUM 的前 2 个参数必须是**字符串**（板块名 / 公式名）：\n" + insum_help())
+            out_i = _const_fold(a2, allow_div=True)
+            calc_i = _const_fold(a3, allow_div=True)
+            if out_i is None or calc_i is None or not float(out_i).is_integer() or not float(calc_i).is_integer():
+                raise CodeGenError("INSUM 的第 3/4 个参数必须是**常量整数**：\n" + insum_help())
+            out_i, calc_i = int(out_i), int(calc_i)
+            if out_i != 1:
+                raise CodeGenError(
+                    "INSUM 的第 3 个参数（取第几个输出）目前只能是 **1**（本平台公式都是单输出），"
+                    "当前为 %d" % out_i)
+            if calc_i not in INSUM_CALC_TYPES:
+                raise CodeGenError(
+                    "INSUM 的第 4 个参数（计算类型）目前支持 %s；\n"
+                    "  · 4=最大值序号 / 5=最小值序号：返回的是'哪只股票'、"
+                    "与'全市场同值字段'的物化形态不兼容 ⇒ 暂不支持 ✓\n"
+                    "  · 当前为 %d" % (INSUM_CALC_HELP, calc_i))
+            return insum_field(a0.value, a1.value, out_i, calc_i)
         # 直接映射
         if name in FUNC_QLIB:
             q = _ema_op_name() if name == "EMA" else FUNC_QLIB[name]

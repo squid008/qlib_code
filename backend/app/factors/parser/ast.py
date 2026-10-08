@@ -20,6 +20,17 @@ class Num(Expr):
 
 
 @dataclass
+class Str(Expr):
+    """字符串字面量（★ 2026-10-09）。
+
+    用途：横向统计函数的"板块名 / 指标名"参数，如 `INSUM('全部Ａ股','IS_GOLD_PIT',1,0)`、
+    `BLOCKSETNUM('沪深300')`。⚠ 目前**只**被 `BLOCKSETNUM`/`INSUM` 消费；
+    其它地方出现字符串 ⇒ codegen 报「无法生成的表达式节点」（明确报错，不静默 ✓）。
+    """
+    value: str
+
+
+@dataclass
 class Field(Expr):
     """行情字段（CLOSE/HIGH/LOW/OPEN/VOL/AMOUNT...）。"""
     name: str          # 规范化后的大写字段名

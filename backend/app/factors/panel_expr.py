@@ -399,7 +399,10 @@ _DIR_META_TTL_S = float(os.environ.get("QLIB_PANEL_DIR_META_TTL", "60"))
 # ⚠ 刻意**不抛异常**：正常回测/测试不应因缺物化而中断 ✓（且部分场景确实只需别字段 ✓）。
 # ---------------------------------------------------------------------------
 _LOGGER = logging.getLogger(__name__)
-_MATERIALIZED_PREFIXES = ("chip_", "pre", "prevwap")
+# ★ 2026-10-09 加 `mkt_`：横向统计（`BLOCKSETNUM`/`INSUM`）是**物化**出来的市场级字段，
+#   缺了同样"不报错、静默全 NaN"✗（用户会以为"坑数量=0 / 纯度=0"是行情真实状态 ✗）
+#   ⇒ 一并纳入"整列全 NaN 就提示 + 给出修复命令"的防护 ✓。
+_MATERIALIZED_PREFIXES = ("chip_", "pre", "prevwap", "mkt_")
 _MISSING_WARNED: set = set()
 
 
@@ -420,10 +423,13 @@ def _warn_if_materialized_missing(key: str, s: "pd.Series") -> None:
         "  ⇒ 修复（每台机器各做一次，详见 md/deploy.md「物化字段」一节）：\n"
         "       python backend/tools/materialize_chip.py 400   # chip_*（分批）\n"
         "       python backend/tools/build_preclose.py         # pre*（前复权）\n"
+        "       python backend/tools/materialize_market.py     # mkt_*（BLOCKSETNUM/INSUM 横向统计）\n"
         "       python backend/tools/verify_materialized.py    # 核对，退出码 0 才算好"
         % (key,
            "`COST()/WINNER()` 等公式静默失效（结果全 NaN）"
            if key.startswith("chip_") else
+           "`BLOCKSETNUM()/INSUM()` 静默失效（板内股票数 / 坑数量 / 纯度全 NaN）"
+           if key.startswith("mkt_") else
            "`forward`（前复权）静默失效 ⇒ 价格量纲因子会被按**后复权价**排序"))
     if _LOGGER is not None:
         _LOGGER.warning(_msg)

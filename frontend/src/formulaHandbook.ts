@@ -37,6 +37,12 @@ const RAW_HANDBOOK: HandbookEntry[] = [
   // q 的顺序与 backend/tools/dump_finance.py 的 FIN_FIELDS **逐项一致**（顺序错位=取错指标，有测试守着）
   { name: 'FINANCE', abbr: '基本面指标', kind: 'func', desc: '基本面指标的历史序列（来自米筐财报，按公告日对齐，无未来函数）。\n用法:\n FINANCE(q)\n q 为指标编号（常量整数）：\n 1 = 市盈率TTM(倍)\n 2 = 市净率(倍)\n 3 = 营业收入增长率(%)\n 4 = 净利润增长率(%)\n 5 = 销售毛利率(%)\n 6 = 净资产收益率ROE(%)\n 7 = 总资产收益率ROA(%)\n 8 = 每股收益-基本(元)\n 9 = 营业利润增长率(%)\n例:\n PE:=FINANCE(1); 低估:PE>0 AND PE<20;\n LOWPB:FINANCE(2)<1;\n 高成长:FINANCE(3)>30 AND FINANCE(4)>30;\n口径:\n · 3~9 为报告期口径(累计值)，日频序列只在公告日跳变（公告日前向填充）；\n · 1/2 为日频，用当日总市值÷最新已披露的归母净利润TTM / 归母净资产；\n · 一律取"公告日<=当日"的最新一期：财报被追溯调整时，调整后的数字也只在调整公告日之后才生效。\n注意:\n · 数据截至最近一次物化（见 formulas 同一 data 目录下 features/_finance_meta.json 的 written_at）。\n · 金融股无毛利，FINANCE(5) 为 NaN；净资产为负时 FINANCE(2) 为 NaN；亏损股 FINANCE(1) 为负值。\n · q 需为常量（参数/中间变量写成常数也可以，如 N:=2; FINANCE(N)）；不能用随行变化的表达式。' },
 
+  // ---------------- 横向统计（通达信 BLOCKSETNUM/INSUM；2026-10-09 加） ----------------
+  // ⚠ 这两个是"跨股票（横向）"统计，且**必须物化**（qlib 逐股求值算不了横截面）⇒
+  //   保存公式后要跑一次 `python tools/materialize_market.py`（详见 md/开发记录.md 2026-10-09）
+  { name: 'BLOCKSETNUM', abbr: '板块股票数', kind: 'func', desc: '板块的当日成分股数（日截面）。\n用法:\n BLOCKSETNUM(\'板块名\')\n 板块名: 全部A股 / 沪深A股 / 沪深300 / 中证500 / 中证800 / 中证1000\n例:\n 总股票数:=BLOCKSETNUM(\'全部A股\');\n纯净度:=坑数量/总股票数*100;\n口径:\n · 按当日真实成分（指数成分历史变更不穿越、无未来函数）。\n · 全部A股 = 全部在市A股（含ST、含停牌、不含退市，含北交所）；\n · 沪深A股 = 同上但剔除北交所。\n注意:横向统计是物化字段 ⇒ 保存公式后需跑一次 tools/materialize_market.py，否则整列 NaN。' },
+  { name: 'INSUM', abbr: '板块横向统计', kind: 'func', desc: '把板块内所有股票某个公式的输出横向聚合（通达信 INSUM 语义）。\n用法:\n INSUM(\'板块名\',\'公式名\',1,类型)\n · 公式名 = 已保存公式的输出名（要先把那个公式保存进公式库）\n · 第 3 参 = 取第几个输出线，只能填 1（本平台公式都是单输出）\n · 类型: 0=累加 1=平均 2=最大值 3=最小值（4/5=极值序号暂不支持）\n例:\n 坑数量:=INSUM(\'全部A股\',\'IS_GOLD_PIT\',1,0);\n 总股票数:=BLOCKSETNUM(\'全部A股\');\n 纯度:IF(坑数量/总股票数*100>40,40,坑数量/总股票数*100);\n口径:\n · 停牌股算在分母里、其指标值当日按 0 计（与通达信"板块成分股数"口径一致）；\n · 累加/平均忽略 NaN（按 0 计）、最大/最小忽略 NaN。\n注意:改被调公式或改板块口径后，要重跑 tools/materialize_market.py --overwrite 才会更新。' },
+
   // ---------------- 常用算术/统计函数 ----------------
   { name: 'MA', abbr: '简单移动平均', kind: 'func', desc: '简单移动平均。\n用法:\n MA(X,N)\n 返回 X 在 N 周期的简单平均\n 窗口不足按已有数据算(min_periods=1)。\n例:\n MA(CLOSE,5)' },
   { name: 'EMA', abbr: '指数移动平均', kind: 'func', desc: '指数移动平均（pandas ewm adjust=True 口径）。\n用法:\n EMA(X,N)\n N=4 即 span=4 归一化指数加权。\n注意:序列开头与通达信递归式有初值差；需要通达信递归口径可直接写 EMA_TDX(X,N)。' },

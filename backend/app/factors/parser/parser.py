@@ -12,11 +12,11 @@ from __future__ import annotations
 from typing import List
 
 from .ast import (
-    Formula, Assign, Output, Expr, Num, Field, Var, BinOp, UnaryOp, FuncCall,
+    Formula, Assign, Output, Expr, Num, Str, Field, Var, BinOp, UnaryOp, FuncCall,
 )
 from .lexer import (
     Lexer, Token, TT_NUM, TT_IDENT, TT_OP, TT_LPAREN, TT_RPAREN,
-    TT_SEMI, TT_COMMA, TT_COLON, TT_ASSIGN, TT_EOF, LexerError,
+    TT_SEMI, TT_COMMA, TT_COLON, TT_ASSIGN, TT_STR, TT_EOF, LexerError,
 )
 
 # 行情字段（大写）→ qlib $field
@@ -243,6 +243,10 @@ class Parser:
         if t.type == TT_NUM:
             self.advance()
             return Num(float(t.value))
+        if t.type == TT_STR:
+            # ★ 2026-10-09：字符串字面量（目前只有 BLOCKSETNUM/INSUM 会消费）
+            self.advance()
+            return Str(t.value)
         if t.type == TT_IDENT:
             self.advance()
             upper = t.value

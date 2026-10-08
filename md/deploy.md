@@ -149,6 +149,27 @@ python backend/tools/verify_materialized.py             # 核对覆盖率/同轴
 - 口径：`pre* = 源字段 / factor_last`（逐位；`factor_last` = `factor.day.bin` 末值，五字段共用 ⇒ 不会 `prehigh < prelow`）；
   `chip_*` 必须与 `$close` **同轴**（首值+长度一致，否则多股票一起加载会报 `identically-labeled`，见 change_log `[1.19.91]/[1.19.92]`）。
 
+### 物化字段：横向统计（`mkt_*` —— `BLOCKSETNUM` / `INSUM`）—— **每台机器必须各做一次**
+
+通达信那种"**横向**（跨股票）统计"（板块当日股数、板内某公式输出的横向聚合，例如 A 股"黄金坑纯度"）
+在 **qlib 侧无法现算**（qlib 表达式是**逐股**时间序列，看不见其它股票 ✗）⇒ 只能先物化成本项目自造的
+**市场级字段**（同一交易日全市场同值）：`features/{code}/mkt_*.day.bin`。
+
+```bash
+python backend/tools/materialize_market.py                # 自动扫描公式库里的 BLOCKSETNUM/INSUM 用法
+python backend/tools/materialize_market.py --overwrite     # ★ 改了被调公式 / 板块口径之后必跑
+python backend/tools/materialize_market.py --dry-run       # 只列出"会物化什么"
+```
+
+- 被调公式（如 `IS_GOLD_PIT`）必须是**已保存的公式**（`INSUM` 按**输出名**引用它）⇒ 改了那个公式后必须重跑 ✓；
+- 口径：板块成分按**当日真实成分**（`instruments/*.txt` 自带起止日 ⇒ 无未来函数 ✓）；
+  `全部A股` = 全部在市 A 股（含 ST、含停牌、不含退市），`沪深A股` = 同上但剔除北交所；
+  停牌股**算在分母里**、其指标值当日按 **0** 计（与通达信"成分股数"口径一致 ✓）；
+- 缺了同样**不报错、静默全 NaN** ✗ ⇒ 用 `/api/version` 的 **`market_meta.ok`** 判断
+  （`false` = 没物化或口径过期 ⇒ 立刻重跑 ✓）；
+- 默认窗口 `2010-01-01 ~ 数据末日`（`--start/--end` 可改）：`BARSCOUNT()` 会从**窗口起点**开始计数，
+  对"上市满 N 天"这类判据无影响 ✓（老股票早已超过 N 天）。
+
 > ★★ **v1.20.45 起：怎么判断"这台机器的 `chip_*` 要不要重物化"**（同事 `git pull` 后**先做这件** ✗）：
 > 1. `curl http://127.0.0.1:8001/api/version` ⇒ 看 **`chip_meta.ok`** ✓
 >    （`false` ⇒ 本机 bin 是**别的口径**物化的、或**压根没物化** ✗ ⇒ 立刻重物化 ✓）；

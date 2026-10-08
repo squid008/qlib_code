@@ -70,6 +70,25 @@ def create_app() -> FastAPI:
     except Exception as _e:                                # noqa: BLE001
         logger.warning("[chip-meta] check failed: %r", _e)
 
+    # ★ 2026-10-09：同样检查「横向统计字段（`mkt_*`，BLOCKSETNUM/INSUM）物化口径戳」✓
+    #   为什么：横向统计是**物化**出来的（qlib 侧无法现算）⇒ 用的公式/板块口径变了就必须重物化 ✗，
+    #   而"拿旧口径的 bin"同样是**静默偏差** ✗（数值看着合理，只是少算了 / 口径旧了 ✗）。
+    #   ⇒ 状态挂 `/api/version`（中文提示走 JSON，理由同上：Windows 下日志流是 GBK ✗）。
+    market_meta: dict = {}
+    try:
+        from .factors.market_stat import market_meta_state
+        market_meta = market_meta_state()
+        _st = str(market_meta.get("state", "?"))
+        _msg = "[market-meta] state=%s semantics=%s" % (_st, market_meta.get("expected", "?"))
+        if market_meta.get("ok"):
+            logger.info(_msg)
+        else:
+            logger.warning("%s -- MATERIALIZE REQUIRED: run"
+                           " `python backend/tools/materialize_market.py --overwrite`"
+                           " (see GET /api/version -> market_meta.message)", _msg)
+    except Exception as _e:                                # noqa: BLE001
+        logger.warning("[market-meta] check failed: %r", _e)
+
     # 路由
     app.include_router(backtest.router)
     app.include_router(data.router)
@@ -93,7 +112,7 @@ def create_app() -> FastAPI:
         ⇒ 必须跑 `python backend/tools/materialize_chip.py 400 --overwrite` ✓，
         再 `python backend/tools/verify_materialized.py` 核对 ✓。
         """
-        return {"version": __version__, "chip_meta": chip_meta}
+        return {"version": __version__, "chip_meta": chip_meta, "market_meta": market_meta}
 
     # 参数校验错误：返回友好信息，不暴露堆栈
     @app.exception_handler(RequestValidationError)
