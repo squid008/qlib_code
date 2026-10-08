@@ -614,5 +614,16 @@
     "updated_at": "2026-10-09 01:50:10",
     "author": "u-8bcb1f27",
     "author_user": "Administrator"
+  },
+  {
+    "id": "24be667ba74e",
+    "name": "深跌90",
+    "text": "n=90;\n条件:=CLOSE <= MA(CLOSE, N);\n原始值:=COUNT(条件,20)/20;\n深跌90:IF(n<3,原始值,MA((C-LLV(C,N))/(HHV(C,N)-LLV(C,N)),20));",
+    "expression": "Mean(Div(Sub($close,Min($close,90)),Sub(Max($close,90),Min($close,90))),20)",
+    "codegen": "1.20.58",
+    "created_at": "2026-10-09 01:59:07",
+    "updated_at": "2026-10-09 01:59:07",
+    "author": "u-8bcb1f27",
+    "author_user": "Administrator"
   }
 ]
