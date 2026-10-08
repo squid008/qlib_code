@@ -9,8 +9,11 @@
     `workdir/custom_formulas.json` 从 git 移除后，`sync_now` 里那条
     `git add --force -- <老文件> <公式目录>` 因**路径不存在**而 `fatal`（exit 128）
     并**中止整条 add** ⇒ 什么都没 stage ⇒ **公式再也不会被自动提交/推送** ✗（静默不同步 ✗✗）。
-    现在改为**只 stage 存在的目标、且逐个 add** ✓（并在 `.gitignore` 里修好被 `workdir/`
-    盖掉的 `!formulas/*.json` 例外 ✓）。
+    现在改为**只 stage 存在的目标** ✓（并在 `.gitignore` 里修好被 `workdir/` 盖掉的 `!formulas/*.json`
+    例外 ✓）。⚠ 2026-10-09 追加：当时还顺手写成了"**逐个 add**"✗ ⇒ 在"两个目标都存在"的环境
+    （本仓库老单文件仍被 git 跟踪 ⇒ **CI 干净检出里两个都在** ✓）会变成 **2 次 add** ✗
+    ⇒ `tests/test_formula_git_sync.py` 的三条断言在 **CI 上红** ✗ ⇒ 已改回
+    **一条 add 带全部"存在"路径** ✓（真正根因由 `os.path.exists` 过滤解决 ✓）。
 
 设计取舍（重要 ✓）：
 · **挂载点**：`services/custom_formulas._save()` 末尾 ✓ —— 新建/更新/删除/陈旧重编**全部**经过它 ✓
@@ -157,11 +160,21 @@ def sync_now(reason: str = "") -> "tuple[bool, str]":
         staged = [rel for rel in _TARGETS if os.path.exists(os.path.join(_REPO_ROOT, rel))]
         if not staged:
             return True, "公式库路径都不存在，跳过"
-        for rel in staged:
-            add = _run(["add", "--force", "--", rel])
-            if add.returncode != 0:
-                return False, "git add %s 失败: %s" % (
-                    rel, (add.stderr or add.stdout).strip()[:200] or "未知")
+        # ★★ 2026-10-09：**一条 add 带全部"存在"路径** ✓（回到 v1.20.63 的写法 ✓，而不是逐个 add ✗）
+        #   为什么改回来（CI 红根因 ✓）：v1.20.69 的"逐个 add"本意是**定位失败项** ✓，但它把
+        #   "两个目标都存在"的环境变成 **2 次 add** ✗ —— 而本仓库里老单文件
+        #   `workdir/custom_formulas.json` **仍是被 git 跟踪的** ⇒ **CI 的干净检出里两个目标都在** ✗
+        #   ⇒ `tests/test_formula_git_sync.py` 的三条断言（期望 `["add","diff"]` 这种**一次 add**）
+        #     在 CI 上必然红 ✗（2026-10-09 实测：本地 4 个失败里的 3 条 + CI 全红就是这个 ✓）。
+        #   ⚠⚠ 关键是 v1.20.69 的**真正根因**（把**不存在**的路径塞进 add ⇒
+        #     `fatal: pathspec 'A' did not match any files` **中止整条 add** ⇒ 公式库再也不被提交 ✗）
+        #     已经由上面那句 `os.path.exists` 过滤**彻底解决** ✓ ⇒ 一条 add 完全安全 ✓✓
+        #     （所有传进去的路径都已确认存在 ✓）。不要再改回逐个 add ✗：
+        #     要么同步改测试、要么就会在"两个目标都在"的机器/CI 上红 ✓。
+        add = _run(["add", "--force", "--", *staged])
+        if add.returncode != 0:
+            return False, "git add %s 失败: %s" % (
+                "、".join(staged), (add.stderr or add.stdout).strip()[:200] or "未知")
 
         # 无差异 ⇒ 直接结束 ✓（避免每次启动/自动重编都造空提交 ✗）
         if _run(["diff", "--cached", "--quiet", "--", *staged]).returncode == 0:
