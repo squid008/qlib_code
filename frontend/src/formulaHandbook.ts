@@ -33,6 +33,10 @@ const RAW_HANDBOOK: HandbookEntry[] = [
   { name: 'COST', abbr: '成本分位价', kind: 'func', desc: '成本分布：求"多少比例的筹码成本低于该价"。\n用法:\n COST(q)\n q 为百分数、必须是常量且在 (0,100) 之间，如 COST(95)。\n例:\n COST(95) > CLOSE   95% 的筹码成本都低于现价（上方套牢盘少）\n注意:q 目前只物化了 5 / 30 / 75 / 95 四档，其它分位会报"字段不存在"。' },
   { name: 'WINNER', abbr: '获利盘比例', kind: 'func', desc: '获利盘比例：价格 P 下方的持仓占比(0~100)。\n用法:\n WINNER(P)\n P 只能是 C / H / L（现价/最高价/最低价），如 WINNER(C)。\n例:\n WINNER(C) > 80   八成以上筹码处于获利状态\n注意:与 COST(q) 互为反向（COST 由分位求价格、WINNER 由价格求分位）；两者都由"换手率衰减"的筹码分布算出。' },
 
+  // ---------------- 基本面指标（FINANCE，米筐 pit 财报物化字段；2026-10-09 加） ----------------
+  // q 的顺序与 backend/tools/dump_finance.py 的 FIN_FIELDS **逐项一致**（顺序错位=取错指标，有测试守着）
+  { name: 'FINANCE', abbr: '基本面指标', kind: 'func', desc: '基本面指标的历史序列（来自米筐财报，按公告日对齐，无未来函数）。\n用法:\n FINANCE(q)\n q 为指标编号（常量整数）：\n 1 = 市盈率TTM(倍)\n 2 = 市净率(倍)\n 3 = 营业收入增长率(%)\n 4 = 净利润增长率(%)\n 5 = 销售毛利率(%)\n 6 = 净资产收益率ROE(%)\n 7 = 总资产收益率ROA(%)\n 8 = 每股收益-基本(元)\n 9 = 营业利润增长率(%)\n例:\n PE:=FINANCE(1); 低估:PE>0 AND PE<20;\n LOWPB:FINANCE(2)<1;\n 高成长:FINANCE(3)>30 AND FINANCE(4)>30;\n口径:\n · 3~9 为报告期口径(累计值)，日频序列只在公告日跳变（公告日前向填充）；\n · 1/2 为日频，用当日总市值÷最新已披露的归母净利润TTM / 归母净资产；\n · 一律取"公告日<=当日"的最新一期：财报被追溯调整时，调整后的数字也只在调整公告日之后才生效。\n注意:\n · 数据截至最近一次物化（见 formulas 同一 data 目录下 features/_finance_meta.json 的 written_at）。\n · 金融股无毛利，FINANCE(5) 为 NaN；净资产为负时 FINANCE(2) 为 NaN；亏损股 FINANCE(1) 为负值。\n · q 需为常量（参数/中间变量写成常数也可以，如 N:=2; FINANCE(N)）；不能用随行变化的表达式。' },
+
   // ---------------- 常用算术/统计函数 ----------------
   { name: 'MA', abbr: '简单移动平均', kind: 'func', desc: '简单移动平均。\n用法:\n MA(X,N)\n 返回 X 在 N 周期的简单平均\n 窗口不足按已有数据算(min_periods=1)。\n例:\n MA(CLOSE,5)' },
   { name: 'EMA', abbr: '指数移动平均', kind: 'func', desc: '指数移动平均（pandas ewm adjust=True 口径）。\n用法:\n EMA(X,N)\n N=4 即 span=4 归一化指数加权。\n注意:序列开头与通达信递归式有初值差；需要通达信递归口径可直接写 EMA_TDX(X,N)。' },

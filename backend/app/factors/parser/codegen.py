@@ -154,6 +154,31 @@ L2_VOL_DIR_FIELDS = [
     ["$mf_vol_s_b", "$mf_vol_s_s"],
 ]
 
+# ---- 基本面 FINANCE(q)：益盟盘口那几个基本面指标的历史序列 ----
+# 数据由 tools/dump_finance.py 从**米筐 pit 财报表 + 总市值**物化成字段 bin（`{qlib_dir}/features/{code}/fin_*.day.bin`）
+# ⇒ FINANCE(q) 只是"字段选择器"（同 COST(q) 的做法 ✓），不要在算子层现算：
+#   · 财报是**低频事件**（每股每季一条）但有 5000+ 只 ⇒ 逐股现算要反复读盘 ✗；
+#   · 物化时已按**公告日**对齐（info_date ≤ 当日 ⇒ 无未来函数 ✓），算子在运行期无法更准 ✓。
+# ⚠ 本表顺序 = FINANCE(q) 的 q（1..9），必须与 tools/dump_finance.py 的 `FIN_FIELDS` **逐项一致** ✗
+#   （顺序错位 = 静默取错指标 ✗）⇒ 由 `tests/test_finance_func.py` 直接读那个脚本比对 ✓。
+FINANCE_FIELDS = [
+    ("fin_pe_ttm", "市盈率TTM"),
+    ("fin_pb", "市净率"),
+    ("fin_rev_yoy", "营业收入增长率"),
+    ("fin_np_yoy", "净利润增长率"),
+    ("fin_gross_margin", "销售毛利率"),
+    ("fin_roe", "净资产收益率ROE"),
+    ("fin_roa", "总资产收益率ROA"),
+    ("fin_eps", "每股收益(基本)"),
+    ("fin_op_yoy", "营业利润增长率"),
+]
+
+
+def finance_help() -> str:
+    """FINANCE(q) 的编号说明（错误提示/测试共用一份文案，避免两处漂移）。"""
+    return "\n".join("  %d = %s" % (i + 1, d) for i, (_f, d) in enumerate(FINANCE_FIELDS))
+
+
 # ---- 二元运算 → qlib 表达式 ----
 BINOP_MAP = {
     "ADD": "Add", "SUB": "Sub", "MUL": "Mul", "DIV": "Div",
@@ -636,6 +661,22 @@ class CodeGen:
                 raise CodeGenError("WINNER(P)：目前只支持 P = C/H/L（现价/最高价/最低价）；"
                                    "其它价（开盘价、均价等）暂不支持")
             return "$chip_win_%s" % nm
+        # 基本面（2026-10-09）：FINANCE(q) → 派生字段 `$fin_*`（物化 bin，见上方 FINANCE_FIELDS）
+        if name == "FINANCE":
+            if len(e.args) != 1:
+                raise CodeGenError(
+                    "FINANCE 需要 1 个参数：FINANCE(q)，q 为指标编号（常量整数）：\n" + finance_help())
+            q = _const_fold(e.args[0], allow_div=True)
+            if q is None or not float(q).is_integer():
+                raise CodeGenError(
+                    "FINANCE(q) 的 q 必须是**常量整数**（不能是行情字段/变量）：\n" + finance_help()
+                    + "\n  例：`PE:=FINANCE(1); 因子:PE<20;`")
+            q = int(q)
+            if not (1 <= q <= len(FINANCE_FIELDS)):
+                raise CodeGenError(
+                    "FINANCE(q) 的 q 需在 1~%d 之间，当前为 %d：\n%s"
+                    % (len(FINANCE_FIELDS), q, finance_help()))
+            return "$" + FINANCE_FIELDS[q - 1][0]
         # 直接映射
         if name in FUNC_QLIB:
             q = _ema_op_name() if name == "EMA" else FUNC_QLIB[name]

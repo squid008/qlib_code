@@ -23,6 +23,9 @@ BUILTIN_FUNCS = {
     "CROSS", "IF", "IFS", "RANGE", "LONGCROSS",
     # 筹码分布（v1.19.83）：通达信/益盟的 WINNER(P)/COST(q)，由面板级派生字段承载
     "COST", "WINNER",
+    # 基本面（2026-10-09）：益盟盘口那 9 个基本面指标，FINANCE(q) 取第 q 个的历史序列
+    # （字段 bin 由 tools/dump_finance.py 从米筐 pit 财报表 + 总市值生成，见该脚本顶部口径表）
+    "FINANCE",
     "DELTA", "MEAN", "MED",
     "ABS", "SQRT", "LOG", "LN", "EXP", "POW", "POWER", "MAX", "MIN", "MOD",
     "CEILING", "FLOOR",
