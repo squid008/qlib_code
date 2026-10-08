@@ -3,6 +3,26 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.80] - 2026-10-09
+
+### Fixed（CI 红：公式库自动同步"逐个 add"在干净检出里变成 2 次 add ⇒ 三条守卫断言失败）
+
+- **现象**：用户报「CI 红了」。查 `gh run list`：v1.20.78 / v1.20.79 两次推送都是 failure
+  （而 v1.20.77 是 success ✗ 说明是**中间那批提交**引入的）。
+- **根因**（`--log-failed` 一眼看到 `['add','add','diff'] == ['add','diff']`）：
+  `services/formula_git_sync.sync_now` 在 v1.20.69 改成"**逐个 add 存在的目标**"（本意 = 方便定位
+  是哪条路径失败 ✓），而**本仓库里老单文件 `backend/workdir/custom_formulas.json` 仍是被 git 跟踪的**
+  ⇒ **CI 的干净检出里两个目标都存在**（老单文件 + `formulas/` 目录）⇒ 每个目标一次 add = **2 次 add** ✗
+  ⇒ `tests/test_formula_git_sync.py` 三条断言（均期望"**一次** add"）在 CI 上必然失败 ✗
+  —— ⚠ 而开发机因老文件"存在与否"不同**本地全绿**，所以这个回归**只会在 CI 暴露** ✓。
+- **修复**：改回**一条 add 带全部"存在"的路径** ✓。v1.20.69 要解决的**真正根因**
+  （把**不存在**的路径塞进 add ⇒ `fatal: pathspec ... did not match any files` **中止整条 add** ✗）
+  已由上一步的 `os.path.exists` 过滤彻底解决 ⇒ 一条 add 完全安全 ✓（传进去的路径都确认存在 ✓）；
+  失败信息改为列出全部尝试路径（不再逐条 add 也能定位 ✓）。
+- **验证**：本地 `test_formula_git_sync.py` 16 项全过 ✓、全量 pytest **634 passed / 1 failed**
+  （唯一失败是 `datareq` 标记的筹码体检，CI 本就不跑 ✓）、ruff ✓；
+  推送后 CI **success（1m43s）** ✓。
+
 ## [1.20.79] - 2026-10-09
 
 ### Added（`FINANCE_TDX(q)`：**通达信源**的基本面序列——与 `FINANCE(q)` 同编号、可交叉校验 ✓ 用户 2026-10-09）

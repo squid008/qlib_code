@@ -68,8 +68,11 @@ def _log(msg: str) -> None:
 
 # d:\quant\qlib_code（本文件在 backend/app/services/ 下 ⇒ 上溯三级 ✓）
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-# 老的单文件：v1.20.66 起**已停止 git 跟踪**、新环境里**大概率不存在** ⇒ 只在存在时才 stage ✓
-# （⚠ 它的"存在与否"曾让整条 add 失败 ⇒ 见 `sync_now` 里 v1.20.69 的逐个 add 修复 ✓）
+# 老的单文件：**只在它存在时才 stage** ✓（新装的机器上大概率不存在 ✓）。
+# ⚠⚠ 2026-10-09 复核实测（`git ls-files backend/workdir`）：**它在本仓库里仍是被跟踪的** ✗ ——
+#   这里原先写着"v1.20.66 起已停止 git 跟踪"，是**过时结论** ✗（就是它让 CI 的干净检出里
+#   **两个目标都存在** ⇒ "逐个 add"变成两次 add ⇒ 三条守卫断言在 CI 红 ✗，
+#   详见 `sync_now` 里 2026-10-09 的注释与 md/开发记录.md §4 ✓）。
 _REL_PATH = os.path.join("backend", "workdir", "custom_formulas.json")
 # ★ v1.20.65 按人分文件 → ★ v1.20.69 起按**装机**分文件（`<install_id>.json` ✓，
 #   与用户名无关 ⇒ 两台机器永不共用文件 ⇒ git 层面只新增/改自己的文件 ⇒ 永不冲突 ✓✓）
