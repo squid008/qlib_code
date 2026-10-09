@@ -656,11 +656,11 @@
   {
     "id": "15e46752a2ae",
     "name": "黄金坑启动",
-    "text": "{ ===== 黄金坑启动（推荐版：三信号至少 2 个）2026-10-09 ===== }\n参数 N=60;\n\n基本面:=FINANCE(1)>0 AND FINANCE(2)>0 AND FINANCE(3)>0 AND FINANCE(4)>0\n        AND FINANCE(5)>0 AND FINANCE(6)>0 AND FINANCE(7)>0 AND FINANCE(8)>0;\n放量上涨:=V>=REF(V,1)*1.9 AND C>REF(C,1);\n站上60线:=C>ma(c,60);\n\n{ 之前 N 天：每个信号\"出现过\"记 1 分，要求 ≥2 分（想要全出现就改成 >=3） }\n坑分:=REF(COUNT(IS_GOLD_PIT,N),1)>=15;\n潜龙分:=REF(COUNT(资金潜龙,N),1)>=15;\n冰焰分:=REF(COUNT(冰谷火焰,N),1)>=1;\n信号分:=坑分 and 潜龙分 and 冰焰分;\n\n黄金坑启动:基本面 AND 放量上涨 AND 站上60线 AND 信号分>=1;",
-    "expression": "And(And(And(And(And(And(And(And(And(And(Gt($fin_pe_ttm,0),Gt($fin_pb,0)),Gt($fin_rev_yoy,0)),Gt($fin_np_yoy,0)),Gt($fin_gross_margin,0)),Gt($fin_roe,0)),Gt($fin_roa,0)),Gt($fin_eps,0)),And(Ge($volume,Mul(Ref($volume,1),1.9)),Gt($close,Ref($close,1)))),Gt($close,Mean($close,60))),Ge(And(And(Ge(Ref(Sum(Gt(Abs(Lt(Less(40,Mul(Sub(Div(EMA($low,3),Mul(EMA($low,30),0.849)),1),100)),0)),0),60),1),15),Ge(Ref(Sum(Gt(Abs(And(Gt(Mul(EMA(Div($mf_amount_xl,$market_cap),60),60),EMA(Mul(EMA(Div($mf_amount_xl,$market_cap),60),60),10)),Lt($close,Mul(0.8,Ref($close,60))))),0),60),1),15)),Ge(Ref(Sum(Gt(Abs(And(And(Gt(Mul(Sub(1,Div($close,Ref($close,55))),100),27),Eq($low,Min($low,34))),Ge(Mul(Sub(Div($close,$low),1),100),1))),0),60),1),1)),1))",
+    "text": "{ ===== 黄金坑启动（推荐版：三信号至少 2 个）2026-10-09 ===== }\n参数 N=120;\n\n基本面:=FINANCE(1)>0 AND FINANCE(2)>0 AND FINANCE(3)>0 AND FINANCE(4)>0\n        AND FINANCE(5)>0 AND FINANCE(6)>0 AND FINANCE(7)>0 AND FINANCE(8)>0;\n放量上涨:=V>=REF(V,1)*1.9 AND C>REF(C,1);\n站上60线:=C>ma(c,60);\n\n{ 之前 N 天：每个信号\"出现过\"记 1 分，要求 ≥2 分（想要全出现就改成 >=3） }\n坑分:=REF(COUNT(IS_GOLD_PIT,N),1)>=15;\n潜龙分:=REF(COUNT(资金潜龙,N),1)>=15;\n冰焰分:=REF(COUNT(冰谷火焰,N),1)>=1;\n信号分:=坑分 and 潜龙分 and 冰焰分;\n\n黄金坑启动:基本面 AND 放量上涨 AND 站上60线 AND 信号分>=1;",
+    "expression": "And(And(And(And(And(And(And(And(And(And(Gt($fin_pe_ttm,0),Gt($fin_pb,0)),Gt($fin_rev_yoy,0)),Gt($fin_np_yoy,0)),Gt($fin_gross_margin,0)),Gt($fin_roe,0)),Gt($fin_roa,0)),Gt($fin_eps,0)),And(Ge($volume,Mul(Ref($volume,1),1.9)),Gt($close,Ref($close,1)))),Gt($close,Mean($close,60))),Ge(And(And(Ge(Ref(Sum(Gt(Abs(Lt(Less(40,Mul(Sub(Div(EMA($low,3),Mul(EMA($low,30),0.849)),1),100)),0)),0),120),1),15),Ge(Ref(Sum(Gt(Abs(And(Gt(Mul(EMA(Div($mf_amount_xl,$market_cap),60),60),EMA(Mul(EMA(Div($mf_amount_xl,$market_cap),60),60),10)),Lt($close,Mul(0.8,Ref($close,60))))),0),120),1),15)),Ge(Ref(Sum(Gt(Abs(And(And(Gt(Mul(Sub(1,Div($close,Ref($close,55))),100),27),Eq($low,Min($low,34))),Ge(Mul(Sub(Div($close,$low),1),100),1))),0),120),1),1)),1))",
     "codegen": "1.20.83",
     "created_at": "2026-10-09 11:16:31",
-    "updated_at": "2026-10-09 18:52:50",
+    "updated_at": "2026-10-09 18:54:09",
     "author": "u-8bcb1f27",
     "author_user": "Administrator",
     "author_modified_by": "u-8bcb1f27"
