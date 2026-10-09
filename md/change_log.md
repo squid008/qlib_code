@@ -3,6 +3,32 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.83] - 2026-10-09
+
+### Fixed（★ `COUNT(X,N)` 是**静默错**：数的是"非 NaN 个数"✗ 而不是"条件成立天数"）
+
+- **怎么发现的**（用户 2026-10-09 让写一条"黄金坑后放量启动"选股公式 ✓，
+  我在交付前做**真实数据体检** ✓）：公式能编译 ✓，但面板链一跑就报
+  `ValueError: panel_expr 不支持算子 Count` ✗；顺手去查 qlib 的 `Count` 定义 ⇒
+  `qlib/data/ops.py: class Count(Rolling)` → `Rolling(feature, N, "count")` =
+  "rolling count of **number of non-NaN elements**" ✗✗。
+- **后果（这才是要命的）**：条件序列几乎全是 0/1、极少 NaN ⇒ `Count(cond, 30)` **恒等于 30** ✗
+  ⇒ `COUNT(IS_GOLD_PIT,30)>=15` **恒真** ✗ ⇒ **回测链把选股条件当空气** ✓；
+  而**单因子测试**链直接抛错 ✗ ⇒ 同一个公式"一条链静默失效、另一条链报错" ✓，
+  且错误信息完全不指向 COUNT ✗。
+- **修法**（单一口径源头 = 编译产物 ✓）：
+  · 常量窗口 `COUNT(X,N)` 由 codegen 展开为 **`Sum(Gt(Abs(X),0),N)`** ✓
+    = 通达信口径（窗口内**非 0 且非 NaN** 的天数 ✓），与**变量窗口**走的 `DYN_COUNT`
+    （`ops_ext.dyn_window_count_vec`：窗口内非 0 且非 NaN 计数 ✓）**完全一致** ✓；
+  · 只用 `Sum/Abs/Gt` 三个**两条链都已实现**的算子 ✓（不引入新算子 ⇒ 零"单因子测试 vs 回测发散"风险 ✓）；
+  · `panel_expr._ROLL_FUNC` 补 `Count` 仅作**兼容**（旧缓存 expression 不再报"不支持算子"✗，
+    语义对齐 qlib ✓ —— 但谁都不该再用它算"成立天数"✗，代码里已写明 ✓）。
+- **存量影响**：`CODEGEN_SEMANTICS` 推进到 `1.20.83` ⇒ 已保存公式**自动重编** ✓；
+  受影响如 `深跌2/深跌3`（`原始值:=COUNT(条件,20)/20` ✓ —— 旧口径恒为 1 ✗，现在才是真比例 ✓）。
+- 测试：新增 `backend/tests/test_count_semantics.py`（10 项：展开式断言 ✓、**生成结果里绝不出现 `Count(`** ✓、
+  `参数 N=` 常量折叠 ✓、变量窗口仍走 `DYN_COUNT` ✓、**"必须给出真成立天数、不是窗口长度"** ✓、
+  `COUNT(...)>=15` 可以/不可以为假 ✓、NaN 日不计 ✓、**panel 与 qlib 真算子逐位对拍** ✓）。
+
 ## [1.20.82] - 2026-10-09
 
 ### Added（保存公式**按输出名查重**：撞名弹「覆盖它 / 仍新建一条 / 取消」✓ 用户 2026-10-09）

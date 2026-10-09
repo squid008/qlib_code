@@ -857,7 +857,14 @@ def reconstruct(node: Node) -> str:
 # ===========================================================================
 
 _ROLL_FUNC = {"Mean": "mean", "Max": "max", "Min": "min", "Sum": "sum", "Std": "std",
-              "Var": "var"}
+              "Var": "var",
+              # ★ v1.20.83：`Count` 只作**兼容**用 —— codegen 早已不再为 `COUNT(X,N)` 生成它
+              #   （改用 `Sum(Gt(Abs(X),0),N)` ✓，见 codegen 里 CONST 分支的长注释 ✓）；
+              #   这里补上只为两件事：① 库里**旧缓存**的 expression 不再报
+              #   `panel_expr 不支持算子 Count` ✗（2026-10-09 实测：用户选股公式直接卡在这句 ✓）；
+              #   ② 语义**对齐 qlib** ✓（qlib `Count` = 窗口内非 NaN 个数 ✗）。
+              #   ⚠ 它的口径**不是**通达信 COUNT ✗ ⇒ 谁都不该用它算"条件成立天数" ✓。
+              "Count": "count"}
 # qlib 的 Max/Min 是滚动窗口极值；通达信 MAX(A,B)/MIN(A,B) 元素取大/小 → Greater/Less
 _BIN_ELEM = {
     "Add": "add", "Sub": "sub", "Mul": "mul", "Div": "div",

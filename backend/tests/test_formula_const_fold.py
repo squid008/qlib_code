@@ -93,7 +93,11 @@ def test_user_case_shen_die():
     t10 = translate_formula("n=10;\n" + body)
     assert t10.expression.startswith("Mean(Div(Sub($close,Min($close,10))")
     t2 = translate_formula("n=2;\n" + body)
-    assert t2.expression.startswith("Div(Count(Le($close,Mean($close,2)),20),20)")
+    # ⚠ v1.20.83：`原始值` 里的 `COUNT(条件,20)` 曾生成 qlib `Count`（= 非 NaN 计数 ✗，
+    #   对 0/1 条件**恒等于 20** ⇒ `原始值` 恒为 1 ✗）。现展开为通达信口径
+    #   `Sum(Gt(Abs(…),0),20)` = 真成立的天数 ✓（详见 tests/test_count_semantics.py ✓）。
+    assert t2.expression.startswith(
+        "Div(Sum(Gt(Abs(Le($close,Mean($close,2))),0),20),20)")
 
 
 def test_nonconst_if_is_preserved():

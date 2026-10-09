@@ -69,7 +69,10 @@ class CodeGenError(Exception):
 # ⚠ 值取「**生成结果最后变化的版本**」✓（不是发版号 ✗）—— 单纯加注释/日志/性能重构**不要**动它 ✓，
 #   否则 60+ 条公式会白重编一次 ✓（无害但没必要 ✓）。
 # 历史：`1.20.58` = 纯常量**比较 / 逻辑**折叠 + `IF(恒定条件,…)` 整棵选支 ✓（会改变生成结果 ✓）。
-CODEGEN_SEMANTICS = "1.20.58"
+#       `1.20.83` = 常量窗口 `COUNT(X,N)` 由 qlib `Count`（非 NaN 计数 ✗）改为
+#                   `Sum(Gt(Abs(X),0),N)`（通达信口径：非 0 且非 NaN 的天数 ✓）——
+#                   **会改变生成结果** ✓ ⇒ 存量公式（如 `深跌2/3` 用到 COUNT ✓）会被自动重编 ✓。
+CODEGEN_SEMANTICS = "1.20.83"
 
 
 # ---- 行情字段映射（大写 → qlib $field）----
@@ -428,7 +431,12 @@ def _ema_op_name() -> str:
 FUNC_QLIB = {
     "MA": "Mean", "EMA": "EMA", "WMA": "WMA",
     "HHV": "Max", "LLV": "Min",
-    "SUM": "Sum", "COUNT": "Count",
+    "SUM": "Sum",
+    # ⚠ `COUNT` 在此表里只是**占位**（保持"函数名→算子名"表完整 ✓）——常量窗口的 COUNT
+    #   在下面 `_DYN_WINDOW_OPS` 分支里被**抢先**展开成 `Sum(Gt(Abs(X),0),N)` ✓，
+    #   绝不能再落到 qlib `Count` 上 ✗（它是"非 NaN 计数"，对 0/1 条件恒等于窗口长度 ✗✗，
+    #   详见该分支的注释 ✓）。
+    "COUNT": "Count",
     "ABS": "Abs", "SQRT": "Sqrt", "LOG": "Log", "LN": "Log",
     # v1.20.34：EXP(X)=e^X（研报公式常用：Alpha101/GTJA 系列里 EXP(POW(...)) 等组合很常见 ✓）
     #   ⚠ 之前**不支持** ⇒ 用户写 `EXP(...)` 直接 `CodeGenError: 不支持的函数：EXP` ✗
@@ -715,8 +723,27 @@ class CodeGen:
             # 常量窗口用标准 qlib 算子（性能好）；变量窗口逐位置计算
             # ⚠ v1.20.57：用 `_is_const_int_expr`（**常量折叠**后判断 ✓）而不是 `isinstance(Num)` ✗
             #   —— 参数代入后的常量表达式（`参数 N=2*3;` ⇒ AST 是 BinOp ✓）也能走内建快路径 ✓。
-            q = (_DYN_WINDOW_OPS[name] if not _is_const_int_expr(e.args[1])
-                 else FUNC_QLIB[name])
+            const_n = _is_const_int_expr(e.args[1])
+            if name == "COUNT" and const_n:
+                # ★ v1.20.83：常量窗口的 COUNT **必须自己展开**，绝不能用 qlib 的 `Count` ✗✗
+                #   qlib `Count` = `Rolling(..., "count")` = 窗口内**非 NaN 个数** ✗
+                #   （`qlib/data/ops.py` 的 class Count 文档原话 ✓）。而条件序列几乎全是
+                #   0/1、极少 NaN ⇒ 它**恒等于窗口长度**（min(已上市天数, N)）✗✗
+                #   ⇒ `COUNT(IS_GOLD_PIT,30)>=15` 会**恒真**、选股条件静默失效 ✗
+                #   （2026-10-09 实测：面板链直接报"不支持算子 Count"✗，回测链则悄悄算成 30 ✗）。
+                #   通达信口径 = 窗口内**非 0 且非 NaN** 的天数 ✓ —— 必须与**变量窗口**那条
+                #   （DYN_COUNT，见 `ops_ext.dyn_window_count_vec`："窗口内非 0 且非 NaN 计数" ✓）
+                #   完全一致 ✓，否则同一公式换个 N 写法就换口径 ✗。
+                #   展开式：`Sum(Gt(Abs(X),0),N)` ✓
+                #     · X≠0 ⇒ |X|>0 ⇒ 记 1 ✓（负数、或 `IF(B点,2,0)` 这类"信号值"同样算成立 ✓ 同 TDX ✓）；
+                #     · X=NaN（停牌/无数据）⇒ `Abs` → NaN ⇒ `Gt(NaN,0)` = 假 ⇒ 记 0 ✓（该日不计入 ✓）；
+                #     · 只用 Sum/Abs/Gt 三个**两条链都已实现**的算子 ✓（面板 `_apply` 与 qlib 同源），
+                #       不引入新算子 ⇒ 零"单因子测试 vs 回测"发散风险 ✓。
+                #   ⚠ 不要写成 `Sum(X,N)` ✗：X 可能是非 0/1 的信号值（如 `量王` 的 2/-1 ✓），
+                #     直接求和会把"2"当成两个成立日 ✗。
+                inner = self._g(e.args[0])
+                return f"Sum(Gt(Abs({inner}),0),{self._g(e.args[1])})"
+            q = (_DYN_WINDOW_OPS[name] if not const_n else FUNC_QLIB[name])
             inner = ",".join(self._g(a) for a in e.args)
             return f"{q}({inner})"
         # ★ v1.20.55：**只能是常量窗口**的滚动算子 —— 变量窗口在这里就报清楚 ✗
