@@ -147,10 +147,7 @@ def _market_impact_warning(name: str) -> str:
         return ""
     if not fields:
         return ""
-    return ("⚠ 这条公式被横向统计物化引用：%s ⇒ 现有 `mkt_*` 值仍是**旧口径**"
-            "（文件名只哈希公式名 ⇒ 名字不变、值有数、不报错 ✗）。\n"
-            "· 只是临时试验 ⇒ 改回原样即可（指纹会自动重新吻合 ✓，**无需**重物化 ✓）\n"
-            "· 确认保留新口径 ⇒ 跑 `python backend/tools/materialize_market.py --overwrite` ✓"
+    return ("⚠ 这条公式被横向统计物化引用：%s ⇒ 现有文件是旧口径，需要重新物化。"
             % "、".join(fields))
 
 

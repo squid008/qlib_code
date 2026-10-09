@@ -401,8 +401,23 @@ def refresh_stale_expressions(items: List[dict]) -> bool:
                  % (it.get("name"), type(e).__name__, e))
             continue
         if t.expression != it.get("expression"):
-            _log("%s 的 expression 已按原文重编（codegen %s）"
-                 % (it.get("name"), CODEGEN_SEMANTICS))
+            # ★ v1.20.89：**同一进程只喊一次** ✓ —— 用户 2026-10-09 观察到日志里
+            #   `[formulas] 深跌2 的 expression 已按原文重编（codegen 1.20.83）` 反复出现 ✓。
+            #   根因**不是 bug** ✓：该条目属于**别的装机**的文件 ⇒ 按 v1.20.69 的刻意设计
+            #   **只返回、不落盘** ✓（自动回写会造出高时间戳副本、永久遮蔽对方后续更新 ✗✗）
+            #   ⇒ 本进程内存里重编了、但盘上还是旧串 ⇒ 下次 `list_custom_formulas()` 又重编一次 ✗
+            #   ⇒ 日志每次都喊 ✗。所以：重编照旧（语义必须一致 ✓），**只把日志压成一条** ✓，
+            #   并在文案里说清"想彻底消除该去那台机器重存 / 或在本机重存一份" ✓。
+            #   （用函数属性当"喊过了"的集合：免得为一行日志新增模块级状态 ✓）
+            _seen = getattr(refresh_stale_expressions, "_logged", None)
+            if _seen is None:
+                _seen = refresh_stale_expressions._logged = set()      # type: ignore[attr-defined]
+            if (it.get("name"), CODEGEN_SEMANTICS) not in _seen:
+                _seen.add((it.get("name"), CODEGEN_SEMANTICS))
+                _log("%s 的 expression 已按原文重编（codegen %s）——⚠ 该条目不在**本机文件**里 ⇒ "
+                     "只在本进程内存生效、**不落盘**（v1.20.69 的刻意设计：自动回写会造成"
+                     "高时间戳副本、永久遮蔽对方更新 ✗）⇒ 每次加载都会重编一次，日志只喊这一次 ✓。"
+                     % (it.get("name"), CODEGEN_SEMANTICS))
         it["expression"] = t.expression
         it["codegen"] = CODEGEN_SEMANTICS
         changed = True

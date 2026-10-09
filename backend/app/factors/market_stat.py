@@ -276,15 +276,13 @@ def stale_formula_names() -> List[str]:
 
 def stale_message(names: Sequence[str]) -> str:
     """过期提示的中文长文案（`/api/version` 与**保存时**共用 ✓，只此一份 ✓）。"""
-    return ("被横向统计物化引用的公式正文已改：%s ⇒ 现有 `mkt_*` bin 仍是**旧口径**"
-            "（文件名只哈希**公式名** ✗ ⇒ 文件名不变、值有数、不报错 ✗）。"
-            "处理：① 只是临时试验 ⇒ **改回原样**即可（指纹会自动重新吻合 ✓，无需重物化 ✓）；"
-            "② 确认保留新口径 ⇒ 重跑 `python backend/tools/materialize_market.py --overwrite` ✓"
-            % "、".join(names))
+    return ("被横向统计物化引用的公式已改：%s ⇒ 现有 `mkt_*` 文件是**旧口径**，需要重新物化："
+            "`python backend/tools/materialize_market.py --overwrite` ✓" % "、".join(names))
 
 
 def materialize_impact(name: str) -> List[str]:
-    """这次保存的公式**被哪些物化字段引用** ⇒ 返回那些 `mkt_*` 字段名（空 = 无影响 ✓）。
+    """★ v1.20.89：这条公式**被物化引用、且编译结果与物化时不一致** ⇒ 返回那些 `mkt_*` 字段
+    （空 = **无需提示** ✓ —— 包括"压根没被引用"与"改回原样、指纹已吻合"两种情形 ✓）。
 
     为什么要有它（用户 2026-10-09：「我把 `IS_GOLD_PIT:轨迹` 改成了 `<10`，物化会有影响吗？
     **我没有看到提示**」✓）：② 的检查原来只在**后端启动时**跑一次 ✗、而且前端**根本没读**
@@ -298,7 +296,40 @@ def materialize_impact(name: str) -> List[str]:
         specs = list(discover_specs())          # 扫公式库现推（meta 缺失也能答 ✓）
     except Exception:                            # noqa: BLE001
         return []
-    return sorted({sp.field for sp in specs if (sp.formula or "").strip().upper() == key})
+    # ★ v1.20.89：**必须做指纹比对**（用户 2026-10-09：「我改回原样就不要报这个提示了
+    #   （刚才我改 0 也提示了）」✓）—— 只判"被引用"是**误报** ✗：改回原样后正文与物化时
+    #   一致 ⇒ 文件其实是对的 ⇒ 不该打扰 ✓。只有"**跟物化时不一样**"才提示 ✓：
+    #   ① 正文真的改了（口径变了 ✓）② 库里 expression 被新版编译器重编过（如 codegen 1.20.83
+    #   的 COUNT 修正 ✓）—— 两种都该重物化 ✓。
+    #   ⚠ meta 里没有该公式的指纹（老物化 ✓）⇒ **不提示** ✗（无从判断 ⇒ 交给
+    #     `/api/version` 的口径戳兜底 ✓）。
+    # ⚠ 必须先按**公式名**筛出规格 ✗（否则会把 `mkt_num_all` 这种"成分股数"也算进影响面 ✗
+    #   —— 它 `formula=None`、跟任何公式都无关 ✓；2026-10-09 实测第一版就漏了这一步 ✗）
+    specs = [sp for sp in specs if (sp.formula or "").strip().upper() == key]
+    if not specs:
+        return []
+    stored = {str(k).strip().upper(): v for k, v in _stored_fingerprints().items()}
+    old = stored.get(key)
+    if not old:
+        return []
+    import hashlib                                   # noqa: PLC0415
+    try:
+        now = hashlib.md5(formula_expression(specs[0].formula).encode("utf-8")).hexdigest()[:12]
+    except Exception:                                # noqa: BLE001
+        return []
+    if now == old:                                   # ★ 改回原样 ⇒ 指纹吻合 ⇒ **不提示** ✓
+        return []
+    return sorted({sp.field for sp in specs})
+
+
+def _stored_fingerprints() -> Dict[str, str]:
+    """读 `_market_meta.json` 里存的被调公式指纹（读不到 ⇒ 空 dict ✓，调用方据此**不提示** ✓）。"""
+    import json                                      # noqa: PLC0415
+    try:
+        with open(market_meta_path(), "r", encoding="utf-8") as f:
+            return (json.load(f) or {}).get("formula_fingerprints") or {}
+    except Exception:                                # noqa: BLE001
+        return {}
 
 
 def market_meta_state_live() -> Dict:
