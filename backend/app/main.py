@@ -76,8 +76,23 @@ def create_app() -> FastAPI:
     #   ⇒ 状态挂 `/api/version`（中文提示走 JSON，理由同上：Windows 下日志流是 GBK ✗）。
     market_meta: dict = {}
     try:
-        from .factors.market_stat import market_meta_state
+        from .factors.market_stat import market_meta_state, stale_formula_names
         market_meta = market_meta_state()
+        # ★ v1.20.87：**"文件在、内容旧"**也要能提示（用户 2026-10-09 追问「我改了公式，
+        #   涉及的物化文件也要变，能不能提示呢」✓）—— 物化字段名只跟**公式名**有关 ✗
+        #   ⇒ 改了被调公式正文后文件名不变、值却是旧口径 ✗✗，而"整列全 NaN"那道防线看不见它 ✗。
+        #   物化时已把被调公式的**内容指纹**写进 meta ✓ ⇒ 这里比对 ✓。
+        _stale = stale_formula_names()
+        if _stale:
+            market_meta.update({
+                "ok": False,
+                "state": "stale_formula",
+                "stale_formulas": _stale,
+                "message": ("被横向统计物化引用的公式正文已改：%s ⇒ 现有 `mkt_*` bin 仍是**旧口径**"
+                            "（文件名不变、值有数 ⇒ 不报错 ✗）。请重跑 "
+                            "`python backend/tools/materialize_market.py --overwrite` ✓"
+                            % "、".join(_stale)),
+            })
         _st = str(market_meta.get("state", "?"))
         _msg = "[market-meta] state=%s semantics=%s" % (_st, market_meta.get("expected", "?"))
         if market_meta.get("ok"):

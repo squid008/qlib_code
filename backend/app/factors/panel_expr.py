@@ -416,6 +416,33 @@ def _warn_if_materialized_missing(key: str, s: "pd.Series") -> None:
             return                                            # 有值 ⇒ 正常 ✓
     except Exception:                                         # noqa: BLE001
         return
+    # ★ v1.20.87：`mkt_*` 整列 NaN ⇒ **先试现算回退** ✓（用户 2026-10-09 追问：
+    #   「如果 IS_GOLD_PIT 我把物化文件删了，它会**自动回退**不走物化路线计算吗？」⇒ 原来不会 ✗：
+    #   `INSUM(...)` 编译产物就是字段引用 `$mkt_insum_...` ⇒ 缺文件 = 整列 NaN，只出声提示 ✗）
+    #   现算走 `market_stat.compute_field_inline`：与物化**同一条路**（`all_codes()` 全市场池 +
+    #   同一窗口 + 同一个 `_aggregate`/`block_mask` ✓）⇒ **不会**因为"当前面板只有 300 只"
+    #   而算出偏小的全A股计数 ✗✓（那正是最危险的静默口径漂移 ✓）。
+    #   就地填充 `s`（调用方持有的就是这个 Series ✓）并**不再告警**（已不是失效状态 ✓）；
+    #   失败才照旧出声 ✓（慢是必然的：这是"坏了才走"的退路 ✓）。
+    if key.startswith("mkt_"):
+        try:
+            from .market_stat import compute_field_inline
+            ser = compute_field_inline(key)
+            if ser is not None and len(ser):
+                _idx = s.index
+                _dates = _idx.get_level_values(1) if getattr(_idx, "nlevels", 1) > 1 else _idx
+                filled = ser.reindex(pd.DatetimeIndex(_dates)).to_numpy(dtype=float)
+                if np.isfinite(filled).any():
+                    s.iloc[:] = filled
+                    if _LOGGER is not None:
+                        _LOGGER.warning(
+                            "物化字段 $%s 缺失 ⇒ 已改用**现算回退**（结果正确 ✓ 但明显更慢 ✗）；"
+                            "想恢复性能请跑：python backend/tools/materialize_market.py --overwrite ✓",
+                            key)
+                    return
+        except Exception as _e:                                  # noqa: BLE001
+            if _LOGGER is not None:
+                _LOGGER.warning("$%s 现算回退失败：%r ⇒ 下面照旧给出物化修复提示 ✓", key, _e)
     _MISSING_WARNED.add(key)
     _msg = (
         "物化字段 `$%s` **整列全为 NaN** —— 极可能是【物化文件缺失】✗（缺了不报错、会静默失效 ✓）。\n"

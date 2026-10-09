@@ -3,6 +3,34 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.88] - 2026-10-09
+
+### Added（② 物化"内容过期"能提示 ／ ③ `mkt_*` 缺失**现算回退** —— 用户 2026-10-09 追问的两件事）
+
+- **② 「我改了公式，涉及的物化文件也要变，能不能提示呢？」** ⇒ 能 ✓：
+  · 物化字段名里那 6 位十六进制是**公式名**的哈希（`..._is_gold_pit_7758f0_...` ✓，与正文无关 ✗）
+    ⇒ 改了被调公式正文后**文件名不变、内容却是旧口径** ✗✗ —— 最难发现的一类；
+    而既有防线只有"**整列全 NaN** 才告警"✗，对"旧值有数、看着还挺合理"**完全无感** ✗
+    （2026-10-09 实测：改了 `IS_GOLD_PIT` 正文，`mkt_insum_...` 仍是 02:06 的旧算式 ✓）。
+  · `market_stat.formula_fingerprints()`：物化时把每个被调公式的**编译后 expression** 的
+    md5 前 12 位写进 `_market_meta.json` ✓（用**编译结果**而非原文 ⇒ 改注释/空行**不误报** ✓，
+    语义真变才报 ✓）；`stale_formula_names()` 与当前库比对 ✓；启动时挂进 `/api/version` 的
+    `market_meta`（`state="stale_formula"` + 中文提示"请重跑 materialize_market.py --overwrite"✓）。
+  · 老物化（meta 里还没指纹 ✓）**不误报** ✓，由既有口径戳提示兜底 ✓。
+- **③ 「如果 IS_GOLD_PIT 我把物化文件删了，它会自动回退不走物化路线计算吗？」** ⇒ **原来不会** ✗
+  （`INSUM(...)` 编译产物就是字段引用 `$mkt_insum_...` ⇒ 缺文件 = 整列 NaN，只在面板出声告警 ✓），
+  **现在会** ✓：`market_stat.compute_field_inline(field)` 按 meta 规格现算 ✓，`panel_expr` 在
+  "整列全 NaN" 那一刻先试它 ✓ —— 成功则**就地填充**并撤下告警 ✓（日志说明"已改用现算回退、慢 ✗"✓），
+  失败才照旧提示 ✓。
+  · ⚠ 退路必须与物化**逐位同口径** ⇒ 用 **`all_codes()` 全市场池**（**不是**当前面板的池 ✗ ——
+    若照 300 只的 csi300 面板去算"全A股坑数量"，会静默偏小 ✗✗）、同一窗口、**同一个**
+    `_aggregate`/`block_mask`/`formula_expression` ✓；结果按字段缓存（一次会话只算一遍 ✓）。
+  · **对拍实证**：`ai_test/probe_inline_mkt.py` —— 现算 vs 物化 bin，`mkt_insum_all_is_gold_pit_7758f0_1_0`
+    与 `mkt_num_all` 在 3 只股票、3993~4068 天上 **最大绝对差 0**（末日照抄：坑数量 17 / 成分股 5548 ✓）。
+- 测试：`backend/tests/test_market_meta_stale.py`（8 项：指纹随编译结果变 ✓、公式缺失跳过 ✓、
+  改正文即报过期 ✓、老 meta 不误报 ✓、meta 缺失不报 ✓、未知字段返回 None ✓、BLOCKSETNUM 便宜路径 ✓、
+  结果缓存 ✓）。
+
 ## [1.20.87] - 2026-10-09
 
 ### Added（① 公式依赖**自动失效** —— 彻底堵掉"回测对、单因子测试还是旧值"）

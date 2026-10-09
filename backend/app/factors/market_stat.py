@@ -225,6 +225,126 @@ def formula_expression(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# ★ v1.20.87：被调公式的**内容指纹**（"文件在、内容旧"也能被发现 ✓）
+# ---------------------------------------------------------------------------
+def formula_fingerprints(specs: Optional[Sequence[Spec]] = None) -> Dict[str, str]:
+    """`{被调公式名: md5(编译后 expression)[:12]}` ✓。
+
+    为什么需要（用户 2026-10-09 追问「我改了公式，涉及的物化文件也要变，**能不能提示呢**」✓）：
+      物化字段名里那 6 位十六进制是**公式名**的哈希（`..._is_gold_pit_7758f0_...` ✓ 与正文无关 ✓）
+      ⇒ 改了正文后**文件名不变、内容却是旧口径** ✗✗ —— 这是最难发现的一类错：
+      现有防线只有"**整列全 NaN** 才告警"（`panel_expr._warn_if_materialized_missing` ✓），
+      而"旧值有数、看着还挺合理"它**完全看不见** ✗（2026-10-09 实测：改了 `IS_GOLD_PIT`
+      正文，`mkt_insum_...` 仍是 02:06 的旧算式 ✓）。⇒ 物化时把指纹写进 `_market_meta.json` ✓，
+      启动 / `/api/version` 时比对 ⇒ 立刻能指出"该重跑物化了" ✓。
+
+    ⚠ 指纹取**编译后的 expression**（不是原文 ✓）：改注释/空行/缩进**不会**误报 ✓，
+      只有**语义真的变了**（生成结果不同）才报 ✓。
+    """
+    import hashlib                                   # noqa: PLC0415  局部导入：本函数极少调用 ✓
+    out: Dict[str, str] = {}
+    try:
+        todo = list(specs if specs is not None else discover_specs())
+    except Exception:                                # noqa: BLE001
+        return out
+    for name in sorted({sp.formula for sp in todo if sp.formula}):
+        try:
+            expr = formula_expression(name)
+        except Exception:                            # noqa: BLE001  公式没了 ⇒ 由别的检查报 ✓
+            continue
+        out[str(name)] = hashlib.md5(expr.encode("utf-8")).hexdigest()[:12]
+    return out
+
+
+def stale_formula_names() -> List[str]:
+    """`_market_meta.json` 里存的指纹 vs **当前**公式库 ⇒ **正文变过**的被调公式名 ✓（空 = 一致 ✓）。
+
+    读不到 meta / meta 里没有指纹（老物化，本次之前跑的 ✓）⇒ 返回空 ✓（不误报 ✓，此时
+    `/api/version` 仍会给出"口径戳缺失/需重跑"的既有提示 ✓）。
+    """
+    import json                                      # noqa: PLC0415
+    try:
+        with open(market_meta_path(), "r", encoding="utf-8") as f:
+            stored = (json.load(f) or {}).get("formula_fingerprints") or {}
+    except Exception:                                # noqa: BLE001
+        return []
+    if not stored:
+        return []
+    now = formula_fingerprints()
+    return sorted(n for n, h in stored.items() if now.get(n) not in (None, h))
+
+
+# ---------------------------------------------------------------------------
+# ★ v1.20.87：`mkt_*` 物化文件缺失 ⇒ **现算回退**（用户 2026-10-09 要求 ✓）
+# ---------------------------------------------------------------------------
+_INLINE_CACHE: Dict[str, Optional[pd.Series]] = {}
+
+
+def compute_field_inline(field: str) -> Optional[pd.Series]:
+    """按规格**现算**一个 `mkt_*` 字段 ⇒ 逐日市场级 Series（失败返回 None ✓）。
+
+    用户追问：「如果 `IS_GOLD_PIT` 我把物化文件删了，它会**自动回退**不走物化路线计算吗？」
+    ⇒ **原来不会** ✗：`INSUM(...)` 的编译产物就是**字段引用** `$mkt_insum_...` ✓ ⇒ 缺文件=整列 NaN，
+      只会在面板打一条"整列全 NaN ⇒ 请重跑 materialize_market.py"的告警 ✓（回测链则直接报
+      取不到该 feature ✗）。⇒ 现在补上退路 ✓。
+
+    ⚠ 口径必须与物化**逐位一致** ⇒ 走**同一条路**：
+      · 股票池 = `all_codes()`（不是当前面板的池 ✗ —— 面板可能只有 300 只，
+        照它算出来的"全A股坑数量"必然偏小 ✗✗，这正是最危险的静默口径漂移 ✓）；
+      · 窗口 = meta 里记录的那段（读不到就用 `DEFAULT_START` ✓）；
+      · 被调公式 = `formula_expression(name)`（库里编译好的 ✓）；
+      · 聚合 = **同一个** `_aggregate` ✓、掩码 = **同一个** `block_mask` ✓。
+    代价：要建一个全市场 PanelEvaluator（慢 ✓ 请当"坏了才走的退路" ✓）；结果按字段缓存 ✓
+    （一次会话只算一遍 ✓）。
+    """
+    if field in _INLINE_CACHE:
+        return _INLINE_CACHE[field]
+    _INLINE_CACHE[field] = None                      # 占位：算失败也不反复重算 ✓
+    import json                                      # noqa: PLC0415
+    spec: Optional[Spec] = None
+    start = DEFAULT_START
+    try:
+        with open(market_meta_path(), "r", encoding="utf-8") as f:
+            meta = json.load(f) or {}
+        for d in (meta.get("specs") or []):
+            if str(d.get("field") or "") == field:
+                spec = Spec(str(d.get("block") or ""), d.get("formula"),
+                            int(d.get("out_index") or 1), int(d.get("calc_type") or 0))
+                break
+        start = str(meta.get("start_time") or start)
+    except Exception:                                # noqa: BLE001
+        spec = None
+    if spec is None:                                 # meta 缺失 ⇒ 退一步：扫公式库现推规格 ✓
+        for sp in discover_specs():
+            if sp.field == field:
+                spec = sp
+                break
+    if spec is None:
+        return None
+    try:
+        from ..services.qlib_runtime import ensure_qlib_init
+        ensure_qlib_init()
+        codes = all_codes()
+        cal = _calendar()
+        cal = cal[cal >= pd.Timestamp(start)]
+        if spec.formula is None:                     # BLOCKSETNUM：每日成分股数 ✓（便宜 ✓）
+            values = block_mask(spec.block_key, codes, cal).sum(axis=1).astype(float)
+        else:
+            expr = formula_expression(spec.formula)
+            fields = _collect_field_names([(expr, "x")])
+            ev = PanelEvaluator(codes, cal[0].strftime("%Y-%m-%d"), cal[-1].strftime("%Y-%m-%d"),
+                                union_fields=fields, read_start=cal[0].strftime("%Y-%m-%d"))
+            s = ev.eval_expr(expr).unstack(level=0).reindex(index=cal, columns=codes)
+            values = _aggregate(s.to_numpy(dtype=float), block_mask(spec.block_key, codes, cal),
+                                spec.calc_type)
+        out = pd.Series(np.asarray(values, dtype=float), index=cal)
+        _INLINE_CACHE[field] = out
+        return out
+    except Exception:                                # noqa: BLE001  退路失败 ⇒ 让告警照旧出声 ✓
+        return None
+
+
+# ---------------------------------------------------------------------------
 # 写盘
 # ---------------------------------------------------------------------------
 def _write_bin(path: str, first_idx: int, values: np.ndarray) -> None:
@@ -386,6 +506,9 @@ def materialize(specs: Optional[Sequence[Spec]] = None,
         "n_codes": len(codes),
         "specs": [sp.to_dict() for sp in specs],
         "counts": dict(out),
+        # ★ v1.20.87：被调公式的**内容指纹** ✓ ⇒ 以后改了 `IS_GOLD_PIT` 之类被物化引用的公式，
+        #   启动 / `/api/version` 一比就能喊"该重跑物化了" ✓（见 `stale_formula_names` ✓）
+        "formula_fingerprints": formula_fingerprints(specs),
     })
     return out
 
