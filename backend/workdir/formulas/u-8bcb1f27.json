@@ -630,11 +630,11 @@
   {
     "id": "82bd03f0b707",
     "name": "调整后纯度",
-    "text": "FAST:=EMA(LOW,3);\nBASE:=EMA(LOW,30)*0.849;\n轨迹:=MIN(40,(FAST/BASE-1)*100);\n深度:=IF(轨迹<0,-轨迹,0);\n总股票数:=BLOCKSETNUM('全部A股');\n坑数量:=INSUM('全部A股','IS_GOLD_PIT',1,0);\n纯度:=坑数量/总股票数*100;\n调整后纯度:IF(纯度>40,40,纯度);",
-    "expression": "If(Gt(Mul(Div($mkt_insum_all_is_gold_pit_7758f0_1_0,$mkt_num_all),100),40),40,Mul(Div($mkt_insum_all_is_gold_pit_7758f0_1_0,$mkt_num_all),100))",
+    "text": "FAST:=EMA(LOW,3);\nBASE:=EMA(LOW,30)*0.849;\n轨迹:=MIN(40,(FAST/BASE-1)*100);\n深度:=IF(轨迹<0,-轨迹,0);\n总股票数:=BLOCKSETNUM('中证1000');\n坑数量:=INSUM('全部A股','IS_GOLD_PIT',1,0);\n纯度:=坑数量/总股票数*100;\n调整后纯度:IF(纯度>40,40,纯度);",
+    "expression": "If(Gt(Mul(Div($mkt_insum_all_is_gold_pit_7758f0_1_0,$mkt_num_csi1000),100),40),40,Mul(Div($mkt_insum_all_is_gold_pit_7758f0_1_0,$mkt_num_csi1000),100))",
     "codegen": "1.20.83",
     "created_at": "2026-10-09 02:03:21",
-    "updated_at": "2026-10-09 16:05:34",
+    "updated_at": "2026-10-09 17:04:27",
     "author": "u-8bcb1f27",
     "author_user": "Administrator",
     "author_modified_by": "u-8bcb1f27"
