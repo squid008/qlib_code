@@ -9,6 +9,8 @@ import type {
   BacktestPartialResult,
   FactorCatalog,
   GateCompose,
+  DatasetsStatus,
+  DatasetInfo,
 } from './types'
 
 // 通过 Vite 代理转发到后端，无需写死后端地址
@@ -878,6 +880,25 @@ export interface EventNavResult {
 export async function runEventNav(req: EventNavRequest): Promise<EventNavResult> {
   const { data } = await http.post<EventNavResult>('/factors/event-study/nav', req, {
     timeout: 600000,
+  })
+  return data
+}
+
+// ---------- 数据集（口径）切换（2026-10-09 ✓） ----------
+
+export async function getDatasets(): Promise<DatasetsStatus> {
+  const { data } = await http.get('/datasets')
+  return data
+}
+
+/** 切换数据集（全局生效 ✓）；有任务在跑时后端回 409 ⇒ 前端提示后可强制 ✓ */
+export async function switchDataset(
+  name: string,
+  allowWhileRunning = false,
+): Promise<{ active: string; info: DatasetInfo }> {
+  const { data } = await http.post('/datasets/active', {
+    name,
+    allow_while_running: allowWhileRunning,
   })
   return data
 }

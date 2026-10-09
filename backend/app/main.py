@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 
 from . import config, __version__
 from .logger import get_logger
-from .routers import backtest, data, factors, signal_test
+from .routers import backtest, data, datasets, factors, signal_test
 
 logger = get_logger(__name__)
 
@@ -107,6 +107,7 @@ def create_app() -> FastAPI:
     # 路由
     app.include_router(backtest.router)
     app.include_router(data.router)
+    app.include_router(datasets.router)
     app.include_router(factors.router)
     app.include_router(signal_test.router)
 

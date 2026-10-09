@@ -267,3 +267,28 @@ export interface DataSourceInfo {
     index_constituent: boolean
   }
 }
+
+// ---------- 数据集（口径）切换（2026-10-09 ✓） ----------
+export interface DatasetInfo {
+  name: string
+  dir: string
+  exists: boolean
+  label: string
+  convention: string
+  note: string
+  only_price?: boolean
+  calendar_days: number
+  calendar_first: string
+  calendar_last: string
+  codes: number
+  fields: number
+  has_fin: boolean
+  has_mf: boolean
+  has_chip: boolean
+}
+
+export interface DatasetsStatus {
+  active: string
+  datasets: DatasetInfo[]
+  switchable: boolean
+}

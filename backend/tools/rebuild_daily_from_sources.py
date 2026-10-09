@@ -10,8 +10,8 @@
 | 源 | 位置 | 作用 | 验证结论 |
 |---|---|---|---|
 | **①主源 raw** | `E:\\quant\\trader_code\\data\\market\\daily\\<CODE>.{XSHE,XSHG,BJSE}.h5` 的 `raw` 组 | **未复权真值** | 与 bundle 分钟聚合**逐位**一致（抽样 ✓）；含北交所 352 只 ✓ |
-| **②因子源** | `data/cn_data2/features/<code>/factor.day.bin` | 复权因子 `f(d)` | `f / adj_tushare` = **常数**（002487/600519/300073 全历史 ✓，极差 ~1e-7）⇒ 干净 ✓ |
-| **③交叉核对** | `data/cn_data2`、`E:\\rq\\bundle\\h5\\equities`、`data/tushare_cache/daily` | 独立验算 | 按**日期**比对、相对容差默认 0.5% ✓ |
+| **②因子源** | `data/cn_data3/features/<code>/factor.day.bin` | 复权因子 `f(d)` | `f / adj_tushare` = **常数**（002487/600519/300073 全历史 ✓，极差 ~1e-7）⇒ 干净 ✓ |
+| **③交叉核对** | `data/cn_data3`、`E:\\rq\\bundle\\h5\\equities`、`data/tushare_cache/daily` | 独立验算 | 按**日期**比对、相对容差默认 0.5% ✓ |
 
 ## ⚠ 这次挖出来的两个「静默数据错误」（本工具修的就是它们）
 1. **现 `cn_data` 的 `factor` bin 不可信**：它与 tushare `adj_factor` **不成比例** ——
@@ -33,11 +33,14 @@
 | adjclose | `raw_close × adj(d)`（与 `dump_tushare_daily` 同口径 ✓） |
 | change | 缓存 `pct_chg ÷ 100`；没缓存的日子用 `adjclose(d) / adjclose(前一交易日) − 1` ✓ |
 
-`f(d)` 取法（**默认零 API 调用** ✓）：
-- `d ≤ cn_data2 末日（2026-09-04）` ⇒ 直接取 `cn_data2/factor.day.bin`（按 **cn_data2 自己的日历**
-  定位 ✓，绝不用本项目索引混用 ✗）；
-- 更晚 ⇒ `f(d) = f(锚) × adj(d) ÷ adj(锚)`，锚 = 该股在 cn_data2 段最后一格有 adj 的日期 ✓
-  （`adj` 取自 `data/tushare_cache/daily/*.json` ✓ 已缓存 8/24~10/9 ✓）。
+## `f(d)` 取法（**两套口径 ✓，都零额外 API 调用**）
+- `--f-source qlib`（默认）：`d ≤ qlib 官方末日` ⇒ 直接取 `cn_data3/factor.day.bin`（按 **cn_data3
+  自己的日历**定位 ✓，绝不用本项目索引混用 ✗）；更晚 ⇒ `f(d) = f(锚) × adj(d) ÷ adj(锚)`，锚 = 该股在
+  cn_data3 段最后一格有 adj 的日期（`adj` 取自 `data/tushare_cache/daily/*.json` ✓）。
+- `--f-source tushare`：`f(d) = scale × adj_tushare(d)`，`adj` 取自
+  `data/tushare_cache/adj/<ts_code>.json`（`prefetch_adj_factor.py` 拉的**全历史** ✓）；
+  `scale` 优先用**现网 bin 最近 30 个可用日的 `f_cur/adj` 中位数**（不跳价 ✓），退路用
+  **上市首日归一化** `1/(raw(首日)×adj(首日))` ✓ —— 两者差异 >0.5% 的票会计数并在收尾打印 ✓。
 
 ## 用法
     python tools/rebuild_daily_from_sources.py                  # dry-run：目标清单 + 三源差异清单
@@ -51,10 +54,12 @@ from __future__ import annotations
 import argparse
 import collections
 import csv
+import json
 import os
 import shutil
 import sys
 import time
+from bisect import bisect_right
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -65,12 +70,14 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dump_finance import load_calendar, write_bin                        # noqa: E402
 from dump_tushare_daily import EXTRA_FIELDS, PRICE_FIELDS, read_day      # noqa: E402
+from dump_tushare_finance import to_ts_code                              # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 FIELDS = PRICE_FIELDS + EXTRA_FIELDS                                     # 10 个行情字段 ✓
 MAIN_ROOT = Path(os.environ.get("MARKET_DAILY_ROOT", r"E:\quant\trader_code\data\market\daily"))
 BUNDLE_ROOT = Path(os.environ.get("BUNDLE_EQUITIES_ROOT", r"E:\rq\bundle\h5\equities"))
-CN2 = ROOT / "data" / "cn_data2"
+QLIB_REF = ROOT / "data" / "cn_data3"                                    # qlib 官方（米筐口径 ✓）
+ADJ_DIR = ROOT / "data" / "tushare_cache" / "adj"                        # tushare adj 全历史 ✓
 TS_CACHE = ROOT / "data" / "tushare_cache" / "daily"
 RQ_SUFFIX = {"sh": "XSHG", "sz": "XSHE", "bj": "BJSE"}                   # ⚠ 北交所是 BJSE，不是 XBSE ✗
 
@@ -105,15 +112,41 @@ def read_main_raw(code: str) -> Optional[Dict[str, dict]]:
 
 
 # ---------------------------------------------------------------- ② 因子源
-class FactorSource:
-    """`f(d)`：cn_data2 的 factor（∝ tushare adj ✓）+ 尾部用已缓存的 adj 延伸 ✓。"""
+def _adj_at(rows: Dict[str, float], ks: List[str], day: str) -> Optional[float]:
+    """取 `day` 当日的 adj（复权因子是**阶梯函数** ✓ ⇒ 早于首个已知日就向上补、中间取最近的前值 ✓）。"""
+    k = day.replace("-", "")
+    if not ks or k < ks[0]:
+        return rows[ks[0]] if ks else None
+    i = bisect_right(ks, k) - 1
+    return rows[ks[i]]
 
-    def __init__(self, cn2: Path, ts_cache: Path):
-        self.cal2 = pd.read_csv(cn2 / "calendars" / "day.txt", header=None)[0].astype(str).tolist()
-        self.last2 = self.cal2[-1]                                       # 2026-09-04 ✓
-        self.feats = cn2 / "features"
+
+class FactorSource:
+    """复权因子 `f(d)` 的**双口径**来源（★ 2026-10-09 用户定调：米筐拿不到数据了 ⇒ 以 tushare 为准）。
+
+    - `mode="qlib"`（默认）：直接用 qlib 官方 provider（默认 `data/cn_data3`）的 `factor` bin ✓
+      —— 即"米筐/qlib 口径" ✓（实测它与 tushare `adj_factor` **只差一个常数** ✓：002487 全历史
+      `factor/adj` 极差 ~1e-7 ✓）。
+    - `mode="tushare"`：`f(d) = scale × adj_tushare(d)` ✓，adj 来自
+      `data/tushare_cache/adj/<ts_code>.json`（`prefetch_adj_factor.py` 拉的**全历史** ✓）。
+
+    ★ **尺度（scale）怎么定**（决定价位绝对值 ⇒ 必须与平台现状**连续**，不然公式阈值会集体错位 ✗）：
+      ① 首选 = **现网 bin 最近 30 个可用日的 `f_cur(d)/adj(d)` 中位数** ✓ —— 现网尾部本来就是
+         tushare 口径写进去的（`dump_tushare_daily.py` ✓）⇒ 锚它 = 不跳价 ✓；
+      ② 退路 = `1 / (raw(上市首日) × adj(上市首日))` ✓ —— qlib 官方的归一化正是"上市首日 close = 1.0"
+         （002487：`adj(10/9)=4.6971 ÷ 47.6 = 0.098680` = 现网值 ✓ 逐位吻合 ✓）。
+      两条都会算，差异大的股票会进差异清单 ⇒ 便于发现"现网尾部本身不一致"的票 ✓。
+    """
+
+    def __init__(self, mode: str, qlib_ref: Path, adj_dir: Path, ts_cache: Path):
+        self.mode = mode
+        self.cal2 = pd.read_csv(qlib_ref / "calendars" / "day.txt", header=None)[0].astype(str).tolist()
+        self.last2 = self.cal2[-1]
+        self.feats = qlib_ref / "features"
+        self.adj_dir = adj_dir
         self.cache = ts_cache
-        # ★ 只把**缓存里真有的那几天**（8/24~10/9 ✓）一次读进来，其余日期一律 None ✓
+        self.stats: collections.Counter = collections.Counter()
+        # ★ 只把**缓存里真有的那几天**（日线缓存窗口 ✓）一次读进来，其余日期一律 None ✓
         #   踩过的坑（2026-10-09）：`adj_of` 原来对**每个历史交易日**都 `Path.exists()` 一次
         #   ⇒ 每只 ~8000 次系统调用 ✗✗（Defender 下 ~3 秒/只）+ 把 None 全塞进字典
         #   ⇒ 内存 1GB+、CPU 只有 15%（时间全耗在等 I/O）✗。现在改成**纯字典查** ✓。
@@ -123,16 +156,59 @@ class FactorSource:
                 day = "%s-%s-%s" % (p.stem[:4], p.stem[4:6], p.stem[6:8])
                 try:
                     self._have[day] = read_day(day)[1]
-                except Exception:                                    # noqa: BLE001
+                except Exception:                                        # noqa: BLE001
                     continue
         self._asof: Dict[str, Optional[Tuple[str, float]]] = {}
 
     def adj_of(self, day: str) -> Optional[Dict[str, float]]:
-        """某交易日的 adj_factor ⇒ **只在预读窗口内**返回（否则 None ✓，绝不逐日碰文件系统 ✗）。"""
+        """某交易日的 adj_factor（全市场）⇒ **只在预读窗口内**返回（否则 None ✓，绝不逐日碰盘 ✗）。"""
         return self._have.get(day)
 
+    # ---- tushare 口径：全历史 adj（每只一个文件 ✓，不做内存缓存以免 GB 级占用 ✗）----
+    def adj_full(self, code: str) -> Optional[Dict[str, float]]:
+        p = self.adj_dir / ("%s.json" % to_ts_code(code))
+        if not p.exists():
+            return None
+        try:
+            rows = json.loads(p.read_text(encoding="utf-8")).get("rows") or {}
+            return {k: float(v) for k, v in rows.items() if v} or None
+        except Exception:                                                # noqa: BLE001
+            return None
+
+    def _scale_tushare(self, code: str, rows: Dict[str, float], ks: List[str],
+                       raw: Dict[str, dict], cur_f: Dict[str, float]) -> Optional[float]:
+        """见类注释的①②两条锚 ✓；返回 None 表示这只票定不了尺度（会跳过并计数 ✗）。"""
+        got_recent = None
+        pairs = []
+        for d in reversed(sorted(raw)):
+            f = cur_f.get(d)
+            a = _adj_at(rows, ks, d)
+            if f and f > 0 and a and a > 0:
+                pairs.append(f / a)
+            if len(pairs) >= 30:
+                break
+        if len(pairs) >= 5:
+            got_recent = float(np.median(pairs))
+        d0 = min(raw)
+        v0 = raw[d0].get("close")
+        a0 = _adj_at(rows, ks, d0)
+        listing = 1.0 / (float(v0) * float(a0)) if (v0 and v0 > 0 and a0 and a0 > 0) else None
+        if got_recent is not None and listing is not None:
+            self.stats["两锚都有"] += 1
+            if abs(got_recent / listing - 1.0) > 0.005:
+                self.stats["两锚差>0.5%"] += 1
+            self.stats["用现网尾部锚"] += 1
+            return got_recent
+        if got_recent is not None:
+            self.stats["用现网尾部锚"] += 1
+            return got_recent
+        if listing is not None:
+            self.stats["用上市首日锚"] += 1
+            return listing
+        return None
+
     def asof(self, code: str) -> Optional[Tuple[str, float]]:
-        """该股在 cn_data2 段**最后一格**有 adj 的 (日期, adj) ⇒ 延伸的锚 ✓。"""
+        """该股在 qlib 官方段**最后一格**有 adj 的 (日期, adj) ⇒ 尾部延伸的锚 ✓。"""
         if code not in self._asof:
             res = None
             for j in range(len(self.cal2) - 1, max(-1, len(self.cal2) - 60), -1):
@@ -144,12 +220,25 @@ class FactorSource:
             self._asof[code] = res
         return self._asof[code]
 
-    def series(self, code: str) -> Optional[Dict[str, float]]:
-        """`f(d)` ⇒ {日期: f}（cn_data2 段按 **cn_data2 日历**定位 ✓ + 尾部按 adj 延伸 ✓）。
-
-        ⚠ 不缓存结果（每次现算 ✓）：读一只 factor bin 只要 0.1ms ✓，而缓存 1385 只的
-          4000 项字典会吃掉 GB 级内存 ✗（2026-10-09 实测 1GB 就是这么来的 ✓）。
-        """
+    def series(self, code: str, raw: Optional[Dict[str, dict]] = None,
+               cur_f: Optional[Dict[str, float]] = None) -> Optional[Dict[str, float]]:
+        """`f(d)` ⇒ {日期: f}（两套口径都支持 ✓；不缓存结果，免得 5900 只 × 4000 项撑爆内存 ✗）。"""
+        if self.mode == "tushare":
+            rows = self.adj_full(code)
+            if not rows or not raw:
+                return None
+            ks = sorted(rows)
+            scale = self._scale_tushare(code, rows, ks, raw, cur_f or {})
+            if scale is None:
+                self.stats["定不了尺度"] += 1
+                return None
+            out = {}
+            for d in sorted(raw):
+                a = _adj_at(rows, ks, d)
+                if a and a > 0:
+                    out[d] = float(a) * scale
+            return out or None
+        # ---- qlib 官方口径：直接取它的 factor bin（按它的日历定位 ✓）+ 尾部用已缓存 adj 延伸 ✓
         p = self.feats / code / "factor.day.bin"
         out: Dict[str, float] = {}
         if p.exists():
@@ -175,7 +264,7 @@ class FactorSource:
         return out or None
 
     def _tail_days(self) -> List[str]:
-        """> cn_data2 末日、且缓存里有的交易日（升序 ✓；直接用预读窗口 ✓ 不再 glob ✗）。"""
+        """> qlib 官方末日、且缓存里有的交易日（升序 ✓；直接用预读窗口 ✓ 不再 glob ✗）。"""
         return sorted(d for d in self._have if d > self.last2)
 
 
@@ -317,6 +406,20 @@ def bundle_check(code: str, new: dict, cal_pos: Dict[str, int], sample: int) -> 
 
 
 # ---------------------------------------------------------------- 目标清单
+def cur_factor_map(qlib: Path, code: str, cal: List[str]) -> Dict[str, float]:
+    """现网 `factor` bin ⇒ {日期: f}（**只给 tushare 口径定尺度用** ✓，不参与数值计算 ✓）。"""
+    h = read_cur_bin(qlib, code, "factor")
+    if h is None:
+        return {}
+    first, vals = h
+    out: Dict[str, float] = {}
+    for i, v in enumerate(vals):
+        j = first + i
+        if 0 <= j < len(cal) and np.isfinite(v) and v > 0:
+            out[cal[j]] = float(v)
+    return out
+
+
 def classify(code: str, qlib: Path, cal_pos: Dict[str, int],
              raw: Optional[dict]) -> Tuple[str, str]:
     """判定是否要重建 ⇒ (类别, 原因)；类别 == '' 表示已健康 ✓。
@@ -363,6 +466,11 @@ def main():
     ap.add_argument("--tol", type=float, default=0.005, help="判定「差异超标」的相对容差（默认 0.5%% ✓）")
     ap.add_argument("--bundle-sample", type=int, default=6, help="每只用 bundle 分钟数据抽查几天（0=关 ✓）")
     ap.add_argument("--report", default="", help="差异清单 CSV 落盘路径（默认 ai_test/ 自动命名 ✓）")
+    ap.add_argument("--f-source", choices=("qlib", "tushare"), default="qlib",
+                    help="复权因子口径：qlib=cn_data3 的 factor（米筐/qlib 口径 ✓，默认）；"
+                         "tushare=全历史 adj_factor + 尺度锚（✓ 需先跑 prefetch_adj_factor.py）")
+    ap.add_argument("--qlib-ref", default=str(QLIB_REF), help="qlib 官方 provider（因子源 + 交叉核对 ✓）")
+    ap.add_argument("--adj-dir", default=str(ADJ_DIR), help="tushare adj 全历史缓存目录 ✓")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
@@ -380,9 +488,13 @@ def main():
     if not MAIN_ROOT.exists():
         raise SystemExit("主源目录不存在：%s（可用 MARKET_DAILY_ROOT 覆盖 ✓）" % MAIN_ROOT)
 
-    fs = FactorSource(CN2, TS_CACHE)
-    print("因子源 cn_data2：日历 %d 天（~%s）| 尾部延伸用 tushare 缓存 %d 天"
-          % (len(fs.cal2), fs.last2, len(fs._tail_days())), flush=True)
+    ref = Path(args.qlib_ref)
+    fs = FactorSource(args.f_source, ref, Path(args.adj_dir), TS_CACHE)
+    print("口径 f-source=%s | qlib 官方参考 %s（日历 %d 天 ~%s）| 尾部延伸用 tushare 缓存 %d 天"
+          % (args.f_source, ref.name, len(fs.cal2), fs.last2, len(fs._tail_days())), flush=True)
+    if args.f_source == "tushare" and not Path(args.adj_dir).exists():
+        raise SystemExit("tushare 口径需要 adj 缓存 %s ⇒ 先跑 tools/prefetch_adj_factor.py --apply ✓"
+                         % args.adj_dir)
 
     t0 = time.time()
     targets: List[Tuple[str, str, str, dict, Dict[str, float]]] = []
@@ -394,11 +506,12 @@ def main():
         if kind or args.all:
             if raw is None:
                 continue
-            fmap = fs.series(code)
+            fmap = fs.series(code, raw, cur_factor_map(qlib, code, cal))
             if not fmap:
                 stat["无因子源"] += 1
                 if args.verbose:
-                    print("  ✗ %-9s 无因子源（cn_data2 factor 缺失）⇒ 跳过 ✗" % code, flush=True)
+                    print("  ✗ %-9s 无因子源（%s 口径取不到 f）⇒ 跳过 ✗" % (code, args.f_source),
+                          flush=True)
                 continue
             targets.append((code, kind or "健康", why, raw, fmap))
         if i % 200 == 0:
@@ -441,10 +554,10 @@ def main():
         worst = max((devs[f][1] for f in devs if np.isfinite(devs[f][1])), default=float("nan"))
         bad = bool(np.isfinite(worst) and worst > args.tol)
         n_bad += int(bad)
-        # 交叉核对：cn_data2 的 close / factor（同日 ✓）
+        # 交叉核对：qlib 官方（默认 cn_data3）的 close（**按日期**对齐 ✓）
         c2_max = float("nan")
-        p2 = CN2 / "features" / code / "close.day.bin"
-        if p2.exists():
+        p2 = ref / "features" / code / "close.day.bin" if ref != qlib else None
+        if p2 is not None and p2.exists():
             a2 = np.fromfile(str(p2), dtype="<f4")
             rel = []
             for j in range(1, a2.size):
@@ -464,14 +577,14 @@ def main():
             "cur_n": cur_n, "new_n": new_valid, "add_days": add_days,
             "overlap_n": devs.get("close", (0, 0, 0))[2],
             # ⚠ 下面的 dev_index_* 是**索引对齐**比较 ⇒ 只有「已对齐/超长」组有意义 ✓；
-            #   跨源判断看 vs_cn_data2_max_close（按日期对齐 ✓）
+            #   跨源判断看 vs_qlib_official_close_max（按日期对齐 ✓）
             "dev_index_med_close": devs.get("close", (float("nan"),))[0],
             "dev_index_max_close": devs.get("close", (float("nan"), float("nan")))[1],
             "dev_index_max_volume": devs.get("volume", (float("nan"), float("nan")))[1],
             "dev_index_max_amount": devs.get("amount", (float("nan"), float("nan")))[1],
             "dev_index_max_factor": devs.get("factor", (float("nan"), float("nan")))[1],
             "dev_index_max_adjclose": devs.get("adjclose", (float("nan"), float("nan")))[1],
-            "vs_cn_data2_max_close": c2_max,
+            "vs_qlib_official_close_max": c2_max,
             "bundle_n": b_n, "bundle_bad": b_bad, "bundle_worst": b_worst,
             "diff_over_tol": int(bad),
         })
@@ -479,7 +592,7 @@ def main():
             print("  处理 %d/%d（当前 %s）%.0fs" % (k, len(targets), code, time.time() - t0), flush=True)
         if args.verbose or bad or k <= 5:
             print("  %-9s %-11s 现 %d 天 → 重建 %d 天（可补回 %d）| 索引对齐重叠 %d 天 close 中位 %.2e/最大 %.2e "
-                  "| 按日期对齐 vs cn_data2 %.2e %s"
+                  "| 按日期对齐 vs qlib 官方 %.2e %s"
                   % (code, kind, cur_n, new_valid, add_days, rows[-1]["overlap_n"],
                      rows[-1]["dev_index_med_close"], rows[-1]["dev_index_max_close"],
                      c2_max, "⚠超容差" if bad else ""), flush=True)
@@ -520,18 +633,20 @@ def main():
     print("\n===== 汇总（%s）=====" % ("已写盘 ✓" if args.apply else "dry-run ✓"))
     print("处理 %d 只 | 三源/现值差异超容差（%.1f%%）%d 只 | 可补回行情天数合计 %d"
           % (len(rows), args.tol * 100, n_bad, n_add))
+    if fs.stats:
+        print("口径尺度锚统计（f-source=%s）：%s" % (args.f_source, dict(fs.stats)))
     print("可补回天数分布（下界 500 天分桶 ⇒ 只数）：%s"
           % dict(sorted(add_hist.items())))
     if rows:
-        c2 = sorted((r for r in rows if np.isfinite(r["vs_cn_data2_max_close"])),
-                    key=lambda r: -r["vs_cn_data2_max_close"])[:10]
-        print("★ 与 cn_data2 按**日期**对齐差异最大的 10 只（跨源差异清单 ✓）：")
+        c2 = sorted((r for r in rows if np.isfinite(r["vs_qlib_official_close_max"])),
+                    key=lambda r: -r["vs_qlib_official_close_max"])[:10]
+        print("★ 与 qlib 官方（%s）按**日期**对齐差异最大的 10 只（跨源差异清单 ✓）：" % ref.name)
         for r in c2:
             print("   %-9s %-11s vs cn_data2 最大 %.3e | 索引对齐重叠 %s 天 中位 %.3e | 可补回 %s"
-                  % (r["code"], r["kind"], r["vs_cn_data2_max_close"], r["overlap_n"],
+                  % (r["code"], r["kind"], r["vs_qlib_official_close_max"], r["overlap_n"],
                      r["dev_index_med_close"], r["add_days"]))
-        ok = [r for r in rows if np.isfinite(r["vs_cn_data2_max_close"])
-              and r["vs_cn_data2_max_close"] <= 1e-4]
+        ok = [r for r in rows if np.isfinite(r["vs_qlib_official_close_max"])
+              and r["vs_qlib_official_close_max"] <= 1e-4]
         print("其中「与 cn_data2 逐位一致（≤1e-4）」的 %d/%d 只 ⇒ 这些就是**口径已确证**的 ✓"
               % (len(ok), len(rows)))
         worst_rows = sorted((r for r in rows if np.isfinite(r["dev_index_max_close"])),

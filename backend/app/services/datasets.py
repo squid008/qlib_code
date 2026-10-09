@@ -1,0 +1,238 @@
+# -*- coding: utf-8 -*-
+"""多数据集（数据口径）切换服务 —— 用户 2026-10-09：三套数据来回切，前端做对照。
+
+## 三套数据集（都在 `data/` 下 ✓）
+
+| 名字 | 目录 | 口径 | 字段 | 说明 |
+|---|---|---|---|---|
+| `cn_data` | `data/cn_data` | **米筐/qlib 口径** | 全字段 | 由 `cn_data.rar`（米筐 era 备份）解出 ✓，行情段按 qlib 官方口径重建 ✓ |
+| `cn_data2` | `data/cn_data2` | **tushare 口径** | 全字段 | **平台主数据集** ✓：行情 = `raw × tushare adj` ✓，财务/资金流/筹码齐全 ✓ |
+| `cn_data3` | `data/cn_data3` | qlib 官方原始 | **仅 10 个行情字段** | 对照用 ✓；**没有** `fin_*`/`mf_*`/`chip_*` ✗ ⇒ UI 必须提示 ✓ |
+
+## ★ 为什么是"全局切换"而不是"每请求带一个数据集"
+qlib 的 `D`（DatasetProvider）是**进程级单例**，`qlib.init(provider_uri=...)` 只能生效一次 ✗；
+要在运行期换目录，只能重新 `qlib.init`（实测 `C.register()` 会重注册 wrappers ✓ 见
+`qlib/config.py:503-522`）并清掉各模块的进程级缓存 ✗ ⇒ 天然是**全局状态** ✓。
+本平台单用户、任务串行排队 ⇒ 全局切换够用且最稳 ✓（切换前后端会把正在跑的任务情况回报给 UI ✓）。
+
+## ★ 子进程（joblib worker）怎么跟随
+`config.py` 在**导入时**就读 `data/active_dataset.json` ✓ ⇒ `spawn` 出来的 worker 进程
+自然落到同一数据集 ✓（只改内存变量是不行的 ✗ —— worker 会重新 import ✓）。
+"""
+from __future__ import annotations
+
+import json
+import os
+import threading
+import time
+from pathlib import Path
+from typing import Dict, List, Optional
+
+ROOT = Path(__file__).resolve().parents[3]                 # <repo>/
+DATA = ROOT / "data"
+ACTIVE_FILE = DATA / "active_dataset.json"
+_LOCK = threading.Lock()
+_PROBE_CACHE: Dict[str, tuple] = {}                        # name -> (mtime, info)
+
+# 显示名 / 口径标签 / 缺字段提示（前端直接用 ✓）
+REGISTRY: Dict[str, dict] = {
+    "cn_data": {
+        "dir": "cn_data",
+        "label": "米筐/qlib 口径",
+        "convention": "qlib 官方（factor 与 tushare adj 只差常数）",
+        "note": "由 cn_data.rar 备份解出，行情段按 qlib 口径重建",
+    },
+    "cn_data2": {
+        "dir": "cn_data2",
+        "label": "tushare 口径（主）",
+        "convention": "行情 = raw × tushare adj_factor；财务/资金流/筹码全量",
+        "note": "平台主数据集：93 个字段齐全、日历到最新交易日",
+    },
+    "cn_data3": {
+        "dir": "cn_data3",
+        "label": "qlib 官方原始",
+        "convention": "qlib 官方 cn_data 原样（10 个行情字段）",
+        "note": "仅行情字段；FINANCE(q)/资金流/筹码等公式在此数据集下取不到数（按 NaN 处理）",
+        "only_price": True,
+    },
+}
+_ORDER = ["cn_data2", "cn_data", "cn_data3"]               # 默认优先级：主数据集优先 ✓
+
+
+def dataset_dir(name: str) -> Path:
+    return DATA / REGISTRY[name]["dir"]
+
+
+def available() -> List[str]:
+    """磁盘上真实存在的数据集（保持 `_ORDER` 的展示顺序 ✓）。"""
+    return [n for n in _ORDER if (dataset_dir(n) / "calendars" / "day.txt").exists()]
+
+
+def active_name() -> str:
+    """当前生效的数据集名：优先落盘记录 ✓ → 再按优先级挑一个存在的 ✓ → 兜底 cn_data ✓。
+
+    ⚠ 读盘一律用 **`utf-8-sig`**：PowerShell 的 `Set-Content -Encoding UTF8` 会写 **BOM** ✗，
+      用 `utf-8` 读会抛 `JSONDecodeError: Unexpected UTF-8 BOM` ⇒ 被 `except` 吞掉后**静默回落**
+      到别的数据集 ✗✗（2026-10-09 实测踩到 ✓）。这里的 `except` 是"文件坏了也别让服务起不来" ✓，
+      但**不能**让它变成"悄悄换数据集" ✗ ⇒ 容错要往"读得进去"的方向做，而不是"猜一个" ✗。
+    """
+    try:
+        if ACTIVE_FILE.exists():
+            name = (json.loads(ACTIVE_FILE.read_text(encoding="utf-8-sig")) or {}).get("name")
+            if name in REGISTRY and name in available():
+                return name
+    except Exception:                                                     # noqa: BLE001
+        pass
+    av = available()
+    return av[0] if av else "cn_data"
+
+
+def active_dir() -> str:
+    return str(dataset_dir(active_name()))
+
+
+def _mtime(name: str) -> float:
+    try:
+        return (dataset_dir(name) / "calendars" / "day.txt").stat().st_mtime
+    except Exception:                                                     # noqa: BLE001
+        return 0.0
+
+
+def probe(name: str, use_cache: bool = True) -> dict:
+    """数据集体检信息（前端展示 / 切换前确认用 ✓）：日历范围、股票数、字段数、缺哪些类字段 ✓。"""
+    mt = _mtime(name)
+    if use_cache and name in _PROBE_CACHE and _PROBE_CACHE[name][0] == mt:
+        return dict(_PROBE_CACHE[name][1])
+    d = dataset_dir(name)
+    info: dict = {
+        "name": name,
+        "dir": str(d),
+        "exists": (d / "calendars" / "day.txt").exists(),
+        "label": REGISTRY[name]["label"],
+        "convention": REGISTRY[name]["convention"],
+        "note": REGISTRY[name]["note"],
+        "only_price": bool(REGISTRY[name].get("only_price")),
+    }
+    cal_days = codes = fields = 0
+    first = last = ""
+    has_fin = has_mf = has_chip = False
+    if info["exists"]:
+        try:
+            cal = (d / "calendars" / "day.txt").read_text(encoding="utf-8").split()
+            cal_days, first, last = len(cal), (cal[0] if cal else ""), (cal[-1] if cal else "")
+        except Exception:                                                 # noqa: BLE001
+            pass
+        feats = d / "features"
+        if feats.is_dir():
+            # ⚠ 字段数要**跨全表均匀抽样后取并集** ✓：字段集**逐股不同**（新股/退市/北交所少很多 ✗），
+            #   只数开头那几只 bj 票会把 93 字段的数据集报成 "22~35 字段" ✗（2026-10-09 两次踩到并修 ✓）。
+            subs = [s for s in sorted(feats.iterdir()) if s.is_dir()]
+            codes = len(subs)
+            union: set = set()
+            best = 0
+            step = max(1, len(subs) // 30)
+            for sub in subs[::step][:30]:
+                names = {p.name for p in sub.glob("*.bin")}
+                union |= names
+                best = max(best, len(names))
+            fields = max(best, len(union))
+            has_fin = any(n.startswith("fin_") for n in union)
+            has_mf = any(n.startswith("mf_") for n in union)
+            has_chip = any(n.startswith("chip_") for n in union)
+    info.update({"calendar_days": cal_days, "calendar_first": first, "calendar_last": last,
+                 "codes": codes, "fields": fields,
+                 "has_fin": has_fin, "has_mf": has_mf, "has_chip": has_chip})
+    _PROBE_CACHE[name] = (mt, dict(info))
+    return info
+
+
+def status() -> dict:
+    """给前端的整体状态：可选项 + 当前项 + 体检 ✓。"""
+    av = available()
+    cur = active_name()
+    return {"active": cur, "datasets": [probe(n) for n in av], "switchable": len(av) > 1}
+
+
+def clear_caches() -> Dict[str, bool]:
+    """清掉各模块的**进程级缓存**（它们会把 provider 目录/日历快照住 ✗ ⇒ 切换后必须清 ✓）。"""
+    done: Dict[str, bool] = {}
+    try:
+        from ..factors import panel_expr
+        panel_expr.reset_caches()
+        done["panel_expr"] = True
+    except Exception:                                                     # noqa: BLE001
+        done["panel_expr"] = False
+    try:
+        from ..engine import limits as _limits
+        _limits._tag_field_cache.clear()
+        done["limits"] = True
+    except Exception:                                                     # noqa: BLE001
+        done["limits"] = False
+    try:                                                                  # 特征面板缓存按目录 mtime 失效 ✓
+        from ..engine import feature_cache
+        if hasattr(feature_cache, "invalidate_all"):
+            feature_cache.invalidate_all()
+        done["feature_cache"] = True
+    except Exception:                                                     # noqa: BLE001
+        done["feature_cache"] = False
+    try:                                                                  # 事件研究缓存按内容寻址 ✓
+        from ..factors import event_study_cache
+        if hasattr(event_study_cache, "clear"):
+            event_study_cache.clear()
+        done["event_study_cache"] = True
+    except Exception:                                                     # noqa: BLE001
+        done["event_study_cache"] = False
+    return done
+
+
+def activate(name: str, allow_while_running: bool = False) -> dict:
+    """切到某个数据集：落盘 ✓ → 改 `config.QLIB_PROVIDER_URI` ✓ → 重新 init qlib ✓ → 清缓存 ✓。
+
+    ⚠ 切换是**全局**的：正在跑的回测/单因子任务会读到新数据 ✗ ⇒ 默认先探测任务占用 ✓，
+      `allow_while_running=False` 时若检测到在跑就**拒绝**（由 UI 让用户确认后重试 ✓）。
+    """
+    if name not in REGISTRY:
+        raise ValueError("未知数据集：%s（可选 %s）" % (name, ", ".join(REGISTRY)))
+    if name not in available():
+        raise FileNotFoundError("数据集目录不存在或缺日历：%s" % dataset_dir(name))
+    running = _running_tasks()
+    if running and not allow_while_running:
+        raise RuntimeError("有正在运行的任务（%s）⇒ 现在切换会让它们读到新数据；"
+                           "请等它跑完，或确认后用 allow_while_running=true 强制切换" % running)
+    with _LOCK:
+        target = str(dataset_dir(name))
+        ACTIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = ACTIVE_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"name": name, "dir": target,
+                                   "updated": time.strftime("%Y-%m-%d %H:%M:%S")},
+                                  ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, ACTIVE_FILE)                                      # 原子 ✓
+        from .. import config
+        config.QLIB_PROVIDER_URI = target                                 # ① 所有直接读它的模块自动跟随 ✓
+        os.environ["QLIB_PROVIDER_URI"] = target                          # ② 兼容按 env 读的脚本 ✓
+        from .qlib_runtime import reset_qlib_init
+        reset_qlib_init(target)                                           # ③ 重注册 qlib providers ✓
+        cleared = clear_caches()                                          # ④ 清进程级缓存 ✓
+    out = probe(name, use_cache=False)
+    out["cleared"] = cleared
+    return out
+
+
+def _running_tasks() -> str:
+    """在跑的任务描述（"回测 3 个" / "" ✓）—— 探不到就当没有 ✓（不阻塞切换 ✓）。"""
+    parts = []
+    try:
+        from ..engine import task_registry as _tr                     # type: ignore
+        n = int(getattr(_tr, "running_count", lambda: 0)() or 0)
+        if n:
+            parts.append("回测 %d 个" % n)
+    except Exception:                                                     # noqa: BLE001
+        pass
+    try:
+        from ..factors import single_test as _st                      # type: ignore
+        n = int(getattr(_st, "running_count", lambda: 0)() or 0)
+        if n:
+            parts.append("单因子 %d 个" % n)
+    except Exception:                                                     # noqa: BLE001
+        pass
+    return "、".join(parts)

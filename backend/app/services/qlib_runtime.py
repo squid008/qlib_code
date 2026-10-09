@@ -50,6 +50,21 @@ def ensure_qlib_init(provider_uri: Optional[str] = None) -> None:
             _QLIB_INITIALIZED = True
 
 
+def reset_qlib_init(provider_uri: Optional[str] = None) -> None:
+    """**强制下次重新初始化 qlib**（多数据集切换用 ✓，2026-10-09）。
+
+    为什么能行：`qlib.init` 里的 `C.register()` 会 `register_all_wrappers()`（`qlib/config.py:503-522` ✓）
+    ⇒ 二次 init 会把 `Cal/Inst/FeatureD` 等 provider wrapper 重新绑到新 `provider_uri` ✓，
+    并 `H.clear()` 清掉 qlib 的内存缓存 ✓。所以这里只需把"已初始化"标志复位再 init 一次 ✓。
+
+    ⚠ 先释放锁再调 `ensure_qlib_init`（`threading.Lock` 不可重入 ⇒ 直接嵌套会死锁 ✗）。
+    """
+    global _QLIB_INITIALIZED
+    with _QLIB_INIT_LOCK:
+        _QLIB_INITIALIZED = False
+    ensure_qlib_init(provider_uri)
+
+
 def _restore_custom_ops() -> None:
     """校验并写回 C.custom_ops（被其他 qlib.init 清空时立即恢复）。"""
     try:

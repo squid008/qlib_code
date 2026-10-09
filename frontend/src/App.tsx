@@ -19,9 +19,11 @@ import {
   updateCustomFormula,
   deleteCustomFormula,
   getSingleFactorTestTasks,
+  getDatasets,
+  switchDataset,
 } from './api'
 import type { BacktestCapacity, CustomFormula, CustomFormulaConflict } from './api'
-import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog } from './types'
+import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog, DatasetsStatus } from './types'
 import MetricCards from './components/MetricCards'
 import NavChart from './components/NavChart'
 import LayerChart from './components/LayerChart'
@@ -94,6 +96,8 @@ export default function App() {
   const [error, setError] = useState('')
   const [capacity, setCapacity] = useState<BacktestCapacity | null>(null)
   const [version, setVersion] = useState('')
+  // 数据集（口径）切换：cn_data=米筐/qlib、cn_data2=tushare（主）、cn_data3=qlib 官方原始（仅行情 ✓）
+  const [datasets, setDatasets] = useState<DatasetsStatus | null>(null)
   // 触发历史回测面板刷新：递增该 key 即可让 HistoryPanel 自动 load（用于"任务取消/完成后自动更新"）
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0)
   const [tasks, setTasks] = useState<BacktestTask[]>([])  // 所有活跃任务（支持多任务并行显示与取消）
@@ -198,6 +202,30 @@ export default function App() {
   useEffect(() => {
     getAppVersion().then((v) => setVersion(v.version)).catch(() => {})
   }, [])
+
+  // 数据集（口径）列表 + 当前生效项（切换是**后端全局状态** ✓，前端只是触发器 ✓）
+  useEffect(() => {
+    getDatasets().then(setDatasets).catch(() => {})
+  }, [])
+
+  const activeDataset = datasets?.datasets.find((d) => d.name === datasets.active) || null
+
+  async function handleDatasetChange(name: string, force = false) {
+    try {
+      await switchDataset(name, force)
+      setDatasets(await getDatasets())
+    } catch (e) {
+      const err = e as { response?: { status?: number; data?: { detail?: string } }; message?: string }
+      const msg = String(err?.response?.data?.detail || err?.message || e)
+      if (err?.response?.status === 409 && !force) {
+        if (window.confirm(msg + '\n\n仍要强制切换？（正在跑的对照结果会失真）')) {
+          await handleDatasetChange(name, true)
+        }
+        return
+      }
+      window.alert('切换数据集失败：' + msg)
+    }
+  }
 
   // 加载已保存的自定义公式（后端持久化），默认全选
   useEffect(() => {
@@ -1049,14 +1077,47 @@ export default function App() {
   return (
     <div className="min-h-screen">
       <header className="bg-slate-900 text-white py-4 px-6 shadow">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <h1 className="text-xl font-bold">Qlib 量化回测平台</h1>
-          {version && (
-            <span className="text-sm text-slate-400 font-mono">v{version}</span>
-          )}
+          <div className="flex items-center gap-3">
+            {datasets && (
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <span>数据集</span>
+                <select
+                  className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm text-white"
+                  value={datasets.active}
+                  onChange={(e) => handleDatasetChange(e.target.value)}
+                  disabled={!datasets.switchable}
+                  title="切换后单因子/回测/事件研究全部读这套数据（全局生效）"
+                >
+                  {datasets.datasets.map((d) => (
+                    <option key={d.name} value={d.name}>
+                      {d.name}｜{d.label}
+                      {d.calendar_last ? `（至 ${d.calendar_last}）` : ''}
+                      {d.only_price ? '· 仅行情' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {version && (
+              <span className="text-sm text-slate-400 font-mono">v{version}</span>
+            )}
+          </div>
         </div>
         <p className="text-sm text-slate-400">
           Alpha158 因子 + LightGBM 模型 + TopK 策略 | 多数据源支持
+          {activeDataset?.only_price && (
+            <span className="ml-2 text-amber-400">
+              ⚠ 当前数据集仅有行情字段：FINANCE(q)/资金流/筹码类公式取不到数（按 NaN 处理）
+            </span>
+          )}
+          {activeDataset && !activeDataset.only_price && (
+            <span className="ml-2 text-slate-500">
+              {activeDataset.label} · {activeDataset.codes} 只 · {activeDataset.fields} 字段 · 至 {activeDataset.calendar_last}
+              {!activeDataset.has_fin && '（无财务字段）'}
+            </span>
+          )}
         </p>
       </header>
 

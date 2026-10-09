@@ -3,6 +3,37 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.95] - 2026-10-09
+
+### Added（三套数据集并存 + 顶栏切换对照；新增 tushare 口径的 adj_factor 全历史预取）
+
+- ★ **三套数据集**（用户要求"别比来比去不一致了，各种各的" ✓，都在 `data/` 下）：
+  · `cn_data` = **米筐 era 口径**（6455 天 ~2026-08-21 / 6142 只 / 72 字段）—— 由 `cn_data.rar` 解出 ✓；
+  · `cn_data2` = **tushare 口径（平台主数据集）**（6484 天 ~2026-10-09 / 6161 只 / **94 字段**）✓；
+  · `cn_data3` = **qlib 官方原始**（6465 天 ~2026-09-04 / 6148 只 / **10 个行情字段**，无 fin_*/mf_*/chip_* ✗）。
+- ★ **发现**：`cn_data3` 与我此前当"米筐 factor 源"用的那份**逐位相同** ⇒ "米筐口径"与"qlib 官方口径"
+  在这份数据上是同一套 ✓（`factor / tushare adj` 全历史恒定 ✓）。
+- **新增 `GET /api/datasets` + `POST /api/datasets/active`**：全局切换数据集 ✓（qlib 的 `D` 是进程级单例 ⇒
+  只能是全局 ✓；二次 `qlib.init` 会经 `C.register()/register_all_wrappers()` 重新绑定 providers ✓）。
+  切换三件事：**落盘** `data/active_dataset.json`（子进程 worker 才不会读回旧的 ✗）✓ → 重 init qlib ✓ →
+  清进程级缓存（`panel_expr` 新增 `reset_caches` / `limits` / `feature_cache` / `event_study_cache` ✓）。
+  有任务在跑时**默认拒绝**切换 ✓（前端可确认后强制 ✓）。
+- **前端**：顶栏新增数据集选择器（原回测表单里一直 disabled 的"数据源"下拉位置 ✓），
+  并显示当前数据集的规模与"仅行情字段"提示 ✓。
+- **新增 `tools/prefetch_adj_factor.py`**：按股票预取 tushare `adj_factor` **全历史** ✓
+  （1 次调用/只，5894 只 ≈ 45 分钟；断点续跑 ✓ 原子写 ✓），另带 `--check` 抽查
+  "qlib 官方 factor 是否 ∝ tushare adj" ✓ —— 这是"米筐拿不到数据"之后的**复权因子唯一来源** ✓。
+- **`tools/rebuild_daily_from_sources.py` 支持双口径**：`--f-source qlib`（cn_data3 的 factor ✓，默认）
+  与 `--f-source tushare`（全历史 adj + **尺度锚**：优先"现网尾部 30 日中位比值"✓ 保证不跳价 ✓，
+  退路"上市首日归一化" `1/(raw×adj)` ✓，两锚差异 >0.5% 会计数上报 ✓）。
+- **体检结论**（新增 `ai_test/probe_align_audit.py`）：**米筐 era 那套是干净的** ✓（超长 0 / 负 header 0 ✓，
+  593 只"缺口"与 qlib 官方同款 ⇒ 是这些票本身停更 ✓）；**live 那套才是坏的**（7540 条超长 + 6110 条缺口 ✓）
+  ⇒ 正是要用 tushare 重建 `cn_data2` 的原因 ✓。
+- **修三个静默坑**：① PowerShell `Set-Content -Encoding UTF8` 写 **BOM** ⇒ `json.load` 抛错被吞
+  ⇒ **静默回落到别的数据集** ✗（改 `utf-8-sig` 读 ✓ 并加测试 ✓）；② 数据集字段数只抽样开头几只
+  （bj 票字段少 ✗）⇒ 报成"22 字段" ✗（改跨全表均匀抽样取并集 ✓）；③ 并行命令共享 shell、`cd` 打架 ✗。
+- 相关测试 **32 项全过** ✓（新增 `tests/test_datasets_switch.py` 8 项 ✓）。
+
 ## [1.20.94] - 2026-10-09
 
 ### Fixed / Added（缓存截断 + 市值续更风暴两个"静默坑"；FINANCE 全量跑完；三源重建工具）

@@ -206,6 +206,34 @@ def _feature_dir() -> str:
     return os.path.join(os.path.abspath("."), "..", "data", "cn_data", "features")
 
 
+def reset_caches() -> None:
+    """清空所有**以 provider 目录/日历为前提**的进程级缓存（多数据集切换后必须调 ✓）。
+
+    ★ 为什么必须清（2026-10-09 加"三套数据切换对照"时踩到的道理）：
+      `_CAL`/`_FEATURE_DIR` 都是**解析一次就缓存**的 ✓，`.day.bin` 读盘 LRU 与 dir/meta 元数据
+      也都在内存里 ✗ ⇒ 切了目录却不清它们，就会**继续读旧数据集** —— 而且**不报错** ✗✗，
+      于是"对照实验"会得出"两边一样"的假象 ✗。切数据集必须连缓存一起换 ✓。
+    """
+    global _CAL, _FEATURE_DIR, _BIN_CACHE_BYTES, _MERGED_DIR
+    _CAL = None
+    _FEATURE_DIR = None
+    _BIN_CACHE.clear()
+    _BIN_CACHE_BYTES = 0
+    _BIN_META_CACHE.clear()
+    _DIR_META_CACHE.clear()
+    _MERGED_DIR = None
+    _MERGED_IDX.clear()
+    for _mm in list(_MERGED_MM.values()):
+        try:
+            _mm.close()
+        except Exception:                                                 # noqa: BLE001
+            pass
+    _MERGED_MM.clear()
+    _SEG_CACHE.clear()
+    _SEG_RC_CACHE.clear()
+    _MISSING_WARNED.clear()
+
+
 # ---------------- 特征合并层（features_merged/，v1.18.42 / T2 §7.7-E #7）----------------
 # 背景：`features/<inst>/<field>.day.bin` = 6142 目录 / 321249 文件 / 3.2GB，**单文件仅 1.9~2.3KB**；
 # 实测单次 `stat+fromfile` ≈ **205us**（只 stat 就 71us）⇒ 有效 9.5MB/s，比 NVMe 慢 20~50×，
