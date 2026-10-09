@@ -3,6 +3,46 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.94] - 2026-10-09
+
+### Fixed / Added（缓存截断 + 市值续更风暴两个"静默坑"；FINANCE 全量跑完；三源重建工具）
+
+- ★★ **缓存被截断**：`data/tushare_cache/total_mv.json` 停在 `"20260915|601825.SH"`（**半个键值对** ✗）
+  ⇒ 之后每次 `json.load` 都抛 `JSONDecodeError: Expecting ':' delimiter ... char 3421194` ✗ ⇒
+  `tools/dump_tushare_finance.py --mc-tushare` 里**每只股票**都在第一步失败（4 秒"跑完"、写盘 0 个 bin ✗）。
+  · **抢救**：`ai_test/repair_total_mv_cache.py` 用 `JSONDecoder.raw_decode` 逐对解析（截断只在尾部 ⇒
+    前面全保住 ✓）救回 **92576** 条 ✓；再 `tools/prefetch_daily_basic.py --apply --days-from 2026-09-15`
+    补齐 13 天 / **72217** 条 ⇒ **160981 条 / 29 天（8/24~10/9）** ✓，与用户记录的原始条数一致 ✓；
+    清理掉 1300 条 2026-08-01 之前的历史垃圾键 ✓。
+  · ★ **根因（不只是"被杀"）**：本机 **618 只**（588 只北交所 + 30 只）**没有** `market_cap` bin ✗ ⇒
+    `load_market_cap` 无"本地最后有效日"可依、从 **2000-01-04** 起逐日调 `daily_basic`
+    （每只 ~6484 次 × 0.31s ≈ **33 分钟/只** ✗✗，且几乎全返回空值 ✗）；而 `_mc_cache(save=)` 每来一条
+    新键就**整份重写 3.4MB** ✗ ⇒ 进程被杀正好停在半个键值对上 ⇒ 截断 ✗ ⇒ 这也是"**跑 37 分钟无输出**"的真凶 ✓。
+  · **防线**（`tools/dump_tushare_finance.py`）：`--mc-from` **限住续更区间**（默认 = 日线缓存最早日 8/24 ✓，
+    实测 bj 票 **0 秒 / 0 次 API** ✓，此前 33 分钟 ✗）；写盘一律 `atomic_json_dump`（tmp + `os.replace` ⇒
+    绝不半截 ✓）；读盘一律 `read_json_tolerant`（**逐对抢救** ✓）；财务缓存损坏 ⇒ **删掉重下**（绝不整只跳过 ✗）
+    并计入进度行 ✓；进度行改**每 50 只** + `mc调用` 计数 + 秒/只 ⇒ 不会再长时间无输出 ✗。
+- ★ **市值续更静默失效（第二个坑）**：`load_calendar` 返回的 `cal_int` 是 **datetime64[D] 天数偏移**
+  （2026-08-24 → `20726`），拿 `20260824` 直接 `searchsorted` ⇒ 恒返回日历末尾 ⇒ 续更循环**一次都没执行**、
+  `fin_pe_ttm/fin_pb` **静默停在 8/21** ✗ ⇒ 新增 `_d8_offset()` **换域** ✓。复验 002487：市值续更到 **10/9** ✓，
+  = **32,378,755,894 元**（43.75 × 7.4 亿股 ✓ 量级吻合 ✓）。
+- **FINANCE 全量跑完** ✓：`python tools/dump_tushare_finance.py --force --mc-tushare` ⇒ 写盘 **58082** 个 bin /
+  **5908** 只有数据 / 0 只空 / **191 秒**（此前两次都卡在 API 风暴里 ✗，用户原估"110 分钟档"⇒ 现 3 分钟 ✓）。
+  ROE 毛刺 7818 处只记录不改数据 ✓（`features/_finance_warnings.json` ✓）。
+- **Added `tools/rebuild_daily_from_sources.py`（三源重建行情 bin，默认 dry-run ✓）**：
+  主源 `trader_code` 的 raw 组（未复权真值 ✓，与 bundle 分钟聚合**逐位**一致 ✓，含北交所 ✓）+
+  因子源 `cn_data2` 的 `factor`（实测 `f / adj_tushare` **全历史恒定** ✓ ⇒ 干净 ✓）+
+  交叉核对 bundle 分钟聚合 / tushare 缓存（按日期对齐、容差 0.5% ✓），**默认零 API 调用** ✓。
+  · **顺带挖出两个口径事实**：现 `cn_data` 的 `factor` bin 与 tushare `adj` **不成比例** ✗（早段能差 13%~30% ✗）；
+    早段 `close/volume/amount` 与主源 raw 不成比例 ✗（复权因子不可能逐日摆动 ✗）⇒ 早段是坏数据 ✓。
+  · **首轮清单**（`ai_test/rebuild_dryrun_*.csv` ✓，全量扫描 ~90 秒 ✓）：待处理 **1398 只**、
+    **可补回行情 3778 天** ✓；其中 **641 只**（早段被丢 281 + 缺口 360）与 cn_data2 **逐位一致** ✓（口径确证 ✓）；
+    754 只"超长"票重建值与现值在日历内**逐位一致**（中位 2.6e-8 ✓）⇒ 重建这组等于**只删尾部 28 个越界槽** ✓（低风险）；
+    251 只（多为 bj 老代码）主源 h5 缺失 ⇒ 交人工 ✗。`--apply` 前自动备份到 `ai_test/backup_rebuild_<时间戳>/` ✓，
+    且写盘后自检 `first >= 0` ∧ `first + n <= 日历长` ✓（与 v1.20.93 硬规矩一致 ✓）。
+- **Tests**：`tests/test_tushare_finance.py` 加两组 10 项（21 项全过 ✓）——缓存截断**逐对抢救** / 原子写 /
+  `total_mv` 自愈 / 财务缓存**自动重下**；`_d8_offset` **换域** / `MC_FROM` **限区间**（窗口外一次 API 都不许调 ✗）。
+
 ## [1.20.93] - 2026-10-09
 
 ### Fixed / Added（行情 bin 索引错位：定位 + 修复 + 硬规矩；并发现两个可用数据源）

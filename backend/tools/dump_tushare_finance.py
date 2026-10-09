@@ -57,6 +57,31 @@ MC_TUSHARE_CACHE = ROOT / "data" / "tushare_cache" / "total_mv.json"
 ROE_SUSPECTS: List[dict] = []
 # `--roe-guard`：把毛刺 ROE **替换**成自算值（默认 False = 只记录、不动数据 ✓）
 ROE_GUARD = False
+# 「本地缓存 JSON 损坏、已删除并重新下载」的股票清单（进度行 / 收尾统计 ✓）
+CORRUPT_CACHE: List[str] = []
+# 市值（`daily_basic.total_mv`）续更的**下限日**（int YYYYMMDD ✓）—— 由 `--mc-from` 设定 ✓，
+# 见 `load_market_cap` 的注释：不设下限会从 2000 年起逐日调 API ✗（每只 ~6484 次 ✗✗）
+MC_FROM = 20260801
+# 本轮真正发生的 `daily_basic` 调用次数（进度行可见 ✓；正常应恒为 0 ✓）
+MC_FETCHED = 0
+
+
+def _d8_offset(d8: int) -> int:
+    """`20260824` → **datetime64[D] 的天数偏移**（与 `load_calendar` 的 `cal_int` 同域 ✓）。
+
+    ⚠ 必须换域再比（踩过 ✓）：`cal_int` 里存的是 20726 这种天数偏移，拿 YYYYMMDD 直接
+      `searchsorted` 会恒返回末尾 ⇒ 循环不执行、静默不动数据 ✗。
+    """
+    s = str(int(d8))
+    return int(np.datetime64("%s-%s-%s" % (s[:4], s[4:6], s[6:8]), "D").astype(np.int64))
+
+
+def _default_mc_from() -> int:
+    """默认下限 = tushare 日线缓存里**最早**的一天（= 2026-08-24 ✓，也正是预取覆盖的起点 ✓）；
+    没有日线缓存时退回 20260801 ✓。"""
+    ds = sorted(p.stem for p in (ROOT / "data" / "tushare_cache" / "daily").glob("*.json")
+                if len(p.stem) == 8 and p.stem.isdigit())
+    return int(ds[0]) if ds else 20260801
 
 # tushare 表 → 我们要的字段（声明 fields 参数 ⇒ 传输与缓存都小 ✓）
 TABLES = {
@@ -85,6 +110,68 @@ PIT_FIELDS = {
     "capex": ("cashflow", "c_pay_acq_const_fiolta"),
     "roe_waa": ("fina_indicator", "roe_waa"),
 }
+
+
+def atomic_json_dump(path: Path, obj) -> None:
+    """**原子**写 JSON（tmp + `os.replace` ✓）。
+
+    ⚠ 为什么不能直接 `open(w)`（2026-10-09 血泪 ✓）：
+      `data/tushare_cache/total_mv.json` 被写到 **3421194 字节**时进程被杀 ⇒ 文件停在
+      `"20260915|601825.SH"`（冒号都没写完 ✗）⇒ 之后**每次** `_mc_cache()` 都抛
+      `JSONDecodeError: Expecting ':' delimiter ... char 3421194` ✗ ⇒ `dump_tushare_finance.py
+      --mc-tushare` 每只股票都在第一步就失败、4 秒跑完、写盘 0 个 bin ✗（很难看出是缓存的问题）。
+      `os.replace` 在同一文件系统上是原子的 ⇒ 要么旧内容、要么新内容，**绝不会半截** ✓。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False)
+    os.replace(str(tmp), str(path))
+
+
+def read_json_tolerant(path: Path, what: str = "缓存") -> Tuple[Optional[dict], bool]:
+    """读 JSON ⇒ `(对象, 是否损坏)`。损坏时**逐对抢救**（保住完整部分 ✓），抢救不到返回 `(None, True)`。
+
+    抢救原理：文件被截断只可能停在**尾部** ✓ ⇒ 用 `JSONDecoder.raw_decode` 从 `{` 后按
+    (key, value) 一对一对推进，遇到解析不动的地方就停 —— 前面已解析的键值对全部是好的 ✓。
+    """
+    text = path.read_text(encoding="utf-8")
+    try:
+        return json.loads(text), False
+    except ValueError:
+        pass
+    dec = json.JSONDecoder()
+    i, n = 0, len(text)
+    while i < n and text[i].isspace():
+        i += 1
+    if i >= n or text[i] != "{":
+        print("  ⚠ %s 损坏且无法抢救（不是 JSON 对象）⇒ 整份丢弃" % what, flush=True)
+        return None, True
+    i += 1
+    out: dict = {}
+    while True:
+        while i < n and (text[i].isspace() or text[i] == ","):
+            i += 1
+        if i >= n or text[i] == "}":
+            break
+        try:
+            key, i = dec.raw_decode(text, i)
+        except ValueError:
+            break
+        while i < n and text[i].isspace():
+            i += 1
+        if i >= n or text[i] != ":":
+            break
+        i += 1
+        while i < n and text[i].isspace():
+            i += 1
+        try:
+            val, i = dec.raw_decode(text, i)
+        except ValueError:
+            break
+        out[key] = val
+    print("  ⚠ %s 损坏（JSON 截断）⇒ 抢救出 %d 条完整记录、尾部丢弃" % (what, len(out)), flush=True)
+    return (out or None), True
 
 
 def token() -> str:
@@ -325,7 +412,18 @@ def load_market_cap(qlib_dir: Path, cal_int: np.ndarray, code: str,
                     use_tushare: bool, tok: str, rate: float) -> np.ndarray:
     """当日总市值（**元**）：优先本地 `market_cap` bin（米筐口径 ✓，与旧 PE/PB 可比 ✓）；
     `use_tushare=True` 时用 tushare `daily_basic.total_mv`（万元 ⇒ ×1e4 ✓）**续**本地覆盖之后的日期 ✓。
+
+    ⚠⚠ **`MC_FROM` 下限绝不能去掉**（2026-10-09 挖出的"37 分钟无输出"真凶 ✓）：
+      本机有 **618 只**（588 只北交所 + 30 只）**没有** `market_cap.day.bin` ✗ ⇒ 若不设下限，
+      这里会从 **2000-01-04** 起逐日调 `daily_basic`（每只 **6484 次 × 0.31s ≈ 33 分钟/只** ✗✗），
+      而且那时每月只有 1~2 只股票有数据 ⇒ 几乎全部返回空值、还被写进缓存 ✗。
+      副作用有两层：① 全量跑起来看着"卡死"（≥200 只才打印一次进度 ✗）；
+      ② `_mc_cache(save=)` 每来一条新键就整份重写 3.4MB 的 `total_mv.json` ✗ ⇒ 进程被杀时
+      正好停在半个键值对上 ⇒ **files 被截断**、之后每次 `json.load` 都抛 `JSONDecodeError` ✗✗
+      （这正是 2026-10-09 那次缓存损坏的成因 ✓）。
+      ⇒ 现在只在 `[MC_FROM, 日历末]` 区间内续更 ✓，而这段全在预取缓存里 ⇒ **零 API 调用** ✓。
     """
+    global MC_FETCHED
     arr = np.full(len(cal_int), np.nan, dtype=np.float64)
     hit = read_bin(qlib_dir / "features" / code / "market_cap.day.bin")
     if hit is not None:
@@ -338,19 +436,31 @@ def load_market_cap(qlib_dir: Path, cal_int: np.ndarray, code: str,
     if last >= len(cal_int) - 1:
         return arr                                        # 本地已覆盖到末日 ⇒ 无需续 ✓
     ts_code = to_ts_code(code)
-    for pos in range(last + 1, len(cal_int)):
+    pending = 0
+    # ⚠ `cal_int` 是 **datetime64[D] 的天数偏移**（如 20726），不是 YYYYMMDD ✗（2026-10-09 踩过：
+    #   直接 `searchsorted(cal_int, 20260824)` 恒返回末尾 ⇒ 续更循环一次都没跑、PE/PB 停在 8/21 ✗）
+    lo_pos = int(np.searchsorted(cal_int, _d8_offset(MC_FROM)))
+    start_pos = max(last + 1, lo_pos)                     # ★ 下限：绝不从 2000 年起逐日调 API ✗
+    for pos in range(start_pos, len(cal_int)):
         d = str(np.datetime64(int(cal_int[pos]), "D")).replace("-", "")
         cache = _mc_cache()
         v = cache.get("%s|%s" % (d, ts_code))
         if v is None:
             r = ts_call("daily_basic", {"trade_date": d, "ts_code": ts_code}, "ts_code,total_mv", tok)
+            MC_FETCHED += 1
             dd = r.get("data") or {}
             items = dd.get("items") or []
             v = float(items[0][1]) * 1e4 if items and items[0][1] is not None else float("nan")
             cache["%s|%s" % (d, ts_code)] = v
-            _mc_cache(save=cache)
+            pending += 1
+            # ⚠ 攒 50 条再落盘（原来每来一条就整份重写 ⇒ 16 万条时写放大 ~GB 级、被杀的窗口也大 ✗）
+            if pending >= 50:
+                _mc_cache(save=cache)
+                pending = 0
             time.sleep(rate)
         arr[pos] = v
+    if pending:
+        _mc_cache(save=cache)
     return arr
 
 
@@ -358,32 +468,52 @@ _MC_CACHE: Optional[dict] = None
 
 
 def _mc_cache(save: Optional[dict] = None) -> dict:
-    """total_mv 的小缓存（按 (日期, 股票) 键 ✓）—— 只缓存"续"出来的那几十天 ✓。"""
+    """total_mv 的小缓存（按 (日期, 股票) 键 ✓）—— 只缓存"续"出来的那几十天 ✓。
+
+    ⚠ 读写都要**抗损坏**（2026-10-09 踩过 ✗）：原来 `json.load` 裸调 ⇒ 文件一旦被截断
+      （`prefetch_daily_basic.py` / 本脚本写盘时被杀）就**每次都炸**、整轮 dump 全废 ✗；
+      现在 ⇒ 抢救完整记录 + **就地原子修复** ⇒ 自愈 ✓，缺的键由 `load_market_cap` 按需重下 ✓。
+    """
     global _MC_CACHE
     if save is not None:
-        MC_TUSHARE_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        with open(MC_TUSHARE_CACHE, "w", encoding="utf-8") as f:
-            json.dump(save, f, ensure_ascii=False)
+        atomic_json_dump(MC_TUSHARE_CACHE, save)
         _MC_CACHE = save
         return save
     if _MC_CACHE is None:
         if MC_TUSHARE_CACHE.exists():
-            with open(MC_TUSHARE_CACHE, encoding="utf-8") as f:
-                _MC_CACHE = json.load(f)
+            obj, broken = read_json_tolerant(MC_TUSHARE_CACHE, "total_mv 缓存")
+            _MC_CACHE = obj if obj is not None else {}
+            if broken:                       # 抢救完立刻原子写回 ⇒ 下次不再报错 ✓
+                atomic_json_dump(MC_TUSHARE_CACHE, _MC_CACHE)
+                print("  ⇒ 已就地修复 total_mv 缓存（%d 条）；若缺很多天，"
+                      "跑 python tools/prefetch_daily_basic.py --apply 一次补齐最快 ✓"
+                      % len(_MC_CACHE), flush=True)
         else:
             _MC_CACHE = {}
     return _MC_CACHE
 
 
 def fetch_financials(qlib_code: str, tok: str, rate: float, refresh: bool = False) -> Dict[str, List[dict]]:
-    """拉（或读缓存）某股的四表。缓存 ⇒ 断点续跑、重跑几乎免费 ✓。"""
+    """拉（或读缓存）某股的四表。缓存 ⇒ 断点续跑、重跑几乎免费 ✓。
+
+    ⚠ 缓存损坏必须**自动重下**（2026-10-09）：某份缓存 JSON 被截断（实测 char 3421194 ✗）时，
+      绝不允许"整只跳过" ✗（那等于这只股票静默无数据）；这里 ⇒ 记进 `CORRUPT_CACHE`（进度行可见 ✓）
+      + 删掉坏文件 + 走完整重下路径 ✓。写盘一律走 `atomic_json_dump` ✓。
+    """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cp = CACHE_DIR / ("%s.json" % qlib_code)
     if cp.exists() and not refresh:
+        data = None
         try:
-            with open(cp, encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:                                     # noqa: BLE001
+            data, broken = read_json_tolerant(cp, "财务缓存 %s" % qlib_code)
+            if data is not None and not broken:
+                return data
+        except Exception as e:                                # noqa: BLE001
+            print("  ⚠ 财务缓存 %s 读取失败：%s: %s" % (qlib_code, type(e).__name__, e), flush=True)
+        CORRUPT_CACHE.append(qlib_code)
+        try:
+            cp.unlink()                                       # 删掉 ⇒ 下面重下并覆写 ✓（不跳过 ✗）
+        except OSError:
             pass
     ts_code = to_ts_code(qlib_code)
     data: Dict[str, List[dict]] = {}
@@ -393,8 +523,7 @@ def fetch_financials(qlib_code: str, tok: str, rate: float, refresh: bool = Fals
         cols = d.get("fields") or []
         data[api] = [dict(zip(cols, it)) for it in (d.get("items") or [])]
         time.sleep(rate)
-    with open(cp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+    atomic_json_dump(cp, data)
     return data
 
 
@@ -515,13 +644,17 @@ def main():
     ap.add_argument("--rate", type=float, default=0.31, help="每次 API 调用后的间隔秒（200/分钟档）")
     ap.add_argument("--mc-tushare", action="store_true",
                     help="本地 market_cap 覆盖不到的日期用 tushare daily_basic.total_mv 续")
+    ap.add_argument("--mc-from", type=int, default=0,
+                    help="市值续更的下限日（YYYYMMDD ✓；默认=tushare 日线缓存最早日；"
+                         "**不要设成很早** ✗ 见 load_market_cap 注释）")
     ap.add_argument("--refresh", action="store_true", help="忽略本地缓存，重新拉取")
     ap.add_argument("--roe-guard", action="store_true",
                     help="把明显毛刺的 ROE（tushare roe_waa）替换成自算值 累计归母净利/期末归母权益")
     args = ap.parse_args()
 
-    global ROE_GUARD
+    global ROE_GUARD, MC_FROM
     ROE_GUARD = bool(args.roe_guard)
+    MC_FROM = int(args.mc_from) or _default_mc_from()
 
     qlib_dir = Path(args.qlib_dir)
     cal, cal_int = load_calendar(qlib_dir)
@@ -534,8 +667,11 @@ def main():
                        if d.is_dir() and d.name[:2] in ("sh", "sz", "bj") and d.name[2:].isdigit())
     if args.limit:
         codes = codes[:args.limit]
-    print("日历 %d 天（%s ~ %s）| 待处理 %d 只 | rate=%.2fs | verify=%s"
-          % (len(cal), cal[0], cal[-1], len(codes), args.rate, args.verify), flush=True)
+    print("日历 %d 天（%s ~ %s）| 待处理 %d 只 | rate=%.2fs | verify=%s | mc_tushare=%s"
+          % (len(cal), cal[0], cal[-1], len(codes), args.rate, args.verify, args.mc_tushare), flush=True)
+    if args.mc_tushare:
+        print("市值续更下限 mc_from=%d（该日之后才动 daily_basic ✓；下限之前一律留 NaN ✗ 不猜）"
+              % MC_FROM, flush=True)
 
     t0 = time.time()
     done = empty = n_bins = n_skip = 0
@@ -559,15 +695,20 @@ def main():
                       % (code, {k: fields.get(k) for k in ("fin_rev_yoy", "fin_np_yoy",
                                                            "fin_pe_ttm", "fin_pb", "fin_fcf")},
                          max(fields)), flush=True)
-        if i % 200 == 0 or i == len(codes):
+        if i % 50 == 0 or i == len(codes):
             el = time.time() - t0
-            print("  进度 %d/%d  有数据 %d / 空 %d / tushare 无覆盖跳过 %d  写盘 %d 个 bin  %.0fs  预计剩余 %.0fs"
-                  % (i, len(codes), done, empty, n_skip, n_bins, el, el / i * (len(codes) - i)), flush=True)
+            print("  进度 %d/%d  有数据 %d / 空 %d / tushare 无覆盖跳过 %d / 损坏缓存重下 %d / mc调用 %d"
+                  "  写盘 %d 个 bin  %.0fs（%.2fs/只）  预计剩余 %.0fs"
+                  % (i, len(codes), done, empty, n_skip, len(CORRUPT_CACHE), MC_FETCHED,
+                     n_bins, el, el / i, el / i * (len(codes) - i)), flush=True)
 
     if args.verify:
         print("核对模式：未写盘 ✓")
         return
     print("完成：写盘 %d 个 bin（%d 只有数据 / %d 只空）用时 %.0fs" % (n_bins, done, empty, time.time() - t0))
+    if CORRUPT_CACHE:
+        print("⚠ 本地缓存损坏并已重新下载 %d 只（前 20：%s）"
+              % (len(CORRUPT_CACHE), ",".join(CORRUPT_CACHE[:20])))
     print("口径戳：%s" % write_meta(qlib_dir, done, n_bins, args.force, cal[-1]))
     if ROE_SUSPECTS:
         wp = qlib_dir / "features" / "_finance_warnings.json"

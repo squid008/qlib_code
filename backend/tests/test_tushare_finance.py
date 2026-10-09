@@ -218,5 +218,132 @@ class TestExpandDaily:
         assert got[3] == 2.0
 
 
+class TestCacheResilience:
+    """★ 本地缓存被写坏时**必须自愈**（2026-10-09 事故：`total_mv.json` 被截断 ⇒ 整轮 dump 全废 ✗）。
+
+    事故链条（都静默、最难查 ✗）：`prefetch_daily_basic.py` / `_mc_cache(save=)` 直接 `open(w)` 写
+    缓存 ⇒ 写到 **3421194 字节**时进程被杀 ⇒ 文件停在 `"20260915|601825.SH"`（冒号都没写完 ✗）⇒
+    此后**每次** `_mc_cache()` 都抛 `JSONDecodeError: char 3421194` ⇒ `--mc-tushare` 每只股票
+    都在第一步就失败、4 秒"跑完"、写盘 0 个 bin ✗（看着像工具坏了，其实是缓存坏了 ✗）。
+    防线：① 写盘一律 `atomic_json_dump`（tmp + `os.replace`，绝不半截 ✓）；
+          ② 读盘一律 `read_json_tolerant`（逐对抢救 ✓）；
+          ③ 财务缓存坏了 ⇒ **删掉重下**并计入进度行（绝不整只跳过 ✗）。
+    """
+
+    def test_read_ok(self, tmp_path):
+        p = tmp_path / "ok.json"
+        p.write_text('{"a": 1, "b": 2}', encoding="utf-8")
+        obj, broken = M.read_json_tolerant(p)
+        assert (obj, broken) == ({"a": 1, "b": 2}, False)
+
+    def test_salvages_truncated_tail(self, tmp_path):
+        """★ 截断只在尾部 ⇒ 前面的键值对必须**全部**救回来 ✓。"""
+        p = tmp_path / "bad.json"
+        full = M.json.dumps({"20260915|601825.SH": 1.0, "20260916|000001.SZ": 2.0,
+                             "20260917|000002.SZ": 3.0})
+        p.write_text(full[:full.rindex(",") + 1], encoding="utf-8")      # 切在最后一对之前
+        obj, broken = M.read_json_tolerant(p, "单测缓存")
+        assert broken is True
+        assert obj == {"20260915|601825.SH": 1.0, "20260916|000001.SZ": 2.0}
+
+    def test_truncated_mid_value_drops_only_that_pair(self, tmp_path):
+        p = tmp_path / "bad2.json"
+        full = M.json.dumps({"a": 1, "b": 2.0})
+        p.write_text(full[:full.rindex(":") + 1], encoding="utf-8")     # 切在最后一对的冒号后
+        obj, broken = M.read_json_tolerant(p)
+        assert broken is True and obj == {"a": 1}
+
+    def test_unrecoverable_returns_none(self, tmp_path):
+        p = tmp_path / "junk.json"
+        p.write_text("not json at all", encoding="utf-8")
+        obj, broken = M.read_json_tolerant(p)
+        assert obj is None and broken is True
+
+    def test_atomic_dump_leaves_no_tmp(self, tmp_path):
+        p = tmp_path / "x.json"
+        M.atomic_json_dump(p, {"k": 1})
+        assert M.json.loads(p.read_text(encoding="utf-8")) == {"k": 1}
+        assert not list(tmp_path.glob("*.tmp")), "原子写不该留下 .tmp ✓"
+
+    def test_mc_cache_self_heals(self, tmp_path, monkeypatch):
+        """★ total_mv 缓存截断 ⇒ 返回抢救结果 + **就地原子修复**（下次不再报错 ✓）。"""
+        mc = tmp_path / "total_mv.json"
+        full = M.json.dumps({"20260915|601825.SH": 1.0e8, "20260916|000001.SZ": 2.0e8})
+        mc.write_text(full[:full.rindex(",") + 1], encoding="utf-8")
+        monkeypatch.setattr(M, "MC_TUSHARE_CACHE", mc)
+        monkeypatch.setattr(M, "_MC_CACHE", None)
+        got = M._mc_cache()
+        assert got == {"20260915|601825.SH": 1.0e8}
+        assert M.json.loads(mc.read_text(encoding="utf-8")) == got, "应已就地修复 ✓"
+        monkeypatch.setattr(M, "_MC_CACHE", None)
+
+    def test_corrupt_fin_cache_is_redownloaded(self, tmp_path, monkeypatch):
+        """★ 财务缓存损坏 ⇒ **删掉重下**（不整只跳过 ✗）+ 计入 `CORRUPT_CACHE` ✓。"""
+        monkeypatch.setattr(M, "CACHE_DIR", tmp_path)
+        cp = tmp_path / "sz000001.json"
+        cp.write_text('{"income": [{"a": 1', encoding="utf-8")            # 截断
+        calls = []
+
+        def fake_ts_call(api, params, fields="", tok="", retry=3):
+            calls.append(api)
+            return {"code": 0, "data": {"fields": ["x"], "items": []}}
+
+        monkeypatch.setattr(M, "ts_call", fake_ts_call)
+        M.CORRUPT_CACHE.clear()
+        data = M.fetch_financials("sz000001", tok="t", rate=0.0)
+        assert set(calls) == set(M.TABLES), "四张表都要重新拉 ✓"
+        assert data == {k: [] for k in M.TABLES}
+        assert "sz000001" in M.CORRUPT_CACHE
+        assert M.json.loads(cp.read_text(encoding="utf-8")) == data, "坏缓存已被好数据覆写 ✓"
+        M.CORRUPT_CACHE.clear()
+
+
+class TestMarketCapExtend:
+    """★ 市值续更的两条硬规矩（2026-10-09 各踩过一次、都是**静默**的 ✗✗）。
+
+    事故链（两个 bug 叠在一起才炸）：`load_market_cap` 对**没有本地 `market_cap` bin** 的股票
+    （本机 **618 只** = 588 只北交所 + 30 只 ✗）会从**日历第一天 2000-01-04** 开始逐日调
+    `daily_basic`（每只 ~6484 次 × 0.31s ≈ **33 分钟/只** ✗✗）；而且每来一条新键就把 3.4MB 的
+    `total_mv.json` 整份重写一次 ✗ ⇒ 进程被杀时正好停在半个键值对上 ⇒ **文件被截断** ⇒
+    之后每次 `json.load` 都抛 `JSONDecodeError`（就是用户看到的那条 ✗）。
+    """
+
+    def test_d8_offset_is_day_offset_domain(self):
+        """★ `cal_int` 里是 **datetime64[D] 的天数偏移**（2026-08-24 → 20726），**不是** YYYYMMDD ✗。"""
+        assert M._d8_offset(20260824) == int(np.datetime64("2026-08-24", "D").astype(np.int64))
+        assert M._d8_offset(20260824) < 100000, (
+            "拿 YYYYMMDD 直接 searchsorted 会恒返回日历末尾 ⇒ 续更循环一次都不执行、"
+            "PE/PB 静默停在旧日期 ✗（实测就是这样 ✗）")
+
+    def test_mc_from_bounds_lookup_and_leaves_early_nan(self, tmp_path, monkeypatch):
+        """★ 无本地 market_cap 的票必须被 `MC_FROM` 限住：窗口内查缓存、窗口外留 NaN ✓，零 API 调用 ✓。"""
+        qlib = tmp_path
+        (qlib / "calendars").mkdir(parents=True)
+        (qlib / "features" / "sz000001").mkdir(parents=True)          # 故意不放 market_cap bin ✓
+        days = ["2026-08-21", "2026-08-24", "2026-08-25", "2026-08-26", "2026-09-01"]
+        (qlib / "calendars" / "day.txt").write_text("\n".join(days) + "\n", encoding="utf-8")
+        cal, cal_int = M.load_calendar(qlib)
+        mc = tmp_path / "total_mv.json"
+        monkeypatch.setattr(M, "MC_TUSHARE_CACHE", mc)
+        monkeypatch.setattr(M, "_MC_CACHE", None)
+        # ⚠ 缓存里存的是**元** ✓（`prefetch_daily_basic` 已经把 tushare 的万元 ×1e4 后落盘 ✓）
+        M.atomic_json_dump(mc, {"20260825|000001.SZ": 1.0e8, "20260901|000001.SZ": 2.0e8})
+        monkeypatch.setattr(M, "MC_FROM", 20260825)
+        calls = []
+
+        def fake_ts_call(api, params, fields="", tok="", retry=3):
+            calls.append(params)
+            return {"code": 0, "data": {"items": []}}
+
+        monkeypatch.setattr(M, "ts_call", fake_ts_call)
+        arr = M.load_market_cap(qlib, cal_int, "sz000001", True, "t", 0.0)
+        # ★ 只允许补「窗口内 + 缓存里缺」的那一天（2026-08-26）；窗口外（8/21 及更早）绝不调 ✗
+        assert [c["trade_date"] for c in calls] == ["20260826"], "窗口外绝不许调 API ✗（那是 33 分钟/只 的根源 ✗）"
+        assert not np.isfinite(arr[0]) and not np.isfinite(arr[1]), "MC_FROM 之前留 NaN ✓（不猜 ✗）"
+        assert arr[2] == pytest.approx(1.0e8) and arr[4] == pytest.approx(2.0e8)   # 万元 ×1e4 ✓
+        assert not np.isfinite(arr[3]), "补调返回空 ⇒ 留 NaN ✓"
+        monkeypatch.setattr(M, "_MC_CACHE", None)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-q"])
