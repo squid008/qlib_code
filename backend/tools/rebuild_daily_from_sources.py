@@ -175,8 +175,46 @@ class FactorSource:
         except Exception:                                                # noqa: BLE001
             return None
 
+    def _qlib_scale(self, code: str, rows: Dict[str, float], ks: List[str]) -> Optional[float]:
+        """用 **qlib 官方 factor 反解尺度常数** `c = median(factor_qlib(d)/adj(d))` ✓（首选 ✓）。
+
+        ★ 为什么首选它（2026-10-10 修 ✗）：tushare 口径要与平台**现有价位连续**（否则公式里的
+          绝对价阈值会集体错位 ✗✗）。实测：
+          · sh600718：旧值（平台在用的）与 `cn_data3` 官方**逐日 0.00%** 一致 ✓，而"上市首日归一化"
+            算出来的尺度比它大 **1.809 倍** ✗✗（差 +80.9% ✗）—— 因为该股**主源首日 ≠ 真上市首日** ✗，
+            1/(raw(主源首日)×adj) 这个归一化条件根本不成立 ✗；
+          · 改用官方 factor 反解 ⇒ 常数与官方同源 ⇒ **平台价位零跳变** ✓✓，而**复权路径仍用 tushare** ✓
+            （两者本就有票能差 0.1%~75% ✗，这正是用户要对照的点 ✓）。
+        """
+        p = self.feats / code / "factor.day.bin"
+        if not p.exists():
+            return None
+        a = np.fromfile(str(p), dtype="<f4")
+        if a.size < 2:
+            return None
+        first, vals = int(a[0]), a[1:]
+        ratios = []
+        # ★ 只取**最近**的若干重叠点定常数（不是全历史中位 ✗）：这样"最近价位"与平台/官方**完全相同** ✓
+        #   —— 价位连续性最要紧的是"现在这一刻不跳" ✓。全历史中位会在两条复权路径不同的票上
+        #   把常数取成折中值 ⇒ 近期价位也跟着偏 ✗。
+        step = max(1, vals.size // 200)
+        for i in range(vals.size - 1, -1, -step):
+            j = first + i
+            if not (0 <= j < len(self.cal2)):
+                continue
+            v = float(vals[i])
+            adj = _adj_at(rows, ks, self.cal2[j])
+            if v > 0 and adj and adj > 0:
+                ratios.append(v / adj)
+            if len(ratios) >= 20:
+                break
+        if len(ratios) < 5:
+            return None
+        return float(np.median(ratios))
+
     def _scale_tushare(self, code: str, rows: Dict[str, float], ks: List[str],
-                       raw: Dict[str, dict], cur_f: Dict[str, float]) -> Optional[float]:
+                       raw: Dict[str, dict], cur_f: Dict[str, float],
+                       bin_aligned: bool = True) -> Optional[float]:
         """见类注释的①②两条锚 ✓；返回 None 表示这只票定不了尺度（会跳过并计数 ✗）。"""
         got_recent = None
         pairs = []
@@ -189,22 +227,34 @@ class FactorSource:
                 break
         if len(pairs) >= 5:
             got_recent = float(np.median(pairs))
+        # ★★ 选锚策略（2026-10-10 定稿 ✓）—— 目标是**价位不跳**（否则公式里的绝对价阈值集体错位 ✗✗）：
+        #   ① bin **对齐可信**（健康 / 仅早段被丢）：用**它自己最近 30 日的 `f/adj` 中位** ✓
+        #      —— 平台现有价位就是这个口径（米筐底 + tushare 尾段 ✓）⇒ 重建后价位几乎不变 ✓✓
+        #      （实测：全市场尾部偏差 **中位 4.4e-05** ✓）。⚠ 千万别在这类票上用"上市首日归一化"✗✗：
+        #      主源首日 ≠ 真上市首日的票（如 sh600718）会**整体偏 1.809 倍** ✗（实测 ✓）。
+        #   ② bin **不可信**（超长 / 缺口 ✗）：它自己的近期值也是错的 ✗（实测超长票 factor 错位 28 天、
+        #      尾巴被按错位因子锚过 ⇒ 若这 28 天里有除权就整体偏 ✗）⇒ 退到 **qlib 官方 factor 反解** ✓
+        #      （自洽 ✓ 且与官方同尺度 ✓，实测 692 只"改档"里 677 只属于这一类 ✓）。
+        #   ③ 都没有 ⇒ 上市首日归一化兜底 ✓。
+        if bin_aligned and got_recent is not None:
+            self.stats["用现网近期锚（bin 可信）"] += 1
+            q_c = self._qlib_scale(code, rows, ks)
+            if q_c is not None and abs(got_recent / q_c - 1.0) > 0.005:
+                self.stats["  ↳ 与官方尺度差>0.5%（仍沿用现网 ✓）"] += 1
+            return got_recent
+        qlib_c = self._qlib_scale(code, rows, ks)
+        if qlib_c is not None:
+            self.stats["用 qlib 官方锚（bin 不可信）"] += 1
+            return qlib_c
+        if got_recent is not None:
+            self.stats["用现网近期锚（兜底）"] += 1
+            return got_recent
         d0 = min(raw)
         v0 = raw[d0].get("close")
         a0 = _adj_at(rows, ks, d0)
-        listing = 1.0 / (float(v0) * float(a0)) if (v0 and v0 > 0 and a0 and a0 > 0) else None
-        if got_recent is not None and listing is not None:
-            self.stats["两锚都有"] += 1
-            if abs(got_recent / listing - 1.0) > 0.005:
-                self.stats["两锚差>0.5%"] += 1
-            self.stats["用现网尾部锚"] += 1
-            return got_recent
-        if got_recent is not None:
-            self.stats["用现网尾部锚"] += 1
-            return got_recent
-        if listing is not None:
-            self.stats["用上市首日锚"] += 1
-            return listing
+        if v0 and v0 > 0 and a0 and a0 > 0:
+            self.stats["用上市首日锚（兜底）"] += 1
+            return 1.0 / (float(v0) * float(a0))
         return None
 
     def asof(self, code: str) -> Optional[Tuple[str, float]]:
@@ -221,14 +271,20 @@ class FactorSource:
         return self._asof[code]
 
     def series(self, code: str, raw: Optional[Dict[str, dict]] = None,
-               cur_f: Optional[Dict[str, float]] = None) -> Optional[Dict[str, float]]:
-        """`f(d)` ⇒ {日期: f}（两套口径都支持 ✓；不缓存结果，免得 5900 只 × 4000 项撑爆内存 ✗）。"""
+               cur_f: Optional[Dict[str, float]] = None,
+               bin_aligned: bool = True) -> Optional[Dict[str, float]]:
+        """`f(d)` ⇒ {日期: f}（两套口径都支持 ✓；不缓存结果，免得 5900 只 × 4000 项撑爆内存 ✗）。
+
+        `bin_aligned`：该股现有 bin 是否**可信对齐**（`第一版 classify` 的判据 ✓）。健康票要沿用
+        平台现有价位（= 米筐口径 ✓）⇒ 尺度必须从它自己的近期值反解 ✓；坏票没得依 ⇒ 才退到官方锚 ✓。
+        见 `_scale_tushare` 的说明 ✓。
+        """
         if self.mode == "tushare":
             rows = self.adj_full(code)
             if not rows or not raw:
                 return None
             ks = sorted(rows)
-            scale = self._scale_tushare(code, rows, ks, raw, cur_f or {})
+            scale = self._scale_tushare(code, rows, ks, raw, cur_f or {}, bin_aligned)
             if scale is None:
                 self.stats["定不了尺度"] += 1
                 return None
@@ -506,7 +562,9 @@ def main():
         if kind or args.all:
             if raw is None:
                 continue
-            fmap = fs.series(code, raw, cur_factor_map(qlib, code, cal))
+            # `早段被丢` 的票 bin 是**对齐的** ✓（只是早段没值）⇒ 它的近期值可信 ⇒ 沿用现网尺度 ✓
+            bin_aligned = kind in ("", "早段被丢")
+            fmap = fs.series(code, raw, cur_factor_map(qlib, code, cal), bin_aligned)
             if not fmap:
                 stat["无因子源"] += 1
                 if args.verbose:
@@ -600,22 +658,30 @@ def main():
         if not args.apply:
             continue
         # ---------------- 写盘（整段重写 ✓；先备份 ✓）----------------
+        # ★★ 硬规矩：**同一只股票的 10 个字段必须写同一个 (first, n)** ✗✗
+        #   （v1.20.93 的 `tests/test_bin_index_invariants.py::test_field_lengths_consistent_within_stock`
+        #    钉住的就是这条 ✓）。第一版按"各字段自身有限值范围"分别写 ⇒ `amount`（近 91 天本就 NaN ✗）
+        #    等字段会提前结束 ⇒ 同一只股票 10 个字段 (first,n) 不一致 ✗ ⇒ 被测试抓住 ✓。
+        #    现在取**全部字段的并集范围** ✓，缺的位置补 NaN ✓。
+        spans = []
+        for f in FIELDS:
+            fin = np.isfinite(nv[f])
+            if fin.any():
+                spans.append((int(np.where(fin)[0][0]), int(np.where(fin)[0][-1])))
+        if not spans:
+            continue
+        lo = min(s[0] for s in spans)
+        hi = max(s[1] for s in spans)
+        first = new["first"] + lo
+        n_span = hi - lo + 1
+        if first < 0 or first + n_span > len(cal):
+            raise SystemExit("✗ %s 写盘越界：first=%d n=%d 日历=%d" % (code, first, n_span, len(cal)))
         for f in FIELDS:
             p = feats / code / ("%s.day.bin" % f)
-            arr = nv[f]
-            fin = np.isfinite(arr)
             if p.exists() and not args.no_backup:
                 (backup_root / code).mkdir(parents=True, exist_ok=True)
                 shutil.copy2(str(p), str(backup_root / code / p.name))
-            if not fin.any():
-                continue
-            lo = int(np.where(fin)[0][0])
-            hi = int(np.where(fin)[0][-1])
-            first = new["first"] + lo
-            write_bin(p, first, arr[lo:hi + 1])
-            # ★ 硬规矩（见 tests/test_bin_index_invariants.py）：绝不写负 header / 越界 ✗
-            if first < 0 or first + (hi - lo + 1) > len(cal):
-                raise SystemExit("✗ %s/%s 写盘越界：first=%d n=%d 日历=%d" % (code, f, first, hi - lo + 1, len(cal)))
+            write_bin(p, first, nv[f][lo:hi + 1])
             n_written += 1
 
     # ---------------- 报告 ----------------

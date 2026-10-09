@@ -29,19 +29,34 @@ FIELDS = ("close", "open", "high", "low", "volume", "amount", "factor",
           "adjclose", "change", "vwap")
 
 
+def _dataset_dirs() -> list:
+    """要体检的数据集：显式设了 `QLIB_PROVIDER_DIR` 就只查它 ✓，否则**查全部** `data/cn_data*` ✓。
+
+    ★ 2026-10-10 扩成全数据集：三套数据并存后（cn_data 米筐 era / cn_data2 tushare / cn_data3 qlib 官方 ✓），
+      只查 `cn_data` 会漏掉**真正在被用的** `cn_data2` ✗ —— 重建工具的第一版把同一只股票的
+      10 个字段写成了**不同的 (first,n)** ✗，正好能被本文件的第三项测试抓住 ✓✓。
+    """
+    env = os.environ.get("QLIB_PROVIDER_DIR")
+    if env:
+        return [env]
+    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # <repo>/
+    return sorted(p for p in glob.glob(os.path.join(base, "data", "cn_data*")) if os.path.isdir(p))
+
+
 def _hdr(p):
     with open(p, "rb") as f:
         first = int(np.frombuffer(f.read(4), dtype="<f4")[0])
     return first, (os.path.getsize(p) - 4) // 4
 
 
-@pytest.fixture(scope="module")
-def ctx():
-    cal_p = os.path.join(QLIB, "calendars", "day.txt")
+@pytest.fixture(scope="module", params=_dataset_dirs() or [QLIB])
+def ctx(request):
+    root = request.param
+    cal_p = os.path.join(root, "calendars", "day.txt")
     if not os.path.exists(cal_p):
-        pytest.skip("没有 qlib 数据目录：%s" % QLIB)
+        pytest.skip("没有 qlib 数据目录：%s" % root)
     cal = pd.read_csv(cal_p, header=None)[0].astype(str)
-    feats = os.path.join(QLIB, "features")
+    feats = os.path.join(root, "features")
     codes = sorted(d for d in os.listdir(feats) if os.path.isdir(os.path.join(feats, d)))
     if not codes:
         pytest.skip("features 为空")
