@@ -55,7 +55,10 @@ ai_test/
 # TypeScript 编译缓存
 *.tsbuildinfo
 
-# 本地专用文档（不上传到 GitHub）
+# 本地专用配置 / 文档（不上传到 GitHub）
+# ★ 2026-10-09：`config.local.json` 放**本机凭证**（如 tushare token ✓）—— 一旦入库
+#   就等于把令牌公开（还会被另一台机器 pull 到 ✓）⇒ 必须忽略 ✗。
+config.local.json
 md/upload.md
 # ⚠ md/开发记录.md 已于 v1.19.1（2026-09-13 用户要求）**移出忽略列表**、随仓库上传，
 #   便于两地同步（此前为本地专用，需手动拷贝）。
