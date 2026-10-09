@@ -30,16 +30,17 @@ def _load_dump_tool():
 
 
 class TestMapping:
-    def test_q_1_to_9(self):
+    def test_q_1_to_10(self):
         expect = ["$ftdx_pe_ttm", "$ftdx_pb", "$ftdx_rev_yoy", "$ftdx_np_yoy", "$ftdx_gross_margin",
-                  "$ftdx_roe", "$ftdx_roa", "$ftdx_eps", "$ftdx_op_yoy"]
+                  "$ftdx_roe", "$ftdx_roa", "$ftdx_eps", "$ftdx_op_yoy",
+                  "$ftdx_fcf"]               # ★ v1.20.81：自由现金流TTM（元）
         for i, expr in enumerate(expect, 1):
             assert translate_formula("OUT:FINANCE_TDX(%d);" % i).expression == expr
 
     def test_same_numbering_as_finance(self):
         """同 q 同含义（两源交叉校验的前提 ✓）—— 编号说明必须逐项一致。"""
         assert [d for _f, d in FINANCE_TDX_FIELDS] == [d for _f, d in FINANCE_FIELDS]
-        assert len(FINANCE_TDX_FIELDS) == 9
+        assert len(FINANCE_TDX_FIELDS) == 10
 
     def test_lowercase_and_in_formula(self):
         assert translate_formula("OUT:finance_tdx(2);").expression == "$ftdx_pb"
@@ -48,11 +49,11 @@ class TestMapping:
 
 
 class TestErrors:
-    @pytest.mark.parametrize("text", ["OUT:FINANCE_TDX(0);", "OUT:FINANCE_TDX(10);"])
+    @pytest.mark.parametrize("text", ["OUT:FINANCE_TDX(0);", "OUT:FINANCE_TDX(11);"])
     def test_out_of_range(self, text):
         with pytest.raises(CodeGenError) as e:
             translate_formula(text)
-        assert "1~9" in str(e.value) or "需在 1" in str(e.value)
+        assert "1~10" in str(e.value) or "需在 1" in str(e.value)
 
     @pytest.mark.parametrize("text", ["OUT:FINANCE_TDX(CLOSE);", "OUT:FINANCE_TDX(1.5);", "OUT:FINANCE_TDX();"])
     def test_non_const(self, text):

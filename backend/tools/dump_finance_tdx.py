@@ -26,6 +26,12 @@
 | 7 | ftdx_roa | 净利润 ÷ 资产总计 × 100 | 报告期累计（未用平均总资产） |
 | 8 | ftdx_eps | 基本每股收益 | 报告期累计（元） |
 | 9 | ftdx_op_yoy | 营业利润 | 累计同比（%） |
+| 10 | ftdx_fcf | 经营现金流净额(106) − 资本开支(113) | **自由现金流TTM**（元）；TTM = 累计(Q)+累计(上年年报)−累计(上年同期Q) |
+
+⚠⚠ 通达信 gpcw 里**同文件内口径不统一**（实测 2026-10-09，务必记住）：
+  · **单季**：营业收入(229)/营业成本(74)/营业利润(230)/净利润(94)/归母净利(231) —— 按年累加才得到累计 ✓
+  · **年内累计**：经营现金流净额(106)/资本开支(113)（实测 300750 2026q2 与米筐同报告期**比值 1.0000** ✓）
+    ⇒ **不要**把它们也去累加 ✗（会双计 ✗）
 
 未复权价 = `$close / $factor`（本机实测：米筐市值 ÷ (close/factor) == 通达信总股本，比值 **1.0000** ✓）。
 
@@ -171,6 +177,9 @@ def build_events(cw_dir: str, code_map: Dict[str, str], since: int = 19991231,
             npx_q = float(d["np_parent"][i])
             ta = float(d["total_assets"][i])
             gm_tdx = float(d["gross_margin"][i])         # 通达信自己的销售毛利率（金融股恒为 0）
+            # ⚠ 现金流两项是**年内累计**（不是单季 ✗）⇒ 直接取用、**不进**下面的累加 ✓
+            ocf_ytd = float(d["ocf"][i])
+            capex_ytd = float(d["capex"][i])
 
 
             # ---- 年内累计（单季 → 累计）：缺上一季就判 NaN（宁可没有，也别给错数 ✓）----
@@ -203,6 +212,17 @@ def build_events(cw_dir: str, code_map: Dict[str, str], since: int = 19991231,
                               for k in (1, 2, 3)]
             np_par_ttm = float(np.sum(four)) if all(np.isfinite(x) for x in four) else float("nan")
 
+            # ---- 自由现金流TTM（元，q=10）：累计 → TTM 标准式（与米筐路线同口径 ✓）----
+            fy_prev_q = "%dq4" % (y - 1)
+            fm = hist.get(code, {}).get(fy_prev_q)
+            fcf_ttm = float("nan")
+            if prev_m is not None and fm is not None:
+                _parts = (ocf_ytd - capex_ytd,
+                          fm.get("_ocf", float("nan")) - fm.get("_capex", float("nan")),
+                          prev_m.get("_ocf", float("nan")) - prev_m.get("_capex", float("nan")))
+                if all(np.isfinite(x) for x in _parts):
+                    fcf_ttm = _parts[0] + _parts[1] - _parts[2]
+
             m = {
                 "_quarter": q,
                 "_npx_q": npx_q,                             # 单季归母（供下一年的 TTM 滚用 ✓）
@@ -222,9 +242,11 @@ def build_events(cw_dir: str, code_map: Dict[str, str], since: int = 19991231,
                 "roe": float(d["roe"][i]),                   # 通达信给的就是**累计加权ROE** ✓
                 "roa": (net_c / ta * 100.0) if (np.isfinite(ta) and ta > 0 and np.isfinite(net_c)) else float("nan"),
                 "eps": float(d["eps"][i]),                   # 累计基本每股收益 ✓
+                "fcf": fcf_ttm,                              # 自由现金流TTM（元）
                 # 原料（同比基数 + PE/PB 的"财务腿"）
                 "_rev": rev_c, "_cost": cost_c, "_op": op_c, "_net": net_c, "_npx": npx_c,
                 "_np_ttm": (np_par_ttm if np.isfinite(np_par_ttm) else float(d["np_ttm"][i])),
+                "_ocf": ocf_ytd, "_capex": capex_ytd,        # 供后续报告期算 FCF-TTM（累计值 ✓）
                 "_equity": float(d["equity_parent"][i]),
                 "_shares": float(d["shares"][i]),
             }

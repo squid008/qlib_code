@@ -35,6 +35,7 @@
 | 7 | fin_roa         | %  | 报告期**净利润 / 期末总资产**（累计；未用平均总资产，见下方"口径差异"） |
 | 8 | fin_eps         | 元 | 报告期**基本每股收益**（累计） |
 | 9 | fin_op_yoy      | %  | 报告期**营业利润** / 去年同期同报告期 - 1（累计同比；益盟同列指标） |
+| 10 | fin_fcf        | 元 | **自由现金流TTM** = 经营现金流净额TTM − 资本开支TTM（CAPEX=购建固定资产、无形资产和其他长期资产支付的现金）；TTM = 累计(Q)+累计(上年年报)−累计(上年同期Q) |
 
 注意事项：
 - 3~9 是**报告期口径**：日频序列只在**公告日**跳变（公告日前向填充），与益盟盘口显示一致 ✓。
@@ -68,6 +69,9 @@ FIN_FIELDS = [
     ("fin_roa", "%"),
     ("fin_eps", "元"),
     ("fin_op_yoy", "%"),
+    # ★ 2026-10-09 追加（用户要求「加个自由现金流的指标」）：自由现金流TTM（元）
+    #   = 经营活动现金流净额TTM − 资本开支TTM（CAPEX = "购建固定资产、无形资产和其他长期资产支付的现金"）
+    ("fin_fcf", "元"),
 ]
 
 # pit h5 里需要用到的原始字段（其余 380 多个不读）
@@ -76,6 +80,8 @@ NEED_PIT = [
     "profit_from_operation", "net_profitTTM", "np_parent_company_ownersTTM",
     "equity_parent_company", "total_equity", "total_assets",
     "return_on_equity_weighted_average", "basic_earnings_per_share",
+    # 自由现金流用（v1.20.81）：经营现金流净额 + 购建固定资产等支付的现金（均为**年内累计**）
+    "cash_flow_from_operating_activities", "cash_paid_for_asset",
 ]
 
 FIN_META_NAME = "_finance_meta.json"
@@ -291,6 +297,20 @@ def build_report_metrics(tab: PitTable) -> Dict[str, np.ndarray]:
             out["fin_roa"][i] = np_all[i] / ta[i] * 100.0
         if eps is not None and np.isfinite(eps[i]):
             out["fin_eps"][i] = eps[i]
+        # ---- 自由现金流TTM（元，v1.20.81）----
+        #   FCF_ttm = 经营现金流净额TTM − 资本开支TTM，两者都用**累计 → TTM** 的标准式：
+        #       TTM(Q) = 累计(Q) + 累计(上年年报) − 累计(上年同期 Q)
+        #   （对 Q4 该式自动退化为"累计(Q)" ✓）—— 四个取值都按 `info_date <= t` 取 ✓（PIT 安全 ✓）
+        ocf_c = tab.val_at("cash_flow_from_operating_activities", q, t)
+        capex_c = tab.val_at("cash_paid_for_asset", q, t)
+        fy_prev = "%dq4" % (int(q[:4]) - 1)
+        ocf_f = tab.val_at("cash_flow_from_operating_activities", fy_prev, t)
+        capex_f = tab.val_at("cash_paid_for_asset", fy_prev, t)
+        ocf_p = tab.val_at("cash_flow_from_operating_activities", pq, t) if pq else float("nan")
+        capex_p = tab.val_at("cash_paid_for_asset", pq, t) if pq else float("nan")
+        _vals = (ocf_c, capex_c, ocf_f, capex_f, ocf_p, capex_p)
+        if all(np.isfinite(v) for v in _vals):
+            out["fin_fcf"][i] = (ocf_c - capex_c) + (ocf_f - capex_f) - (ocf_p - capex_p)
     return out
 
 

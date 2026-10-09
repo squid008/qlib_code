@@ -972,9 +972,32 @@ def chip_turn_of(ev) -> "pd.Series":
                               "turn_max": _mx,
                               "turn_median": (float(np.nanmedian(_tv))
                                               if np.isfinite(_tv).any() else float("nan"))}
-        if np.isfinite(_mx) and _mx > 1.0:
-            return (_turn_field / 100.0).where(_turn_field > 0)
-        return _turn_field.where(_turn_field > 0)
+        _real = ((_turn_field / 100.0) if (np.isfinite(_mx) and _mx > 1.0)
+                 else _turn_field).where(_turn_field > 0)
+        # ★★ 2026-10-09 **逐股兜底**（修一个"静默、且随批次变化"的坑 ✗）：
+        #   `turn.day.bin` 在本机**只覆盖部分股票**（实测 2450/6141，且**只有 sh** ✓；sz/bj 没有 ✗）
+        #   ⇒ 原实现"面板只要**有一处**非空就整体用 `$turn`"✗ ⇒ 没有该字段的股票换手率**全 NaN**
+        #     ⇒ 筹码整条**静默全 NaN** ✗（COST/WINNER 对那批股票直接用不了，而界面上毫无提示 ✗）；
+        #     更糟的是**物化是按批做的**（400 只/批 ✓）⇒ 批次里"有没有 sh 股票"会改变该批 sz 股票的
+        #     结果 ⇒ **同一只股票在不同批次里算出不同值** ✗✗（实测：sz300750 有值、sz000001 全 NaN ✓）。
+        #   ⇒ 缺失的按**标签对齐**回退到反推口径 ✓（有 turn 的股票**一个数都不变** ✓）。
+        _proxy = _chip_turn_proxy(ev, _px_raw, _vol, _mc)
+        _filled = _real.where(_real.notna(), _proxy)
+        try:
+            ev._chip_turn_meta["turn_missing_ratio"] = float(
+                (_real.isna()).to_numpy().mean())
+        except Exception:                                     # noqa: BLE001
+            pass
+        return _filled
+    return _chip_turn_proxy(ev, _px_raw, _vol, _mc)
+
+
+def _chip_turn_proxy(ev, _px_raw, _vol, _mc) -> "pd.Series":
+    """**反推**换手率 = 成交量(校准成股) × 真实价 ÷ 市值（v1.20.44 的逐股手/股自校准 ✓）。
+
+    ★ v1.20.81：从 `chip_turn_of` 里抽出来 ✓ —— 这样"有 `$turn` 的股票用真值、缺的**按股票**兜底"
+      可以共用同一段代码 ✓（原实现整体二选一 ⇒ 没有 turn 的股票换手率全 NaN ✗，见 `chip_turn_of`）。
+    """
     _vol_sh = _vol
     try:
         _amt = ev.field("$amount")

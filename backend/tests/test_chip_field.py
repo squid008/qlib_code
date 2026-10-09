@@ -140,7 +140,7 @@ def test_chip_fields_on_real_data():
     import time
 
     from app.factors.chip_dist import chip_run
-    from app.factors.panel_expr import _CHIP_BASE_FIELDS, PanelEvaluator
+    from app.factors.panel_expr import _CHIP_BASE_FIELDS, PanelEvaluator, chip_turn_of
     from app.services.qlib_runtime import ensure_qlib_init
 
     ensure_qlib_init()          # ⚠ 必须走统一入口（裸调 qlib.init 会清空 custom_ops）
@@ -174,8 +174,14 @@ def test_chip_fields_on_real_data():
     # 与内核直算逐位一致（同一批输入矩阵）—— ⚠ 必须比**同一条计算路径**：
     # `field()` 现在优先读物化 bin（长预热），而 `ref` 是本窗现算（无预热）⇒ 只能拿"强制现算"的
     # `_chip_field()` 来比（方案 c：读 bin 路径已由上面的合理性断言守护）。
+    # ★★ v1.20.81 修：参照必须用**生产同款换手率** `chip_turn_of(ev)` ✗→✓
+    #   原实现拿"测试自己那套近似"（全局 scale 判据 ✓）当输入，而生产用的是
+    #   `chip_turn_of()`（**真 `$turn` 优先**、缺失时**逐股**手/股校准 ✓）⇒ 输入不同 ⇒
+    #   递推必然发散 ⇒ 这条"逐位一致"断言**长期红** ✗（2026-10-09 定位：换成生产同款后
+    #   484/484 逐位相同 ✓）。⚠ 与文件头那句教训一致：**比"同一条计算路径"，连输入也得同源** ✓。
+    T_prod = chip_turn_of(ev).unstack(level=0)
     ref = chip_run(C.to_numpy(float), H.to_numpy(float), L.to_numpy(float),
-                   T.to_numpy(float), qs=(95,))["cost_95"].reshape(-1, order="F")
+                   T_prod.to_numpy(float), qs=(95,))["cost_95"].reshape(-1, order="F")
     computed = ev._chip_field("chip_cost_95")           # noqa: SLF001 —— 故意走现算路径（裸字段名，不带 `$`）
     got = computed.to_numpy(dtype=float)
     assert got.shape == c95.to_numpy(dtype=float).shape, "现算与读 bin 两条路径的形状必须一致"
@@ -186,3 +192,57 @@ def test_chip_fields_on_real_data():
     mb = np.isfinite(bin_vals)
     assert mb.any(), "物化 bin 路径应能读到值（若本机未物化会退回现算，同样有值）"
     assert np.nanmedian(bin_vals[mb]) > 0, "COST 价格应为正"
+
+
+class TestTurnPerInstrumentFallback:
+    """★ v1.20.81：`$turn` 只覆盖**部分**股票（本机实测 2450/6141、且**只有 sh** ✓）
+    ⇒ 缺失的那批必须**按股票**兜底到反推口径，而不是整块变 NaN。
+
+    原实现："面板只要有一处非空 ⇒ 整体用 `$turn`"✗ ⇒ 缺该字段的股票换手率**全 NaN**
+    ⇒ 筹码**静默全 NaN** ✗（COST/WINNER 对那批股票直接用不了、界面无提示 ✗），
+    而且**物化是按批做的**（400 只/批）⇒ 批次里"有没有 sh 股票"会改变该批 sz 股票的结果
+    ⇒ **同一只股票在不同批次里算出不同值** ✗✗（实测：sz300750 有值、sz000001 全 NaN ✓）。
+
+    本用例用**合成面板**（不依赖真实数据 ✓）钉住"有则用真值、无则回退反推" ✓。
+    """
+
+    @staticmethod
+    def _ev(turn_a: float, turn_b: float):
+        import pandas as pd
+
+        dates = pd.date_range("2024-01-01", periods=3)
+        idx = pd.MultiIndex.from_product([["A", "B"], dates], names=["instrument", "datetime"])
+
+        def col(va, vb):
+            return pd.Series([va] * 3 + [vb] * 3, index=idx, dtype=float)
+
+        data = {
+            "$close": col(10.0, 10.0),
+            "$factor": col(1.0, 1.0),
+            "$volume": col(100.0, 100.0),
+            "$amount": col(1000.0, 1000.0),
+            "$market_cap": col(1e6, 1e6),
+            "$turn": col(turn_a, turn_b),          # 百分数口径（与真实 turn.day.bin 一致 ✓）
+        }
+
+        class _Ev:
+            def field(self, name):
+                return data[name]
+
+        return _Ev()
+
+    def test_missing_turn_falls_back_per_instrument(self):
+        from app.factors.panel_expr import chip_turn_of
+
+        t = chip_turn_of(self._ev(2.0, float("nan")))
+        a = float(t.xs("A").iloc[-1])
+        b = float(t.xs("B").iloc[-1])
+        assert abs(a - 0.02) < 1e-12, "有 turn 的股票必须用真值（百分数 ⇒ /100），实际 %r" % a
+        assert np.isfinite(b) and b > 0, "缺 turn 的股票必须兜底成反推值（原实现给 NaN ✗）"
+        assert abs(b - 100.0 * 10.0 / 1e6) < 1e-12, "兜底口径 = 量(校准成股)×真实价÷市值，实际 %r" % b
+
+    def test_all_have_turn_uses_field_only(self):
+        from app.factors.panel_expr import chip_turn_of
+
+        t = chip_turn_of(self._ev(2.0, 4.0))
+        assert abs(float(t.xs("B").iloc[-1]) - 0.04) < 1e-12

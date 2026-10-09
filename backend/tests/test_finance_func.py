@@ -23,6 +23,7 @@ from app.factors.parser.semantic import SemanticError
 _EXPECTED = [
     "市盈率TTM", "市净率", "营业收入增长率", "净利润增长率",
     "销售毛利率", "净资产收益率ROE", "总资产收益率ROA", "每股收益(基本)", "营业利润增长率",
+    "自由现金流TTM",
 ]
 _DUMP_TOOL = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tools", "dump_finance.py"))
 
@@ -38,10 +39,11 @@ def _load_dump_tool():
 
 
 class TestFinanceMapping:
-    def test_q_1_to_9_maps_to_fields(self):
+    def test_q_1_to_10_maps_to_fields(self):
         expect = [
             "$fin_pe_ttm", "$fin_pb", "$fin_rev_yoy", "$fin_np_yoy", "$fin_gross_margin",
             "$fin_roe", "$fin_roa", "$fin_eps", "$fin_op_yoy",
+            "$fin_fcf",                      # ★ v1.20.81：自由现金流TTM（元）
         ]
         for i, expr in enumerate(expect, 1):
             r = translate_formula(f"OUT:FINANCE({i});")
@@ -71,11 +73,11 @@ class TestFinanceMapping:
 
 
 class TestFinanceErrors:
-    @pytest.mark.parametrize("text", ["OUT:FINANCE(0);", "OUT:FINANCE(10);", "OUT:FINANCE(-1);"])
+    @pytest.mark.parametrize("text", ["OUT:FINANCE(0);", "OUT:FINANCE(11);", "OUT:FINANCE(-1);"])
     def test_out_of_range(self, text):
         with pytest.raises(CodeGenError) as e:
             translate_formula(text)
-        assert "1~9" in str(e.value) or "需在 1" in str(e.value)
+        assert "1~10" in str(e.value) or "需在 1" in str(e.value)
 
     @pytest.mark.parametrize("text", ["OUT:FINANCE(CLOSE);", "OUT:FINANCE(1.5);", "OUT:FINANCE();"])
     def test_non_const_q(self, text):
@@ -104,6 +106,6 @@ class TestFinanceCrossFileConsistency:
 
     def test_units_declared(self):
         mod = _load_dump_tool()
-        assert len(mod.FIN_FIELDS) == 9
+        assert len(mod.FIN_FIELDS) == 10
         # 单位表存在（dump 侧用它写 meta），且长度一致
         assert all(u for _f, u in mod.FIN_FIELDS)

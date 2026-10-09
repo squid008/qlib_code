@@ -48,6 +48,10 @@ IDX_NP_PARENT = 231      # 归属于母公司所有者的净利润（元）
 IDX_GROSS_MARGIN = 201   # 销售毛利率（%）（通达信自己算好的，与益盟同口径 ✓）
 IDX_ROE_WEIGHTED = 280   # 加权净资产收益率（%）（与米筐 return_on_equity_weighted_average 逐位一致 ✓）
 IDX_NP_TTM = 275         # 近一年净利润（元）—— PE(TTM) 用
+# ★ 2026-10-09：自由现金流用（⚠ 这两个是**年内累计**，与营收/净利的"单季"口径**不同** ✗✓
+#   实测：300750 2026q2 的 106 == 米筐同报告期 `cash_flow_from_operating_activities`（比值 1.0000 ✓））
+IDX_OCF = 106            # 经营活动产生的现金流量净额（元，年内累计）
+IDX_CAPEX = 113          # 购建固定资产、无形资产和其他长期资产支付的现金（元，年内累计）
 
 WANT = {
     "eps": IDX_EPS,
@@ -63,6 +67,8 @@ WANT = {
     "gross_margin": IDX_GROSS_MARGIN,
     "roe": IDX_ROE_WEIGHTED,
     "np_ttm": IDX_NP_TTM,
+    "ocf": IDX_OCF,          # 经营现金流净额（年内累计）
+    "capex": IDX_CAPEX,      # 资本开支（年内累计）
 }
 
 DEFAULT_CW_DIR = os.environ.get("TDX_CW_DIR", r"D:\new_tdx\vipdoc\cw")
