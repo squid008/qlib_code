@@ -25,6 +25,7 @@ from ..services.custom_formulas import (
     update_custom_formula as _update_custom_formula,
     delete_custom_formula as _delete_custom_formula,
     find_live_by_name as _find_live_by_name,          # ★ v1.20.82：保存查重 ✓
+    mark_dependents_stale as _mark_dependents_stale,  # ★ v1.20.87：依赖自动失效 ✓
 )
 from .. import config
 from ..engine.task_manager import get_task_manager
@@ -145,7 +146,11 @@ def create_saved_formula(req: CustomFormulaBody):
         dup = _find_live_by_name(t.name)
         if dup is not None:
             return _dup_conflict("create", t.name, dup)
-    return _create_custom_formula(t.name, req.formula.strip(), t.expression)
+    item = _create_custom_formula(t.name, req.formula.strip(), t.expression)
+    # ★ v1.20.87：**自动**把引用了本公式的其它公式标为待重编 ✓（用户 2026-10-09：
+    #   「改被调用公式的正文，依赖它的公式必须重存一遍」能不能避免 ⇒ 现在从机制上避免了 ✓）
+    _mark_dependents_stale(t.name, exclude_id=item.get("id"))
+    return item
 
 
 @router.put("/custom-formulas/{formula_id}", summary="编辑自定义公式（重新编译并保存）")
@@ -163,6 +168,10 @@ def update_saved_formula(formula_id: str, req: CustomFormulaBody):
     item = _update_custom_formula(formula_id, t.name, req.formula.strip(), t.expression)
     if item is None:
         raise HTTPException(status_code=404, detail="公式不存在")
+    # ★ v1.20.87：同上 —— 改了正文 ⇒ 引用它的公式（含传递）自动待重编 ✓（避免"回测对、
+    #   单因子测试还是旧值" ✓）；⚠ 必须放在 `_update_custom_formula` **之后**（它内部持锁 ✓，
+    #   而 `mark_dependents_stale` 也要拿同一把锁 ⇒ 晚一步调用才不会自锁 ✓）。
+    _mark_dependents_stale(t.name, exclude_id=formula_id)
     return item
 
 

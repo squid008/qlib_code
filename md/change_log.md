@@ -3,6 +3,36 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.87] - 2026-10-09
+
+### Added（① 公式依赖**自动失效** —— 彻底堵掉"回测对、单因子测试还是旧值"）
+
+- **用户 2026-10-09 追问**：「改**被调用公式**的正文后依赖它的公式必须重存一遍 ✗（回测按原文重编 ✓、
+  单因子测试/事件研究用缓存 `expression` ✗）——**那能不能避免呢？**」⇒ 能 ✓，本次落地 ✓。
+- `services/custom_formulas.mark_dependents_stale(name, exclude_id)`：保存/编辑公式后，把**引用了它**的
+  公式（**含传递依赖** A→B→C ✓）的 `codegen` 戳**清空** ✓ ⇒ 下次读列表时由既有
+  `refresh_stale_expressions()` **自动按新正文重编** ✓（编译失败只保留旧串、绝不 500 ✓）。
+- 细节：**整词**匹配（`CPX` 不误伤 `CPX2`、`深跌10` 不误伤 `深跌100` ✓）、**排除自己**（输出名常出现在
+  自己正文里 ✓）、传递依赖循环到不动点（≤5 轮 ✓）、**幂等**、**只动本装机文件**（别人的条目由他那台
+  自己重编 ✓，与既有设计一致 ✓）、跳过墓碑 ✓。
+- 接线：`POST/PUT /api/factors/custom-formulas` 在**落盘之后**调用（⚠ 那两个服务函数内部持锁 ✗，
+  标记函数也要同一把锁 ⇒ 必须在**锁外**调用，否则自锁 ✓）。
+- 测试：`backend/tests/test_formula_dep_stale.py`（6 项：直接依赖 ✓、传递依赖 ✓、整词匹配 ✓、
+  排除自己 + 幂等 ✓、墓碑 ✓，以及**端到端**"标脏 ⇒ 重编成新正文"✓）。
+- 待办（用户已确认要做 ✓）：**②** 物化引用提示（保存时 warning + `_market_meta.json` 存**正文哈希**、
+  `/api/version` 比对 ⇒ "文件在但内容旧"这种也能被发现 ✓）；**③** `mkt_*` 缺失时**现算回退**
+  （现已确认：缺失只会"整列 NaN + 一次性告警"，**不回退** ✗；唯一有退路的是筹码 `COST(36)` 这类 ✓）。
+
+## [1.20.86] - 2026-10-09
+
+### Added（③ 行情增量落地：追加日历 + 扩行情类字段，方案 A）
+
+- `backend/tools/dump_tushare_daily.py`：把新交易日追加进 `calendars/day.txt` 并扩**行情类**字段
+  （`close/open/high/low/vwap/volume/amount/change/factor/adjclose` ✓；口径在重叠日 8/21 上逐项反解验证 ✓）。
+  ⚠ `pre*` 五个字段**不写**（它们是**前复权价** = `价 ÷ factor 末值` ✗ 不是"前一日价" ✓，由
+  `tools/build_preclose.py` 物化 ⇒ 数据更新后跑一次 `--overwrite` ✓）。
+- `instruments/*.txt` 同步延续到新末日（否则新日期"选不出票"✗；冻结原末日成分口径 ✓）。
+
 ## [1.20.85] - 2026-10-09
 
 ### Added（tushare 继续接管：**涨跌停价 + ST 标签**，并在 FINANCE 全量跑完后**自动串联**执行）

@@ -301,6 +301,68 @@ def find_live_by_name(name: str, exclude_id: Optional[str] = None) -> Optional[d
     return None
 
 
+def _text_refs(text: str, name: str) -> bool:
+    """正文里是否**引用了**公式 name（**整词**匹配、大小写不敏感 ✓）。
+
+    ⚠ 必须整词（不能 `in` 子串 ✗）：`CPX` 会命中 `CPX2`、`深跌10` 会命中 `深跌100` ✗。
+    中文名天然是"一个词"（`isalnum()` 为真 ✓）⇒ 不用正则也稳 ✓（也避免给本模块引 `re` ✓）。
+    """
+    if not text or not name:
+        return False
+    want = name.strip().lower()
+    if not want:
+        return False
+    toks, cur = [], ""
+    for ch in text:
+        if ch.isalnum() or ch == "_":
+            cur += ch
+        else:
+            if cur:
+                toks.append(cur.lower())
+                cur = ""
+    if cur:
+        toks.append(cur.lower())
+    return want in toks
+
+
+def mark_dependents_stale(name: str, exclude_id: str = "") -> List[str]:
+    """★ v1.20.87：把**引用了 `name` 的公式**（含**传递**依赖 ✓）标记为"待重编"，返回被标记的名字 ✓。
+
+    为什么必须（用户 2026-10-09 追问「能不能避免」✓）：改**被调用公式**的正文后，依赖方缓存里的
+    `expression` 是**内联展开过的旧正文** ✗，而 `refresh_stale_expressions` 只看全局
+    `CODEGEN_SEMANTICS` 戳 ✗ ⇒ 不手动重存就永远是旧值 ⇒ 出现最误导的现象：
+    **回测（按原文重编 ✓）是对的、单因子测试/事件研究（用缓存 ✗）还是旧值** ✓。
+
+    做法：把它们的 `codegen` 戳**清空** ✓ ⇒ 下次 `list_custom_formulas()` 时被
+    `refresh_stale_expressions` 自动按新正文重编 ✓（编译失败只保留旧串、绝不 500 ✓）。
+    细节：
+      · **传递依赖**：A→B→C 时改 C 要连 B、A 一起失效 ⇒ 循环到不动点（最多 5 轮 ✓）；
+      · **排除自己**：输出名通常出现在自己正文里 ✗ 不能自己把自己标脏（无意义 ✓）；
+      · **只动本装机文件** ✓：别人的条目不动（由他那台自己重编 ✓，与既有设计一致 ✓）。
+    """
+    with _lock:
+        mine = _read_items(_MY_FILE)
+        frontier = {str(name or "")}
+        changed: List[str] = []
+        for _ in range(5):
+            grew = False
+            for it in mine:
+                if it.get("deleted") or (exclude_id and it.get("id") == exclude_id):
+                    continue
+                if (it.get("codegen") or "") != CODEGEN_SEMANTICS:
+                    continue                     # 已经是"待重编"状态 ⇒ 不必再标 ✓
+                if any(_text_refs(it.get("text") or "", n) for n in frontier):
+                    it["codegen"] = ""           # 清戳 ⇒ 下次读列表自动重编 ✓
+                    changed.append(it.get("name") or "")
+                    frontier.add(str(it.get("name") or ""))
+                    grew = True
+            if not grew:
+                break
+        if changed:
+            _save_my(mine)
+        return [c for c in changed if c]
+
+
 def _save_my(items: List[dict]) -> None:
     """写**自己的**文件（原子替换 ✓）并触发公式库的 git 自动同步 ✓。"""
     os.makedirs(os.path.dirname(_MY_FILE) or ".", exist_ok=True)
