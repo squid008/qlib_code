@@ -322,6 +322,36 @@ def materialize_impact(name: str) -> List[str]:
     return sorted({sp.field for sp in specs})
 
 
+def materialized_fields() -> set:
+    """`_market_meta.json` 里**已物化**的字段名集合（读不到 / 没物化过 ⇒ 空集 ✓）。"""
+    import json                                      # noqa: PLC0415
+    try:
+        with open(market_meta_path(), "r", encoding="utf-8") as f:
+            meta = json.load(f) or {}
+    except Exception:                                # noqa: BLE001
+        return set()
+    return {str(d.get("field") or "") for d in (meta.get("specs") or []) if d.get("field")}
+
+
+def missing_materialized_fields(text: str) -> List[str]:
+    """这段公式原文里用到、但 meta 里**还没物化**的 `mkt_*` 字段（空 = 没有缺口 ✓）。
+
+    为什么要有它（用户 2026-10-09：「我把 `总股票数:=BLOCKSETNUM('全部A股')` 改成**中证1000**，
+    **不提示重新物化吗**？」✓）：① 的指纹判据只覆盖"**被** `INSUM(...)` 引用的公式" ✗，
+    而这次改的是**用法本身**（公式自己**含有** BLOCKSETNUM/INSUM ✓）⇒ 判据覆盖不到 ✗✗。
+    改动后果：板块换了 ⇒ `block_key` 不同 ⇒ **字段名也换了**（`mkt_num_all` → `mkt_num_csi1000` ✗）
+    ⇒ 新字段**没有 bin** ✗ ⇒ 单因子测试/事件研究靠 ③ 的现算兜住（BLOCKSETNUM 很便宜 ✓，
+    INSUM 慢但结果一致 ✓），而 **qlib 回测链没有现算退路** ✗ ⇒ 很可能直接报"取不到该 feature" ✗
+    ⇒ 必须提示 ✓。
+    ⚠ meta 里一条规格都没有（从没物化 / 很老的物化 ✓）⇒ **不提示** ✗（无从判断，别误报 ✓）。
+    """
+    want = {s.field for s in specs_from_text(text or "")}
+    known = materialized_fields()
+    if not known:
+        return []
+    return sorted(want - known)
+
+
 def _stored_fingerprints() -> Dict[str, str]:
     """读 `_market_meta.json` 里存的被调公式指纹（读不到 ⇒ 空 dict ✓，调用方据此**不提示** ✓）。"""
     import json                                      # noqa: PLC0415
