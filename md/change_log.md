@@ -3,6 +3,43 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.84] - 2026-10-09
+
+### Added（★ 财务数据源切到 **tushare**：先与米筐对拍通过，再用它更新新数据）
+
+- **背景**（用户 2026-10-09）：米筐 rqalpha bundle 是**本机快照**（财务只到 2026 中报、行情到 08-21 ✗），
+  用户升到 tushare **3000 积分**并要求「**跟米筐对拍核对下，没啥问题，后面的新数据就用它**」✓。
+- **新增工具** `backend/tools/dump_tushare_finance.py`：tushare 四表（`income`/`balancesheet`/
+  `cashflow`/`fina_indicator`）→ 与 `dump_finance.py` **逐项同口径**的 `features/{code}/fin_*.day.bin`
+  （字段表直接 `from dump_finance import FIN_FIELDS` ⇒ 口径唯一 ✓）+ 口径戳（`source: tushare` ✓）。
+  支持 `--codes/--limit/--verify/--force/--rate/--refresh/--mc-tushare/--roe-guard` ✓；
+  逐股 JSON 缓存到 `data/tushare_cache/`（**断点续跑** ✓ 重跑几乎免费 ✓）。
+- **对拍结论**（证据脚本 `ai_test/probe_crosscheck_fin.py` / `_many.py` ✓ 共三层）：
+  · **A) 原始财务值**（同一报告期）：40 只 × 8 字段 × 最近 8 期 ≈ **2173 格**，
+    **99.0% 逐位相同**（差异 < 1e-9 ✓）；超 0.01% 的只有 **23 格（1.06%）**，
+    且集中在 **5 只个股的追溯调整期**（2%~12% ✓，两源对"调整后数字"的收录口径差 ✓）+
+    2 格是**米筐把 EPS 只存 2 位小数**导致的舍入差（0.98 vs 0.99 ✓ 不是错 ✗）。
+  · **B) 落盘产物**：宁德时代/当升科技 10 个字段 @2026-08-21 **全部 1e-8 内一致** ✓；
+    茅台/平安的差**全部来自"tushare 已有中报（2026q2），米筐快照还停在一季报"** ✓✓
+    —— 正是换源要拿到的新数据 ✓。
+  · **C) 市值源**：米筐 `market_cap` vs tushare `daily_basic.total_mv`（万元→元）8 只全一致到 **1e-8** ✓
+    ⇒ PE/PB 的差异不是市值源造成的 ✓（已排除 ✓）。
+- **实测口径修正**（对拍直接抓出来的 ✓）：
+  · 「营业收入」必须用 tushare **`total_revenue`（营业总收入）** ✗ 不能用 `revenue`：
+    实测茅台系统性差 **1.86%**（它有财务公司利息收入 ✓）；改后逐项 0 差 ✓。
+  · tushare `fina_indicator.roe_waa` **偶有毛刺**：平安银行 **2026q1 = 0.24** ✗（同股上一期 2.8、
+    下一期 5.22 ✓ 米筐 2.83 ✓）⇒ 工具会把它记进 `features/_finance_warnings.json`
+    （**默认只记录、不改数据** ✓；`--roe-guard` 才用"累计归母净利/期末归母权益"替换 ✓）。
+  · ⚠ **北交所覆盖不到**：`430xxx` 等 tushare 只有 `fina_indicator`、三张表 **0 行** ✗
+    ⇒ 这类股票**整只跳过**（保持米筐数据不动 ✓）—— 否则会只写 `fin_roe`、其余字段留在米筐值上，
+    造成**同一只股票字段来自两个源**且无法分辨 ✗✗（588 只 bj ✓）。
+- **验证**：`backend/tests/test_tushare_finance.py`（12 项：字段表与 codegen 逐项一致 ✓、
+  `YYYYMMDD`→`YYYY-MM-DD` 与 `np.datetime64` 陷阱 ✓、`000001.SZ`↔`sz000001` ✓、
+  **PIT 语义（更正行只在公告日之后生效 ✓、报告期前取不到 ✓、`report_type='1'` 过滤 ✓）**、
+  TTM=累计(Q)+累计(上年年报)−累计(上年同期Q) ✓、毛利率/ROA/FCF ✓、ROE 毛刺记录与 guard ✓）。
+- **数据**：全量 dump 已启动（6161 只 ≈ 2.5~3 小时；tushare 财务接口**必须逐股拉** ✗ ⇒
+  5000 只 × 4 表 ≈ 2 万次调用 ✓ 在 200 次/分钟限额内 ✓）；`dump_finance.py` 保留为**回退方案** ✓。
+
 ## [1.20.83] - 2026-10-09
 
 ### Fixed（★ `COUNT(X,N)` 是**静默错**：数的是"非 NaN 个数"✗ 而不是"条件成立天数"）
