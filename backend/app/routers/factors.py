@@ -130,6 +130,30 @@ def list_saved_formulas():
     return {"items": _list_custom_formulas()}
 
 
+def _market_impact_warning(name: str) -> str:
+    """★ v1.20.89：保存的公式被**横向统计物化**（`mkt_*`）引用 ⇒ 当场告知"物化值已过期" ✓。
+
+    用户 2026-10-09：把 `IS_GOLD_PIT:轨迹` 改成 `<10` 后问「物化会有影响吗？**我没有看到提示**」
+    ⇒ 影响**有** ✓（`mkt_insum_all_is_gold_pit_...` 仍是 `<0` 口径算的 ✓），而提示**没有任何出口** ✗：
+      · ② 的指纹比对只在**后端启动时**跑一次 ✗，保存后不重启永远是旧结论 ✗；
+      · 前端**根本没读** `chip_meta`/`market_meta` ✗✗（`grep` frontend 0 处引用 ✓）。
+    ⇒ 在**保存这条路径上**直接答一句 ✓（最贴近用户动作的位置 ✓），文案与 `/api/version` 同源 ✓。
+    返回空串 = 无影响 ✓（前端只看真假 ✓）。
+    """
+    try:
+        from ..factors.market_stat import materialize_impact
+        fields = materialize_impact(name)
+    except Exception:                                            # noqa: BLE001
+        return ""
+    if not fields:
+        return ""
+    return ("⚠ 这条公式被横向统计物化引用：%s ⇒ 现有 `mkt_*` 值仍是**旧口径**"
+            "（文件名只哈希公式名 ⇒ 名字不变、值有数、不报错 ✗）。\n"
+            "· 只是临时试验 ⇒ 改回原样即可（指纹会自动重新吻合 ✓，**无需**重物化 ✓）\n"
+            "· 确认保留新口径 ⇒ 跑 `python backend/tools/materialize_market.py --overwrite` ✓"
+            % "、".join(fields))
+
+
 @router.post("/custom-formulas", summary="编译并保存自定义公式")
 def create_saved_formula(req: CustomFormulaBody):
     """编译用户公式并保存到 workdir/custom_formulas.json，返回保存的条目。
@@ -140,6 +164,8 @@ def create_saved_formula(req: CustomFormulaBody):
       现在按**输出名**查（后端是唯一权威：名字由编译器定 ✓），命中返回
       **409 + `conflict`** ✓ ⇒ 前端给"覆盖它 / 仍新建一条 / 取消"✓；
       `allow_duplicate=true`（= 用户点了"仍新建一条"✓）即跳过本次提示 ✓。
+
+    ★ v1.20.89：返回体里带 `materialize_warning`（被 `mkt_*` 引用却改了正文 ⇒ 非空 ✓）。
     """
     t = _compile_formula_or_400(req.formula, req.patchable)
     if not req.allow_duplicate:
@@ -150,6 +176,8 @@ def create_saved_formula(req: CustomFormulaBody):
     # ★ v1.20.87：**自动**把引用了本公式的其它公式标为待重编 ✓（用户 2026-10-09：
     #   「改被调用公式的正文，依赖它的公式必须重存一遍」能不能避免 ⇒ 现在从机制上避免了 ✓）
     _mark_dependents_stale(t.name, exclude_id=item.get("id"))
+    # ★ v1.20.89：被物化引用 ⇒ 当场提示"物化值已过期" ✓（用户实测"看不到提示" ✓）
+    item["materialize_warning"] = _market_impact_warning(t.name)
     return item
 
 
@@ -172,6 +200,9 @@ def update_saved_formula(formula_id: str, req: CustomFormulaBody):
     #   单因子测试还是旧值" ✓）；⚠ 必须放在 `_update_custom_formula` **之后**（它内部持锁 ✓，
     #   而 `mark_dependents_stale` 也要拿同一把锁 ⇒ 晚一步调用才不会自锁 ✓）。
     _mark_dependents_stale(t.name, exclude_id=formula_id)
+    # ★ v1.20.89：编辑被物化引用的公式 ⇒ 同样当场提示（用户 2026-10-09 实测：
+    #   `IS_GOLD_PIT:轨迹<10` 改了之后**看不到任何提示** ✓ ⇒ 现在保存返回里就有 ✓）
+    item["materialize_warning"] = _market_impact_warning(t.name)
     return item
 
 

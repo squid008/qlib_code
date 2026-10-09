@@ -127,7 +127,16 @@ def create_app() -> FastAPI:
         ⇒ 必须跑 `python backend/tools/materialize_chip.py 400 --overwrite` ✓，
         再 `python backend/tools/verify_materialized.py` 核对 ✓。
         """
-        return {"version": __version__, "chip_meta": chip_meta, "market_meta": market_meta}
+        # ★ v1.20.89：**实时**比对物化指纹 ⇒ 保存公式后刷新页面即可见 ✓
+        #   （原来返回的是**启动时**抓的快照 ✗ ⇒ 不重启永远是旧结论 ✗，用户 2026-10-09
+        #   实测"改了 `IS_GOLD_PIT` 却看不到提示" ✓）。本函数很轻（读 meta + 编译被引用的
+        #   那两三个公式 ✓）⇒ 每次请求都算没问题 ✓。
+        try:
+            from .factors.market_stat import market_meta_state_live
+            _mm = market_meta_state_live()
+        except Exception:                                    # noqa: BLE001
+            _mm = market_meta
+        return {"version": __version__, "chip_meta": chip_meta, "market_meta": _mm}
 
     # 参数校验错误：返回友好信息，不暴露堆栈
     @app.exception_handler(RequestValidationError)

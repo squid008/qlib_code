@@ -452,6 +452,8 @@ export default function App() {
       syncFormulasToForm(next, ids)
       setFormulaInput('')
       setFormulaConflict(null)
+      // ★ v1.20.89：新建的公式若被 `mkt_*` 物化引用 ⇒ 当场提示"物化值已过期" ✓（同上）
+      if (item.materialize_warning) setFormulaError(item.materialize_warning)
     } catch (e: unknown) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const data = (e as any)?.response?.data
@@ -558,6 +560,11 @@ export default function App() {
       syncFormulasToForm(next, selectedFormulaIds)
       setEditingId(null)
       setEditingText('')
+      // ★ v1.20.89：改的若是**被横向统计物化引用**的公式（如 `IS_GOLD_PIT`）⇒ 当场提示
+      //   "物化值已过期" ✓（用户 2026-10-09：把它改成 `轨迹<10` 后**看不到任何提示** ✗ ——
+      //   原因：指纹比对只在后端启动时跑 ✗、且前端压根没读 `market_meta` ✗✗ ⇒ 后端现在随
+      //   保存直接返回 ✓）。文案是长多行 ✓，面板已用 `whitespace-pre-line` 渲染 ✓。
+      if (item.materialize_warning) setFormulaError(item.materialize_warning)
     } catch (e: unknown) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const detail = (e as any)?.response?.data?.detail

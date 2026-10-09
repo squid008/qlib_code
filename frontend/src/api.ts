@@ -240,6 +240,11 @@ export interface CustomFormula {
   expression: string // 编译后的 qlib 表达式（回测用，前端默认不展示）
   created_at: string
   updated_at: string
+  /**
+   * ★ v1.20.89：这条公式**被横向统计物化引用**（`mkt_*`）时，保存后后端给的"物化值已过期"
+   * 提示（无影响时为空串/缺省 ✓）。用户 2026-10-09 实测「改了 `IS_GOLD_PIT` 看不到提示」✓。
+   */
+  materialize_warning?: string
 }
 export async function listCustomFormulas(): Promise<{ items: CustomFormula[] }> {
   const { data } = await http.get<{ items: CustomFormula[] }>('/factors/custom-formulas')

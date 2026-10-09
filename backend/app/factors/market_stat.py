@@ -274,6 +274,49 @@ def stale_formula_names() -> List[str]:
     return sorted(n for n, h in stored.items() if now.get(n) not in (None, h))
 
 
+def stale_message(names: Sequence[str]) -> str:
+    """过期提示的中文长文案（`/api/version` 与**保存时**共用 ✓，只此一份 ✓）。"""
+    return ("被横向统计物化引用的公式正文已改：%s ⇒ 现有 `mkt_*` bin 仍是**旧口径**"
+            "（文件名只哈希**公式名** ✗ ⇒ 文件名不变、值有数、不报错 ✗）。"
+            "处理：① 只是临时试验 ⇒ **改回原样**即可（指纹会自动重新吻合 ✓，无需重物化 ✓）；"
+            "② 确认保留新口径 ⇒ 重跑 `python backend/tools/materialize_market.py --overwrite` ✓"
+            % "、".join(names))
+
+
+def materialize_impact(name: str) -> List[str]:
+    """这次保存的公式**被哪些物化字段引用** ⇒ 返回那些 `mkt_*` 字段名（空 = 无影响 ✓）。
+
+    为什么要有它（用户 2026-10-09：「我把 `IS_GOLD_PIT:轨迹` 改成了 `<10`，物化会有影响吗？
+    **我没有看到提示**」✓）：② 的检查原来只在**后端启动时**跑一次 ✗、而且前端**根本没读**
+    `chip_meta`/`market_meta` ✗✗（`grep` frontend 0 处引用 ✓）⇒ 保存公式后**没有任何提示出口** ✗。
+    ⇒ 保存路径直接问一句"你改的这条有没有被物化引用" ✓，有就当场告诉用户 ✓。
+    """
+    key = (name or "").strip().upper()
+    if not key:
+        return []
+    try:
+        specs = list(discover_specs())          # 扫公式库现推（meta 缺失也能答 ✓）
+    except Exception:                            # noqa: BLE001
+        return []
+    return sorted({sp.field for sp in specs if (sp.formula or "").strip().upper() == key})
+
+
+def market_meta_state_live() -> Dict:
+    """`market_meta_state()` + **实时**指纹比对（每次调用都算 ✓，供 `/api/version` 用 ✓）。
+
+    ⚠ 启动时抓的那份是**快照** ✗ ⇒ 保存公式后不重启就永远是旧结论 ✗（用户实测"看不到提示"✓）。
+    """
+    st = market_meta_state()
+    try:
+        stale = stale_formula_names()
+        if stale:
+            st.update({"ok": False, "state": "stale_formula",
+                       "stale_formulas": stale, "message": stale_message(stale)})
+    except Exception:                            # noqa: BLE001
+        pass
+    return st
+
+
 # ---------------------------------------------------------------------------
 # ★ v1.20.87：`mkt_*` 物化文件缺失 ⇒ **现算回退**（用户 2026-10-09 要求 ✓）
 # ---------------------------------------------------------------------------
