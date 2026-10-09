@@ -20,7 +20,7 @@ import {
   deleteCustomFormula,
   getSingleFactorTestTasks,
 } from './api'
-import type { BacktestCapacity, CustomFormula } from './api'
+import type { BacktestCapacity, CustomFormula, CustomFormulaConflict } from './api'
 import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog } from './types'
 import MetricCards from './components/MetricCards'
 import NavChart from './components/NavChart'
@@ -136,9 +136,16 @@ export default function App() {
   const [showFormulaPanel, setShowFormulaPanel] = useState(false) // 是否展开公式编辑面板
   const [formulaError, setFormulaError] = useState('') // 公式编译错误提示
   const [formulaTranslating, setFormulaTranslating] = useState(false)
-  // 编辑状态：editingId 非空时对应公式进入编辑模式
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingText, setEditingText] = useState('')
+  // ★ v1.20.82：保存查重（用户 2026-10-09「加个保存查重提示，我记得以前有查重啊」）——
+  //   老查重只比**正文完全相同**（见下面的 `addCustomFormula` 早退分支）✗ ⇒ 正文差一个
+  //   注释/空行就绕过去了（实测 `IS_GOLD_PIT` 被并存两条 ✗）。现在改由**后端按输出名**判
+  //   （名字是唯一可寻址键 ✓，`INSUM`/公式间调用都只认名字 ✓），命中就 409 +
+  //   `conflict`；这里只是把冲突显示出来，让用户选，**绝不擅自删/覆盖任何东西** ✓。
+  const [formulaConflict, setFormulaConflict] = useState<
+    { text: string; existing: CustomFormulaConflict } | null
+  >(null)
   // 单因子测试面板（不训练模型，勾选因子后快速诊断）
   const [showSingleTestPanel, setShowSingleTestPanel] = useState(false)
   // 交易信号测试面板（v1.19.38）：上传外部买入信号 CSV（同事格式 / 聚宽成交明细）
@@ -421,33 +428,75 @@ export default function App() {
   }
 
   // 添加自定义公式：编译并保存到后端，默认勾选
-  const addCustomFormula = async () => {
+  // `allowDuplicate` = 用户已在查重提示里明确选了「仍新建一条」（同名并存 ✓ 后端不再拦 ✓）
+  const addCustomFormula = async (allowDuplicate = false) => {
     const text = formulaInput.trim()
     if (!text) {
       setFormulaError('请先输入公式')
       return
     }
+    setFormulaConflict(null)
+    // 快检：**正文一字不差**已经存过 ⇒ 连请求都不用发（后端还会按**输出名**兜一层 ✓）
     if (customFormulas.some((f) => f.text.trim() === text)) {
-      setFormulaError('该公式已存在，可直接勾选使用或点编辑修改')
+      setFormulaError('该公式已存在（正文完全相同），可直接勾选使用，或点它右侧「编辑」修改')
       return
     }
     setFormulaTranslating(true)
     setFormulaError('')
     try {
-      const item = await createCustomFormula(text)
+      const item = await createCustomFormula(text, allowDuplicate)
       const next = [...customFormulas, item]
       setCustomFormulas(next)
       const ids = new Set(selectedFormulaIds).add(item.id)
       setSelectedFormulaIds(ids)
       syncFormulasToForm(next, ids)
       setFormulaInput('')
+      setFormulaConflict(null)
     } catch (e: unknown) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const detail = (e as any)?.response?.data?.detail
-      setFormulaError(detail ? String(detail) : '公式编译失败，请检查语法')
+      const data = (e as any)?.response?.data
+      // ★ 409 + `conflict` ⇒ 不是编译错误，而是**同名** ⇒ 走下面的提示条（用户定夺 ✓），
+      //   输入框里的正文**原样保留** ✓（清空就白敲了 ✗）
+      if (data?.conflict) {
+        setFormulaConflict({ text, existing: data.conflict as CustomFormulaConflict })
+        return
+      }
+      setFormulaError(data?.detail ? String(data.detail) : '公式编译失败，请检查语法')
     } finally {
       setFormulaTranslating(false)
     }
+  }
+
+  // 查重提示 →「覆盖它」：把新正文写进**已有那条**（不新增条目 ⇒ 列表保持干净 ✓）
+  const overwriteConflictFormula = async () => {
+    if (!formulaConflict) return
+    const { text, existing } = formulaConflict
+    setFormulaTranslating(true)
+    setFormulaError('')
+    try {
+      const item = await updateCustomFormula(existing.id, text)
+      const next = customFormulas.some((x) => x.id === item.id)
+        ? customFormulas.map((x) => (x.id === item.id ? item : x))
+        : [...customFormulas, item]      // 本地列表可能陈旧（另一台机器新增的）⇒ 补进来 ✓
+      setCustomFormulas(next)
+      const ids = new Set(selectedFormulaIds).add(item.id)
+      setSelectedFormulaIds(ids)
+      syncFormulasToForm(next, ids)
+      setFormulaInput('')
+      setFormulaConflict(null)
+    } catch (e: unknown) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const detail = (e as any)?.response?.data?.detail
+      setFormulaConflict(null)
+      setFormulaError(detail ? String(detail) : '公式保存失败，请检查语法')
+    } finally {
+      setFormulaTranslating(false)
+    }
+  }
+
+  // 查重提示 →「仍新建一条」（同名并存 ⇒ 后端 `allow_duplicate` 放行 ✓）
+  const createConflictAnyway = () => {
+    void addCustomFormula(true)
   }
 
   // 删除自定义公式（同时从后端删除）
@@ -1237,9 +1286,17 @@ export default function App() {
               formulaTranslating={formulaTranslating}
               editingId={editingId}
               editingText={editingText}
-              onInputChange={setFormulaInput}
+              formulaConflict={formulaConflict}
+              // 改动正文 ⇒ 之前的查重结论就过期了（名字可能已变）⇒ 顺手收起提示条 ✓
+              onInputChange={(v) => {
+                setFormulaInput(v)
+                if (formulaConflict) setFormulaConflict(null)
+              }}
               onEditingTextChange={setEditingText}
-              onAdd={addCustomFormula}
+              onAdd={() => addCustomFormula()}
+              onConflictOverwrite={overwriteConflictFormula}
+              onConflictCreateAnyway={createConflictAnyway}
+              onConflictCancel={() => setFormulaConflict(null)}
               onToggle={toggleFormula}
               onToggleAll={toggleAllFormulas}
               onStartEdit={startEditFormula}

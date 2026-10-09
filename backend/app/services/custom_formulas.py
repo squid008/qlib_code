@@ -266,6 +266,41 @@ def load_merged() -> List[dict]:
     return out
 
 
+def _name_key(name) -> str:
+    """公式名的**比较键**：大小写不敏感 + 忽略空白 ✓。
+
+    `PE` / `pe` / ` P E ` 视为同名 —— 与公式语言本身一致（变量名大小写不敏感 ✓，
+    前端 `formulaList.formulaKey` 也是先小写 ✓）。
+    """
+    return "".join(str(name or "").split()).lower()
+
+
+def find_live_by_name(name: str, exclude_id: Optional[str] = None) -> Optional[dict]:
+    """★ v1.20.82：按**输出名**找同名的**活体**公式（保存前查重 ✓）；没有 ⇒ None ✓。
+
+    【为什么按名字查】（身份明明是 `id` ✗）—— 因为**名字才是平台里唯一可寻址的键** ✓：
+      · `INSUM('全部A股','IS_GOLD_PIT',1,0)`、公式间调用 `基础:CPX>0`、列表展示，**全只认名字** ✗；
+      · 而身份是 `id` ⇒ **同名不同 id 会并列共存**（多装机设计的必然语义，见模块头 ✓）；
+      ⇒ 库里一旦出现两条同名，"引用取到哪条"就成了一场**静默的幸运抽奖** ✗✗
+        （2026-10-09 实测：`IS_GOLD_PIT` 被存了两次 ⇒ 列表并排两条、`INSUM` 取首个 ✓）。
+      ⇒ 保存时**查重提示**（前端给"覆盖 / 仍新建一条 / 取消"三选 ✓），由用户定夺 ✓ ——
+        既不再产生无名重复 ✗，也不越权替用户删东西 ✓。
+
+    ⚠ 判定口径 = **合并后**（`load_merged` ✓）+ **跳过 tombstone**（已删的不算 ✓）+
+      `exclude_id` 排除自己 ✓（编辑自己时别自己撞自己 ✓）。
+      **跨装机的同名条目照样提示** ✓ —— 它就在你实际加载/求值的库里 ✓，遮蔽风险一样真实 ✓。
+    """
+    key = _name_key(name)
+    if not key:
+        return None
+    for it in load_merged():
+        if it.get("deleted") or (exclude_id and it.get("id") == exclude_id):
+            continue
+        if _name_key(it.get("name")) == key:
+            return it
+    return None
+
+
 def _save_my(items: List[dict]) -> None:
     """写**自己的**文件（原子替换 ✓）并触发公式库的 git 自动同步 ✓。"""
     os.makedirs(os.path.dirname(_MY_FILE) or ".", exist_ok=True)

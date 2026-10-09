@@ -12,6 +12,7 @@ from typing import List, Optional
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..factors.catalog import get_catalog, FACTOR_PROVIDERS
@@ -23,6 +24,7 @@ from ..services.custom_formulas import (
     create_custom_formula as _create_custom_formula,
     update_custom_formula as _update_custom_formula,
     delete_custom_formula as _delete_custom_formula,
+    find_live_by_name as _find_live_by_name,          # ★ v1.20.82：保存查重 ✓
 )
 from .. import config
 from ..engine.task_manager import get_task_manager
@@ -40,6 +42,7 @@ class TranslateRequest(BaseModel):
 class CustomFormulaBody(BaseModel):
     formula: str = ""          # 与 TranslateRequest 一致：用户原文公式
     patchable: bool = False
+    allow_duplicate: bool = False   # ★ v1.20.82：明知同名也要新建一条 ⇒ 跳过查重提示 ✓
 
 
 def _formula_library(exclude_id: str = None) -> dict:
@@ -60,6 +63,40 @@ def _compile_formula_or_400(formula: str, patchable: bool = False, exclude_id: s
         return translate_formula(formula, patchable=patchable, library=_formula_library(exclude_id))
     except (LexerError, ParseError, SemanticError, CodeGenError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+def _dup_conflict(mode: str, name: str, dup: dict) -> JSONResponse:
+    """★ v1.20.82：**同名公式**的 409 冲突响应（供前端弹"覆盖 / 仍新建 / 取消"✓）。
+
+    ⚠ `detail` 保持**字符串** ✓ —— 前端历史代码是 `String(detail)` 直接显示 ✓，
+      塞 dict 会渲染成 `[object Object]` ✗✗；结构化信息因此挂在**同级 `conflict`** ✓
+      （新前端读它渲染选择按钮 ✓，旧前端只看到人话提示 ✓ 双向兼容 ✓）。
+
+    `mode`：`create` = 新建撞名（可"仍新建一条" ✓）；`update` = 编辑改成别人的名字
+    （几乎都是改错名 ⇒ **只拦不给新建** ✓，否则等于把列表里的重名又造一遍 ✗）。
+    """
+    who = ("，作者 %s" % dup.get("author")) if dup.get("author") else ""
+    if mode == "create":
+        hint = ("请点「覆盖它」（把新正文写进那一条）/「仍新建一条」（确实要两条并存）/「取消」，"
+                "或换个输出名再存。")
+    else:
+        hint = "请换个输出名，或先在列表里删掉那条同名公式。"
+    return JSONResponse(status_code=409, content={
+        "detail": (
+            "已存在同名公式「%s」%s：id %s，%s 保存。\n"
+            "公式名是平台里唯一可寻址的键（INSUM、公式间调用、列表都只认名字）"
+            "⇒ 同名两条并列会让「引用取到哪条」变得不确定。%s"
+            % (dup.get("name") or name, who, dup.get("id"),
+               dup.get("updated_at") or "时间未知", hint)
+        ),
+        "conflict": {
+            "id": dup.get("id"),
+            "name": dup.get("name"),
+            "updated_at": dup.get("updated_at"),
+            "text": dup.get("text"),
+            "author": dup.get("author"),
+        },
+    })
 
 
 @router.post("/translate", summary="翻译益盟/通达信公式为 qlib 表达式")
@@ -94,15 +131,35 @@ def list_saved_formulas():
 
 @router.post("/custom-formulas", summary="编译并保存自定义公式")
 def create_saved_formula(req: CustomFormulaBody):
-    """编译用户公式并保存到 workdir/custom_formulas.json，返回保存的条目。"""
+    """编译用户公式并保存到 workdir/custom_formulas.json，返回保存的条目。
+
+    ★ v1.20.82：**保存查重**（用户 2026-10-09：「加个保存查重提示，我记得以前有查重啊」）——
+      老查重在前端**只比正文**（`App.tsx`）✗ ⇒ 正文差一个注释/空行就绕过去了 ✗
+      （实测：`IS_GOLD_PIT` 被存成两条同名，列表里并排出现 ✗）。
+      现在按**输出名**查（后端是唯一权威：名字由编译器定 ✓），命中返回
+      **409 + `conflict`** ✓ ⇒ 前端给"覆盖它 / 仍新建一条 / 取消"✓；
+      `allow_duplicate=true`（= 用户点了"仍新建一条"✓）即跳过本次提示 ✓。
+    """
     t = _compile_formula_or_400(req.formula, req.patchable)
+    if not req.allow_duplicate:
+        dup = _find_live_by_name(t.name)
+        if dup is not None:
+            return _dup_conflict("create", t.name, dup)
     return _create_custom_formula(t.name, req.formula.strip(), t.expression)
 
 
 @router.put("/custom-formulas/{formula_id}", summary="编辑自定义公式（重新编译并保存）")
 def update_saved_formula(formula_id: str, req: CustomFormulaBody):
-    """按 id 修改公式：重新编译后覆盖 text/name/expression。"""
+    """按 id 修改公式：重新编译后覆盖 text/name/expression。
+
+    ★ v1.20.82：编辑成**别人的名字**同样是造重名（会并列 ✗）⇒ 这里也查重并 409 ✓
+      （`exclude_id` 排除自己 ✓ —— 不排除的话"编辑自己"会立刻被判成循环/撞名 ✗）。
+      编辑撞名几乎都是名字改错了 ⇒ **只拦、不给"仍新建"** ✓。
+    """
     t = _compile_formula_or_400(req.formula, req.patchable, exclude_id=formula_id)
+    dup = _find_live_by_name(t.name, exclude_id=formula_id)
+    if dup is not None:
+        return _dup_conflict("update", t.name, dup)
     item = _update_custom_formula(formula_id, t.name, req.formula.strip(), t.expression)
     if item is None:
         raise HTTPException(status_code=404, detail="公式不存在")

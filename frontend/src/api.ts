@@ -245,8 +245,23 @@ export async function listCustomFormulas(): Promise<{ items: CustomFormula[] }> 
   const { data } = await http.get<{ items: CustomFormula[] }>('/factors/custom-formulas')
   return data
 }
-export async function createCustomFormula(formula: string): Promise<CustomFormula> {
-  const { data } = await http.post<CustomFormula>('/factors/custom-formulas', { formula })
+/** ★ v1.20.82：保存撞名时后端 409 返回的冲突详情（供 UI 弹"覆盖 / 仍新建 / 取消"）。 */
+export interface CustomFormulaConflict {
+  id: string
+  name: string
+  updated_at: string
+  text: string
+  author?: string
+}
+export async function createCustomFormula(
+  formula: string,
+  allowDuplicate = false,
+): Promise<CustomFormula> {
+  const { data } = await http.post<CustomFormula>('/factors/custom-formulas', {
+    formula,
+    // 只有用户明确点了「仍新建一条」才为 true ⇒ 否则后端 409 拦下并给出同名条目 ✓
+    allow_duplicate: allowDuplicate,
+  })
   return data
 }
 export async function updateCustomFormula(id: string, formula: string): Promise<CustomFormula> {

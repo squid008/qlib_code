@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import type { CustomFormula } from '../api'
+import type { CustomFormula, CustomFormulaConflict } from '../api'
 import { arrangeFormulas, type SortMode } from '../formulaList'
 import FormulaHandbookModal from './FormulaHandbookModal'
 import FormulaEditor from './FormulaEditor'
@@ -13,9 +13,14 @@ interface FormulaPanelProps {
   formulaTranslating: boolean
   editingId: string | null
   editingText: string
+  /** ★ v1.20.82：保存撞名的冲突详情（非空 ⇒ 显示下面那条"三选"提示 ✓）。 */
+  formulaConflict: { text: string; existing: CustomFormulaConflict } | null
   onInputChange: (v: string) => void
   onEditingTextChange: (v: string) => void
   onAdd: () => void
+  onConflictOverwrite: () => void
+  onConflictCreateAnyway: () => void
+  onConflictCancel: () => void
   onToggle: (id: string) => void
   onToggleAll: (select: boolean) => void
   onStartEdit: (f: CustomFormula) => void
@@ -33,9 +38,13 @@ export default function FormulaPanel({
   formulaTranslating,
   editingId,
   editingText,
+  formulaConflict,
   onInputChange,
   onEditingTextChange,
   onAdd,
+  onConflictOverwrite,
+  onConflictCreateAnyway,
+  onConflictCancel,
   onToggle,
   onToggleAll,
   onStartEdit,
@@ -118,7 +127,9 @@ export default function FormulaPanel({
             </button>
             <button
               type="button"
-              onClick={onAdd}
+              // ⚠ 必须包一层箭头函数：直接 `onClick={onAdd}` 会把**点击事件**当成第一个参数
+              //    传进去 ✗（`addCustomFormula(allowDuplicate)` 拿到 MouseEvent ⇒ 恒真 ⇒ 查重被绕过 ✗）
+              onClick={() => onAdd()}
               disabled={formulaTranslating}
               className="px-2 py-1 rounded bg-emerald-600 text-white text-xs disabled:opacity-50"
             >
@@ -126,7 +137,58 @@ export default function FormulaPanel({
             </button>
           </div>
           {formulaError && (
-            <p className="mt-1 text-red-500 text-[11px] break-all">{formulaError}</p>
+            <p className="mt-1 text-red-500 text-[11px] break-all whitespace-pre-line">{formulaError}</p>
+          )}
+          {/* ★ v1.20.82：保存查重提示（后端 409 + `conflict`）——
+              只提示、不动数据 ✓：默认什么都不发生，用户点哪条才做哪条 ✓。
+              老查重只比正文完全相同 ✗ ⇒ `IS_GOLD_PIT` 那样"差一个注释"的重名会溜进去 ✗。 */}
+          {formulaConflict && (
+            <div className="mt-1.5 rounded border border-amber-400 bg-amber-50 dark:bg-amber-900/20 p-2 text-[11px]">
+              <p className="text-amber-800 dark:text-amber-200">
+                已存在同名公式「{formulaConflict.existing.name}」（id{' '}
+                {formulaConflict.existing.id.slice(0, 6)}…
+                {formulaConflict.existing.updated_at
+                  ? `，${formulaConflict.existing.updated_at} 保存`
+                  : ''}
+                ）：
+              </p>
+              <p
+                className="mt-0.5 max-h-20 overflow-y-auto font-mono text-slate-500 break-all bg-white/60 dark:bg-slate-800/60 rounded px-1 py-0.5"
+                title={formulaConflict.existing.text}
+              >
+                {formulaConflict.existing.text}
+              </p>
+              <p className="mt-0.5 text-slate-500">
+                公式名是唯一可寻址的键（INSUM、公式间调用都只认名字）⇒ 同名两条会让「引用取到哪条」不确定。
+              </p>
+              <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                <button
+                  type="button"
+                  onClick={onConflictOverwrite}
+                  disabled={formulaTranslating}
+                  title="把左侧输入框里的新正文写进上面那一条（不新增条目）"
+                  className="px-2 py-0.5 rounded bg-amber-600 text-white disabled:opacity-50"
+                >
+                  覆盖它
+                </button>
+                <button
+                  type="button"
+                  onClick={onConflictCreateAnyway}
+                  disabled={formulaTranslating}
+                  title="确实要让两条同名公式并存（列表里会出现两条同名）"
+                  className="px-2 py-0.5 rounded border border-amber-500 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50"
+                >
+                  仍新建一条
+                </button>
+                <button
+                  type="button"
+                  onClick={onConflictCancel}
+                  className="px-2 py-0.5 rounded border text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
           )}
         </div>
         {/* 右侧：公式列表（占 3/5 = 60%） */}
