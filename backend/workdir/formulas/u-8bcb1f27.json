@@ -606,14 +606,15 @@
   },
   {
     "id": "6d85c6790543",
-    "name": "IS_GOLD_PIT",
-    "text": "MIN_N:=MIN(15,BARSCOUNT(C));\nMIN_M:=MIN(2,BARSCOUNT(C));\nMIN_R:=MIN(27,BARSCOUNT(C));\nLL_N:=REF(L,MIN_N);\n中间值1:=(L-LL_N)/LL_N*50+17.79;\nVAR4:=MA(L,MIN_R+1);\nVAR5:=(L-VAR4)/VAR4*100;\nVARC:=MA(VAR5,MIN(BARSCOUNT(C)+1,2))+17.79;\nVARB:=(VARC+中间值1)/2;\n{ 输出1：当VARB<0时为1，否则为0，供INSUM累加 }\nIS_GOLD_PIT:IF(VARB<0, 1, 0);",
-    "expression": "If(Lt(Div(Add(Add(DYN_MEAN(Mul(Div(Sub($low,DYN_MEAN($low,Add(Less(27,BARSCOUNT($close)),1))),DYN_MEAN($low,Add(Less(27,BARSCOUNT($close)),1))),100),Less(Add(BARSCOUNT($close),1),2)),17.79),Add(Mul(Div(Sub($low,DYN_REF($low,Less(15,BARSCOUNT($close)))),DYN_REF($low,Less(15,BARSCOUNT($close)))),50),17.79)),2),0),1,0)",
+    "name": "轨迹",
+    "text": "FAST:=EMA(LOW,3);\nBASE:=EMA(LOW,30)*0.849;\n轨迹:MIN(40,(FAST/BASE-1)*100);",
+    "expression": "Less(40,Mul(Sub(Div(EMA($low,3),Mul(EMA($low,30),0.849)),1),100))",
     "codegen": "1.20.83",
     "created_at": "2026-10-09 01:50:10",
-    "updated_at": "2026-10-09 01:50:10",
+    "updated_at": "2026-10-09 15:21:45",
     "author": "u-8bcb1f27",
-    "author_user": "Administrator"
+    "author_user": "Administrator",
+    "author_modified_by": "u-8bcb1f27"
   },
   {
     "id": "24be667ba74e",
