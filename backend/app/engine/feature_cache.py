@@ -28,11 +28,26 @@ import pandas as pd
 from qlib.data.dataset.loader import QlibDataLoader
 
 try:
-    from ..config import WORK_DIR, QLIB_PROVIDER_URI
+    from ..config import WORK_DIR
 
     _CACHE_DIR = os.path.join(WORK_DIR, "feature_cache")
 except Exception:  # pragma: no cover
     _CACHE_DIR = os.path.join(os.path.abspath("."), "feature_cache")
+
+
+# ★ 2026-10-10 修：数据集路径必须**动态读** ✗→✓
+# 旧写法是 `from ..config import QLIB_PROVIDER_URI` ⇒ **import 期快照** ✗ ⇒ 界面切数据集
+# （`datasets.activate` 只改 `config.QLIB_PROVIDER_URI` ✓）之后，本模块仍指向**旧目录** ✗✗ ⇒
+# 缓存键里的"数据版本"、戳文件路径全算在旧数据集上（"看着切了、实际没切" ✓ 与
+# `panel_expr._feature_dir()` 是同一类坑 ✓）。每次调用重新取，才是同一个权威来源 ✓。
+def _provider_uri() -> str:
+    """当前生效的数据集目录（动态读 `app.config` ✓，拿不到返回 ""✓）。"""
+    try:
+        from ..config import QLIB_PROVIDER_URI as _u
+
+        return _u or ""
+    except Exception:  # pragma: no cover
+        return os.environ.get("QLIB_PROVIDER_URI") or ""
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +76,7 @@ _STAMP_NAME = ".data_version"
 
 def data_version_stamp(qlib_dir=None) -> str:
     """戳文件路径（`<数据集目录>/.data_version` ✓）；拿不到数据集目录时返回 "" ✓。"""
-    root = qlib_dir or QLIB_PROVIDER_URI or ""
+    root = qlib_dir or _provider_uri() or ""
     return os.path.join(root, _STAMP_NAME) if root else ""
 
 
@@ -92,7 +107,7 @@ def _data_version() -> str:
     「数据集根目录 + 日历文件」的 mtime（旧判据 ✓，只能捕捉"换数据集 / 日历变化"✓，
     捕捉不到原地重写 bin ✗ —— 所以新工具一定要落戳 ✓）。"""
     try:
-        root = QLIB_PROVIDER_URI or ""
+        root = _provider_uri() or ""
         if root:
             p = os.path.join(root, _STAMP_NAME)
             if os.path.exists(p):
@@ -198,6 +213,12 @@ def _cache_path(instruments, exprs, names, start_time, end_time, extra="") -> st
         str(start_time),
         str(end_time),
         _data_version(),
+        # ★ 2026-10-10：**把数据集目录本身也放进 key** ✗→✓
+        #   为什么只靠 `_data_version()` 不够：它优先读**戳文件**；若两个数据集**都没有戳**
+        #   （或戳内容恰好相同），key 就与数据集无关 ⇒ 切数据集后命中**另一套数据**的缓存 ✗✗
+        #   （实测事故：单因子测试"两个数据源结果逐位相同"，根因就是这里 + 上面那个 import 期快照 ✗）。
+        #   放进目录后任何数据集都不可能互相命中 ✓（代价：挪数据根会让缓存失效 ✓ 可接受）。
+        os.path.normcase(os.path.abspath(_provider_uri() or "")),
         _code_version(),
         str(extra or ""),
     ]

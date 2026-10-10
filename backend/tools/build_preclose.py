@@ -20,9 +20,14 @@
 - ⚠ **数据更新后必须重跑**（`factor_last` 变 ⇒ 整条历史价缩放）。
 
 用法（cwd 任意）：
-    python backend/tools/build_preclose.py               # 只补缺失
+    python backend/tools/build_preclose.py               # 只补缺失（用**当前生效数据集** ✓）
     python backend/tools/build_preclose.py --overwrite    # 全量重写
+    python backend/tools/build_preclose.py --qlib-dir data/cn_data --overwrite   # 指定数据集 ✓
 之后跑 `python backend/tools/verify_materialized.py` 核对。
+
+⚠ 2026-10-10 加 `--qlib-dir`：原先只能靠 `app.config.QLIB_PROVIDER_URI`（**当前生效数据集**）✗
+  ⇒ 修 `cn_data` 的 `pre*` 时若"当前生效"是 `cn_data2`，就会**写错数据集** ✗✗
+  （历史上 `cn_data` 的 `pre*` 变成"cn_data2 的副本"就是这么来的 ✓）。
 """
 import os
 import sys
@@ -64,8 +69,16 @@ def write_bin(path, first_idx, vals) -> None:
 
 def main() -> int:
     overwrite = "--overwrite" in sys.argv
-    fdir = features_dir()
-    print("数据目录: %s" % fdir, flush=True)
+    # ★ 2026-10-10：支持 `--qlib-dir <目录>`（不写就仍用当前生效数据集 ✓）
+    qlib_dir = None
+    if "--qlib-dir" in sys.argv:
+        _i = sys.argv.index("--qlib-dir")
+        if _i + 1 >= len(sys.argv):
+            print("✗ --qlib-dir 后面要跟目录", flush=True)
+            return 2
+        qlib_dir = sys.argv[_i + 1]
+    fdir = (str(qlib_dir).rstrip("/\\") + "/features") if qlib_dir else features_dir()
+    print("数据目录: %s%s" % (fdir, "" if qlib_dir else "（= 当前生效数据集 ✓）"), flush=True)
     if not os.path.isdir(fdir):
         print("✗ 数据目录不存在", flush=True)
         return 2

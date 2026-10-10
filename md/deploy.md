@@ -164,12 +164,32 @@ python backend/tools/dump_finance_tdx.py --force        # 改了口径后全量�
 - ★ 2026-10-10（v1.21.4）起 `FINANCE(q)` 默认取**单季度**，另有 `FINANCE(q,2)` 年化 / `FINANCE(q,3)` TTM ⇒
   每个 q=3..10 都物化 `_q` / `_ann` / `_ttm` **三档**（共 24 个字段/只 ✓）；**两条链共用同一份派生公式** ✓；
 - 米筐源需要 `E:/rq/finance/pit/*.h5`（**有公告日** ⇒ 严格按公告日对齐 ✓）；
+- ⚠ **`--qlib-dir` 一定要写**（`build_preclose.py` 也支持 ✓，2026-10-10 加）：这些工具的默认目录来自
+  `app.config.QLIB_PROVIDER_URI` = **当前生效数据集** ⇒ 修 `cn_data` 时若"当前生效"是 `cn_data2`，
+  就会**写错数据集** ✗（历史事故：`cn_data` 的 `pre*` 变成了 cn_data2 的副本 ✓）；
+- ⚠ **数据集路径的优先级（2026-10-10 改）**：**落盘的 `data/active_dataset.json`（UI 切换）优先** ✓，
+  其次环境变量 `QLIB_PROVIDER_URI`；要"环境变量强制覆盖"（容器/CI）请显式设 `QLIB_PROVIDER_URI_FORCE=1` ✓。
+  两者冲突时启动会打一行告警 ✓（历史上"环境变量优先"导致 UI 切换**静默不生效**、对照实验得出"两边一样"的假象 ✗）。
 - 通达信源需要 `D:/new_tdx/vipdoc/cw/gpcw*.zip`（会员"财务数据下载"）；
   ⚠ 它**没有公告日** ⇒ 可用日按**法定披露截止日**推定（一季报 4/30、中报 8/31、三季报 10/31、年报次年 4/30），
   **保守：宁晚不错** ⇒ 同一交易日两源可能差一个报告期（对比时务必对齐报告期 ✓）；
 - ⚠ `FINANCE_TDX(q)` 函数本身**已下线**（2026-10-10 ✓）—— `ftdx_*` 数据仍照常 dump，只作**多源复核** ✓；
 - 口径戳：`features/_finance_meta.json`（含 `tier_fields` / `tier_note` ✓）/ `features/_finance_tdx_meta.json`（重跑后自动刷新 ✓）；
 - ⚠ 两个 dump 工具写盘成功后会自动**落数据戳**（`feature_cache.bump_data_version` ✓）⇒ 否则面板缓存继续"有效" ✗。
+
+### 数据修复：`cn_data` 的 `open/high/low`（2026-10-10，v1.21.5）
+
+```bash
+python backend/tools/rebuild_cn_data_ohlc_from_bundle.py            # dry-run（默认 ✓，先看闸门）
+python backend/tools/rebuild_cn_data_ohlc_from_bundle.py --apply    # 写盘（旧 bin 备份到 ai_test/ ✓）
+python backend/tools/build_preclose.py --qlib-dir data/cn_data --overwrite   # 用自家价重算 pre* ✓
+```
+
+- **背景**：`cn_data` 的 `open/high/low` 曾被写成 `close`（全池 95.8% 行四值相同 ✗）⇒ 用日内高低点的
+  公式全失真（`黄金坑启动` 触发 6 ↔ 3691 ✓）；`pre*` 也曾是另一套数据的副本（混源 ✗）。
+- 口径：**米筐 bundle 原始 O/H/L × `$factor`**（与 `$close` 同式 ⇒ 同源 ✓，实测中位相对差 3.4e-08 ✓）；
+  bundle 日频只从 **2005-01-01** 起 ⇒ 更早的行**保留原值**并汇报（**不拿另一套数据补** ✗）。
+- 跑完会**自动落数据戳** ✓（`build_preclose` 那步请再补落一次或跑 `bump_data_version` ✓）。
 
 ### 物化字段：横向统计（`mkt_*` —— `BLOCKSETNUM` / `INSUM`）—— **每台机器必须各做一次**
 
