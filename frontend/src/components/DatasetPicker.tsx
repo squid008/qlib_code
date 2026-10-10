@@ -10,13 +10,18 @@ import type { DatasetsStatus } from '../types'
  */
 interface Props {
   datasets: DatasetsStatus | null
-  onSwitch: (name: string) => void
+  /** 切换数据集；返回 Promise 时组件会显示"切换中…"✓（后端要重新体检+重注册 qlib，约 0.1~0.7 s ✓） */
+  onSwitch: (name: string) => void | Promise<void>
   /** 正在切换中（禁用交互 ✓） */
   busy?: boolean
 }
 
 export default function DatasetPicker({ datasets, onSwitch, busy }: Props) {
   const [open, setOpen] = useState(false)
+  // ★ 切换中的目标（用户 2026-10-10："切换会卡一下" ⇒ 得有反馈 ✓）：
+  //   菜单一点就收起、后端要 ~0.1~0.7 s 才回来 ⇒ 期间按钮上显示"切换中…" ✓，
+  //   避免"点了没反应"的观感 ✗（高度恒定不变 ✓ 不会挤动别的控件 ✓）。
+  const [pending, setPending] = useState('')
   const boxRef = useRef<HTMLDivElement | null>(null)
 
   // 点外面 / 按 Esc 关闭 ✓（原生 select 会自己处理，这里要手写 ✓）
@@ -39,6 +44,7 @@ export default function DatasetPicker({ datasets, onSwitch, busy }: Props) {
   const list = datasets?.datasets || []
   const active = list.find((d) => d.name === datasets?.active) || null
   const onlyOne = list.length <= 1
+  const lock = !!busy || !!pending
 
   return (
     <div className="relative" ref={boxRef}>
@@ -49,14 +55,17 @@ export default function DatasetPicker({ datasets, onSwitch, busy }: Props) {
           //   —— 之前那行 `N 只 · M 字段` 只在上面的 `!open` 下渲染 ⇒ 一点开就消失，
           //   整行高度变化、把下面的"选股方式"等控件顶上去 ✗✗，用户 2026-10-10 反馈 ✓）
           'mt-1 w-full h-[34px] border rounded px-2 text-left flex items-center justify-between ' +
-          (onlyOne || busy ? 'bg-slate-100 text-slate-500 cursor-default' : 'bg-white hover:border-slate-400')
+          (onlyOne || lock ? 'bg-slate-100 text-slate-500 cursor-default' : 'bg-white hover:border-slate-400')
         }
-        onClick={() => !onlyOne && !busy && setOpen((v) => !v)}
+        onClick={() => !onlyOne && !lock && setOpen((v) => !v)}
         title={onlyOne ? '只有一个数据集可用' : '切换数据集（后端全局生效）'}
       >
-        {/* 收起时只显示短标签（如 "tushare 口径"）✓；详情全在下面展开的菜单里 ✓ */}
-        <span className="truncate">{active ? active.label : (datasets ? '（无可用数据集）' : '加载中…')}</span>
-        {!onlyOne && <span className="ml-2 text-slate-400">▾</span>}
+        {/* 收起时只显示短标签（如 "tushare 口径"）✓；详情全在下面展开的菜单里 ✓
+            ⚠ 切换中要**就地换文案**（不能另起一行 ✗ —— 高度必须恒定 ✓）*/}
+        <span className="truncate">
+          {pending ? '切换中…' : (active ? active.label : (datasets ? '（无可用数据集）' : '加载中…'))}
+        </span>
+        {!onlyOne && <span className="ml-2 text-slate-400">{pending ? '⋯' : '▾'}</span>}
       </button>
 
       {open && (
@@ -70,7 +79,9 @@ export default function DatasetPicker({ datasets, onSwitch, busy }: Props) {
                 className={'w-full text-left px-3 py-2 border-b last:border-b-0 hover:bg-slate-50 ' + (isActive ? 'bg-blue-50' : '')}
                 onClick={() => {
                   setOpen(false)
-                  if (!isActive) onSwitch(d.name)
+                  if (isActive || lock) return
+                  setPending(d.name)
+                  void Promise.resolve(onSwitch(d.name)).finally(() => setPending(''))
                 }}
               >
                 {/* ★ 展开后才显示完整信息 ✓ */}
@@ -78,6 +89,7 @@ export default function DatasetPicker({ datasets, onSwitch, busy }: Props) {
                   <span className="font-medium text-slate-800">{d.label}</span>
                   <span className="text-xs text-slate-500">{d.name}</span>
                   {isActive && <span className="text-xs text-blue-600">当前</span>}
+                  {pending === d.name && <span className="text-xs text-slate-500">切换中…</span>}
                 </div>
                 <div className="text-xs text-slate-500 mt-0.5">
                   自动检测：{d.calendar_days} 天（{d.calendar_first} ~ <b>{d.calendar_last}</b>）· {d.codes} 只 · {d.fields} 字段

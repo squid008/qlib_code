@@ -213,8 +213,22 @@ export default function App() {
 
   async function handleDatasetChange(name: string, force = false) {
     try {
-      await switchDataset(name, force)
-      setDatasets(await getDatasets())
+      // ★ 切换接口的返回值里**已经带了新数据集的最新体检**（`{active, info}` ✓）
+      //   ⇒ 直接就地更新本地状态即可，**不要再 `GET /api/datasets`** ✗✗：
+      //   那个接口会把**三个**数据集全部重新体检（`?refresh` 语义），体检本身在 TTL(20s) 过期后
+      //   要 ~1.8 s ✗ ⇒ 用户点一下要愣 1~2 秒（2026-10-10 用户反馈"切换会卡一下"的一半原因 ✓）。
+      const had = datasets
+      const res = await switchDataset(name, force)
+      if (had) {
+        setDatasets({
+          ...had,
+          active: res.active,
+          datasets: had.datasets.map((d) => (d.name === res.info.name ? res.info : d)),
+        })
+      } else {
+        // 兜底：列表还没加载出来（理论上点不到下拉 ✗）⇒ 才去拉一次完整列表 ✓
+        setDatasets(await getDatasets())
+      }
     } catch (e) {
       const err = e as { response?: { status?: number; data?: { detail?: string } }; message?: string }
       const msg = String(err?.response?.data?.detail || err?.message || e)

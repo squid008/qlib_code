@@ -211,15 +211,24 @@ def probe(name: str, use_cache: bool = True) -> dict:
         if feats.is_dir():
             # ⚠ 字段数要**跨全表均匀抽样后取并集** ✓：字段集**逐股不同**（新股/退市/北交所少很多 ✗），
             #   只数开头那几只 bj 票会把 93 字段的数据集报成 "22~35 字段" ✗（2026-10-09 两次踩到并修 ✓）。
-            subs = [s for s in sorted(feats.iterdir()) if s.is_dir()]
-            codes = len(subs)
+            # ★★ 必须用 `os.scandir` + `DirEntry.is_dir()`（**不是** `Path.iterdir()` + `Path.is_dir()` ✗）：
+            #   `Path.is_dir()` 会对**每个条目**单独 `stat` 一次 ✗ ⇒ 6000+ 只股票 ≈ **590 ms/数据集** ✗✗
+            #   （实测 2026-10-10 ✓）⇒ 三个数据集一起体检要 **1.76 s** ✗ ⇒ 用户点一下"切换数据集"
+            #   要愣 1~2 秒（"会卡一下" ✗）。scandir 的 DirEntry 自带目录项类型 ⇒ 几乎零系统调用 ✓
+            #   （实测同一份数据 590 ms → ~30 ms ✓）。
+            try:
+                with os.scandir(feats) as it:
+                    sub_names = sorted(e.name for e in it if e.is_dir())
+            except OSError:
+                sub_names = []
+            codes = len(sub_names)
             union: set = set()
             best = 0
-            step = max(1, len(subs) // 30)
-            for sub in subs[::step][:30]:
+            step = max(1, len(sub_names) // 30)
+            for nm in sub_names[::step][:30]:
                 # ⚠ 必须**去掉 `.day.bin` 后缀** ✓：标记文件里的 `fields_baseline` 存的是"字段名"
                 #   （如 `close` ✓），带后缀去比差集会把每个字段都算成"多出" ✗（2026-10-10 实测 ✓）。
-                names = {p.name.replace(".day.bin", "") for p in sub.glob("*.bin")}
+                names = {p.name.replace(".day.bin", "") for p in (feats / nm).glob("*.bin")}
                 union |= names
                 best = max(best, len(names))
             fields = max(best, len(union))

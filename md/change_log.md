@@ -3,6 +3,30 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.97] - 2026-10-10
+
+### Fixed / Performance（"切换数据集会卡一下" —— 实测定位后两处修复，接口快 20 倍）
+
+- ★ **症状**（用户 2026-10-10）：点"数据源（数据集）"切换会愣一下，感觉卡 ✗。**实测**（Edge CDP +
+  独立进程分步计时 ✓，脚本 `ai_test/ui_perf.mjs` / `ai_test/perf_server_side.py` ✓）：点击后 =
+  `POST /api/datasets/active` **583 ms** ✗ + 紧随的 `GET /api/datasets` **最多 2291 ms** ✗✗
+  ⇒ 观感"愣 1~2 秒且全程无反馈" ✓（浏览器**长任务为 0** ✓ ⇒ 不是前端卡 ✗，是**在等接口** ✓）。
+- **修复① 后端体检提速 20 倍**（`app/services/datasets.py::probe`）：`Path.iterdir()` + `Path.is_dir()`
+  会对 features/ 下 **6000+ 个子目录逐个 `stat`** ✗ ⇒ 改用 `os.scandir()` + `DirEntry.is_dir()`
+  （类型由目录项直接给出 ⇒ 几乎零系统调用 ✓）。实测：单数据集体检 **592 → 30 ms** ✓、
+  三个一起体检 **1759 → 108 ms** ✓。逻辑（抽样、字段并集、基准对比）逐行未变 ✓，
+  `tests/test_datasets_switch.py` 12 项照过 ✓。
+- **修复② 前端不再重复拉全量**（`App.tsx::handleDatasetChange`）：切换接口的返回值**已含新数据集的最新
+  体检**（`{active, info}` ✓）⇒ 就地更新本地状态 ✓，**去掉紧随的 `GET /api/datasets`** ✗
+  （该接口会把三个数据集全部重算，TTL 过期后要 ~2.3 s ✗）。实测真切换：**583 → 90~95 ms** ✓。
+- **修复③ 切换中有反馈**（`components/DatasetPicker.tsx`）：新增 `pending` 状态 ⇒ 菜单一点，
+  按钮**就地换成** `切换中…` ✓（不增删任何行 ⇒ 高度恒定 ✓ 不会挤动其它控件 ✓）。
+- ★ **端到端实测**（`ai_test/ui_switch_check.mjs` ✓，真点下拉并切换）：→ 米筐 **875 ms**（后端重启后
+  首次，含该数据集 qlib 冷初始化 ✓）/ → tushare **104 ms** ✓；按钮文案 `切换中… ⋯` → `tushare 口径 ▾` ✓；
+  **控件位移 0 个** ✓、**长任务 0 个** ✓。
+- 备注：`reset_qlib_init` **冷启动 4~5 s**（`import qlib`）/ 热 39 ms ⇒ 后端刚重启后的**第一次**切换
+  会明显慢一下 ✓（正常现象 ✓）；`clear_caches()` 13 ms ✓。
+
 ## [1.20.96] - 2026-10-10
 
 ### Changed（数据集切换器交互定稿 + "口径必须自证"；用户五条要求）
