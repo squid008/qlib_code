@@ -3,6 +3,27 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.96] - 2026-10-10
+
+### Changed（数据集切换器交互定稿 + "口径必须自证"；用户五条要求）
+
+- **顶栏的数据集切换删掉** ✓ ⇒ 只保留**回测表单里的"数据源（数据集）"** ✓（页头仅留一行 `当前数据集：xxx`）。
+- **交互改成"两段式"** ✓（用户要求）：**收起时只显示短标签**（如 `tushare 口径` ✓）+ 一行 `N 只 · M 字段`；
+  **点开后才显示完整信息** ✓（目录名 / **自动检测**的日历起止 / 股票数 / 字段数 / 口径说明 / 基准提示 /
+  "仅行情字段"告警 ✓）。新组件 `frontend/src/components/DatasetPicker.tsx` ✓。
+- ★ **口径必须由目录自证**（`data/<name>/.dataset.json` ✓）：`cn_data2` 必须 `convention=tushare`、
+  `cn_data3` 必须 `qlib` ✓ 才出现在列表里 ✓ —— **同事自己建的同名目录（不是 tushare 数据）不会被冒充**
+  ✗；`cn_data` 是基线，只要有目录就显示 ✓；其它 `cn_dataN` 带已知口径标记也会显示 ✓（方便同事挂数据集 ✓）。
+  标记文件同时记录 `label`（前端收起时的短标签 ✓）与 `fields_baseline`（字段基准 ✓）。
+- ★ **字段与基准不一致 ⇒ 只提示、不报错** ✓（用户明确要求"随便他们"）：`probe` 对比 `fields_baseline`，
+  多/缺字段时给一句话提示（"与基准字段不一致（仅提示，不影响使用）：多 N 个…" ✓），**绝不抛错** ✓。
+- **日历末日自动检测** ✓（读该数据集自己的 `calendars/day.txt` ✓，不写死）。
+- 标记已写入：`cn_data`（ricequant / 84 字段基准）、`cn_data2`（tushare / 94）、`cn_data3`（qlib / 10）✓；
+  生成脚本 `ai_test/write_dataset_markers.py` ✓。
+- ⚠ 修两个坑：① 字段基准对比时文件名**带 `.day.bin` 后缀**去比 ⇒ 每个字段都被算成"多出" ✗（已去后缀 ✓）；
+  ② 切换测试写脏 `config.QLIB_PROVIDER_URI` 且未还原 ⇒ 后续 `test_panel_expr`/`test_signal_pool_wide` **9 项全崩**
+  ✗（单跑能过、全量挂 ✓）⇒ fixture 里 monkeypatch ✓。修完全量 **717 passed / 0 failed** ✓，前端 `tsc` + `build` 通过 ✓。
+
 ## [1.20.95] - 2026-10-09
 
 ### Added（三套数据集并存 + 顶栏切换对照；新增 tushare 口径的 adj_factor 全历史预取）

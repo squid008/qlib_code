@@ -24,6 +24,7 @@ import {
 } from './api'
 import type { BacktestCapacity, CustomFormula, CustomFormulaConflict } from './api'
 import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog, DatasetsStatus } from './types'
+import DatasetPicker from './components/DatasetPicker'
 import MetricCards from './components/MetricCards'
 import NavChart from './components/NavChart'
 import LayerChart from './components/LayerChart'
@@ -1080,26 +1081,6 @@ export default function App() {
         <div className="flex items-center justify-between gap-4">
           <h1 className="text-xl font-bold">Qlib 量化回测平台</h1>
           <div className="flex items-center gap-3">
-            {datasets && (
-              <label className="flex items-center gap-2 text-sm text-slate-300">
-                <span>数据集</span>
-                <select
-                  className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm text-white"
-                  value={datasets.active}
-                  onChange={(e) => handleDatasetChange(e.target.value)}
-                  disabled={!datasets.switchable}
-                  title="切换后单因子/回测/事件研究全部读这套数据（全局生效）"
-                >
-                  {datasets.datasets.map((d) => (
-                    <option key={d.name} value={d.name}>
-                      {d.name}｜{d.label}
-                      {d.calendar_last ? `（至 ${d.calendar_last}）` : ''}
-                      {d.only_price ? '· 仅行情' : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
             {version && (
               <span className="text-sm text-slate-400 font-mono">v{version}</span>
             )}
@@ -1113,10 +1094,7 @@ export default function App() {
             </span>
           )}
           {activeDataset && !activeDataset.only_price && (
-            <span className="ml-2 text-slate-500">
-              {activeDataset.label} · {activeDataset.codes} 只 · {activeDataset.fields} 字段 · 至 {activeDataset.calendar_last}
-              {!activeDataset.has_fin && '（无财务字段）'}
-            </span>
+            <span className="ml-2 text-slate-500">当前数据集：{activeDataset.label}</span>
           )}
         </p>
       </header>
@@ -1166,27 +1144,8 @@ export default function App() {
 
             <label className="block">
               <span className="text-sm text-slate-500">数据源（数据集）</span>
-              <select
-                className="mt-1 w-full border rounded px-2 py-1"
-                value={datasets?.active || ''}
-                onChange={(e) => handleDatasetChange(e.target.value)}
-                disabled={!datasets || !datasets.switchable}
-                title="切换后单因子测试/回测/事件研究全部读这套数据（后端全局生效）"
-              >
-                {(datasets?.datasets || []).map((d) => (
-                  <option key={d.name} value={d.name}>
-                    {d.name}｜{d.label}
-                    {d.calendar_last ? `（至 ${d.calendar_last}）` : ''}
-                  </option>
-                ))}
-              </select>
-              {activeDataset && (
-                <span className="mt-1 block text-xs text-slate-400">
-                  {activeDataset.codes} 只 · {activeDataset.fields} 字段
-                  {activeDataset.only_price ? '（仅行情字段）' : ''}
-                  {!activeDataset.only_price && !activeDataset.has_fin ? '（无财务字段）' : ''}
-                </span>
-              )}
+              {/* 收起只显示短标签（如 tushare 口径），点开才显示完整信息（末日自动检测/字段/基准提示）✓ */}
+              <DatasetPicker datasets={datasets} onSwitch={handleDatasetChange} />
             </label>
 
             <div className="block">

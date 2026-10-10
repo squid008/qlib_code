@@ -34,23 +34,27 @@ ACTIVE_FILE = DATA / "active_dataset.json"
 _LOCK = threading.Lock()
 _PROBE_CACHE: Dict[str, tuple] = {}                        # name -> (mtime, info)
 
-# 显示名 / 口径标签 / 缺字段提示（前端直接用 ✓）
+# 显示名 / 口径标签（前端直接用 ✓）。`expect_convention` = **必须靠目录里的标记文件自证** ✓，
+# 不满足就**不显示** ✓（同事自建同名目录、里面不是 tushare 数据时，不能冒充 tushare 口径 ✗）。
 REGISTRY: Dict[str, dict] = {
     "cn_data": {
         "dir": "cn_data",
         "label": "米筐/qlib 口径",
+        "expect_convention": None,                        # 基线数据集：只要目录在就显示 ✓
         "convention": "qlib 官方（factor 与 tushare adj 只差常数）",
         "note": "由 cn_data.rar 备份解出，行情段按 qlib 口径重建",
     },
     "cn_data2": {
         "dir": "cn_data2",
-        "label": "tushare 口径（主）",
+        "label": "tushare 口径",
+        "expect_convention": "tushare",                   # ★ 必须标记为 tushare 才显示 ✓
         "convention": "行情 = raw × tushare adj_factor；财务/资金流/筹码全量",
-        "note": "平台主数据集：93 个字段齐全、日历到最新交易日",
+        "note": "平台主数据集：字段齐全、日历到最新交易日",
     },
     "cn_data3": {
         "dir": "cn_data3",
         "label": "qlib 官方原始",
+        "expect_convention": "qlib",                      # ★ 必须标记为 qlib 才显示 ✓
         "convention": "qlib 官方 cn_data 原样（10 个行情字段）",
         "note": "仅行情字段；FINANCE(q)/资金流/筹码等公式在此数据集下取不到数（按 NaN 处理）",
         "only_price": True,
@@ -58,14 +62,74 @@ REGISTRY: Dict[str, dict] = {
 }
 _ORDER = ["cn_data2", "cn_data", "cn_data3"]               # 默认优先级：主数据集优先 ✓
 
+# ★ 数据集标记文件（放在 provider 根目录 ✓ 与 qlib 的 calendars/features/instruments 并存 ✓）
+#   作用：① **证明口径**（同事自建目录没这个标记 ⇒ 不显示 ✓）；② 记录**字段基准**，
+#   用于"同事往 cn_data 里 dump 了新字段"时**只提示不报错** ✓。
+MARKER_NAME = ".dataset.json"
+KNOWN_CONVENTIONS = {"tushare", "qlib", "ricequant"}
+
 
 def dataset_dir(name: str) -> Path:
-    return DATA / REGISTRY[name]["dir"]
+    """数据集目录 ✓（注册表没登记的 `cn_dataN` 也支持 ✓ —— 同事挂自己的数据集用 ✓）。"""
+    return DATA / (REGISTRY.get(name, {}).get("dir") or name)
+
+
+def marker_path(name: str) -> Path:
+    return dataset_dir(name) / MARKER_NAME
+
+
+def read_marker(name: str) -> dict:
+    """读数据集标记（**一律 `utf-8-sig`** ✓ 容忍 BOM）；没有/坏了 ⇒ {} ✓（不抛异常 ✗）。"""
+    p = marker_path(name)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8-sig")) or {}
+    except Exception:                                                     # noqa: BLE001
+        return {}
+
+
+def declared_convention(name: str) -> Optional[str]:
+    """目录**自报**的口径（标记文件里的 `convention` ✓）；没标记/没写 ⇒ None ✓。"""
+    c = read_marker(name).get("convention")
+    return str(c).strip() if c else None
+
+
+def _accepted(name: str) -> bool:
+    """该数据集是否允许出现在切换列表里 ✓（**认不出来的一律不显示** ✗）。
+
+    规则（用户 2026-10-10 定 ✓）：
+    · `cn_data` = 基线，只要目录在就显示 ✓（同事往里面 dump 字段也照常显示 ✓，只给提示 ✓）；
+    · `cn_data2` **必须**标记 `convention=tushare` ✓、`cn_data3` **必须**标记 `qlib` ✓
+      —— 同事自己建的同名目录若没标记 ⇒ **不显示** ✓（免得把非 tushare 的数据当 tushare 用 ✗）；
+    · 其它 `cn_dataN`：标记里的口径属于已知集合 ⇒ 显示 ✓（方便同事挂自己的数据集 ✓）。
+    """
+    if not (dataset_dir(name) / "calendars" / "day.txt").exists():
+        return False
+    expect = (REGISTRY.get(name) or {}).get("expect_convention")
+    declared = declared_convention(name)
+    if expect:
+        return declared == expect
+    if name == "cn_data":
+        return True
+    return declared in KNOWN_CONVENTIONS
+
+
+def discover_names() -> List[str]:
+    """候选名 = 注册表里的名字 + `data/` 下任何 `*_data`/`cn_data*` 目录 ✓（按 `_ORDER` 排序 ✓）。"""
+    names = list(REGISTRY.keys())
+    if DATA.is_dir():
+        for d in sorted(DATA.iterdir()):
+            if d.is_dir() and d.name not in names and (d.name.startswith("cn_data")
+                                                      or d.name.endswith("_data")):
+                names.append(d.name)
+    order = {n: i for i, n in enumerate(_ORDER)}
+    return sorted(names, key=lambda n: (order.get(n, 99), n))
 
 
 def available() -> List[str]:
-    """磁盘上真实存在的数据集（保持 `_ORDER` 的展示顺序 ✓）。"""
-    return [n for n in _ORDER if (dataset_dir(n) / "calendars" / "day.txt").exists()]
+    """磁盘上真实存在**且口径可自证**的数据集 ✓（保持 `_ORDER` 的展示顺序 ✓）。"""
+    return [n for n in discover_names() if _accepted(n)]
 
 
 def active_name() -> str:
@@ -79,7 +143,7 @@ def active_name() -> str:
     try:
         if ACTIVE_FILE.exists():
             name = (json.loads(ACTIVE_FILE.read_text(encoding="utf-8-sig")) or {}).get("name")
-            if name in REGISTRY and name in available():
+            if name and name in available():      # 只认"存在且口径可自证"的数据集 ✓
                 return name
     except Exception:                                                     # noqa: BLE001
         pass
@@ -122,14 +186,17 @@ def probe(name: str, use_cache: bool = True) -> dict:
         if mt0 == mt and (time.time() - ts) < _PROBE_TTL:
             return dict(info0)
     d = dataset_dir(name)
+    reg = REGISTRY.get(name) or {}
+    mk = read_marker(name)                                 # 标记文件可覆盖显示名/说明 ✓
     info: dict = {
         "name": name,
         "dir": str(d),
         "exists": (d / "calendars" / "day.txt").exists(),
-        "label": REGISTRY[name]["label"],
-        "convention": REGISTRY[name]["convention"],
-        "note": REGISTRY[name]["note"],
-        "only_price": bool(REGISTRY[name].get("only_price")),
+        "label": str(mk.get("label") or reg.get("label") or name),        # ★ 前端**收起时只显示这个短标签** ✓
+        "convention": str(mk.get("convention") or reg.get("convention") or ""),
+        "declared_convention": declared_convention(name) or "",           # 目录自报口径（标记 ✓）
+        "note": str(mk.get("note") or reg.get("note") or ""),
+        "only_price": bool(reg.get("only_price")),
     }
     cal_days = codes = fields = 0
     first = last = ""
@@ -150,7 +217,9 @@ def probe(name: str, use_cache: bool = True) -> dict:
             best = 0
             step = max(1, len(subs) // 30)
             for sub in subs[::step][:30]:
-                names = {p.name for p in sub.glob("*.bin")}
+                # ⚠ 必须**去掉 `.day.bin` 后缀** ✓：标记文件里的 `fields_baseline` 存的是"字段名"
+                #   （如 `close` ✓），带后缀去比差集会把每个字段都算成"多出" ✗（2026-10-10 实测 ✓）。
+                names = {p.name.replace(".day.bin", "") for p in sub.glob("*.bin")}
                 union |= names
                 best = max(best, len(names))
             fields = max(best, len(union))
@@ -160,6 +229,24 @@ def probe(name: str, use_cache: bool = True) -> dict:
     info.update({"calendar_days": cal_days, "calendar_first": first, "calendar_last": last,
                  "codes": codes, "fields": fields,
                  "has_fin": has_fin, "has_mf": has_mf, "has_chip": has_chip})
+    # ★ 字段基准对比 ⇒ **只提示、不报错** ✓（用户要求：同事往 cn_data 里 dump 一堆字段，随便他们 ✓，
+    #   只要提示"与基准不一致"即可 ✓）。基准来自该目录自己的标记文件 `fields_baseline` ✓。
+    base = mk.get("fields_baseline")
+    if isinstance(base, list) and base:
+        base_set = {str(x) for x in base}
+        extra = sorted(union - base_set) if info["exists"] else []
+        miss = sorted(base_set - union) if info["exists"] else []
+        info["fields_extra"] = extra[:60]
+        info["fields_extra_count"] = len(extra)
+        info["fields_missing"] = miss[:60]
+        info["fields_missing_count"] = len(miss)
+        info["baseline_count"] = len(base_set)
+        if extra or miss:
+            info["field_note"] = ("与基准字段不一致（仅提示，不影响使用）：多 %d 个%s、缺 %d 个%s"
+                                  % (len(extra), ("（如 " + "、".join(extra[:3]) + "）") if extra else "",
+                                     len(miss), ("（如 " + "、".join(miss[:3]) + "）") if miss else ""))
+        else:
+            info["field_note"] = "字段与基准一致（%d 个）" % len(base_set)
     _PROBE_CACHE[name] = (time.time(), mt, dict(info))
     return info
 

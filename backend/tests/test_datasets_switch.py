@@ -18,8 +18,13 @@ import pytest
 from app.services import datasets as D
 
 
-def _make_dataset(root, name, days, fields=("close", "factor"), codes=("sz000001",)):
-    """造一个最小 provider：calendars/day.txt + features/<code>/<field>.day.bin ✓。"""
+# 各数据集**默认**应有的口径标记（`convention="auto"` 时按名字取 ✓；显式给 None ⇒ 故意不写标记 ✓）
+DEFAULT_CONV = {"cn_data": "ricequant", "cn_data2": "tushare", "cn_data3": "qlib"}
+
+
+def _make_dataset(root, name, days, fields=("close", "factor"), codes=("sz000001",),
+                  convention="auto", baseline=None):
+    """造一个最小 provider：calendars/day.txt + features/<code>/<field>.day.bin（+ 标记文件 ✓）。"""
     base = root / name
     (base / "calendars").mkdir(parents=True, exist_ok=True)
     (base / "calendars" / "day.txt").write_text("\n".join(days) + "\n", encoding="utf-8")
@@ -28,17 +33,37 @@ def _make_dataset(root, name, days, fields=("close", "factor"), codes=("sz000001
         d.mkdir(parents=True, exist_ok=True)
         for f in fields:
             (d / ("%s.day.bin" % f)).write_bytes(b"\x00" * 8)
+    conv = DEFAULT_CONV.get(name) if convention == "auto" else convention
+    if conv is not None:
+        marker = {"name": name, "convention": conv, "label": "%s 口径" % conv}
+        if baseline is not None:
+            marker["fields_baseline"] = list(baseline)
+        (base / D.MARKER_NAME).write_text(json.dumps(marker, ensure_ascii=False), encoding="utf-8")
     return base
 
 
 @pytest.fixture()
 def fake_data(tmp_path, monkeypatch):
-    """把 DATA/ACTIVE_FILE 指到临时目录，避免碰真实数据 ✓。"""
+    """把 DATA/ACTIVE_FILE 指到临时目录，避免碰真实数据 ✓。
+
+    ⚠ 还必须 monkeypatch `config.QLIB_PROVIDER_URI` ✓：`activate()` 会**直接写这个模块全局**（生产上
+      就是这样让同进程的读者立刻生效的 ✓），但测试若不还原，跑完本文件后它仍指向**已删除的 tmp 目录**
+      ✗✗ ⇒ 后面的 `test_panel_expr.py` / `test_signal_pool_wide.py` 全崩 ✗（2026-10-10 实测：
+      单跑能过、全量 9 项挂 ✗）。monkeypatch 会在 teardown 还原**原值** ⇒ 无论测试中间被写成什么 ✓。
+    """
+    from app import config
     data = tmp_path / "data"
     data.mkdir()
     monkeypatch.setattr(D, "DATA", data)
     monkeypatch.setattr(D, "ACTIVE_FILE", data / "active_dataset.json")
-    return data
+    monkeypatch.setattr(config, "QLIB_PROVIDER_URI", config.QLIB_PROVIDER_URI)
+    yield data
+    # teardown 时顺手把可能被写脏的全局复位 ✓（monkeypatch 也会再兜一层 ✓）
+    try:
+        import importlib
+        importlib.reload(config)
+    except Exception:                                                     # noqa: BLE001
+        pass
 
 
 def test_registry_covers_three_conventions():
@@ -127,6 +152,65 @@ def test_active_name_tolerates_utf8_bom(fake_data, monkeypatch):
         b"\xef\xbb\xbf" + json.dumps({"name": "cn_data3"}).encode("utf-8"))
     monkeypatch.setattr(D, "_PROBE_CACHE", {})
     assert D.active_name() == "cn_data3"
+
+
+def test_unmarked_or_mismatched_dir_is_hidden(fake_data, monkeypatch):
+    """★ 口径必须靠**目录里的标记文件自证** ✓（用户 2026-10-10 要求）。
+
+    场景：同事自己建了 `cn_data2`，里面放的是**他自己的数据**（不是 tushare ✗）。
+    这时绝不能把它当"tushare 口径"端出来 ✗ ⇒ 没标记 / 标记不匹配 ⇒ **不显示** ✓。
+    """
+    monkeypatch.setattr(D, "_PROBE_CACHE", {})
+    # ① 完全没标记
+    _make_dataset(fake_data, "cn_data2", ["2026-10-09"], convention=None)
+    assert D.available() == []                                    # cn_data2 不显示、cn_data 也还没造 ✓
+    # ② 标记写的是别的口径
+    _make_dataset(fake_data, "cn_data2", ["2026-10-09"], convention="ricequant")
+    assert "cn_data2" not in D.available()
+    # ③ 标记写对了 ⇒ 才显示 ✓
+    _make_dataset(fake_data, "cn_data2", ["2026-10-09"], convention="tushare")
+    assert D.available() == ["cn_data2"]
+
+
+def test_cn_data_shows_without_marker_and_extra_dataset_needs_known_convention(fake_data, monkeypatch):
+    """`cn_data` 是基线：只要有目录就显示 ✓（同事往里 dump 字段也照常 ✓）；
+    其它 `cn_dataN` 则需要**已知口径**的标记才显示 ✓（方便同事挂自己的数据集 ✓）。"""
+    monkeypatch.setattr(D, "_PROBE_CACHE", {})
+    _make_dataset(fake_data, "cn_data", ["2026-08-21"], convention=None)
+    _make_dataset(fake_data, "cn_data4", ["2026-10-09"], convention="unknown-vendor")
+    assert D.available() == ["cn_data"]                           # cn_data4 口径不认识 ⇒ 不显示 ✓
+    _make_dataset(fake_data, "cn_data4", ["2026-10-09"], convention="tushare")
+    assert D.available() == ["cn_data", "cn_data4"]               # 认了 ⇒ 显示（顺序按 _ORDER：注册的在前 ✓）
+
+
+def test_field_baseline_mismatch_is_only_a_hint(fake_data, monkeypatch):
+    """★ 字段与基准不一致 ⇒ **只提示、不报错** ✓（用户明确要求：同事随意 dump 字段 ✓）。"""
+    _make_dataset(fake_data, "cn_data", ["2026-08-21"],
+                  fields=("close", "factor", "fin_pe_ttm", "their_own_field"),
+                  baseline=("close", "factor"))                   # 基准只有 2 个 ⇒ 多出 2 个 ✓
+    monkeypatch.setattr(D, "_PROBE_CACHE", {})
+    info = D.probe("cn_data")                                     # 绝不抛异常 ✓
+    assert info["baseline_count"] == 2
+    assert info["fields_extra_count"] == 2
+    assert info["fields_missing_count"] == 0
+    assert "不一致" in info["field_note"] and "仅提示" in info["field_note"]
+    # 基准一致时给"一致"提示 ✓
+    _make_dataset(fake_data, "cn_data", ["2026-08-21"], fields=("close", "factor"),
+                  baseline=("close", "factor"))
+    monkeypatch.setattr(D, "_PROBE_CACHE", {})
+    assert "一致" in D.probe("cn_data")["field_note"]
+
+
+def test_marker_label_overrides_registry_and_bom_tolerated(fake_data, monkeypatch):
+    """标记里的 `label` 覆盖注册表默认值 ✓（前端**收起时只显示这个短标签** ✓）；带 BOM 也要能读 ✓。"""
+    import os as _os
+    base = _make_dataset(fake_data, "cn_data2", ["2026-10-09"], convention="tushare")
+    (base / D.MARKER_NAME).write_bytes(
+        b"\xef\xbb\xbf" + json.dumps({"convention": "tushare", "label": "我自己的标签"},
+                                     ensure_ascii=False).encode("utf-8"))
+    monkeypatch.setattr(D, "_PROBE_CACHE", {})
+    assert D.probe("cn_data2")["label"] == "我自己的标签"
+    assert _os.path.exists(str(base / D.MARKER_NAME))
 
 
 def test_clear_caches_touches_panel_expr():

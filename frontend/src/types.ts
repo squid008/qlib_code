@@ -273,10 +273,13 @@ export interface DatasetInfo {
   name: string
   dir: string
   exists: boolean
+  // label = **短标签**（下拉收起时只显示它 ✓）；note/convention = 展开后的完整说明 ✓
   label: string
   convention: string
   note: string
+  declared_convention?: string
   only_price?: boolean
+  // calendar_last = **自动检测**的日历末日 ✓（不写死 ✓）
   calendar_days: number
   calendar_first: string
   calendar_last: string
@@ -285,6 +288,13 @@ export interface DatasetInfo {
   has_fin: boolean
   has_mf: boolean
   has_chip: boolean
+  // 与"标记文件里的字段基准"对比 ⇒ **只提示、不报错** ✓（同事自己 dump 字段进去也照常用 ✓）
+  baseline_count?: number
+  fields_extra?: string[]
+  fields_extra_count?: number
+  fields_missing?: string[]
+  fields_missing_count?: number
+  field_note?: string
 }
 
 export interface DatasetsStatus {
