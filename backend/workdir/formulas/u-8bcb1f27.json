@@ -709,5 +709,16 @@
     "updated_at": "2026-10-10 11:57:01",
     "author": "u-8bcb1f27",
     "author_user": "Administrator"
+  },
+  {
+    "id": "6847a5d6f5ec",
+    "name": "活跃",
+    "text": "M5:=MA(CLOSE,5);\nM10:=MA(CLOSE,10);\n\nL55:=LLV(LOW,55);\nH55:=HHV(HIGH,55);\n\nR55:=(CLOSE-L55)/(H55-L55)*100;\n\nWEAK:=M5<M10*0.96\n      or CLOSE<M10*0.90\n      or  CLOSE<REF(CLOSE,3)*0.85\n      or  CLOSE<REF(CLOSE,5)*0.85;\n\n海面线:=20;\n活跃:IF(WEAK,R55*0.5,R55);",
+    "expression": "If(Or(Or(Or(Lt(Mean($close,5),Mul(Mean($close,10),0.96)),Lt($close,Mul(Mean($close,10),0.9))),Lt($close,Mul(Ref($close,3),0.85))),Lt($close,Mul(Ref($close,5),0.85))),Mul(Mul(Div(Sub($close,Min($low,55)),Sub(Max($high,55),Min($low,55))),100),0.5),Mul(Div(Sub($close,Min($low,55)),Sub(Max($high,55),Min($low,55))),100))",
+    "codegen": "1.21.4",
+    "created_at": "2026-10-10 16:42:51",
+    "updated_at": "2026-10-10 16:42:51",
+    "author": "u-8bcb1f27",
+    "author_user": "Administrator"
   }
 ]
