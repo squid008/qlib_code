@@ -50,6 +50,14 @@
 - **行情换口径后必须重算的派生字段**（照 `ai_test/refinish_cn_data2.ps1` 串行跑 ✓）：
   `preclose/preopen/prehigh/prelow/prevwap`（除以 `factor_last` ✓）、`turn`、`mkt_*`、`chip_*`、
   `is_st/limit_*`、`mf_*` ✓。
+- **`cn_data`（米筐 era）补财务 ✓**：用 `tools/dump_finance.py`（**米筐 pit 财报** ✓，
+  `E:\rq\finance\pit`，带 `info_date` 发布日 / `if_adjusted` 修订日 ✓）写 54356 个 bin / 5567 只 ✓，
+  口径戳 `calendar_last_day=2026-08-21` ✓ —— **只到与行情同一天** ✓（用户要求 ✓）。
+  ⚠ 我中途误用通达信源（`ftdx_*`，没有发布日 ✗），经用户指出后已把 31586 个 `ftdx_*.bin`
+  移到 `data/_unused_ftdx_cn_data/` ✓（**移动**：本机批量删除守卫对 AI 一律拦截 ✗，连工具批准也不放行 ✓）。
+- **修 `probe` 缓存永不过期** ✗：缓存键只看 `calendars/day.txt` 的 mtime，而补字段改的是
+  `features/<code>/` 子目录 ✗ ⇒ 补完财务后接口仍报"74 字段 / fin=False" ✓✗
+  ⇒ 加 **20 秒 TTL** + `features/` mtime + `GET /api/datasets?refresh=1` 手动刷新 ✓。
 
 ## [1.20.94] - 2026-10-09
 

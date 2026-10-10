@@ -91,9 +91,25 @@ def active_dir() -> str:
     return str(dataset_dir(active_name()))
 
 
+_PROBE_TTL = 20.0        # 秒；缓存最长寿命（配合 ?refresh=1 可立即刷新 ✓）
+
+
 def _mtime(name: str) -> float:
+    """缓存键：日历文件的 mtime ✓（**注意它不足以侦测"新增字段"** ✗）。
+
+    ⚠ 2026-10-10 踩到：后台作业补 `fin_*` / 重算 `chip_*` 时，改的是 `features/<code>/` 这些
+      **子目录**的 mtime ✗，而这里看的是 `calendars/day.txt` ⇒ 缓存**永不失效** ⇒ 补完米筐财务后
+      接口仍报"74 字段 / fin=False" ✗✗（界面与实际数据长期不符 ✗）。故再加 TTL + `?refresh=1` ✓。
+    """
     try:
-        return (dataset_dir(name) / "calendars" / "day.txt").stat().st_mtime
+        d = dataset_dir(name)
+        t = (d / "calendars" / "day.txt").stat().st_mtime
+        try:
+            # 顺带把 `features/` 目录本身的 mtime 并进去（新增/删除股票目录时能立刻察觉 ✓）
+            t = max(t, (d / "features").stat().st_mtime)
+        except Exception:                                                 # noqa: BLE001
+            pass
+        return t
     except Exception:                                                     # noqa: BLE001
         return 0.0
 
@@ -101,8 +117,10 @@ def _mtime(name: str) -> float:
 def probe(name: str, use_cache: bool = True) -> dict:
     """数据集体检信息（前端展示 / 切换前确认用 ✓）：日历范围、股票数、字段数、缺哪些类字段 ✓。"""
     mt = _mtime(name)
-    if use_cache and name in _PROBE_CACHE and _PROBE_CACHE[name][0] == mt:
-        return dict(_PROBE_CACHE[name][1])
+    if use_cache and name in _PROBE_CACHE:
+        ts, mt0, info0 = _PROBE_CACHE[name]
+        if mt0 == mt and (time.time() - ts) < _PROBE_TTL:
+            return dict(info0)
     d = dataset_dir(name)
     info: dict = {
         "name": name,
@@ -142,15 +160,16 @@ def probe(name: str, use_cache: bool = True) -> dict:
     info.update({"calendar_days": cal_days, "calendar_first": first, "calendar_last": last,
                  "codes": codes, "fields": fields,
                  "has_fin": has_fin, "has_mf": has_mf, "has_chip": has_chip})
-    _PROBE_CACHE[name] = (mt, dict(info))
+    _PROBE_CACHE[name] = (time.time(), mt, dict(info))
     return info
 
 
-def status() -> dict:
-    """给前端的整体状态：可选项 + 当前项 + 体检 ✓。"""
+def status(refresh: bool = False) -> dict:
+    """给前端的整体状态：可选项 + 当前项 + 体检 ✓（`refresh=True` ⇒ 体检绕过缓存 ✓）。"""
     av = available()
     cur = active_name()
-    return {"active": cur, "datasets": [probe(n) for n in av], "switchable": len(av) > 1}
+    return {"active": cur, "datasets": [probe(n, use_cache=not refresh) for n in av],
+            "switchable": len(av) > 1}
 
 
 def clear_caches() -> Dict[str, bool]:

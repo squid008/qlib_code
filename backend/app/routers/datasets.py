@@ -25,9 +25,10 @@ class SwitchRequest(BaseModel):
 
 
 @router.get("", summary="列出可用数据集与当前生效项")
-def list_datasets():
+def list_datasets(refresh: bool = False):
+    """`?refresh=1` ⇒ **绕过体检缓存**立即重算 ✓（后台作业补完 fin_*/chip_* 后想立刻看到 ✓）。"""
     try:
-        return datasets.status()
+        return datasets.status(refresh=refresh)
     except Exception as e:                                                # noqa: BLE001
         logger.exception("列出数据集失败")
         raise HTTPException(status_code=500, detail="列出数据集失败：%s" % e) from e
