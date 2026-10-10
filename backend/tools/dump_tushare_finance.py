@@ -633,6 +633,51 @@ def write_meta(qlib_dir: Path, n_codes: int, n_bins: int, overwrite: bool, cal_l
     return p
 
 
+def _declared_convention(qlib_dir: Path) -> str:
+    """读数据集**自报**的口径：优先 `.dataset.json` 的 `convention` ✓；
+    退回 `features/_finance_meta.json` 的 `source` ✓（米筐链的口径戳没有 `source` ✗，
+    但带 `source_pit_dir: E:\\rq\\finance\\pit` ✓ ⇒ 也能识别成米筐 ✓）；都没有 ⇒ `""` ✓。
+    """
+    try:
+        d = json.loads((qlib_dir / ".dataset.json").read_text(encoding="utf-8")) or {}
+        c = str(d.get("convention") or "").strip().lower()
+        if c:
+            return c
+    except Exception:                                                     # noqa: BLE001
+        pass
+    try:
+        m = json.loads((qlib_dir / "features" / "_finance_meta.json").read_text(encoding="utf-8")) or {}
+        src = str(m.get("source") or "").strip().lower()
+        if src:
+            return src
+        if m.get("source_pit_dir"):
+            return "ricequant"
+    except Exception:                                                     # noqa: BLE001
+        pass
+    return ""
+
+
+def guard_convention(qlib_dir: Path, allow_non_tushare: bool) -> None:
+    """★★ 硬规矩（2026-10-10 用户澄清后加）：本工具是 **tushare 财务链** ⇒ 只许写
+    `convention=tushare` 的数据集（如 `data/cn_data2` ✓）。
+
+    **Why**：`cn_data` 是**米筐源**数据集（`.dataset.json`: `convention=ricequant` ✓，
+    财务 = 米筐 pit 带发布日/修订日 ✓），而本工具的 `--qlib-dir` **默认值恰好就是 `data/cn_data`** ✗
+    ⇒ 2026-10-09 我照着默认值跑了一次，把 tushare 财务灌进了米筐数据集 ✗✗（虽然随后被米筐那条链
+    force 重灌覆盖 ✓、没留下残留 ✓，但白跑了 3 小时 ✗，而且差点变成"同一数据集混两个源"✗）。
+    **How to apply**：换数据集先看该目录的 `.dataset.json` ✓；真要往非 tushare 数据集写，
+    必须显式 `--allow-non-tushare` ✓（= 明示你清楚在混源 ✗）。
+    """
+    conv = _declared_convention(qlib_dir)
+    if conv and conv != "tushare" and not allow_non_tushare:
+        raise SystemExit(
+            "✗ 拒绝写入：目标 %s 的口径是 %r，不是 tushare ✗\n"
+            "  本工具只生成 **tushare 财务** ⇒ 只应写 tushare 口径的数据集（如 data/cn_data2 ✓）。\n"
+            "  · 米筐源数据集（data/cn_data ✓）请改用 tools/dump_finance.py ✓；\n"
+            "  · 确实要往这里强写：加 --allow-non-tushare ✓（= 明示你在混源 ✗）。"
+            % (qlib_dir, conv))
+
+
 def main():
     ap = argparse.ArgumentParser(description="tushare 财务 → qlib fin_* 字段（与 dump_finance 同口径）")
     ap.add_argument("--qlib-dir", default=os.environ.get("QLIB_PROVIDER_URI")
@@ -648,6 +693,8 @@ def main():
                     help="市值续更的下限日（YYYYMMDD ✓；默认=tushare 日线缓存最早日；"
                          "**不要设成很早** ✗ 见 load_market_cap 注释）")
     ap.add_argument("--refresh", action="store_true", help="忽略本地缓存，重新拉取")
+    ap.add_argument("--allow-non-tushare", action="store_true",
+                    help="★ 允许往**非 tushare 口径**的数据集里写（会混源 ✗；默认拒绝 ✓ 见 guard_convention）")
     ap.add_argument("--roe-guard", action="store_true",
                     help="把明显毛刺的 ROE（tushare roe_waa）替换成自算值 累计归母净利/期末归母权益")
     args = ap.parse_args()
@@ -657,6 +704,8 @@ def main():
     MC_FROM = int(args.mc_from) or _default_mc_from()
 
     qlib_dir = Path(args.qlib_dir)
+    # ★ 先卡口径（见函数注释：默认目录就是米筐源的 cn_data ✗ ⇒ 照默认跑会混源 ✗✗）
+    guard_convention(qlib_dir, bool(args.allow_non_tushare))
     cal, cal_int = load_calendar(qlib_dir)
     tok = token()
     feats = qlib_dir / "features"

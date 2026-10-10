@@ -15,6 +15,7 @@ tushare 能持续更新 ⇒ 用户决定"**后面的新数据就用它**" ✓，
    以及 ROE 毛刺的**记录**（平安 2026q1 实测 tushare 给 0.24 ✗，米筐 2.83 ✓）。
 """
 import importlib.util
+import json
 import os
 import sys
 
@@ -343,6 +344,47 @@ class TestMarketCapExtend:
         assert arr[2] == pytest.approx(1.0e8) and arr[4] == pytest.approx(2.0e8)   # 万元 ×1e4 ✓
         assert not np.isfinite(arr[3]), "补调返回空 ⇒ 留 NaN ✓"
         monkeypatch.setattr(M, "_MC_CACHE", None)
+
+
+class TestConventionGuard:
+    """★★ 硬规矩：tushare 财务链**只许写 tushare 口径**的数据集 ✗（2026-10-10 用户澄清后加 ✓）。
+
+    **Why**：`cn_data` 是**米筐源**数据集（`.dataset.json`: `convention=ricequant` ✓，
+    财务 = 米筐 pit 带发布日/修订日 ✓），而本工具 `--qlib-dir` 的**默认值恰好就是 `data/cn_data`** ✗
+    ⇒ 2026-10-09 我照默认值跑了一次、把 tushare 财务灌进米筐数据集 ✗✗（随后被米筐那条链 force 重灌
+    覆盖 ✓、没留残留 ✓，但白跑 3 小时 ✗）。这组测试把它钉死：认出口径就**拒绝** ✓。
+    """
+
+    def test_refuses_ricequant_dataset(self, tmp_path):
+        (tmp_path / ".dataset.json").write_text(json.dumps({"convention": "ricequant"}), encoding="utf-8")
+        with pytest.raises(SystemExit) as ei:
+            M.guard_convention(tmp_path, False)
+        assert "拒绝写入" in str(ei.value), "必须给出口径不符的明确提示 ✓"
+
+    def test_allows_tushare_dataset(self, tmp_path):
+        (tmp_path / ".dataset.json").write_text(json.dumps({"convention": "tushare"}), encoding="utf-8")
+        M.guard_convention(tmp_path, False)          # 不抛 ✓
+
+    def test_allows_explicit_override_and_unmarked_dir(self, tmp_path):
+        (tmp_path / ".dataset.json").write_text(json.dumps({"convention": "ricequant"}), encoding="utf-8")
+        M.guard_convention(tmp_path, True)           # 显式 --allow-non-tushare ⇒ 放行 ✓
+        M.guard_convention(tmp_path / "无标记目录", False)   # 同事自建目录没标记 ⇒ 放行 ✓
+
+    def test_detects_ricequant_by_finance_meta(self, tmp_path):
+        """没有 `.dataset.json` 时，靠**米筐链的口径戳**（`source_pit_dir` ✓）也要认出来 ✗。"""
+        (tmp_path / "features").mkdir()
+        (tmp_path / "features" / "_finance_meta.json").write_text(
+            json.dumps({"source_pit_dir": "E:\\rq\\finance\\pit"}), encoding="utf-8")
+        with pytest.raises(SystemExit):
+            M.guard_convention(tmp_path, False)
+
+    def test_qingdan_marker_beats_meta(self, tmp_path):
+        """标记文件里的 `convention=tushare` 优先 ⇒ 即便有旧口径戳也放行 ✓。"""
+        (tmp_path / "features").mkdir()
+        (tmp_path / "features" / "_finance_meta.json").write_text(
+            json.dumps({"source_pit_dir": "E:\\rq\\finance\\pit"}), encoding="utf-8")
+        (tmp_path / ".dataset.json").write_text(json.dumps({"convention": "tushare"}), encoding="utf-8")
+        M.guard_convention(tmp_path, False)
 
 
 if __name__ == "__main__":

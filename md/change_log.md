@@ -3,6 +3,28 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.98] - 2026-10-10
+
+### Added / Fixed（数据集"口径归属"硬规矩：tushare 财务链只许写 tushare 口径的数据集）
+
+- ★ **用户澄清**（2026-10-10）：**`cn_data` 保持米筐源，财务也用米筐的** ✓ —— 每套数据集的
+  行情/财务**必须同源、绝不混** ✗：`cn_data` = 米筐 pit ✓（末日 2026-08-21 ✓）、
+  `cn_data2` = tushare ✓（末日 2026-10-09 ✓，平台当前生效 ✓）、`cn_data3` = qlib 官方原始（仅行情 ✓）。
+- ⚠ **更正 [1.20.94] 的记述**：那次"FINANCE 全量（58082 bin / 191 s）"实际写进了
+  **`data/cn_data`（米筐源）** ✗ —— 因为 `tools/dump_tushare_finance.py` 的 `--qlib-dir` **默认值
+  就是 `data/cn_data`** ✗，属**误操作** ✗（随后用户用米筐链 force 重灌：
+  `ai_test/finance_rq_micang.log` 07:42 ✓、5567 只 / 54356 bins ✓，已全部覆盖回来 ✓）。
+  事后体检（`ai_test/check_cn_data_finance_source.py` + `check_cn_data_market_cap.py`）：
+  `cn_data` 的 `fin_*` **无 tushare 残留** ✓（所有字段末有效日 ≤ 2026-08-21 ✓，" > 8/21" = **0 只** ✓）、
+  `market_cap.day.bin` **未被碰过** ✓（`dump_one` 只写 `fin_*` ✓、`load_market_cap` 只读 ✓）
+  ⇒ **现状与用户意图一致、无需回滚** ✓。
+- **新增 `guard_convention()`**（`tools/dump_tushare_finance.py` ✓）：写盘**前**读目标目录的**自报口径**
+  （`.dataset.json` 的 `convention` ✓；缺失则退回 `_finance_meta.json` 的 `source` / `source_pit_dir` ✓）
+  ⇒ 口径 ≠ `tushare` **直接拒绝** ✓ 并提示"米筐源请改用 `tools/dump_finance.py` ✓"；
+  真要混源必须显式 `--allow-non-tushare` ✓。**实测**：`data/cn_data` ⇒ 拒绝 ✓（退出码 1 ✓）；
+  `data/cn_data2` ⇒ 正常 ✓（`--verify` 0 写盘 ✓）。
+- **Tests**：`tests/test_tushare_finance.py` 新增 `TestConventionGuard` 5 项（**26 passed** ✓）。
+
 ## [1.20.97] - 2026-10-10
 
 ### Fixed / Performance（"切换数据集会卡一下" —— 实测定位后两处修复，接口快 20 倍）
