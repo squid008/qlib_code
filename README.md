@@ -114,11 +114,18 @@ npm run dev
 
 然后浏览器访问 http://localhost:5173
 
-### 数据路径配置
-数据路径按以下优先级查找（不用改代码）：
-1. 环境变量 `QLIB_PROVIDER_URI`
-2. 项目目录下 `data/cn_data`
-3. 当前用户主目录 `~/.qlib/qlib_data/cn_data`
+### 数据路径配置（★ 2026-10-10 起：**落盘的"当前数据集"优先** ✓）
+
+按以下优先级查找（不用改代码 ✓）：
+
+1. **`data/active_dataset.json`**（界面顶栏切换会原子写它 ✓）—— **最高优先** ✓
+2. 环境变量 `QLIB_PROVIDER_URI`（⚠ 要**强制**用它压过第 1 条时，另需设 `QLIB_PROVIDER_URI_FORCE=1` ✓）
+3. 项目目录下 `data/cn_data`（基线 ✓）
+4. 当前用户主目录 `~/.qlib/qlib_data/cn_data`
+
+⚠ **为什么**不许**"环境变量优先"**（2026-10-10 实测踩到、代价很大 ✗）：机器上有个**用户级**环境变量
+`QLIB_PROVIDER_URI=data\cn_data` ⇒ 界面切到 `cn_data2` 后，**新起的进程/子进程又回到 `cn_data`** ✗
+⇒ 表现为"切换看着生效、实际没生效"、"两个数据源跑出来一模一样" ✗（详见下方「坑二」的核实清单 ✓）。
 
 ## 主要 API
 
@@ -154,19 +161,124 @@ npm run dev
 
 ## 数据源说明
 
-### Qlib 数据源（已启用）
-- 提供 A 股**日线**行情（open/high/low/close/volume/amount/factor）
-- 数据路径默认 `~/.qlib/qlib_data/cn_data`（当前用户主目录），可用环境变量 `QLIB_PROVIDER_URI` 覆盖
-- **注意**：Qlib 数据本身只有日线，不含分钟/财报/行业/指数成分
+### 三套数据集（可同时存在，界面顶栏切换 ✓）
 
-### rqalpha h5 数据源（已实现）
-- 提供 **分钟线（1min）、财报、指数成分、日线** 等 Qlib 缺失的数据
-- 实现于 `backend/app/datasource/rqalpha_source.py`，通过 `h5py` 直接读取 rqalpha bundle 的 h5 文件
-- 启用条件：`RQALPHA_BUNDLE_PATH` 指向 bundle 目录（如 `E:\rq\bundle`），目录存在则自动注册
-- **依赖**：需安装 `h5py`（`pip install h5py`）
-- 依赖 `E:\rq\bundle` 存在 `h5/equities/`（分钟）、`finance/pit/`（财报）、`constituents/index/`（指数成分）等子目录
+| 名称 | 目录 | 口径 | 字段 | 说明 |
+|---|---|---|---|---|
+| `cn_data2` | `data/cn_data2` | **tushare 口径** | 全字段 ✓ | **平台主数据集** ✓：行情 = `raw × tushare adj_factor` ✓；财务（`fin_*`）/资金流（`mf_*`）/筹码（`chip_*`）齐全 ✓；日历跟到最新交易日 ✓ |
+| `cn_data` | `data/cn_data` | **米筐/qlib 口径** | 全字段 ✓ | 由 `cn_data.rar`（米筐 era 备份）解出 ✓，行情段按 qlib 官方口径重建 ✓（财务来自**米筐 pit** ✓，带公告日/修订日 ✓） |
+| `cn_data3` | `data/cn_data3` | qlib 官方原始 | **仅 10 个行情字段** ✗ | 只作对照 ✓：`FINANCE(q)` / 资金流 / 筹码在这套下取不到数（按 NaN ✓） |
 
-> 注：行业分类（industry）能力目前未实现（capabilities 标记为 false）。
+- **口径自证**：每个数据集根目录有 `.dataset.json`（口径 + 字段基准 ✓）；`cn_data2` 必须标 `tushare`、
+  `cn_data3` 必须标 `qlib`，否则界面**不显示** ✓（免得把别人的数据当 tushare 用 ✗）；
+  字段与基准不一致时**只提示不报错** ✓（同事往 `cn_data` 里 dump 了新字段 ✓）。
+- **切换**：界面顶栏（写盘 `data/active_dataset.json` ✓）或 `POST /api/datasets/active {"name":"cn_data2"}` ✓；
+  体检用 `GET /api/datasets`（日历范围 / 股票数 / 字段数 / 缺哪些字段 ✓）。
+- **物化字段不在 git** ✗（`fin_*`、`ftdx_*`、`pre*`、`chip_*`、`turn`、市场字段、`mf_*` 等 ✓）
+  ⇒ **每台机器都要按 `md/deploy.md`「物化字段」各跑一次** ✓；这些工具**写盘成功会自动落数据戳** ✓
+  （`<数据集>/.data_version` ✓ —— 否则"改了数据还用旧面板" ✗）。
+
+### Qlib / rqalpha 数据源（历史说明）
+
+- **Qlib 日线**（已启用 ✓）：`open/high/low/close/volume/amount/factor` ✓；
+- **rqalpha h5**（已实现 ✓）：分钟线 / 财报 / 指数成分 / 日线 ✓，实现于
+  `backend/app/datasource/rqalpha_source.py`（`h5py` 直读 ✓），启用条件：`RQALPHA_BUNDLE_PATH` 指向
+  bundle 目录（如 `E:\rq\bundle` ✓，目录存在则自动注册 ✓）；
+- 注：行业分类（industry）能力目前未实现（capabilities 标记为 false ✓）。
+
+---
+
+## ⚠ 数据源必读（两个坑 + 核实清单 —— 换机器/交接/写数据脚本前先看 ✓）
+
+> 这两条都是 **2026-10-10 真实踩过的坑**，各自都很隐蔽（"结果看着正常、其实整段是错的" ✗）。
+> 下面每条都给了**症状 → 根因 → 核实命令与期望值 → 修法** ✓ —— 同事（或同事那边的 AI）
+> 拉代码后**照着核实一遍**即可，不用重新踩 ✓。
+
+### 坑一：OHLC 与前后复权物化（换机器 / 换数据源后必查 ✗）
+
+**症状**：`cn_data` 的 `open/high/low` **被写成了 `close`** ✗ —— 实测全池 **95.8%** 的行四值完全相同、
+175/196 只 **100% 退化** ✗ ⇒ 任何用日内高低点的公式（`(c/l-1)`、`LLV/HHV`、筹码类 ✓）全部失真：
+实证 `黄金坑启动` 的触发数 **6 ↔ 3687**（同一份数据，只差"L 是哪一份"✓）。
+
+**根因**：① 备份解包时 O/H/L 落成了 close 的副本 ✗；② 更隐蔽的是 `pre*`（前复权物化字段）
+**从另一套数据集抄来** ✗（`prelow` 与 `cn_data2` 逐位一致 100%、与自家 `low/factor_last` 只 4% 相符 ✗）
+⇒ **混源** ✗，还顺带**掩盖**了 O/H/L 的退化 ✗（前复权走 pre*，看起来"正常"✗）。
+
+**核实（三条：命令 + 期望值 ✓）**
+
+```powershell
+# ① 物化字段体检：覆盖率 / 同轴 / NaN 位置 / 数值 / 口径戳 / 展开比（退出码 0 才算好 ✓）
+python backend/tools/verify_materialized.py
+
+# ② 前复权是否"自家自洽"：preclose ≈ close / factor_last（自洽率应 ~100% ✓；dry-run 只体检 ✓）
+python backend/tools/build_preclose.py --qlib-dir data/cn_data
+
+# ③ 字段轴不变量：同股各 bin 的 (first, n) 必须一致 ✓（负 header / 越界 = 写坏 ✗）
+python -m pytest backend/tests/test_bin_index_invariants.py -q
+```
+
+**修法（同源 ✓，绝不拿另一套数据补 ✓，都有 dry-run ✓）**
+
+```powershell
+# 用**米筐 bundle**（同源）原始 O/H/L × $factor 重建（四道闸：同源/轴/覆盖/形态 ✓）
+python backend/tools/rebuild_cn_data_ohlc_from_bundle.py --qlib-dir data/cn_data            # dry-run
+python backend/tools/rebuild_cn_data_ohlc_from_bundle.py --qlib-dir data/cn_data --apply    # 写盘（自动备份 + 落戳 ✓）
+# 再用**自家修好的价**重算 pre*（--qlib-dir 必给，否则会写错数据集 ✗）
+python backend/tools/build_preclose.py --qlib-dir data/cn_data --overwrite
+```
+
+> 复权口径本身：本仓 `$close/$open/$high/$low` 原生即**后复权价** = `真实价 × $factor` ✓；
+> 前复权走物化的 `preclose/preopen/prehigh/prelow/prevwap`（= 后复权 ÷ `factor_last` ✓）。
+> **比率类公式（如 `c/ma`）前/后复权结果相同** ✓，价格量纲类（低价股过滤、LLT 等）才会分家 ✓。
+
+### 坑二：切换数据源（"看着切了、其实没切" ✗）
+
+**症状**：界面切到 `cn_data2`，但同一因子在两套数据上跑出**逐位相同**的结果 ✗，
+很容易误判成"两套数据源质量一致、结论稳健" ✗。
+
+**根因（两个独立缺陷叠加 ✗）**：
+
+1. `app/config.py` 旧逻辑"**环境变量优先**" ✗ —— 机器上存在**用户级** `QLIB_PROVIDER_URI=data\cn_data`
+   ⇒ 切到 `cn_data2` 后，**新起的进程 / joblib 子进程又回到 `cn_data`** ✗；
+2. `engine/feature_cache.py` 里的 `QLIB_PROVIDER_URI` 是 **import 期快照** ✗ ⇒ **面板磁盘缓存的键**
+   永远取自"后端启动时的数据集" ⇒ **切数据集不换键** ⇒ 之后任何数据集都命中**同一份面板** ✗✗
+   （这才是"两套结果逐位相同"的**真因** ✓）。
+
+**现行规则（v1.21.5 起 ✓）**
+
+- **`data/active_dataset.json` 优先** ✓ > 环境变量 > `data/cn_data`；容器/CI 要强制用环境变量时设
+  `QLIB_PROVIDER_URI_FORCE=1` ✓；
+- **缓存键必须含数据集目录 + 口径戳** ✓（戳文件 `<数据集>/.data_version` ✓；**改数据必须落戳** ✓，
+  否则"新数据 + 旧面板"✗）；
+- **`qlib.init` 是进程级单例，一个进程只能 init 一次** ✗ ⇒ 自己写脚本时**一个进程只测一个数据集**
+  （循环两个数据集会**静默复用第一段的数据源** ✗，实测踩到 ✓）。
+
+**核实（三条 ✓）**
+
+```powershell
+# ① 当前生效的是哪套（落盘优先 ✓）+ 各套体检
+type data\active_dataset.json                       # 看 "name"/"dir" ✓
+curl http://127.0.0.1:8001/api/datasets             # 日历范围/股票数/字段数/是否缺字段 ✓
+
+# ② 路径跟随守卫：环境变量不得压过文件；面板与缓存目录必须**动态**跟随 ✓
+python -m pytest backend/tests/test_dataset_switch_paths.py -q      # 本机无数据时自动跳过 ✓
+
+# ③ 端到端判据（人工）：同一因子、同一参数在两套数据上跑
+#    · 触发数/未触发数**必须不同** ✓（逐位相同 ⇒ 根本没切 ✗）
+#    · 差异只在小数第 4 位、触发数相同 ⇒ **正常** ✓（两源口径一致，仅个别边界票不同 ✓）
+```
+
+> 参考：`md/大版本更新测试对照记录.md` §4 有四组对照与判据（AR13_ID60 在两套数据上触发数同为
+> 183、未触发数差 1,216 行 ✓ 就是"正常差异"的样子 ✓）；`md/开发记录.md` §12.4j~§12.4m 有完整事故复盘 ✓。
+
+### 另注：单因子「覆盖率」的分母（v1.21.6 改口径 ✓）
+
+- **旧口径**（≤ v1.21.5）：`因子非空行 ÷ 面板行数`，而面板行集 = 本次请求**全部参与字段覆盖区间的并集**
+  ⇒ 同桌多测一个用 `fin_*` 的因子（其物化 bin 铺满整条历法、含**上市前**报告期 ✓）就会让覆盖率
+  **凭空变低** ✗（同一因子能从 99.75% 掉到 98.16% ✗）—— 容易被误读成"数据有毛病" ✗；
+- **新口径**（v1.21.6 起 ✓）：`因子非空行 ÷ CLOSE 有效行`（"在有行情的交易日里，该因子有多少比例有值" ✓），
+  分母与同桌因子无关 ⇒ **跨数据集/跨组合可直接对比** ✓；< 100% 才是**真缺料** ✓
+  （结果里另有 `coverage_den` 字段 = 分母 ✓）。
 
 ## 回测引擎说明
 
@@ -190,7 +302,9 @@ npm run dev
 4. **复权数据口径（v1.6.1 修正；v1.19.87/97 + v1.20.0 补充，务必知晓）**：本机 qlib 数据的 `$close/$open/$high/$low` 原生即**后复权价** = 真实价 × `$factor`
    - ⚠ **2026-09-18 起 `forece[/前复权] 是真前复权**（此前 `forward` 曾"原样返回"⇒ 价格量纲因子实际按**后复权价**排序 ✗）：
      **五个价格字段全部物化**了前复权版 —— `preclose / preopen / prehigh / prelow / prevwap`
-     （= `后复权 ÷ factor_last` ✓，由 `ai_test/build_preclose.py` 生成，各 **6141** 个 ✓）；
+     （= `后复权 ÷ factor_last` ✓，由 `backend/tools/build_preclose.py` **按数据集**生成
+     —— 用法：`python backend/tools/build_preclose.py --qlib-dir data/cn_data2 --overwrite` ✓，
+     ⚠ **必须给 `--qlib-dir`**，否则会写到"当前生效数据集"上 ✗）；
      `adjust_expr(..., 'forward')` 改引用它们（`Add($pre*,0)` ✓）。⚠ **数据更新后需重跑该脚本**
      （`factor_last` 变 ⇒ 历史价整体缩放 ✓）。
    - ⚠ **`$market_cap` 与复权无关**（市值 = 真实价 × 总股本，复权不动股本 ✓）⇒ `PRICE_FIELDS`

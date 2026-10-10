@@ -19,6 +19,11 @@
 ## 安全闸（不满足就不写 ✗）
 ① **身份闸**：从 `market_cap.h5` 重算出来的总市值，必须与目标数据集**现有 `market_cap` bin**
    在抽样日上一致（相对差 ≤0.5% ✓）⇒ 证明"文件↔字段↔单位"三件事都认对了 ✓；
+①′ **替代闸（2026-10-10 新增）**：若该股**整只没有 `market_cap` bin**（旧逻辑直接跳过 ✗，
+   实测 `SZ300114` / `SH689009` 就属此类 ⇒ 单因子「负市值对数」覆盖率 99.98% ✓），则改为
+   校验"源市值全正 + 反推股本落在 1e6~1e13 股" ✓ —— 此时**只创建 `market_cap`、绝不覆盖**
+   （已存在时行为与从前完全一致，只写下面 3 个新字段 ✓），且新 bin **按 close 的轴**写 ✓
+   （仓库硬规矩：同股各 bin 的 `(first,n)` 一致 ✓，见 `tests/test_bin_index_invariants.py` ✓）；
 ② **结构闸**：`circulating_market_cap ≤ market_cap × 1.001` ✓（流通不可能大于总 ✓）；
 ③ **单位闸**：样本日反推股本与 tushare `total_share`（若缓存有 ✓）相对差 ≤2% ✓；
 ④ `first + n <= 日历长` ✓、写入前备份 ✓。
@@ -80,6 +85,34 @@ def series_of(lv0, days, l1s, vss, starts, ends, code: str):
     return {days[int(k)]: float(v) for k, v in zip(l1s[sl], vss[sl])}
 
 
+_FALLBACK: dict = {}
+
+
+def _has_values(s) -> bool:
+    """该股的源序列里**有没有有限值**（`market_cap.h5` 对个别股票只有键、值全 NaN ✗）。"""
+    return bool(s) and bool(np.isfinite(np.asarray(list(s.values()), dtype=float)).any())
+
+
+def _fallback_packs():
+    """懒加载 `market_cap_3.h5` / `market_cap_4.h5`（**同一口径·总市值**的另一版本 ✓）。
+
+    2026-10-10 实测：源目录共 4 个市值文件，本工具原先只读 1/2 ✗；用现有 `market_cap` bin
+    当裁判（抽样 120 只）⇒ #3/#4 与它的中位相对差 **0.0000%** ✓（与流通市值 bin 差 23% ✗）
+    ⇒ 是"总市值"的另一版本，且**覆盖了 #1 缺的那 2 只票** ✓ ⇒ 缺值时回退读取（仍是米筐自家 ✓）。
+    只在该股"#1 没值"时按需读 ✓（每个 201MB，不必每次都载 ✗）。
+    """
+    for name in ("market_cap_3.h5", "market_cap_4.h5"):
+        if name not in _FALLBACK:
+            p = MC_DIR / name
+            if not p.exists():
+                _FALLBACK[name] = None
+                continue
+            print("  （回退源 %s：该股在 market_cap.h5 里没有值 ⇒ 按需读这份 ✓）" % name, flush=True)
+            _FALLBACK[name] = load_sparse(p)
+        if _FALLBACK[name] is not None:
+            yield name, _FALLBACK[name]
+
+
 def main():
     ap = argparse.ArgumentParser(description="米筐侧 4 个市场字段 → qlib bin（默认 dry-run ✓）")
     ap.add_argument("--qlib-dir", default=str(ROOT / "data" / "cn_data"))
@@ -87,9 +120,12 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--apply", action="store_true", help="真的写盘（默认 dry-run ✓）")
     ap.add_argument("--allow-non-ricequant", action="store_true")
+    ap.add_argument("--cross-check-dir", default=str(ROOT / "data" / "cn_data2"),
+                    help="补建 market_cap 时的**对拍**数据目录（tushare 源 ✓；只校验、不取数 ✓ —— 与闸③同性质 ✓）")
     args = ap.parse_args()
 
     qlib = Path(args.qlib_dir)
+    cross_dir = Path(args.cross_check_dir) if args.cross_check_dir else None
     conv = _declared_convention(qlib)
     if conv and conv != "ricequant" and not args.allow_non_ricequant:
         raise SystemExit("✗ 拒绝写入：目标 %s 的口径是 %r，不是 ricequant ✗\n"
@@ -119,14 +155,21 @@ def main():
         rq = "%s.%s" % (code[2:], {"sh": "XSHG", "sz": "XSHE", "bj": "BJSE"}.get(code[:2], ""))
         tot = series_of(lv0_t, days_t, l1_t, vs_t, st_t, en_t, rq)
         cir = series_of(lv0_c, days_c, l1_c, vs_c, st_c, en_c, rq)
-        if not tot:
+        src_tag = "market_cap.h5"
+        if not _has_values(tot):                    # ★ 部分票 #1 只有键、值全 NaN ✗ ⇒ 回退同口径另一版本 ✓
+            for _name, _pack in _fallback_packs():
+                _s = series_of(*_pack, rq)
+                if _has_values(_s):
+                    tot, src_tag = _s, _name
+                    break
+        if not _has_values(tot):
             n_skip += 1
             continue
         # 现有 bin（用于身份闸 + 反推股本 ✓）
         hc = read_bin(ex / code / "close.day.bin")
         hf = read_bin(ex / code / "factor.day.bin")
         hm = read_bin(ex / code / "market_cap.day.bin")
-        if hc is None or hf is None or hm is None:
+        if hc is None or hf is None:
             n_skip += 1
             continue
         f0, close = hc[0], hc[1]
@@ -134,21 +177,64 @@ def main():
             n_skip += 1
             continue
         fold = hf[1]
-        fm, mc_cur = hm[0], hm[1]
+        # ★ 2026-10-10（用户："补" ✓）：允许 `market_cap` **整只缺失** ✓ —— 旧逻辑把"没有
+        #   现有 market_cap bin"的股票**整只跳过** ✗（实测 `sh689009` / `sz300114` 就是：
+        #   米筐源里两只都有市值 ✓，但盘上连 `market_cap.day.bin` 都没有 ✗ ⇒ 单因子
+        #   「负市值对数」覆盖率 99.98% = 少了这 1042 个交易日 ✓）。
+        #   规则：**只创建、绝不覆盖** ✓（已存在时行为与从前完全一致：只写 3 个新字段 ✓）；
+        #   没有旧 bin 可比 ⇒ 身份闸① 换成"源值全正 + 反推股本量级合理"✓。
+        mc_missing = hm is None
+        fm, mc_cur = (hm[0], hm[1]) if hm is not None else (None, None)
         # ---- 闸① 身份：重算的总市值 vs 现有 bin（抽样 12 天 ✓）----
         days_ok = [d for d in sorted(tot) if d in cpos]
         if len(days_ok) < 12:
             n_skip += 1
             continue
-        dev = []
-        for d in days_ok[:: max(1, len(days_ok) // 12)][:12]:
-            j = cpos[d] - fm
-            if 0 <= j < mc_cur.size and np.isfinite(mc_cur[j]) and mc_cur[j] > 0:
-                dev.append(abs(tot[d] / mc_cur[j] - 1.0))
-        if dev and max(dev) > 0.005:
-            print("  ✗ %-9s 身份闸不过：重算总市值与现有 bin 最大相对差 %.3f%% ✗（不写）" % (code, max(dev) * 100))
-            n_skip += 1
-            continue
+        if not mc_missing:
+            dev = []
+            for d in days_ok[:: max(1, len(days_ok) // 12)][:12]:
+                j = cpos[d] - fm
+                if 0 <= j < mc_cur.size and np.isfinite(mc_cur[j]) and mc_cur[j] > 0:
+                    dev.append(abs(tot[d] / mc_cur[j] - 1.0))
+            if dev and max(dev) > 0.005:
+                print("  ✗ %-9s 身份闸不过：重算总市值与现有 bin 最大相对差 %.3f%% ✗（不写）"
+                      % (code, max(dev) * 100))
+                n_skip += 1
+                continue
+        else:
+            # 闸①′（没有旧 bin 可比时的替代）：源市值必须全为正 ✓ + 反推股本量级合理 ✓
+            #   （股本 = 总市值 ÷ 未复权收盘 ⇒ 应在 1e6 ~ 1e13 股之间 ✓，见闸④同口径 ✓）
+            _bad_val = [d for d in days_ok if not (np.isfinite(tot[d]) and tot[d] > 0)]
+            _shares = []
+            for d in days_ok[:: max(1, len(days_ok) // 12)][:12]:
+                k = cpos[d] - f0
+                raw = close[k] / fold[k] if (0 <= k < close.size and np.isfinite(fold[k]) and fold[k]) else np.nan
+                if np.isfinite(raw) and raw > 0:
+                    _shares.append(tot[d] / raw)
+            if _bad_val or not _shares or not all(1e6 <= s <= 1e13 for s in _shares):
+                print("  ✗ %-9s 补建闸不过：源市值异常 %d 天 / 反推股本 %s ✗（不写）"
+                      % (code, len(_bad_val),
+                         [round(s, 1) for s in _shares[:3]] or "无"))
+                n_skip += 1
+                continue
+            # 闸⑤（补建时才有意义）：与 **tushare 源**（`cn_data2` 的 market_cap bin ✓）抽样对拍 ≤2% ✓
+            #   ⚠ 只作**校验**、绝不用它取数 ✓（与闸③"与 tushare total_share 对拍"同性质 ✓）
+            _hx = (read_bin(cross_dir / "features" / code / "market_cap.day.bin")
+                   if cross_dir is not None else None)
+            if _hx is not None:
+                _devs = []
+                for d in days_ok[:: max(1, len(days_ok) // 12)][:12]:
+                    j = cpos[d] - _hx[0]
+                    if 0 <= j < _hx[1].size and np.isfinite(_hx[1][j]) and _hx[1][j] > 0:
+                        _devs.append(abs(tot[d] / _hx[1][j] - 1.0))
+                if _devs and max(_devs) > 0.02:
+                    print("  ✗ %-9s 闸⑤不过：与 tushare（cn_data2）最大相对差 %.2f%% ✗（不写）"
+                          % (code, max(_devs) * 100))
+                    n_skip += 1
+                    continue
+                if _devs:
+                    print("    闸⑤ ✓ 与 cn_data2 抽样 %d 天最大相对差 %.3f%% ✓（口径一致 ✓）"
+                          % (len(_devs), max(_devs) * 100))
         # ---- 闸② 结构：流通 ≤ 总 ----
         bad_struct = sum(1 for d in days_ok if d in cir and cir[d] > tot[d] * 1.001)
         if bad_struct > len(days_ok) * 0.01:
@@ -156,8 +242,15 @@ def main():
             n_skip += 1
             continue
         # ---- 组装 3 个新字段（按日历 ✓，未复权收盘 = close/factor ✓）----
-        lo = cpos[days_ok[0]]
-        hi = cpos[days_ok[-1]]
+        if mc_missing:
+            # ★ 补建 market_cap 时**用 close 的轴** ✓ —— 仓库硬规矩：同股各 bin 的 `(first,n)`
+            #   必须一致 ✓（`tests/test_bin_index_invariants.py` ✓；茅台等现有 market_cap 也是同轴 ✓）；
+            #   源里超出 close 轴的日子（如 `sh689009` 源到 2026-08-26、日历止 2026-08-21 ✓）
+            #   自然落在轴外 ✓（不写盘 ✓）。
+            lo, hi = f0, f0 + close.size - 1
+        else:
+            lo = cpos[days_ok[0]]
+            hi = cpos[days_ok[-1]]
         if lo + (hi - lo + 1) > n_cal:
             n_skip += 1
             continue
@@ -165,13 +258,17 @@ def main():
         arr_cir = np.full(n, np.nan)
         arr_cap = np.full(n, np.nan)
         arr_cca = np.full(n, np.nan)
+        arr_mc = np.full(n, np.nan)
         for d in days_ok:
+            if not (lo <= cpos[d] <= hi):
+                continue
             j = cpos[d] - lo
             k = cpos[d] - f0
             raw = close[k] / fold[k] if (0 <= k < close.size and np.isfinite(fold[k]) and fold[k]) else np.nan
             t = tot[d]
             c = cir.get(d, np.nan)
             arr_cir[j] = c
+            arr_mc[j] = t
             if np.isfinite(raw) and raw > 0:
                 arr_cap[j] = t / raw
                 if np.isfinite(c):
@@ -179,14 +276,20 @@ def main():
         # ---- 闸④ 抽样看量级（股本应为"股"✓）----
         sample = [(d, arr_cap[cpos[d] - lo]) for d in days_ok[-3:]]
         checks.append((code, [(d, round(v, 4)) for d, v in sample]))
-        print("  ✓ %-9s %s ~ %s（%d 天）｜末 3 日：流通市值=%s 总股本=%s"
-              % (code, days_ok[0], days_ok[-1], len(days_ok),
+        print("  ✓ %-9s %s ~ %s（%d 天，源 %s）｜末 3 日：流通市值=%s 总股本=%s%s"
+              % (code, days_ok[0], days_ok[-1], len(days_ok), src_tag,
                  [round(cir.get(d, float('nan')), 4) for d, _ in sample],
-                 [v for _, v in checks[-1][1]]))
+                 [v for _, v in checks[-1][1]],
+                 "｜★ 补建 market_cap（原缺 ✗，按 close 轴 %s 起 × %d ✓）" % (cal[int(lo)], n)
+                 if mc_missing else ""))
         n_ok += 1
         if args.apply:
             backup.mkdir(parents=True, exist_ok=True)
-            for fld, arr in zip(NEW_FIELDS, (arr_cir, arr_cap, arr_cca)):
+            payload = {"circulating_market_cap": arr_cir, "capitalization": arr_cap,
+                       "circulating_cap": arr_cca}
+            if mc_missing:
+                payload["market_cap"] = arr_mc      # 只补缺 ✓（存在时不进 payload ⇒ 绝不覆盖 ✓）
+            for fld, arr in payload.items():
                 p = ex / code / ("%s.day.bin" % fld)
                 if p.exists():
                     shutil.copy2(p, backup / ("%s_%s.day.bin" % (code, fld)))
