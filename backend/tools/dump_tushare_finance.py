@@ -59,6 +59,13 @@ ROE_SUSPECTS: List[dict] = []
 ROE_GUARD = False
 # 「本地缓存 JSON 损坏、已删除并重新下载」的股票清单（进度行 / 收尾统计 ✓）
 CORRUPT_CACHE: List[str] = []
+# ★★ 本轮**真失败**（重试耗尽）的清单 ⇒ 收尾写 `features/_finance_failures.json` ✓
+#   **Why**（用户 2026-10-10）："防止网络抖动然后数据拉取失败，失败跳过静默就这么过去了没发现，
+#   那是有问题的" ✗ —— 失败必须**响**：进度行有计数 ✓、收尾有台账文件 ✓、日志有明确行 ✓。
+FAILED: List[dict] = []
+# tushare 调用/重试次数（进度行可见 ✓；重试数高 ⇒ 网络在抖，值得注意 ✓）
+TS_CALLS = 0
+TS_RETRIES = 0
 # 市值（`daily_basic.total_mv`）续更的**下限日**（int YYYYMMDD ✓）—— 由 `--mc-from` 设定 ✓，
 # 见 `load_market_cap` 的注释：不设下限会从 2000 年起逐日调 API ✗（每只 ~6484 次 ✗✗）
 MC_FROM = 20260801
@@ -186,29 +193,43 @@ def token() -> str:
 
 
 def ts_call(api: str, params: dict, fields: str = "", tok: str = "", retry: int = 3) -> dict:
-    """调一次 tushare HTTP API；频率超限自动退避重试 ✓（权限不足直接抛清楚 ✗）。"""
+    """调一次 tushare HTTP API（重试耗尽才抛 ✗ ⇒ **绝不返回空表示失败** ✓）。
+
+    ⚠⚠ 2026-10-10 修（用户："防止网络抖动然后数据拉取失败，失败跳过静默就这么过去了没发现 ✗"）：
+      原实现**只有频率超限**（-2001/40202）才重试 ✗，而**网络类错误**（`code=-1`：超时/连接重置/
+      DNS 抖动 ✓）走的是 `break` **立即放弃** ✗✗ ⇒ 一次抖动就被上层当成"这只跳过" ✗（静默 ✗）。
+      现在：**任何非致命错误都指数退避重试** ✓（0.5s → 1s → 2s，封顶 4s ✓；频率超限仍按 20s ✓），
+      重试耗尽才抛 `RuntimeError` ✗；调用/重试次数记进 `TS_CALLS/TS_RETRIES` ✓（进度行可见 ✓）。
+    """
+    global TS_CALLS, TS_RETRIES
     tok = tok or token()
     body = json.dumps({"api_name": api, "token": tok, "params": params, "fields": fields},
                       ensure_ascii=False).encode("utf-8")
-    last = {}
-    for _ in range(retry):
+    last: dict = {}
+    tries = max(1, int(retry))
+    for attempt in range(tries):
+        TS_CALLS += 1
         req = urllib.request.Request("https://api.tushare.pro", data=body,
                                      headers={"Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 last = json.loads(r.read().decode("utf-8"))
-        except Exception as e:                                # noqa: BLE001
+        except Exception as e:                                # noqa: BLE001  ← 网络抖动走这里 ✓
             last = {"code": -1, "msg": "%s: %s" % (type(e).__name__, e)}
         code = last.get("code")
         if code == 0:
             return last
-        if code in (40203, 40204):                            # 无权限 / 积分不足
+        if code in (40203, 40204):                            # 无权限 / 积分不足 ⇒ 重试没用 ✓
             raise SystemExit("tushare 无权限调 %s：%s" % (api, last.get("msg")))
+        if attempt == tries - 1:
+            break                                             # 重试耗尽 ⇒ 抛 ✗（不静默 ✓）
         if code in (-2001, 40202):                            # 频率超限
+            TS_RETRIES += 1
             time.sleep(20)
-            continue
-        break
-    raise RuntimeError("tushare 调用失败 %s: %s" % (api, last.get("msg")))
+        else:                                                 # 网络类/其它 ⇒ 指数退避再试 ✓
+            TS_RETRIES += 1
+            time.sleep(min(4.0, 0.5 * (2 ** attempt)))
+    raise RuntimeError("tushare 调用失败 %s（已重试 %d 次）：%s" % (api, tries, last.get("msg")))
 
 
 def to_qlib_code(ts_code: str) -> str:
@@ -686,7 +707,9 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="只处理前 N 只（冒烟）")
     ap.add_argument("--force", action="store_true", help="已存在的 bin 也覆盖重写")
     ap.add_argument("--verify", action="store_true", help="只打印核对值，不写盘")
-    ap.add_argument("--rate", type=float, default=0.31, help="每次 API 调用后的间隔秒（200/分钟档）")
+    ap.add_argument("--rate", type=float, default=0.33,
+                    help="每次 API 调用后的间隔秒（默认 0.33 ✓；用户 2026-10-10："
+                         "0.3 太贴限速，网络一抖就失败 ⇒ 放宽一点 + 靠重试兜住 ✓）")
     ap.add_argument("--mc-tushare", action="store_true",
                     help="本地 market_cap 覆盖不到的日期用 tushare daily_basic.total_mv 续")
     ap.add_argument("--mc-from", type=int, default=0,
@@ -729,7 +752,10 @@ def main():
             res = dump_one(code, cal_int, qlib_dir, tok, args.rate, args.force,
                            args.verify, args.mc_tushare, args.refresh)
         except Exception as e:                                # noqa: BLE001
-            print("  ✗ %s 处理失败：%s: %s" % (code, type(e).__name__, e), flush=True)
+            # ★ 记进失败台账（**不是**"没数据"✗）⇒ 进度行有计数 ✓、收尾写 JSON ✓、重跑自动补 ✓
+            FAILED.append({"code": code, "error": "%s: %s" % (type(e).__name__, e)})
+            print("  ✗ %s 处理失败（已记入失败台账 ✓，**不是**“没数据”✗）：%s: %s"
+                  % (code, type(e).__name__, e), flush=True)
             continue
         fields = {k: v for k, v in res.items() if not k.startswith("_")}
         if res.get("_skipped_no_income"):
@@ -747,17 +773,36 @@ def main():
         if i % 50 == 0 or i == len(codes):
             el = time.time() - t0
             print("  进度 %d/%d  有数据 %d / 空 %d / tushare 无覆盖跳过 %d / 损坏缓存重下 %d / mc调用 %d"
-                  "  写盘 %d 个 bin  %.0fs（%.2fs/只）  预计剩余 %.0fs"
+                  " / **失败 %d** / 重试 %d  写盘 %d 个 bin  %.0fs（%.2fs/只）  预计剩余 %.0fs"
                   % (i, len(codes), done, empty, n_skip, len(CORRUPT_CACHE), MC_FETCHED,
+                     len(FAILED), TS_RETRIES,
                      n_bins, el, el / i, el / i * (len(codes) - i)), flush=True)
 
     if args.verify:
         print("核对模式：未写盘 ✓")
         return
-    print("完成：写盘 %d 个 bin（%d 只有数据 / %d 只空）用时 %.0fs" % (n_bins, done, empty, time.time() - t0))
+    print("完成：写盘 %d 个 bin（%d 只有数据 / %d 只空）用时 %.0fs｜tushare 调用 %d 次、重试 %d 次"
+          % (n_bins, done, empty, time.time() - t0, TS_CALLS, TS_RETRIES))
     if CORRUPT_CACHE:
         print("⚠ 本地缓存损坏并已重新下载 %d 只（前 20：%s）"
               % (len(CORRUPT_CACHE), ",".join(CORRUPT_CACHE[:20])))
+    # ★ 失败台账（用户 2026-10-10："失败跳过静默就这么过去了没发现，那是有问题的 ✗"）
+    #   ⇒ 有失败就**落盘清单 + 显著打印** ✓；重跑会自动补上（缓存命中 ⇒ 只补失败的那些 ✓）
+    if FAILED:
+        fp = qlib_dir / "features" / "_finance_failures.json"
+        try:
+            with open(fp, "w", encoding="utf-8") as f:
+                json.dump({"written_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                           "n": len(FAILED), "items": FAILED,
+                           "ts_calls": TS_CALLS, "ts_retries": TS_RETRIES,
+                           "note": "重试耗尽后仍失败的股票（**不是**“没数据”✗）；重跑本工具会自动补 ✓"},
+                          f, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+        print("⚠⚠ 本轮**真失败 %d 只**（不是“没数据”✗）⇒ 台账 %s ✓；重跑会自动补 ✓"
+              % (len(FAILED), fp))
+    else:
+        print("✓ 本轮无失败（tushare 调用 %d 次，重试 %d 次）" % (TS_CALLS, TS_RETRIES))
     print("口径戳：%s" % write_meta(qlib_dir, done, n_bins, args.force, cal[-1]))
     if ROE_SUSPECTS:
         wp = qlib_dir / "features" / "_finance_warnings.json"
