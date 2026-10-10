@@ -45,24 +45,19 @@ export default function DatasetPicker({ datasets, onSwitch, busy }: Props) {
       <button
         type="button"
         className={
-          'mt-1 w-full border rounded px-2 py-1 text-left flex items-center justify-between ' +
+          // ★ 高度**恒定**：只放短标签一行 ✓（不再随"展开/收起"增删任何行 ✗
+          //   —— 之前那行 `N 只 · M 字段` 只在上面的 `!open` 下渲染 ⇒ 一点开就消失，
+          //   整行高度变化、把下面的"选股方式"等控件顶上去 ✗✗，用户 2026-10-10 反馈 ✓）
+          'mt-1 w-full h-[34px] border rounded px-2 text-left flex items-center justify-between ' +
           (onlyOne || busy ? 'bg-slate-100 text-slate-500 cursor-default' : 'bg-white hover:border-slate-400')
         }
         onClick={() => !onlyOne && !busy && setOpen((v) => !v)}
         title={onlyOne ? '只有一个数据集可用' : '切换数据集（后端全局生效）'}
       >
-        {/* ★ 收起时只显示短标签 ✓ */}
+        {/* 收起时只显示短标签（如 "tushare 口径"）✓；详情全在下面展开的菜单里 ✓ */}
         <span className="truncate">{active ? active.label : (datasets ? '（无可用数据集）' : '加载中…')}</span>
         {!onlyOne && <span className="ml-2 text-slate-400">▾</span>}
       </button>
-
-      {/* 收起状态下的一行小字：只给"多少个字段"这种最小信息 ✓（完整信息在展开里 ✓） */}
-      {active && !open && (
-        <span className="mt-1 block text-xs text-slate-400">
-          {active.codes} 只 · {active.fields} 字段
-          {active.only_price ? '（仅行情）' : ''}
-        </span>
-      )}
 
       {open && (
         <div className="absolute z-30 mt-1 w-[26rem] max-w-[90vw] bg-white border border-slate-300 rounded shadow-lg">

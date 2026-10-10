@@ -1142,11 +1142,14 @@ export default function App() {
               </select>
             </label>
 
-            <label className="block">
+            {/* ⚠ 这里用 div 而不是 label ✓：`label` 会把点击转发给它内部的**可标记控件**，
+                而按钮不是可标记控件 ⇒ 行为不确定；且下拉弹出层不该受 label 包裹影响 ✓ */}
+            <div className="block">
               <span className="text-sm text-slate-500">数据源（数据集）</span>
-              {/* 收起只显示短标签（如 tushare 口径），点开才显示完整信息（末日自动检测/字段/基准提示）✓ */}
+              {/* 收起只显示短标签（如 tushare 口径），点开才显示完整信息（末日自动检测/字段/基准提示）✓
+                  ⚠ 高度必须恒定：展开/收起不得增删任何**在文档流里**的行 ✗（否则下面的"选股方式"会跟着跳 ✗）*/}
               <DatasetPicker datasets={datasets} onSwitch={handleDatasetChange} />
-            </label>
+            </div>
 
             <div className="block">
               <span className="text-sm text-slate-500">特征集</span>
