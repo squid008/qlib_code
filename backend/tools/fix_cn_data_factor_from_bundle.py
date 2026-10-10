@@ -156,16 +156,41 @@ def main():
             my_days = [cal[first + k] for k in range(n)]
             cum = daily_cum(ev, my_days)
             ka = ia - first
-            if ka < 0 or ka >= n or args.anchor not in cum:
-                n_skip += 1
-                continue
-            ca = cum[args.anchor]
+            ca = cum.get(args.anchor)
+            if ka < 0 or ka >= n or ca is None:
+                # ★★ 退市/长期停牌股回退（2026-10-10 ✓）：一批票的数据在**锚定日之前**就结束了 ✗
+                #   （退市 ✓，或全市场锚 2026-08-21 时它已无行情 ✓）。上一版直接 `continue` 跳过 ✗
+                #   —— 但跳过 = 让它继续留着**反向**的错值 ✗，比"修得不那么完美"更坏 ✓。
+                #   ⇒ 回退到**该股自己的最后有效日**做锚 ✓：尺度在"它的最后一天"不变 ✓，
+                #     等价于把锚定日平移成它自己的退市日 ✓（相对变化仍完全跟 bundle ✓）。
+                fin = np.where(np.isfinite(fold) & (fold > 0))[0]
+                if fin.size == 0:
+                    n_skip += 1
+                    continue
+                ka = int(fin[-1])
+                ca = cum.get(my_days[ka])
+                if ca is None:
+                    n_skip += 1
+                    continue
+                # 记账（跑完按这份清单核一遍 ✓）
+                try:
+                    with open(ROOT / "ai_test" / "factor_anchor_fallback.txt", "a", encoding="utf-8") as _fh:
+                        _fh.write("%s %s\n" % (code, my_days[ka]))
+                except Exception:                                        # noqa: BLE001
+                    pass
             f_new = np.full(n, np.nan)
             for k, d in enumerate(my_days):
                 c = cum.get(d)
                 # ⚠ 原因子为 NaN 的日子（停牌/未上市）必须**也留 NaN** ✗ —— 否则会凭空造出价格 ✓
                 if c and np.isfinite(fold[k]):
-                    f_new[k] = fold[ka] * ca / c          # ★ 锚定归一化 ✓（锚定日 f_new == f_old ✓）
+                    # ★★ 方向修正（2026-10-10 ✓）：平台口径是 `$close = raw × factor` = **后复权**
+                    #   ⇒ `factor` 必须 **∝ 累计因子（递增 ✓）**。上一版写成 `ca / c`（∝1/cum ✗）
+                    #   把方向搞反了 ✗✗ —— `cn_data` 的因子一度变成 2.95489 → 2.0726 **递减** ✗，
+                    #   复权后跌幅（−88%）反而**大于**原始跌幅（−83%）✗，分红被算成亏损 ✗。
+                    #   判定证据（都不靠"命名"✓）：① `cn_data2`（tushare adj ✓、金标全过 ✓）同日因子
+                    #   1.45372 → 2.0726 **递增** ✓；② 两套因子**乘积恒为常数** 4.2957 ✓ ⇒ 精确互为倒数 ✗；
+                    #   ③ 用 trader_code 独立 `hfq/qfq/raw` + bundle 预测修正值 = 35.5150 ✓ ↔ 金标 35.5143 ✓。
+                    f_new[k] = fold[ka] * c / ca          # ★ 锚定归一化 ✓（锚定日 f_new == f_old ✓）
             # ⑤ 收益校验：新因子相对变化 vs tushare adj 的不符天数（只允许 ≤ 现状 ✓）
             adj = tushare_adj(code)
             pos = {d: k for k, d in enumerate(my_days)}
@@ -177,21 +202,41 @@ def main():
                     if pos[d1] - pos[d0] != 1:
                         continue
                     a0, a1 = adj.get(d0), adj.get(d1)
-                    if not (a0 and a1) or not np.isfinite(fser[k]) or not np.isfinite(fser[k - 1]) or fser[k] <= 0:
+                    if (not (a0 and a1) or not np.isfinite(fser[k]) or not np.isfinite(fser[k - 1])
+                            or fser[k] <= 0 or fser[k - 1] <= 0):
                         continue
-                    # ★ 平台 `factor ∝ 1/累计因子`（前复权 ⇒ 因子随时间**变小** ✓）
-                    #   ⇒ 要比的是 `f_{t-1}/f_t` 这个**正向**增长量 ✓，别拿 `f_t/f_{t-1}` 去比 ✗（我踩过 ✓）
-                    r = fser[k - 1] / fser[k]
+                    # ★★ 平台口径 = `factor ∝ 累计因子`（**递增** ✓，理由见上）⇒ 要比的是 `f_t / f_{t-1}` ✓。
+                    #   ⚠ 上一版这里写的是 `f_{t-1}/f_t` ✗ 且配着错误前提（"平台 factor ∝ 1/累计因子"✗）
+                    #   ⇒ **闸门与错误方向自洽 ⇒ 自己把自己验过了** ✗✗（2026-10-10 靠 trader_code 独立
+                    #     hfq 才抓出来 ✓）。教训：闸门里"方向/口径"的假设必须**用外部真值**验证，
+                    #     不能只跟自己的另一段代码对账 ✓。
+                    r = fser[k] / fser[k - 1]
                     if abs(r - a1 / a0) / (a1 / a0) > 0.005:
                         cnt += 1
                 return cnt
 
+            # ★ 新增不变式（2026-10-10 ✓）：**后复权累计因子只增不减** ✓（分红/送股只会抬高它 ✓）
+            #   ⇒ 出现**显著下降**（相对 >0.1%）说明方向仍错 ✗ 或该票 bundle 数据有瑕疵 ✗。
+            #   ⚠ 但**不能零容忍** ✗：实测少数票的 `ex_cum_factor` 自身就有 1~2 处回落 ✓
+            #     （缩股 / 数据瑕疵 ✓），整只跳过 = 让它继续留着**反向**的错值 ✗，反而更坏 ✓。
+            #   ⇒ 容忍 `max(3, 1%)` 处回落（bundle 是口径真值 ✓，轻微瑕疵照跟 ✓），
+            #     超限才跳过 ✓（那说明不是瑕疵、而是方向/数据整体不对 ✗）。
+            n_dec = 0
+            for k in range(1, n):
+                if (np.isfinite(f_new[k]) and np.isfinite(f_new[k - 1]) and f_new[k - 1] > 0
+                        and f_new[k] < f_new[k - 1] * 0.999):
+                    n_dec += 1
+
             nb_new = nbad(f_new)
             nb_old = nbad(fold)
-            # ② 锚定日不变 ✓ ③ 无新增 NaN ✓
-            ok = (abs(f_new[ka] - fold[ka]) < 1e-9) and (np.isnan(f_new[~bad]).sum() == np.isnan(fold[~bad]).sum())
+            dec_limit = max(3, n // 100)
+            # ② 锚定日不变 ✓ ③ 无新增 NaN ✓ ④ 因子单调不减（容忍 ≤ dec_limit 处瑕疵 ✓）
+            ok = ((abs(f_new[ka] - fold[ka]) < 1e-9)
+                  and (np.isnan(f_new[~bad]).sum() == np.isnan(fold[~bad]).sum())
+                  and n_dec <= dec_limit)
             if not ok:
-                print("  ✗ %-9s 自检不过（锚定日/NaN 数）⇒ 不写" % code)
+                print("  ✗ %-9s 自检不过（锚定日/NaN 数/因子递减 %d 处 > 容忍 %d）⇒ 不写"
+                      % (code, n_dec, dec_limit))
                 n_skip += 1
                 continue
             if nb_new > nb_old:
@@ -251,6 +296,15 @@ def main():
             print("   %-9s %d → %d" % (c, a, b))
     if args.apply:
         print("已写 %d 个 bin ✓；原文件备份到 %s ✓" % (n_bins, backup))
+        # ★ 落数据戳（2026-10-10 ✓）：不改戳 ⇒ 面板缓存继续"有效" ⇒ 平台拿旧数据跑 ✗✗
+        try:
+            _bak = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if _bak not in sys.path:
+                sys.path.insert(0, _bak)
+            from app.engine.feature_cache import bump_data_version
+            print("数据戳已落 ✓ %s" % bump_data_version(str(qlib), "fix_cn_data_factor"))
+        except Exception as e:                                            # noqa: BLE001
+            print("⚠⚠ 数据戳**没落上**（%r）⇒ 必须手工清 `backend/workdir/feature_cache/` ✗" % e)
     else:
         print("（dry-run：未写盘 ✓；加 --apply 生效 ✓）")
 

@@ -49,19 +49,64 @@ def _norm_instruments(instruments):
     return ",".join(sorted(str(i) for i in instruments))
 
 
+# ★★ 数据「戳文件」（2026-10-10 新增 ✓）
+# 为什么必须加：`_data_version()` 原先**只取数据集根目录的 mtime** ✗ ⇒ 而本项目所有 dump/修复
+# 都是**原地重写** `features/<股票>/*.day.bin` ✗ ⇒ **根目录 mtime 根本不变** ✗✗ ⇒ 面板缓存
+# 全部"看起来还有效" ⇒ 平台继续拿**旧数据**跑 ✗（2026-10-10 实测踩到：`feature_cache` 里 25 个
+# 面板缓存最旧的还是 **10/09** ✓，而当天已改写 5 万多个 bin ✗，事件研究因此读到旧价 ✓）。
+# 约定：**任何改写数据的工具**在 `--apply` 成功后就调一次 `bump_data_version()` ✓；
+# 删掉戳文件即回退到旧的 mtime 判据 ✓（向后兼容 ✓）。
+_STAMP_NAME = ".data_version"
+
+
+def data_version_stamp(qlib_dir=None) -> str:
+    """戳文件路径（`<数据集目录>/.data_version` ✓）；拿不到数据集目录时返回 "" ✓。"""
+    root = qlib_dir or QLIB_PROVIDER_URI or ""
+    return os.path.join(root, _STAMP_NAME) if root else ""
+
+
+def bump_data_version(qlib_dir=None, note: str = "") -> str:
+    """★ 数据被改写后**必须**调用 ✓：把当前时间戳写进数据集目录的 `.data_version` ✓。
+
+    返回写入的内容（失败返回 ""✓；写盘用 tmp + 原子替换 ✓，并发安全 ✓）。
+    `note` 只用于人看（如工具名 ✓），会一起写进文件 ✓。
+    """
+    p = data_version_stamp(qlib_dir)
+    if not p:
+        return ""
+    import time
+    body = "%.6f\t%s" % (time.time(), note or "")
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = p + ".tmp%d" % os.getpid()
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(body)
+        os.replace(tmp, p)
+        return body
+    except Exception:                                                     # noqa: BLE001
+        return ""
+
+
 def _data_version() -> str:
-    """数据版本号：数据目录最后修改时间（数据更新后缓存自动失效）。"""
+    """数据版本号：★ **优先读戳文件** ✓（`bump_data_version` 写的 ✓）；没有戳时才退回
+    「数据集根目录 + 日历文件」的 mtime（旧判据 ✓，只能捕捉"换数据集 / 日历变化"✓，
+    捕捉不到原地重写 bin ✗ —— 所以新工具一定要落戳 ✓）。"""
     try:
         root = QLIB_PROVIDER_URI or ""
-        mtime = 0.0
-        if root and os.path.isdir(root):
+        if root:
+            p = os.path.join(root, _STAMP_NAME)
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    body = f.read().strip()
+                if body:
+                    return "stamp:%s" % body
             mtime = os.path.getmtime(root)
             cal = os.path.join(root, "calendars", "day.txt")
             if os.path.exists(cal):
                 mtime = max(mtime, os.path.getmtime(cal))
-        if mtime:
-            return str(mtime)
-    except Exception:
+            if mtime:
+                return str(mtime)
+    except Exception:                                                     # noqa: BLE001
         pass
     return "unknown"
 

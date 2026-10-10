@@ -198,6 +198,16 @@ def main():
     print("\n合计：可写 %d 只 / 跳过 %d 只" % (n_ok, n_skip))
     if args.apply:
         print("已写 %d 个 bin ✓；原文件（若有）备份到 %s ✓" % (n_bins, backup))
+        # ★ 落数据戳（2026-10-10 ✓）：原地重写 bin 不会改数据集根目录 mtime ✗ ⇒ 不落戳的话
+        #   面板缓存会继续"有效"、平台拿旧数据跑 ✗（`feature_cache.bump_data_version` ✓）
+        try:
+            _bak = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if _bak not in sys.path:
+                sys.path.insert(0, _bak)
+            from app.engine.feature_cache import bump_data_version
+            print("数据戳已落 ✓ %s" % bump_data_version(str(qlib), "dump_ricequant_market_fields"))
+        except Exception as e:                                            # noqa: BLE001
+            print("⚠⚠ 数据戳**没落上**（%r）⇒ 必须手工清 `backend/workdir/feature_cache/` ✗" % e)
     else:
         print("（dry-run：未写盘 ✓；加 --apply 生效 ✓）")
 
