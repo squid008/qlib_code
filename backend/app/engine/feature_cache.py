@@ -69,6 +69,10 @@ def _data_version() -> str:
 # 停牌删行（益盟语义）：哪些叶子字段需要按 $close 掩码删行（自身停牌日可能仍有值）
 _SR_FIELDS_BY_CLOSE_MASK = {
     "$open", "$high", "$low", "$volume", "$amount", "$vwap", "$change", "$factor", "$market_cap",
+    # ★ 2026-10-10 新增的 3 个市场字段：与 `$market_cap` **完全同性质** ✗ ——
+    #   它们在停牌日照样有值（市值/股本按天数连续 ✓，不像价格那样缺行 ✗）⇒
+    #   必须一起按 `$close` 掩码删行 ✓，否则与已删行的价格字段组合时会把停牌行"外对齐"回来 ✗✗。
+    "$circulating_market_cap", "$capitalization", "$circulating_cap",
 }
 _SR_FIELD_RE = re.compile(r"\$([a-z][a-z0-9_]*)")
 

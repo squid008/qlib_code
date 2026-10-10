@@ -3,6 +3,33 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.21.2] - 2026-10-10
+
+### Added（公式补齐 4 个市场字段：总市值/流通市值/总股本/流通股本 —— 米筐、tushare 各自 dump）
+
+- ★ **用户要求**：公式原先只有总市值 `MARKET_CAP`，补 `CIRCULATING_MARKET_CAP`（流通市值 ✓）、
+  `CAPITALIZATION`（总股本 ✓）、`CIRCULATING_CAP`（流通股本 ✓）；`cn_data` 用**米筐**源、
+  `cn_data2` 用 **tushare** 源各自 dump（**不混源** ✓）。
+- **米筐侧（已完成 ✓）**：`tools/dump_ricequant_market_fields.py` —— 从 `E:\rq\others\market-cap\`
+  的 `market_cap.h5`（总市值 ✓）/ `market_cap_2.h5`（流通市值 ✓）读；股本用
+  `市值 ÷ 当日未复权收盘` 反推 ✓（同源自洽 ✓）。落盘 **5536 只 × 3 字段 = 16608 个 bin** ✓，
+  越界 0 ✓，备份 `ai_test/backup_rq_market_*` ✓。已用 tushare **交叉验证**：股本差 **< 0.02%** ✓
+  （002487 7.401e8 vs 7.40086e8 ✓）、结构 ✓（茅台/平安流通=总 ✓、中国平安流通<总 ✓ 因有 H 股 ✓）。
+- **tushare 侧（工具就绪 ✓，取数进行中 ✓）**：`tools/prefetch_basic_fields.py` **按天**取 `daily_basic`
+  5 字段 ✓ + `tools/dump_tushare_market_fields.py` 汇总成 bin ✓。⚠ **按天而非按股票** ✗ ——
+  `daily_basic` 单次有 6000 行上限，按股票拉全历史会被**静默截断** ✗✗；单位统一成 **元/股** ✓；
+  **由近及远** ✓ + **可断点续跑** ✓ + **失败进台账** ✓（沿用 1.21.1 的抗抖动 ✓）。
+- **公式侧**：`parser.py` / `codegen.py` 两处 `FIELD_MAP` 同步加 3 个字段 ✓；⚠⚠
+  `engine/feature_cache.py::_SR_FIELDS_BY_CLOSE_MASK` 必须一并登记 ✗✗ —— 市值/股本**停牌日仍有值** ✗，
+  不按 `$close` 删行就会把停牌行"外对齐"回来 ⇒ **整只股票行轴错位** ✗✗；另补 `_FIELD_CN` 中文名 ✓、
+  前端 `formulaHandbook.ts` 3 个条目（含单位 ✓）；**不动** `CODEGEN_SEMANTICS` ✓
+  （只加字段名、既有公式生成结果不变 ⇒ 动它会让 60+ 条公式白重编 ✗）。
+- **测试**：`tests/test_formula_handbook_sync.py` 新增 3 项守卫（两处 `FIELD_MAP` 同步 ✓、
+  字段别名必须有手册条目 ✓、市场字段必须被 SR 掩码 ✓）⇒ **7 passed** ✓。
+- **端到端实测**（重启后端后走真接口 ✓）：`POST /api/factors/translate`
+  `X:CIRCULATING_MARKET_CAP/CAPITALIZATION;` ⇒ `Div($circulating_market_cap,$capitalization)` ✓、小写等价 ✓;
+  `GET /api/datasets` ⇒ `cn_data` 字段 84 → **87** ✓、`fields_extra` 正是这 3 个 ✓（仅提示不报错 ✓）。
+
 ## [1.21.1] - 2026-10-10
 
 ### Added / Fixed（`cn_data` 复权因子**全市场修复完成** ✓；tushare 抗抖动 + 失败台账 ✓；覆盖率审计 ✓）

@@ -87,6 +87,12 @@ FIELD_MAP = {
     "TURNOVERRATE": "$turn",
     "VWAP": "$vwap",
     "MARKET_CAP": "$market_cap",
+    # ★ 市场派生字段（2026-10-10 补：流通市值 / 总股本 / 流通股本 ✓；单位 元、股 ✓）
+    #   ⚠ 只是**新增可用字段名** ⇒ 既有公式的生成结果**不変** ⇒ **不要**动
+    #     `CODEGEN_SEMANTICS` ✗（那会让 60+ 条存量公式白重编一遍 ✓）
+    "CIRCULATING_MARKET_CAP": "$circulating_market_cap",
+    "CAPITALIZATION": "$capitalization",
+    "CIRCULATING_CAP": "$circulating_cap",
     # 资金流向字段（moneyflow bin，tools/dump_moneyflow.py 生成）
     "MF_AMOUNT_MAIN": "$mf_amount_main", "MF_PCT_MAIN": "$mf_pct_main",
     "MF_AMOUNT_XL": "$mf_amount_xl", "MF_PCT_XL": "$mf_pct_xl",

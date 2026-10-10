@@ -55,6 +55,8 @@ def normalize_mode(mode: str) -> str:
 #   不复权时含除权跳空 ⇒ 与 close/high/low 同属必须前复权的价格字段 ✓。
 # ⚠ `$market_cap` / `$volume` / `$amount` / `$turn` **不在** `PRICE_FIELDS` ⇒ 复权不触碰 ✓：
 #   市值 = 真实价 × 总股本（绝对元，与复权无关 ✓）；量/额/换手率天然与复权无关 ✓。
+#   v1.21.x 新增的 `$circulating_market_cap` / `$capitalization` / `$circulating_cap` 同理 ✓
+#   不在 `PRICE_FIELDS` ✓（市值绝对元 ✓、股本为股数 ✓，都与复权无关 ✓）。
 _PRE_OF = {"$close": "preclose", "$open": "preopen", "$high": "prehigh",
            "$low": "prelow", "$vwap": "prevwap"}
 

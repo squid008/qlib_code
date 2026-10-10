@@ -17,6 +17,8 @@ import re
 import pytest
 
 from app.factors.parser.semantic import BUILTIN_FUNCS
+from app.factors.parser.parser import FIELD_MAP as PARSER_FIELD_MAP
+from app.factors.parser.codegen import FIELD_MAP as CODEGEN_FIELD_MAP
 
 _HANDBOOK = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "src", "formulaHandbook.ts")
@@ -77,3 +79,62 @@ def test_chip_funcs_are_documented():
     """★ 用户 2026-09-17 点名的两个（筹码函数）必须有手册条目。"""
     names = _handbook_names()
     assert {"COST", "WINNER"} <= names, "COST / WINNER 必须写进手册（用户点名要的）"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ★ 字段名一侧的守卫（2026-10-10 加 ✓ —— 原先只守函数 ✗，字段名漏了没人管 ✗）
+# ─────────────────────────────────────────────────────────────────────────────
+# 手册里"已作为别名写进别的条目"的字段名 ⇒ 不单独成条 ✓
+FIELD_ALIAS_GAP = {
+    "VOLUME",     # VOL 条目里写了「用法: VOL 或 V」（VOLUME 同义 ✓，2026-10-10 核实 ✓）
+}
+# 内部实现字段：手册按 `L2_*` **函数**讲 ✓，不引导用户直接写这些叶子字段名 ✓
+FIELD_PREFIX_GAP = ("MF_",)
+
+
+def test_parser_and_codegen_field_maps_in_sync():
+    """★ 两处 `FIELD_MAP` 必须一致 ✗。
+
+    **Why**：`parser.FIELD_MAP` 决定"能不能识别成字段" ✓、`codegen.FIELD_MAP` 决定"能不能
+    生成 qlib 表达式" ✗（不认识就报「不支持的行情字段」✗）⇒ 只改一处会出现
+    "解析通过、编译报错"的怪现象 ✓（2026-10-10 加 3 个市场字段时两处都要改才想起这点 ✓）。
+    """
+    assert set(PARSER_FIELD_MAP) == set(CODEGEN_FIELD_MAP), (
+        "两处 FIELD_MAP 键集不同 ⇒ "
+        + str(sorted(set(PARSER_FIELD_MAP) ^ set(CODEGEN_FIELD_MAP))))
+    diff = sorted(k for k in PARSER_FIELD_MAP if PARSER_FIELD_MAP[k] != CODEGEN_FIELD_MAP[k])
+    assert not diff, "同名别名映射到了不同 qlib 字段：" + str(diff)
+
+
+def test_market_field_aliases_are_documented():
+    """★ 非内部字段别名必须在前端手册里有条目（用户靠手册查用法 ✓）。
+
+    **Why**（2026-10-10）：补 `CIRCULATING_MARKET_CAP` / `CAPITALIZATION` / `CIRCULATING_CAP`
+    时，最容易漏的正是**前端手册** ✗ —— 后端加了、手册忘了，用户根本不知道有这个字段 ✓
+    （思路同 `test_every_backend_func_is_documented_or_declared` ✓，只是字段这一侧原先没人守 ✗）。
+    """
+    names = _handbook_names()
+    miss = sorted(n for n in (set(PARSER_FIELD_MAP) | set(CODEGEN_FIELD_MAP))
+                  if len(n) > 1
+                  and not n.startswith(FIELD_PREFIX_GAP)
+                  and n not in names and n not in FIELD_ALIAS_GAP)
+    assert not miss, (
+        "这些字段别名在后端可用、但前端手册里没有条目：\n  " + "、".join(miss)
+        + "\n⇒ 请在 frontend/src/formulaHandbook.ts 补条目（**写明单位** ✓，如 元/股 ✓）；"
+          "确属别名/内部字段的，加到本文件的 FIELD_ALIAS_GAP / FIELD_PREFIX_GAP ✓。")
+
+
+def test_new_market_fields_are_sr_masked():
+    """★ 市场字段必须与 `$market_cap` 一样按 `$close` 掩码删行 ✗✗。
+
+    **Why**：它们在**停牌日照样有值** ✗（市值/股本是连续序列 ✓，不像价格那样缺行 ✗）⇒
+    若不删行，与已删行的价格字段组合时会把停牌行"外对齐"回来 ⇒ **整只股票的行轴错位** ✗✗
+    （2026-10-10 加这 3 个字段时差点漏掉这一步 ✓）。
+    """
+    from app.engine.feature_cache import _SR_FIELDS_BY_CLOSE_MASK, _sr_wrap_expr
+    need = {"$market_cap", "$circulating_market_cap", "$capitalization", "$circulating_cap"}
+    assert need <= _SR_FIELDS_BY_CLOSE_MASK, (
+        "漏登记到 _SR_FIELDS_BY_CLOSE_MASK ⇒ 停牌行会被外对齐 ✗："
+        + str(sorted(need - _SR_FIELDS_BY_CLOSE_MASK)))
+    for f in sorted(need):
+        assert _sr_wrap_expr(f) == "SR(%s,$close)" % f, "掩码生成不对：%s ⇒ %s" % (f, _sr_wrap_expr(f))

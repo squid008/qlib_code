@@ -31,6 +31,15 @@ FIELD_MAP = {
     "TURNOVERRATE": "$turn",
     "VWAP": "$vwap",
     "MARKET_CAP": "$market_cap",
+    # ★ 市场派生字段（用户 2026-10-10 要求：公式原先只有总市值 ✓，补齐另 3 个 ✓）
+    #   数据来源见 tools/dump_ricequant_market_fields.py（米筐 ✓ 用 market_cap.h5 / market_cap_2.h5
+    #   + 市值÷未复权收盘反推股本 ✓）与 tools/dump_tushare_market_fields.py（tushare `daily_basic` ✓）。
+    #   单位：市值=**元** ✓、股本=**股** ✓（两侧统一 ✓）。
+    #   ⚠ 与 MARKET_CAP 同性质：**停牌日仍有值** ✗ ⇒ 必须同时登记进
+    #     `engine/feature_cache.py::_SR_FIELDS_BY_CLOSE_MASK` ✗（否则停牌行会被"外对齐"回来 ✗）。
+    "CIRCULATING_MARKET_CAP": "$circulating_market_cap",
+    "CAPITALIZATION": "$capitalization",
+    "CIRCULATING_CAP": "$circulating_cap",
     # 资金流向字段（moneyflow bin，tools/dump_moneyflow.py 生成）
     "MF_AMOUNT_MAIN": "$mf_amount_main", "MF_PCT_MAIN": "$mf_pct_main",
     "MF_AMOUNT_XL": "$mf_amount_xl", "MF_PCT_XL": "$mf_pct_xl",
@@ -147,6 +156,9 @@ class Parser:
         "$close": "收盘价", "$high": "最高价", "$low": "最低价",
         "$open": "开盘价", "$volume": "成交量", "$amount": "成交额",
         "$turn": "换手率", "$vwap": "均价",
+        # 2026-10-10 补：市场派生字段的中文名（错误提示用 ✓）
+        "$market_cap": "总市值", "$circulating_market_cap": "流通市值",
+        "$capitalization": "总股本", "$circulating_cap": "流通股本",
     }
 
     def _check_field_name(self, name: str):

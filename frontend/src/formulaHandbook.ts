@@ -17,7 +17,10 @@ const RAW_HANDBOOK: HandbookEntry[] = [
   { name: 'OPEN', abbr: '开盘价', kind: 'field', desc: '当日开盘价。\n用法:\n OPEN 或 O' },
   { name: 'VOL', abbr: '成交量', kind: 'field', desc: '成交量（手）。\n用法:\n VOL 或 V\n注:数据里停牌日无成交为 NaN。' },
   { name: 'AMOUNT', abbr: '成交额', kind: 'field', desc: '成交金额（元）。\n用法:\n AMOUNT' },
-  // 以下按字母升序：MARKET_CAP < TURNOVERRATE < VWAP
+  // 以下按字母升序：CAPITALIZATION < CIRCULATING_CAP < CIRCULATING_MARKET_CAP < MARKET_CAP < TURNOVERRATE < VWAP
+  { name: 'CAPITALIZATION', abbr: '总股本', kind: 'field', desc: '总股本（股）。\n用法:\n CAPITALIZATION\n注:含停牌日亦有值，需注意停牌对齐。' },
+  { name: 'CIRCULATING_CAP', abbr: '流通股本', kind: 'field', desc: '流通股本（股）。\n用法:\n CIRCULATING_CAP\n注:含停牌日亦有值，需注意停牌对齐。' },
+  { name: 'CIRCULATING_MARKET_CAP', abbr: '流通市值', kind: 'field', desc: '流通市值（元）。\n用法:\n CIRCULATING_MARKET_CAP\n注:含停牌日亦有值，需注意停牌对齐。' },
   { name: 'MARKET_CAP', abbr: '总市值', kind: 'field', desc: '总市值（元）。\n用法:\n MARKET_CAP\n注:含停牌日亦有值，需注意停牌对齐。' },
   { name: 'TURNOVERRATE', abbr: '换手率', kind: 'field', desc: '换手率（%）。\n用法:\n TURNOVERRATE' },
   { name: 'VWAP', abbr: '均价', kind: 'field', desc: '成交均价（当日总成交额/总量）。\n用法:\n VWAP' },
