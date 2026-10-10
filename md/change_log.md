@@ -3,6 +3,27 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.20.100] - 2026-10-10
+
+### Added（指数尾部补齐到 10/09 —— 基准曲线不再在 8/21 收尾）
+
+- **背景**：1.20.99 修好指数日期错位后，指数行情只到 **2026-08-21** ✓（与米筐源一致 ✓）⇒ 跑 8/21 之后
+  的回测时基准曲线会在 8/21 收尾 ✗。
+- **新增 `tools/append_index_daily.py`** ✓：从 tushare `index_daily` 给 5 个指数
+  （`sh000300/sh000905/sh000906/sh000852/sz399300`）补齐尾部行情 ✓。默认 **dry-run** ✓；
+  **只追加、不改已有值** ✓（`first` 不动 ✓）；复用 `guard_convention()` ⇒ **只许写 tushare 口径数据集** ✓
+  （防误写米筐源 `cn_data` ✗）；**14 个字段 × 8 天重叠段全量对拍** ✓ + `first+n<=日历长` ✓ + 写前备份 ✓。
+- **口径（先实测再写 ✓，两条是闸门抓出来的 ✗）**：`close/open/high/low` = 原始指数价 × factor ✓；
+  `change` = `pct_chg/100` ✓；`amount` = tushare 千元 ✓；`volume` = `vol(手) ÷ f` ✓；
+  `vwap` = `(amount_千元×1000 ÷ (vol_手×100)) × f` ✓；★ **`adjclose`/`preclose` = 未复权收盘** ✗、
+  **`prevwap`/`prehigh/prelow/preopen` = 未复权值** ✗（第一版按"复权价"猜 ⇒ 重叠段 16 处对不上 ⇒
+  **拒绝写盘** ✓）。
+- **结果** ✓：5 个指数各补 **29 天** ⇒ `n=5284`、`first+n=6484=`**日历长** ✓、末有效日 **2026-10-09** ✓；
+  追加段**无 NaN 洞** ✓、`change` 与 close **完全自洽** ✓、与米筐**重叠段仍逐位一致（0.0e+00）** ✓；
+  沪深300 未复权 8/21 **4618.9** → 10/09 **4317.3** ✓。已重激活数据集清缓存 ✓；
+  `tests/test_bin_index_invariants.py` **9 passed** ✓。备份 `ai_test/backup_index_append_*/` ✓。
+- ⚠ 只动 `cn_data2` ✓；`cn_data`（米筐源）保持只到 8/21 ✓（口径归属 ✓）。
+
 ## [1.20.99] - 2026-10-10
 
 ### Fixed（cn_data2 的**指数日期错位** —— 基准沪深300/中证500/800/1000 终于对了）
