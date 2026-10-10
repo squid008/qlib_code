@@ -3,7 +3,7 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
-## [1.20.100] - 2026-10-10
+## [1.21.0] - 2026-10-10
 
 ### Added（指数尾部补齐到 10/09 —— 基准曲线不再在 8/21 收尾）
 
