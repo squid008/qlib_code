@@ -1165,15 +1165,28 @@ export default function App() {
             </label>
 
             <label className="block">
-              <span className="text-sm text-slate-500">数据源</span>
+              <span className="text-sm text-slate-500">数据源（数据集）</span>
               <select
                 className="mt-1 w-full border rounded px-2 py-1"
-                value="qlib"
-                disabled
-                title="当前仅支持 Qlib 数据源"
+                value={datasets?.active || ''}
+                onChange={(e) => handleDatasetChange(e.target.value)}
+                disabled={!datasets || !datasets.switchable}
+                title="切换后单因子测试/回测/事件研究全部读这套数据（后端全局生效）"
               >
-                <option value="qlib">Qlib</option>
+                {(datasets?.datasets || []).map((d) => (
+                  <option key={d.name} value={d.name}>
+                    {d.name}｜{d.label}
+                    {d.calendar_last ? `（至 ${d.calendar_last}）` : ''}
+                  </option>
+                ))}
               </select>
+              {activeDataset && (
+                <span className="mt-1 block text-xs text-slate-400">
+                  {activeDataset.codes} 只 · {activeDataset.fields} 字段
+                  {activeDataset.only_price ? '（仅行情字段）' : ''}
+                  {!activeDataset.only_price && !activeDataset.has_fin ? '（无财务字段）' : ''}
+                </span>
+              )}
             </label>
 
             <div className="block">
