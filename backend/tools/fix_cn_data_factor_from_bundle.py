@@ -239,10 +239,25 @@ def main():
                       % (code, n_dec, dec_limit))
                 n_skip += 1
                 continue
-            if nb_new > nb_old:
-                print("  ✗ %-9s 收益校验变差（%d → %d 天）⇒ 不写" % (code, nb_old, nb_new))
+            # ★ 新增判据（2026-10-10 ✓）：**旧因子自身多处回落**（相对 >0.1% 超过 3 处 ✓）
+            #   ⇒ 直接证明旧数据本来就是坏的 ✗ ⇒ 即便"与 tushare adj 不符天数"略增 ✗ 也**照 bundle 写** ✓。
+            #   Why：这个计数在**老票/退市票**上几乎是瞎的 ✗ —— 它们与 tushare adj 的重叠极少 ⇒
+            #   计数失真 ⇒ 第一版会把"该修的好因子"判成变差而拒掉 ✗（实测 `sz000033` 旧因子回落 **126 处** ✗
+            #   却被拒 ✓，重跑后与 adj 不符天数 27→0 ✓）。bundle 才是口径真值 ✓。
+            n_dec_old = 0
+            for k in range(1, n):
+                if (np.isfinite(fold[k]) and np.isfinite(fold[k - 1]) and fold[k - 1] > 0
+                        and fold[k] < fold[k - 1] * 0.999):
+                    n_dec_old += 1
+            bypass = n_dec_old > 3 and n_dec <= dec_limit
+            if nb_new > nb_old and not bypass:
+                print("  ✗ %-9s 收益校验变差（%d → %d 天，旧因子回落仅 %d 处）⇒ 不写"
+                      % (code, nb_old, nb_new, n_dec_old))
                 n_skip += 1
                 continue
+            if nb_new > nb_old and bypass:
+                print("   ⚠ %-9s 与 tushare 不符天数 %d→%d（略增 ✗），但**旧因子自身回落 %d 处** ✗ "
+                      "⇒ 判为旧数据坏，按 bundle 写 ✓" % (code, nb_old, nb_new, n_dec_old))
             n_done += 1
             worst.append((nb_old, nb_new, code))
             if args.apply:
