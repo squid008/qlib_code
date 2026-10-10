@@ -193,3 +193,30 @@ Get-NetTCPConnection -LocalPort 5173,8001 -State Listen | Select-Object LocalPor
 | 停前端 | `Get-NetTCPConnection -LocalPort 5173 -State Listen \| ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }` |
 
 > 提示：若提示"没有找到正在监听的进程"，说明该服务本来就没在运行，属正常。
+
+---
+
+## 六、发版后重启后端（改了代码/数据必须重启 ✓）
+
+后端（uvicorn）**不会自动热加载** ⇒ 代码或数据改了要重启才生效 ✓。仓库里有一键脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:\quant\qlib_code\backend\workdir\restart_backend.ps1
+```
+
+成功输出形如：`old backend killed (tree)` + `backend restarted OK, PID(s): 29308` ✓。
+
+> ⚠⚠ **别在命令末尾接 `| Select-Object -Last N` / `| Select-String ...` 之类的管道** ✗ ——
+> 新起的 uvicorn 会**继承并占住**这段管道的句柄 ⇒ PowerShell 等不到 EOF ⇒ 命令**看起来"一直卡住"**，
+> 而其实后端**早就起来了** ✗（用户 2026-10-10 实际踩过 ✓）。
+> 要判断是否真的起来，直接查这两样（都更可靠 ✓）：
+
+```powershell
+# ① 端口在监听（拿到 PID）
+Get-NetTCPConnection -LocalPort 8001 -State Listen | Select-Object OwningProcess,State
+
+# ② 版本号对得上 README 顶部（最直接的"新代码已生效"证据 ✓）
+(Invoke-RestMethod http://127.0.0.1:8001/api/version).version
+```
+
+> 若 ① 有 PID 且 ② 返回新版本号 ⇒ **重启已经成功** ✓，那个"卡住"的命令窗口可以忽略/关掉 ✓。
