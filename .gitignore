@@ -65,3 +65,6 @@ md/upload.md
 
 # IDE 项目数据（记忆/规则/自动化等，本地专属，不上传）
 .codebuddy/
+
+# 后端 stderr 日志（本机运行产物 ✓）
+backend/server.err
