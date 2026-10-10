@@ -431,7 +431,8 @@ export interface SingleFactorTestResult {
   expression: string
   horizon?: number // 该行对应的预测周期（批量测试时每 因子×周期 一行）
   source_formula?: string // 用户原文公式（custom=保存原文；目录因子=表达式本身）
-  coverage: number | null // 因子值非空比例
+  coverage: number | null // 覆盖率：因子非空行 ÷ CLOSE 有效行（v1.21.6 起；分母不再是"面板并集行数"）
+  coverage_den?: number | null // 覆盖率分母（CLOSE 有效行数），仅供自查
   nonzero_ratio: number | null // 非零比例
   is_binary: boolean // 是否 0/1 二值信号
   grouping: 'binary' | 'quantile' | null // 触发分组方式

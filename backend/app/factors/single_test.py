@@ -381,6 +381,9 @@ def _test_one(
         "expression": factor.get("expression") or "",
         "source_formula": factor.get("source_formula") or "",  # 用户原文（仅展示用，随结果回传）
         "coverage": None,
+        # v1.21.6：覆盖率的**分母**（CLOSE 有效行数 ✓，见下方口径注释）—— 仅供自查/测试，
+        # 界面可不显示；旧口径下这个分母是"面板并集行数"（会随同桌因子变 ✗）。
+        "coverage_den": 0,
         "nonzero_ratio": None,
         "is_binary": False,
         "grouping": None,
@@ -417,8 +420,37 @@ def _test_one(
         result["error"] = "无数据（股票池或日期区间无行情）"
         return result
 
+    # ---- 覆盖率（v1.21.6 改口径：分母换成「CLOSE 有效行」✓）----------------------
+    # ★ 为什么不能再用 `df[col].notna().mean()`（旧口径 ✗，2026-10-10 追查实锤）：
+    #   面板行集 = 本次请求**全部参与字段覆盖区间的并集**（`panel_expr._union_layout` ✓，
+    #   为对齐 qlib `D.features` 的 union 行集 ✓）；而 `fin_*` 物化 bin 的区间**铺满整条历法**
+    #   （起点 = 该股 pit 最早公告日、含**上市前**报告期：招股书披露日如宁德时代
+    #   2017-11-10 披露 2014q4~2017q2 ✓；001267 甚至有 1996-1997 的前身财务 ✗）⇒
+    #   面板里存在大量"有财务值、**没有行情**"的死行（实测 cn_data 三因子 203,594 行 /
+    #   cn_data2 92,420 行 ✗）⇒ 旧口径下：**同一个因子、同一参数，只因同桌多测了一个用
+    #   `fin_*` 的因子，覆盖率就从 99.75% 掉到 98.16%（cn_data 96.04%）** ✗ —— 用户拿它
+    #   对比两套数据源时会被误导成"数据有毛病"（2026-10-10 实际发生过 ✓）。
+    #   新口径 = **因子非空行 ÷ CLOSE 有效行**（"在有行情的交易日里，该因子有多少比例有值" ✓）：
+    #   · 分母与"同桌因子 / 字段并集"无关 ⇒ 同一因子在任何数据集、任何组合下都可直接对比 ✓；
+    #   · 真正有信息量的缺失仍照报：金融股无毛利 ⇒ `FINANCE(5)` 覆盖率 < 100% ✓、
+    #     历史不足（预热关掉时）⇒ < 100% ✓、退市/停牌（CLOSE 空）行不再参与分母 ✓。
+    #   ⚠ 统计量**本来就**不受死行影响（`_sub_pos` = 因子有效 ∩ LABEL 有效 ✓）⇒ 本次只动
+    #     这一列显示值，触发/收益/IC/事件研究一律不变 ✓（已用进程内挂钩逐位核对 ✓）。
+    #   CLOSE = `$close/$factor`（后复权真实价，与复权方式无关 ✓）⇒ 分母在前/后复权下一致 ✓。
     fv = df[col]
-    result["coverage"] = round(float(fv.notna().mean()), 4)
+    if "CLOSE" in df.columns:
+        _cl = df["CLOSE"].to_numpy(copy=False)
+        _ok_cl = ~pd.isna(_cl)
+        _den = int(np.count_nonzero(_ok_cl))
+        if _den > 0:
+            _num = int(np.count_nonzero(_ok_cl & ~pd.isna(fv.to_numpy(copy=False))))
+            result["coverage"] = round(_num / _den, 4)
+            result["coverage_den"] = _den            # 分母（CLOSE 有效行），便于自查/测试 ✓
+        else:
+            result["coverage"] = None
+            result["coverage_den"] = 0
+    else:                                            # 兜底（没有 CLOSE 列时退回旧口径 ✓）
+        result["coverage"] = round(float(fv.notna().mean()), 4)
 
     # v1.18.34 性能：位置索引化。原实现在 _exclude / 分位段里对百万行做 `df.loc[g.index]`
     # （MultiIndex 对齐）——全 A 单因子 `_test_one`（20s）cProfile 实测：`Index._get_indexer`

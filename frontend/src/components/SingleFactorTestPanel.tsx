@@ -1332,7 +1332,12 @@ export default function SingleFactorTestPanel({
                     耗时
                   </th>
                 )}
-                <th className="text-right px-1">覆盖率</th>
+                <th
+                  className="text-right px-1"
+                  title="覆盖率 = 因子非空行 ÷ CLOSE 有效行（v1.21.6 起）。即「在有行情的交易日里，该因子有多少比例有值」：分母与同桌测试的其它因子无关，可跨数据集直接对比（旧口径的分母是「面板字段并集行数」，会因同桌多测了带 fin_* 的因子而凭空变低）"
+                >
+                  覆盖率
+                </th>
                 <th className="text-right px-1">信号</th>
                 <th className="text-right px-1">触发数</th>
                 <th className="text-right px-1">触发收益</th>
