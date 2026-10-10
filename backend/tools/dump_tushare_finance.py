@@ -27,6 +27,10 @@ PIT / 无未来函数 ✓。先对拍（`ai_test/probe_crosscheck_fin.py` ✓）
 | 9 | fin_op_yoy | `operate_profit`（营业利润）累计同比 |
 | 10 | fin_fcf | (经营现金流净额 − 资本开支) 的 TTM，资本开支=`c_pay_acq_const_fiolta` |
 
+★ 2026-10-10：与米筐链一起加**三档口径**（`FINANCE(q,口径)` 的第二参数 ✓）——
+  除上面 10 个"累计"档字段外，另物化 q=3..10 的 `_q`(单季) / `_ann`(年化) / `_ttm`(TTM) 共 24 个字段 ✓，
+  派生公式**与米筐链共用** `dump_finance.tiered_report_values()`（两条链不会各算一套口径 ✓）。
+
 ⚠ 单位：tushare 财务金额单位=**元**（与米筐一致 ✓）；`daily_basic.total_mv` 是**万元** ⇒ ×1e4 ✓。
 ⚠ 只取 `report_type='1'`（合并报表 ✓）；同报告期多行（原始 + 更正）= **PIT 的命门**：
   「T 日能看到的数字」= `ann_date <= T` 的**最后一行**（同日多行取 `update_flag` 大的 ✓）。
@@ -46,7 +50,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dump_finance import (                                    # noqa: E402  口径唯一来源 ✓
-    FIN_FIELDS, FIN_META_NAME, FINANCE_SEMANTICS, load_calendar, write_bin,
+    ALL_FIELDS, FIN_FIELDS, FIN_META_NAME, FINANCE_SEMANTICS, TIERED_FIELDS,
+    load_calendar, tiered_report_values, write_bin,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -350,7 +355,7 @@ def build_report_metrics(tab: TsPit, code: str = "") -> Dict[str, List[Tuple[str
       偏离 >50% 就记进 `ROE_SUSPECTS` ⇒ dump 结束写进 `features/_finance_warnings.json`
       （**只报告、不替换** ✗ —— 换不换由人决定 ✓；用了 `--roe-guard` 才替换 ✓）。
     """
-    out: Dict[str, List[Tuple[str, str, float]]] = {k: [] for k, _u in FIN_FIELDS}
+    out: Dict[str, List[Tuple[str, str, float]]] = {k: [] for k in ALL_FIELDS}
     for q in tab.quarter:
         # 该报告期的"事件公告日" = income 的公告日（没有就跳过 ✓）
         ent = tab.by_quarter.get("revenue", {}).get(q)
@@ -393,9 +398,36 @@ def build_report_metrics(tab: TsPit, code: str = "") -> Dict[str, List[Tuple[str
                                          "action": "replaced" if ROE_GUARD else "kept"})
                     if ROE_GUARD:                              # --roe-guard：用自算值顶上 ✓
                         vals["fin_roe"] = roe_calc
+            # ---- ★ 三档口径（2026-10-10 用户定稿）----
+            #   与米筐链**共用** `dump_finance.tiered_report_values()` ✓ ⇒ 两条链口径逐项一致 ✓。
+            #   ⚠ 这里**不用** tushare 的 `roe_waa`（它有毛刺 ✓，见 ROE_SUSPECTS）⇒
+            #     三档 ROE 一律按"归母净利（对应档）÷ 期末归母权益"，两条链因此可逐位对拍 ✓。
+            vals.update(tiered_report_values(_tushare_qget(tab), q, t))
             for k, v in vals.items():
                 out[k].append((ann, q, v))
     return out
+
+
+def _tushare_qget(tab: "TsPit"):
+    """共享三档函数的**取值适配器**：canonical 量名 → tushare 表字段 ✓。
+
+    ⚠ 毛利是**派生量**（tushare 没有 gross_profit 列 ✓）= 营业总收入(total_revenue) − 营业成本(oper_cost)
+      —— 与米筐 pit 的 `gross_profit` 同口径 ✓（跨链对拍时这一项允许小差 ✓）。
+    """
+    name_map = {
+        "rev": "revenue", "np": "net_profit", "np_parent": "net_profit_parent_company",
+        "op": "operate_profit", "ta": "total_assets", "equity": "equity_parent_company",
+        "eps": "basic_earnings_per_share", "ocf": "ocf", "capex": "capex",
+    }
+
+    def qget(name: str, quarter: str, when: int) -> float:
+        if name == "gp":
+            r = tab.val_at("revenue", quarter, when)
+            c = tab.val_at("oper_cost", quarter, when)
+            return (r - c) if (np.isfinite(r) and np.isfinite(c)) else float("nan")
+        return tab.val_at(name_map[name], quarter, when)
+
+    return qget
 
 
 def yoy2(cur: float, tab: TsPit, fld: str, pq: Optional[str], t: int) -> float:
@@ -569,7 +601,7 @@ def build_daily_bins(qlib_code: str, data: Dict[str, List[dict]], cal_int: np.nd
         return {}, tab
     report = build_report_metrics(tab, code=qlib_code)
     daily: Dict[str, np.ndarray] = {
-        k: expand_daily(report[k], cal_int) for k, _u in FIN_FIELDS
+        k: expand_daily(report[k], cal_int) for k in ALL_FIELDS
         if k not in ("fin_pe_ttm", "fin_pb")
     }
     mc = load_market_cap(qlib_dir, cal_int, qlib_code, mc_tushare, tok, rate)
@@ -607,7 +639,7 @@ def dump_one(qlib_code: str, cal_int: np.ndarray, qlib_dir: Path, tok: str, rate
         return {}
     result: Dict[str, Optional[float]] = {}
     written = 0
-    for field, _unit in FIN_FIELDS:
+    for field in ALL_FIELDS:
         arr = daily[field]
         finite = np.isfinite(arr)
         if not finite.any():
@@ -639,7 +671,12 @@ def write_meta(qlib_dir: Path, n_codes: int, n_bins: int, overwrite: bool, cal_l
     meta = {
         "finance_semantics": FINANCE_SEMANTICS,
         "source": "tushare",
+        # 旧"累计"档（盘上保留；`FINANCE` 语言里已无口径取它 ✓）
         "fields": [f for f, _u in FIN_FIELDS],
+        # ★ 三档口径字段（`FINANCE(q,口径)` 取的就是这些 ✓；与 codegen 同名、与米筐链同一套公式 ✓）
+        "tier_fields": list(TIERED_FIELDS),
+        "tier_note": "FINANCE(q,口径)：1=单季 / 2=年化 / 3=TTM（省略 = 1）；"
+                     "比率类分母取报告期期末存量；与米筐链共用 dump_finance.tiered_report_values() ✓",
         "n_codes": n_codes,
         "n_bins_written": n_bins,
         "overwrite": overwrite,
@@ -766,9 +803,10 @@ def main():
             done += 1
             n_bins += int(res.get("_written", 0))
             if args.verify:
-                print("  %s: %s | 最近一期 %s"
+                print("  %s: %s | 三档示例 %s | 最近一期 %s"
                       % (code, {k: fields.get(k) for k in ("fin_rev_yoy", "fin_np_yoy",
                                                            "fin_pe_ttm", "fin_pb", "fin_fcf")},
+                         {k: fields.get(k) for k in ("fin_eps_q", "fin_eps_ann", "fin_eps_ttm")},
                          max(fields)), flush=True)
         if i % 50 == 0 or i == len(codes):
             el = time.time() - t0
@@ -814,6 +852,17 @@ def main():
                       f, ensure_ascii=False, indent=2)
         print("⚠ ROE 毛刺 %d 处 ⇒ %s（%s）"
               % (len(ROE_SUSPECTS), wp, "已替换" if ROE_GUARD else "仅记录、未改数据"))
+    # ★ 落数据戳（2026-10-10 ✓）：原地重写 bin **不会**改数据集根目录 mtime ✗ ⇒ 不落戳的话
+    #   面板缓存会继续"有效"、平台拿旧数据跑 ✗（`feature_cache.bump_data_version` ✓）
+    if n_bins > 0:
+        try:
+            _bak = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if _bak not in sys.path:
+                sys.path.insert(0, _bak)
+            from app.engine.feature_cache import bump_data_version
+            print("数据戳已落 ✓ %s" % bump_data_version(str(qlib_dir), "dump_tushare_finance"))
+        except Exception as e:                                          # noqa: BLE001
+            print("⚠⚠ 数据戳**没落上**（%r）⇒ 必须手工清 `backend/workdir/feature_cache/` ✗" % e)
 
 
 if __name__ == "__main__":

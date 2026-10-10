@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
-"""`FINANCE_TDX(q)` 守卫（通达信源基本面，2026-10-09）。
+"""通达信源基本面（`tools/dump_finance_tdx.py` + 已下线的 `FINANCE_TDX(q)`）。
 
-守护：
-1. q → 字段名 映射（1..9）与校验（报错要能自助）；
-2. **编号与 `FINANCE(q)` 逐个对齐**（用户要求两源可交叉校验 ⇒ 同 q 同含义 ✓）；
-3. **跨文件一致**：物化脚本 `tools/dump_finance_tdx.py` 用的就是 codegen 的表（再钉一次，防重构走偏 ✓）；
-4. **PIT 规则**：可用日 = 法定披露截止日（保守），以及"往前数季度"的换算 ✓。
+★ 2026-10-10（用户第 4 项）：`FINANCE_TDX(q)` **下线** ✗ —— 公式语言里不再提供它
+（写它会得到一条"请改用 FINANCE(q[,口径])"的友好错 ✓），
+**但字段表与 `ftdx_*` bin 数据保留** ✓（只作多源复核用 ✓）。
+
+本测试守护：
+1. `FINANCE_TDX(q)` **确实不能用**、且报错要指向 `FINANCE` ✓；
+2. 字段表仍在、且编号说明与 `FINANCE(q)` 逐个对齐（多源复核的前提 ✓）；
+3. **PIT 规则**：可用日 = 法定披露截止日（保守），以及"往前数季度"的换算 ✓。
 """
 import importlib.util
 import os
@@ -29,36 +32,18 @@ def _load_dump_tool():
     return mod
 
 
-class TestMapping:
-    def test_q_1_to_10(self):
-        expect = ["$ftdx_pe_ttm", "$ftdx_pb", "$ftdx_rev_yoy", "$ftdx_np_yoy", "$ftdx_gross_margin",
-                  "$ftdx_roe", "$ftdx_roa", "$ftdx_eps", "$ftdx_op_yoy",
-                  "$ftdx_fcf"]               # ★ v1.20.81：自由现金流TTM（元）
-        for i, expr in enumerate(expect, 1):
-            assert translate_formula("OUT:FINANCE_TDX(%d);" % i).expression == expr
+class TestRetired:
+    def test_function_is_retired_with_friendly_error(self):
+        """★ 下线后必须给**指向 FINANCE** 的友好错（不能只说"不支持的函数" ✗）。"""
+        with pytest.raises(CodeGenError) as e:
+            translate_formula("OUT:FINANCE_TDX(1);")
+        msg = str(e.value)
+        assert "下线" in msg and "FINANCE(q[,口径])" in msg
 
-    def test_same_numbering_as_finance(self):
-        """同 q 同含义（两源交叉校验的前提 ✓）—— 编号说明必须逐项一致。"""
+    def test_numbering_still_aligned_with_finance(self):
+        """字段表保留 ⇒ 编号说明必须与 `FINANCE(q)` 逐项一致（多源对拍的前提 ✓）。"""
         assert [d for _f, d in FINANCE_TDX_FIELDS] == [d for _f, d in FINANCE_FIELDS]
         assert len(FINANCE_TDX_FIELDS) == 10
-
-    def test_lowercase_and_in_formula(self):
-        assert translate_formula("OUT:finance_tdx(2);").expression == "$ftdx_pb"
-        r = translate_formula("N:=6; OUT:FINANCE_TDX(N)>15;")
-        assert r.expression == "Gt($ftdx_roe,15)"
-
-
-class TestErrors:
-    @pytest.mark.parametrize("text", ["OUT:FINANCE_TDX(0);", "OUT:FINANCE_TDX(11);"])
-    def test_out_of_range(self, text):
-        with pytest.raises(CodeGenError) as e:
-            translate_formula(text)
-        assert "1~10" in str(e.value) or "需在 1" in str(e.value)
-
-    @pytest.mark.parametrize("text", ["OUT:FINANCE_TDX(CLOSE);", "OUT:FINANCE_TDX(1.5);", "OUT:FINANCE_TDX();"])
-    def test_non_const(self, text):
-        with pytest.raises(Exception):
-            translate_formula(text)
 
 
 class TestDumpToolConsistency:

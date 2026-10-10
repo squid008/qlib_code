@@ -3,6 +3,45 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [1.21.4] - 2026-10-10
+
+### Added（`FINANCE(q[,口径])`：单季 / 年化 / TTM —— §12.4j 用户定稿方案落地；`FINANCE_TDX` 下线）
+
+- ★★ **`FINANCE(q[,口径])`**（用户 2026-10-10 定稿 ✓）：第二参数 = **口径**，`FINANCE(q)` ≡ `FINANCE(q,1)`：
+  - `1` = **单季度**（本单季 vs 去年同单季）—— **默认**；
+  - `2` = **年化**（今年累计 ÷ 已披露季度数 × 4）；
+  - `3` = **TTM**（最近连续 4 个单季之和 = 累计(Q) + 上年年报 − 上年同期 Q ✓）。
+  `q=1/2`（市盈率TTM / 市净率）本身只有一档 ⇒ 传第二参给**友好错**（点明"只有 3~10 才有三档" ✓）。
+- ⚠⚠ **语义变化（用户明确要的 ✓，非回归）**：`q=3..10` 的**默认档由"累计/YTD"改成"单季度"** ⇒
+  存量公式 `黄金坑启动` / `YLI_R8_COMBO`（用了 `FINANCE(3..8)` ✓）的取值会跟着变 ✓；
+  旧"累计"档字段仍留在盘上，但**公式语言里不再有口径能取到**（用户定稿只有三档 ✓）。
+  ⇒ `CODEGEN_SEMANTICS` **1.20.83 → 1.21.4**（存量公式按原文**自动重编** ✓）。
+- **数据：两条链各 +24 个字段，派生公式只有一份代码**：
+  - 米筐链 `tools/dump_finance.py`：q=3..10 × {`_q` 单季 / `_ann` 年化 / `_ttm` TTM} ⇒ 每只新增 **24** 个 bin；
+  - tushare 链 `tools/dump_tushare_finance.py`：同一批 24 个字段，**共用** `dump_finance.tiered_report_values()`
+    ⇒ 两条链不可能各算一套口径 ✓（跨文件守卫：字段名必须 == `codegen.finance_tiered_field_names()` ✓）；
+  - 口径戳 `_finance_meta.json` 升 **`finance_semantics=2.0.0`** ✓ 并追加 `tier_fields` / `tier_note` ✓；
+  - 两个 dump 工具**写盘成功后自动落数据戳** ✓（`feature_cache.bump_data_version` —— 否则原地重写 bin
+    不会改数据集根目录 mtime，面板缓存会继续"有效"、平台继续拿旧数据跑 ✗）。
+- **口径细节**（脚本顶部表 + 前端手册两处写清 ✓）：比率类（毛利率 / ROE / ROA）**分母一律取报告期期末存量**；
+  EPS / 自由现金流按同一套"累计 → 单季/年化/TTM"折算；**年化档的增长率恒等于累计同比**
+  （分子分母同乘 `4/季度数` ✓ 数学结果，非 bug ✓）；所有派生值仍按 `info_date<=t` 取 ⇒ **无未来函数** ✓。
+- **`FINANCE_TDX` 下线**（用户第 4 项 ✓，最小改动）：写 `FINANCE_TDX(q)` 会得到一条
+  "已下线，请改用 `FINANCE(q[,口径])`"的**友好错** ✓；**字段表与 `ftdx_*` 数据全部保留**（只作多源复核 ✓）；
+  前端手册不再收录（`test_formula_handbook_sync.KNOWN_GAP` 里写明理由 ✓）。
+- 测试：`tests/test_finance_func.py` 重写为 **31 例**（三档字段名跨文件一致 ✓ +
+  **三档公式自洽**：年化 = 累计×4/季度数 ✓、TTM = Σ 最近 4 个单季 ✓、缺料 ⇒ NaN ✓）；
+  `test_finance_tdx.py` 改为"下线 + 友好错 + 字段表仍对齐"；`test_tushare_finance.py` 加三档口径例；
+  全量 **738 passed** ✓。
+- 验证（真数据 dry-run ✓）：`cn_data` / `cn_data2` 各抽查 3~4 只（含 Q1"单季=累计" ✓、
+  年化 = 单季档×4 的数学一致 ✓、TTM 另算 ✓；万科 A / 当升科技等边界票 ✓）；
+  **两链同口径对拍**（8 只 × 2 期 × 24 字段，`ai_test/probe_fin_tier_cross.py` ✓）：
+  共同可比 **177 格**、**相对差中位数 0.0000%** ✓、仅 **1 格 >3%** ✓ ——
+  那 1 格是 `sz002594` 的 `fin_eps_ttm`（米筐 **2.9889** vs tushare **0.9080** ✓），
+  根因是**每股口径的已知源差异**：米筐 pit 的 `basic_earnings_per_share` **按新股本重述可比期** ✓
+  （该股 2025 年 10 转 20 ⇒ 2025q1 报 1.0391 ✓），tushare `basic_eps` **不重述** ✗（同期 3.12 ✓）
+  ⇒ 差分出的 EPS 三档两链必然不同（**非 bug** ✓，已在 `dump_finance.py` 口径表写明 ✓）。
+
 ## [1.21.3] - 2026-10-10
 
 ### Fixed（cn_data 复权因子**方向写反** + 数据改动**不能失效缓存** 两个真 bug；4 个市场字段补齐）

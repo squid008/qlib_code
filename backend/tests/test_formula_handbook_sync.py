@@ -41,6 +41,10 @@ KNOWN_GAP = {
     "AVEDEV", "DEVSQ", "STDP", "VARP",     # 统计类
     "MEMA", "DMA", "FORCAST", "HHVALL", "LLVALL",   # 通达信均线/回归/全历史
     "FLOOR", "CEILING", "EXP",             # 取整/指数
+    # ★ 2026-10-10 **已下线**的函数（用户第 4 项）：名字仍留在 BUILTIN_FUNCS 里只为给一条
+    #   "请改用 FINANCE(q[,口径])"的友好错 ✓ ⇒ 手册**故意不写**它（写了用户会以为能用 ✗）。
+    #   字段表 `FINANCE_TDX_FIELDS` 与 ftdx_* 数据都保留，只作多源复核 ✓。
+    "FINANCE_TDX",
 }
 
 

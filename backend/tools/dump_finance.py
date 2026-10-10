@@ -28,7 +28,7 @@
 |---|------|------|------|
 | 1 | fin_pe_ttm      | 倍 | 当日总市值 / 最新已披露**归母净利润TTM**（TTM=米筐滚动四季；亏损为负值，同益盟） |
 | 2 | fin_pb          | 倍 | 当日总市值 / 最新已披露**归母所有者权益**（净资产为负 ⇒ NaN） |
-| 3 | fin_rev_yoy     | %  | 报告期**营业总收入** / 去年同期同报告期 - 1（累计同比，同益盟"营业收入增长率"） |
+| 3 | fin_rev_yoy     | %  | 报告期**营业总收入** / 去年同期同报告期 - 1（**累计**同比，同益盟"营业收入增长率"） |
 | 4 | fin_np_yoy      | %  | 报告期**归母净利润** / 去年同期同报告期 - 1（累计同比） |
 | 5 | fin_gross_margin| %  | 报告期**毛利 / 营业总收入**（累计；金融股无毛利 ⇒ NaN） |
 | 6 | fin_roe         | %  | 报告期**加权平均净资产收益率**（米筐 return_on_equity_weighted_average，累计） |
@@ -36,6 +36,30 @@
 | 8 | fin_eps         | 元 | 报告期**基本每股收益**（累计） |
 | 9 | fin_op_yoy      | %  | 报告期**营业利润** / 去年同期同报告期 - 1（累计同比；益盟同列指标） |
 | 10 | fin_fcf        | 元 | **自由现金流TTM** = 经营现金流净额TTM − 资本开支TTM（CAPEX=购建固定资产、无形资产和其他长期资产支付的现金）；TTM = 累计(Q)+累计(上年年报)−累计(上年同期Q) |
+
+### ★★ 三档口径（2026-10-10 用户定稿；`FINANCE(q,口径)` 的第二参数 ✓）
+
+上面那 10 个字段是**旧的"累计"档**（盘上保留 ✓，但 `FINANCE` 语言里不再有口径取它 ✗）。
+每个 q=3..10 另外物化**三档**（字段名 = 基名 + 后缀，由 `codegen.finance_field_name()` 生成 ✓）：
+
+| 口径 | 后缀 | 含义（以营业总收入为例） |
+|---|---|---|
+| 1 | `_q`   | **单季**：本期累计 − 上一季累计（Q1 = 本期累计 ✓） |
+| 2 | `_ann` | **年化**：本期累计 ÷ 已披露季度数 × 4 |
+| 3 | `_ttm` | **TTM**：最近连续 4 个单季之和 = 累计(Q) + 累计(上年年报) − 累计(上年同期Q) |
+
+- 派生**只用在链内已有量**（累计额 + 上年同期 ✓）⇒ 不引新数据源 ✓；四个取值一律按 `info_date<=t` 取 ⇒ PIT 安全 ✓。
+- **增长率类**（q=3/4/9）：三档都用"本期 / **去年同档** − 1"（去年单季 = 上年同期累计 − 上年同期前一季累计 ✓）。
+  ⚠ 年化档会退化成**累计同比**（分子分母同乘 `4/季度数` ✓）—— 这是口径的数学结果 ✓，不是 bug ✓。
+- **比率类**（q=5/6/7）：分子按档取流量、分母始终取**报告期期末**存量（总资产 / 归母权益 ✓）⇒
+  `单季ROE = 单季归母净利 ÷ 期末归母权益`、`TTM ROA = TTM 净利 ÷ 期末总资产` ✓。
+  ⚠ 与报表**披露**的"加权平均 ROE"（只在旧累计档 `fin_roe` 上保留 ✓）**口径不同** ✓（披露值无法拆单季 ✓）。
+- **EPS**（q=8）与**自由现金流**（q=10）按同一套"累计 → 单季/年化/TTM"折算 ✓（FCF = OCF 档值 − CAPEX 档值 ✓）。
+- ⚠ **已知的两链差异（每股口径，非 bug ✓）**：`eps` 是**每股**量，跨"转增/送股"时**能不能差分取决于数据源会不会
+  重述可比期**——米筐 pit 的 `basic_earnings_per_share` **按新股本重述** ✓（实测 `sz002594` 2025 年 10 转 20 后
+  2025q1 报 **1.0391** ✓），tushare 的 `basic_eps` **照原样（不重述）** ✗（同期 **3.12** ✓）⇒
+  该股 `fin_eps_ttm` 两链必然不同（**2.9889 vs 0.9080** ✓，2026-10-10 实测 ✓；其余量/其余票**逐位一致** ✓）。
+  要跨链比 EPS 三档，请**先对齐股本口径**（或改用 `归母净利 ÷ 期末股本` 自算 ✓）。
 
 注意事项：
 - 3~9 是**报告期口径**：日频序列只在**公告日**跳变（公告日前向填充），与益盟盘口显示一致 ✓。
@@ -50,6 +74,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -58,7 +83,14 @@ import h5py
 import numpy as np
 import pandas as pd
 
-# 输出字段：顺序 = FINANCE(q) 的 q（1..9），与公式手册、codegen 的表必须一致
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# ★ 三档口径的**字段名**由 codegen 生成（`finance_field_name()` ✓）⇒ 公式侧与物化侧**天然不漂移** ✓
+from app.factors.parser.codegen import (                      # noqa: E402
+    FINANCE_TIER_SUFFIX, finance_field_name, finance_tiered_field_names,
+)
+
+# 输出字段：顺序 = FINANCE(q) 的 q（1..10），与公式手册、codegen 的表必须一致
 FIN_FIELDS = [
     ("fin_pe_ttm", "倍"),
     ("fin_pb", "倍"),
@@ -84,9 +116,133 @@ NEED_PIT = [
     "cash_flow_from_operating_activities", "cash_paid_for_asset",
 ]
 
+# ---- 三档口径（2026-10-10 用户定稿；见文件顶部口径表 ✓）----------------------
+# q=3..10 各三档（单季/年化/TTM），字段名与 codegen 共用 ⇒ 共 24 个 ✓
+TIERED_FIELDS = finance_tiered_field_names()
+# 要落盘的**全部**字段：旧"累计"档 10 个（保留不动 ✓）+ 三档 24 个 ✓
+ALL_FIELDS = [f for f, _u in FIN_FIELDS] + TIERED_FIELDS
+
+
+def _base_of_tiered(name: str) -> str:
+    """`fin_rev_yoy_q` → `fin_rev_yoy`（取单位 / 旧档同名用 ✓）。"""
+    for suf in FINANCE_TIER_SUFFIX.values():
+        if name.endswith(suf):
+            return name[: -len(suf)]
+    return name
+
+
+# 字段 → 单位（写 meta 用；三档与基名同单位 ✓）
+FIELD_UNITS = dict(FIN_FIELDS)
+FIELD_UNITS.update({f: FIELD_UNITS[_base_of_tiered(f)] for f in TIERED_FIELDS})
+
 FIN_META_NAME = "_finance_meta.json"
 # 口径语义版本：改口径（字段含义 / 对齐方式 / 派生公式）必须递增并重跑 dump
-FINANCE_SEMANTICS = "1.0.0"
+#   `2.0.0` = 2026-10-10 加三档口径（单季 / 年化 / TTM）；旧值是 `1.0.0`（只有累计档 ✓）
+FINANCE_SEMANTICS = "2.0.0"
+
+
+# ---------------------------------------------------------------------------
+# 三档口径的**纯函数**（米筐链与 tushare 链**共用同一套** ✓ ⇒ 两条链天然逐项一致 ✓）
+# ---------------------------------------------------------------------------
+def prev_quarter(q: str, back: int = 1) -> Optional[str]:
+    """`'2026q2'` 往前 back 个季度 → `'2026q1'`（back=4 ⇒ `'2025q2'` ✓）。"""
+    try:
+        y, n = int(q[:4]), int(q[5])
+    except Exception:                                         # noqa: BLE001
+        return None
+    k = y * 4 + (n - 1) - int(back)
+    return "%dq%d" % (k // 4, k % 4 + 1)
+
+
+def quarter_index(q: str) -> int:
+    """`'2026q3'` → 3（= 年度内第几个季度 = 已披露季度数 ✓；算年化用 ✓）。"""
+    try:
+        return int(q[5])
+    except Exception:                                         # noqa: BLE001
+        return 0
+
+
+def prev_year_quarter(q: str) -> Optional[str]:
+    """`'2026q2'` → `'2025q2'`。"""
+    return prev_quarter(q, 4)
+
+
+def tier_value(qget, name: str, q: Optional[str], t: int, tier: int) -> float:
+    """**流量类**量在 tier 档的取值（`qget(name, quarter, when)` = PIT 取值函数 ✓）。
+
+    · tier=1 单季：本期累计 − 上一季累计（Q1 就等于本期累计 ✓）
+    · tier=2 年化：本期累计 ÷ 已披露季度数 × 4
+    · tier=3 TTM ：累计(Q) + 累计(上年年报) − 累计(上年同期 Q)
+                   （Q4 退化为累计 ✓；**等价于"最近 4 个单季之和"** ✓ 有单测钉住 ✓）
+    """
+    if not q:
+        return float("nan")
+    if tier == 1:
+        c = qget(name, q, t)
+        if q.endswith("q1"):
+            return c
+        p = qget(name, prev_quarter(q), t)
+        return (c - p) if (np.isfinite(c) and np.isfinite(p)) else float("nan")
+    if tier == 2:
+        c = qget(name, q, t)
+        n = quarter_index(q)
+        return (c * 4.0 / n) if (np.isfinite(c) and n > 0) else float("nan")
+    c = qget(name, q, t)
+    if q.endswith("q4"):
+        return c
+    fy = "%dq4" % (int(q[:4]) - 1)
+    f = qget(name, fy, t)
+    p = qget(name, prev_year_quarter(q), t)
+    if np.isfinite(c) and np.isfinite(f) and np.isfinite(p):
+        return c + f - p
+    return float("nan")
+
+
+def _ratio(num: float, den: float, scale: float = 100.0) -> float:
+    """`num / den × scale`，分母非正 / 缺失 ⇒ NaN（与旧档口径一致 ✓）。"""
+    if np.isfinite(num) and np.isfinite(den) and den > 0:
+        return num / den * scale
+    return float("nan")
+
+
+def tiered_report_values(qget, q: str, t: int) -> Dict[str, float]:
+    """某一报告期 Q（在 t 日可见）的**三档口径**值 → {字段名(不带 $): 值} ✓。
+
+    `qget` 是各数据链的取值适配器（米筐 = `PitTable.val_at` ✓、tushare = `TsPit.val_at` ✓，
+    名字不同由各链自己映射 ✓）；**派生公式只有这一份** ⇒ 两条链不会算出两套口径 ✓。
+
+    ⚠ 存量公式的口径变化：`FINANCE(q)` 现在 = **单季**档（旧版是累计档 ✓），
+      见 `md/开发记录.md` §12.4j（用户 2026-10-10 定稿 ✓）。
+    """
+    out: Dict[str, float] = {}
+    yq = prev_year_quarter(q)          # 上年同期（同一个季度 ✓）
+
+    def val(name: str, quarter: Optional[str], tier: int) -> float:
+        return tier_value(qget, name, quarter, t, tier)
+
+    for tier in (1, 2, 3):
+        suf = FINANCE_TIER_SUFFIX[tier]
+        # 增长率类（q=3/4/9）= 本期 / **去年同档** − 1（分母须为正，与旧档同一规则 ✓）
+        for name, base_field in (("rev", "fin_rev_yoy"), ("np_parent", "fin_np_yoy"),
+                                 ("op", "fin_op_yoy")):
+            cur = val(name, q, tier)
+            base = val(name, yq, tier)
+            out[base_field + suf] = ((cur / base - 1.0) * 100.0
+                                     if (np.isfinite(cur) and np.isfinite(base) and base > 0)
+                                     else float("nan"))
+        # 比率类（q=5/6/7）：分子按档取流量、分母一律取**报告期期末存量** ✓
+        rev = val("rev", q, tier)
+        out["fin_gross_margin" + suf] = _ratio(val("gp", q, tier), rev)
+        out["fin_roa" + suf] = _ratio(val("np", q, tier), qget("ta", q, t))
+        out["fin_roe" + suf] = _ratio(val("np_parent", q, tier), qget("equity", q, t))
+        # 每股收益（q=8，本身是"每股流量" ⇒ 同流量折算 ✓）
+        out["fin_eps" + suf] = val("eps", q, tier)
+        # 自由现金流（q=10）= 经营现金流档值 − 资本开支档值 ✓
+        ocf, capex = val("ocf", q, tier), val("capex", q, tier)
+        out["fin_fcf" + suf] = (ocf - capex if (np.isfinite(ocf) and np.isfinite(capex))
+                                else float("nan"))
+    return out
+
 
 
 def to_qlib_code(code: str) -> str:
@@ -245,15 +401,6 @@ class PitTable:
         return float(vv[k])
 
 
-def prev_year_quarter(q: str) -> Optional[str]:
-    """'2026q2' → '2025q2'。"""
-    try:
-        y = int(q[:4])
-        return f"{y - 1}{q[4:]}"
-    except Exception:
-        return None
-
-
 def _dec(x) -> str:
     return x.decode() if isinstance(x, bytes) else str(x)
 
@@ -262,9 +409,26 @@ def _dec(x) -> str:
 # 派生序列
 # ----------------------------------------------------------------------------
 def build_report_metrics(tab: PitTable) -> Dict[str, np.ndarray]:
-    """报告期口径指标（行级数组，与 tab.info 对齐）—— 增长率/毛利率/ROE/ROA/EPS。"""
+    """报告期口径指标（行级数组，与 tab.info 对齐）。
+
+    · 旧"累计"档（`fin_rev_yoy` … ✓）口径**一行未改** ✓（盘上保留，公式语言不再取它 ✓）；
+    · ★ 三档口径（`_q` / `_ann` / `_ttm` ✓）由**共享纯函数** `tiered_report_values()` 算 ✓
+      —— 与 tushare 链用的是同一份代码 ⇒ 两条链口径逐项一致 ✓。
+    """
     n = len(tab.info)
-    out = {k: np.full(n, np.nan) for k, _u in FIN_FIELDS}
+    out = {k: np.full(n, np.nan) for k in ALL_FIELDS}
+    # 三档口径：本链的"量名 → pit 字段名"映射（共享函数按 canonical 名取数 ✓）
+    name_map = {
+        "rev": "revenue", "gp": "gross_profit", "np": "net_profit",
+        "np_parent": "net_profit_parent_company", "op": "profit_from_operation",
+        "ta": "total_assets", "equity": "equity_parent_company",
+        "eps": "basic_earnings_per_share",
+        "ocf": "cash_flow_from_operating_activities", "capex": "cash_paid_for_asset",
+    }
+
+    def qget(name: str, quarter: str, when: int) -> float:
+        return tab.val_at(name_map[name], quarter, when)
+
     rev = tab.vals.get("revenue")
     gp = tab.vals.get("gross_profit")
     np_all = tab.vals.get("net_profit")
@@ -311,6 +475,10 @@ def build_report_metrics(tab: PitTable) -> Dict[str, np.ndarray]:
         _vals = (ocf_c, capex_c, ocf_f, capex_f, ocf_p, capex_p)
         if all(np.isfinite(v) for v in _vals):
             out["fin_fcf"][i] = (ocf_c - capex_c) + (ocf_f - capex_f) - (ocf_p - capex_p)
+        # ---- ★ 三档口径（2026-10-10 用户定稿）----
+        #   与 tushare 链共用 `tiered_report_values()` ✓；这里只提供"量名 → pit 字段"的取值适配 ✓
+        for fld, v in tiered_report_values(qget, q, t).items():
+            out[fld][i] = v
     return out
 
 
@@ -346,9 +514,9 @@ def dump_one(code_file: Path, mc: Dict[str, Tuple[int, np.ndarray]], cal_int: np
         return {}
     report = build_report_metrics(tab)
 
-    # 报告期口径 → 日频
+    # 报告期口径 → 日频（旧累计档 + 三档口径 **全部** ✓）
     daily: Dict[str, np.ndarray] = {
-        k: expand_daily(tab, report[k], cal_int) for k, _u in FIN_FIELDS
+        k: expand_daily(tab, report[k], cal_int) for k in ALL_FIELDS
         if k not in ("fin_pe_ttm", "fin_pb")
     }
 
@@ -374,7 +542,7 @@ def dump_one(code_file: Path, mc: Dict[str, Tuple[int, np.ndarray]], cal_int: np
 
     result: Dict[str, Optional[float]] = {}
     written = 0
-    for field, _unit in FIN_FIELDS:
+    for field in ALL_FIELDS:
         arr = daily[field]
         finite = np.isfinite(arr)
         if not finite.any():
@@ -405,7 +573,18 @@ def write_meta(qlib_dir: Path, stats: Dict) -> None:
     payload = dict(stats)
     payload["finance_semantics"] = FINANCE_SEMANTICS
     payload["written_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    # 旧"累计"档（盘上保留；`FINANCE` 语言里已无口径能取到 ✓）
     payload["fields"] = [{"q": i + 1, "field": f, "unit": u} for i, (f, u) in enumerate(FIN_FIELDS)]
+    # ★ 三档口径（2026-10-10）：`FINANCE(q,口径)` 取的就是这些字段 ✓
+    payload["tier_fields"] = [
+        {"q": q, "tier": t, "field": finance_field_name(q, t), "unit": FIELD_UNITS[finance_field_name(q, t)]}
+        for q in range(3, len(FIN_FIELDS) + 1) for t in (1, 2, 3)
+    ]
+    payload["tier_note"] = (
+        "FINANCE(q,口径)：1=单季（累计差分）/ 2=年化（累计÷季度数×4）/ 3=TTM（累计(Q)+上年年报−上年同期Q）；"
+        "省略口径 = 1 单季。字段名 = 基名 + {1:'_q',2:'_ann',3:'_ttm'}。"
+        "比率类（毛利率/ROA/ROE）分母一律取报告期期末存量；EPS/FCF 同流量折算。"
+    )
     try:
         p = qlib_dir / "features" / FIN_META_NAME
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -505,6 +684,15 @@ def main():
           f"用时 {time.time() - t0:.0f}s", flush=True)
     for k, v in stats.items():
         print(f"  {k}: {v}", flush=True)
+    # ★ 落数据戳（2026-10-10 ✓）：原地重写 bin **不会**改数据集根目录 mtime ✗ ⇒ 不落戳的话
+    #   面板缓存会继续"有效"、平台拿旧数据跑 ✗（`feature_cache.bump_data_version` ✓）
+    if n_bins > 0:
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+            from app.engine.feature_cache import bump_data_version      # noqa: PLC0415
+            print("数据戳已落 ✓ %s" % bump_data_version(str(qlib_dir), "dump_finance"))
+        except Exception as e:                                          # noqa: BLE001
+            print("⚠⚠ 数据戳**没落上**（%r）⇒ 必须手工清 `backend/workdir/feature_cache/` ✗" % e)
 
 
 if __name__ == "__main__":

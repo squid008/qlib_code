@@ -72,7 +72,10 @@ class CodeGenError(Exception):
 #       `1.20.83` = 常量窗口 `COUNT(X,N)` 由 qlib `Count`（非 NaN 计数 ✗）改为
 #                   `Sum(Gt(Abs(X),0),N)`（通达信口径：非 0 且非 NaN 的天数 ✓）——
 #                   **会改变生成结果** ✓ ⇒ 存量公式（如 `深跌2/3` 用到 COUNT ✓）会被自动重编 ✓。
-CODEGEN_SEMANTICS = "1.20.83"
+#       `1.21.4` = FINANCE 加**第二参数（口径）**：`FINANCE(q)` 由"累计/YTD"改成"**单季度**"、
+#                  新增 `FINANCE(q,2)` 年化 / `FINANCE(q,3)` TTM、`FINANCE_TDX` 下线 ✓
+#                  —— **会改变生成结果** ✓ ⇒ 存量公式（`黄金坑启动` / `YLI_R8_COMBO` ✓）自动重编 ✓。
+CODEGEN_SEMANTICS = "1.21.4"
 
 
 # ---- 行情字段映射（大写 → qlib $field）----
@@ -165,13 +168,25 @@ L2_VOL_DIR_FIELDS = [
     ["$mf_vol_s_b", "$mf_vol_s_s"],
 ]
 
-# ---- 基本面 FINANCE(q)：益盟盘口那几个基本面指标的历史序列 ----
+# ---- 基本面 FINANCE(q[,口径])：益盟盘口那几个基本面指标的历史序列 ----
 # 数据由 tools/dump_finance.py 从**米筐 pit 财报表 + 总市值**物化成字段 bin（`{qlib_dir}/features/{code}/fin_*.day.bin`）
 # ⇒ FINANCE(q) 只是"字段选择器"（同 COST(q) 的做法 ✓），不要在算子层现算：
 #   · 财报是**低频事件**（每股每季一条）但有 5000+ 只 ⇒ 逐股现算要反复读盘 ✗；
 #   · 物化时已按**公告日**对齐（info_date ≤ 当日 ⇒ 无未来函数 ✓），算子在运行期无法更准 ✓。
-# ⚠ 本表顺序 = FINANCE(q) 的 q（1..9），必须与 tools/dump_finance.py 的 `FIN_FIELDS` **逐项一致** ✗
+# ⚠ 本表顺序 = FINANCE(q) 的 q（1..10），必须与 tools/dump_finance.py 的 `FIN_FIELDS` **逐项一致** ✗
 #   （顺序错位 = 静默取错指标 ✗）⇒ 由 `tests/test_finance_func.py` 直接读那个脚本比对 ✓。
+#
+# ★★ 2026-10-10 用户定稿：**第二参数 = 口径**（FINANCE(q) ≡ FINANCE(q,1)）
+#   1 = 单季度（本单季 vs 去年同单季）
+#   2 = 年化  （今年累计 ÷ 已披露季度数 × 4）
+#   3 = TTM   （最近连续 4 个单季）
+#   q=1/2（市盈率TTM / 市净率）本身只有一档 ⇒ **只允许 1 个参数**，传第二参给友好错 ✓。
+# ⚠⚠ 语义变化（⇒ `CODEGEN_SEMANTICS` 必须升位，见其注释 ✓）：
+#   旧版 q=3..9 取的是**累计/YTD** 值（如"营业收入增长率"= 累计同比 ✓）；
+#   新版 q=3..9 **默认（第 1 档）取单季度** ⇒ 存量公式（`黄金坑启动` / `YLI_R8_COMBO` 用了
+#   `FINANCE(3..8)`）的取值会跟着变 ✓ —— 这是用户明确要的口径 ✓，不是回归 ✗。
+#   ⚠ 旧的**累计**值字段（`fin_rev_yoy` 等，盘上仍保留 ✓）在公式语言里**不再有口径能取到** ✓
+#     （用户定稿只有三档：单季 / 年化 / TTM ✓；要恢复累计得再加一档，属新需求 ✓）。
 FINANCE_FIELDS = [
     ("fin_pe_ttm", "市盈率TTM"),
     ("fin_pb", "市净率"),
@@ -188,17 +203,54 @@ FINANCE_FIELDS = [
 ]
 
 
+# ---- 口径（FINANCE 的第二参数）--------------------------------------------
+# 字段后缀 + 说明由**物化脚本与 codegen 共用**（`finance_field_name()` ✓ ⇒ 三处不会漂移 ✓）。
+FINANCE_TIER_SUFFIX = {1: "_q", 2: "_ann", 3: "_ttm"}
+FINANCE_TIER_LABEL = {1: "单季度", 2: "年化", 3: "TTM"}
+FINANCE_TIER_DESC = {
+    1: "单季度（本单季 vs 去年同单季）",
+    2: "年化（今年累计 ÷ 已披露季度数 × 4）",
+    3: "TTM（最近连续 4 个单季）",
+}
+# 只有一档的 q（市盈率TTM / 市净率本身就是一档 ⇒ 传第二参给友好错 ✓）
+FINANCE_SINGLE_TIER_Q = (1, 2)
+# 可物化三档的 q（3..10）—— 物化脚本按它生成字段名 ✓
+FINANCE_TIERED_Q = tuple(range(3, len(FINANCE_FIELDS) + 1))
+
+
+def finance_field_name(q: int, tier: int = 1) -> str:
+    """FINANCE(q,口径) → **不带 `$`** 的字段名（q=1/2 恒为单档、忽略 tier ✓）。"""
+    base = FINANCE_FIELDS[q - 1][0]
+    if q in FINANCE_SINGLE_TIER_Q:
+        return base
+    return base + FINANCE_TIER_SUFFIX[tier]
+
+
+def finance_tiered_field_names() -> List[str]:
+    """三档物化字段名（q=3..10 × 3 档 = 24 个）—— 跨文件守卫与物化脚本共用 ✓。"""
+    return [finance_field_name(q, t) for q in FINANCE_TIERED_Q for t in (1, 2, 3)]
+
+
 def finance_help() -> str:
-    """FINANCE(q) 的编号说明（错误提示/测试共用一份文案，避免两处漂移）。"""
-    return "\n".join("  %d = %s" % (i + 1, d) for i, (_f, d) in enumerate(FINANCE_FIELDS))
+    """FINANCE(q[,口径]) 的编号/口径说明（错误提示/测试共用一份文案，避免两处漂移）。"""
+    lines = ["  %d = %s" % (i + 1, d) for i, (_f, d) in enumerate(FINANCE_FIELDS)]
+    lines.append("第二参数（口径，可省略；省略 = 1）：")
+    for t in (1, 2, 3):
+        lines.append("  %d = %s" % (t, FINANCE_TIER_DESC[t]))
+    lines.append("  例：FINANCE(3) 与 FINANCE(3,1) 都是**单季**营收增长率；FINANCE(3,3) 是 TTM 营收增长率。")
+    lines.append("  ⚠ 1（市盈率TTM）/ 2（市净率）只有一档，不能传第二参。")
+    return "\n".join(lines)
 
 
-# ---- ★ 2026-10-09：**通达信源**的基本面（`FINANCE_TDX(q)`）----
-# 与 FINANCE(q) **编号/含义完全一致**（1 市盈率TTM … 9 营业利润增长率 ✓），只是数据来自
-# **通达信财务包**（`D:\new_tdx\vipdoc\cw\gpcw*.zip`，会员下载 ✓）而非米筐 ——
-# 用户 2026-10-09：「米筐没有秘钥 ⇒ 以后只能用通达信的数据源」⇒ 两个函数并存，便于**交叉校验** ✓。
+# ---- ★ 2026-10-09：**通达信源**的基本面（`FINANCE_TDX(q)`）—— **2026-10-10 已下线** ✗ ----
+# ⚠⚠ 函数本身**已从公式语言里移除**（用户 2026-10-10 第 4 项："FINANCE_TDX 下线，最小改动，
+#   字段保留只作多源复核" ✓）：写 `FINANCE_TDX(...)` 会得到一条**指向 FINANCE** 的友好错 ✓
+#   （见 `_gen_func` 里那个分支 ✓）。**这张表和 `ftdx_*` bin 数据都保留** ✓ ——
+#   它们只用于"米筐/tushare/通达信三源对拍"，不再出现在用户可写的公式里 ✓。
+# 为什么下线：它与 `FINANCE(q)` 编号/含义**完全一致** ⇒ 两套口径并存只会多一处漂移源 ✓
+#   （而米筐 pit / tushare 两条链都已能覆盖同一批指标 ✓）。
 # ⚠ 字段名由 `tools/dump_finance_tdx.py` 生成（该脚本 import 本表 ⇒ 两处不会漂移 ✓）。
-# ⚠⚠ **PIT 语义不同**（关键差异，手册里必须写清）：
+# ⚠⚠ **PIT 语义与 FINANCE 不同**（若日后要复用它，手册里必须写清）：
 #   · 米筐 pit 有 `info_date`/`if_adjusted` ⇒ 严格"按公告日"生效 ✓；
 #   · 通达信 gpcw **没有公告日** ⇒ 只能用**法定披露截止日**推定可用日
 #     （一季报 4/30、中报 8/31、三季报 10/31、年报次年 4/30）⇒ **保守但可能晚** ✓，
@@ -808,11 +860,13 @@ class CodeGen:
                 raise CodeGenError("WINNER(P)：目前只支持 P = C/H/L（现价/最高价/最低价）；"
                                    "其它价（开盘价、均价等）暂不支持")
             return "$chip_win_%s" % nm
-        # 基本面（2026-10-09）：FINANCE(q) → 派生字段 `$fin_*`（物化 bin，见上方 FINANCE_FIELDS）
+        # 基本面（2026-10-09；2026-10-10 加第二参数"口径"）：FINANCE(q[,口径]) → 派生字段 `$fin_*`
+        # （物化 bin，见上方 FINANCE_FIELDS / FINANCE_TIER_* ✓）
         if name == "FINANCE":
-            if len(e.args) != 1:
+            if len(e.args) not in (1, 2):
                 raise CodeGenError(
-                    "FINANCE 需要 1 个参数：FINANCE(q)，q 为指标编号（常量整数）：\n" + finance_help())
+                    "FINANCE 需要 1~2 个参数：FINANCE(q) 或 FINANCE(q,口径)，q 为指标编号（常量整数）：\n"
+                    + finance_help())
             q = _const_fold(e.args[0], allow_div=True)
             if q is None or not float(q).is_integer():
                 raise CodeGenError(
@@ -823,21 +877,36 @@ class CodeGen:
                 raise CodeGenError(
                     "FINANCE(q) 的 q 需在 1~%d 之间，当前为 %d：\n%s"
                     % (len(FINANCE_FIELDS), q, finance_help()))
-            return "$" + FINANCE_FIELDS[q - 1][0]
-        # 基本面（通达信源，2026-10-09）：FINANCE_TDX(q) → `$ftdx_*`（编号与 FINANCE(q) 相同 ✓）
+            if len(e.args) == 1:
+                tier = 1
+            elif q in FINANCE_SINGLE_TIER_Q:
+                # 友好错：PE/PB 本身就一档，别让用户以为自己写错了口径编号 ✓
+                raise CodeGenError(
+                    "FINANCE(%d) 只有一档（%s），**不能传第二参数**：\n"
+                    "  · 市盈率TTM / 市净率本身就是一档（没有单季/年化/TTM 之分 ✓）；\n"
+                    "  · 只有 3~%d（增长率 / 比率 / 每股收益 / 自由现金流）才有 1 单季 / 2 年化 / 3 TTM ✓。"
+                    % (q, FINANCE_FIELDS[q - 1][1], len(FINANCE_FIELDS)))
+            else:
+                tv = _const_fold(e.args[1], allow_div=True)
+                if tv is None or not float(tv).is_integer():
+                    raise CodeGenError(
+                        "FINANCE(q,口径) 的**第 2 个参数（口径）**必须是常量整数（1 单季 / 2 年化 / 3 TTM）：\n"
+                        + finance_help())
+                tier = int(tv)
+                if tier not in FINANCE_TIER_SUFFIX:
+                    raise CodeGenError(
+                        "FINANCE(q,口径) 的口径需在 1~3 之间（1 单季 / 2 年化 / 3 TTM），当前为 %d：\n%s"
+                        % (tier, finance_help()))
+            return "$" + finance_field_name(q, tier)
+        # 基本面（通达信源）：FINANCE_TDX(q) **已下线**（2026-10-10，用户第 4 项 ✓）
+        # ⚠ 保留它的字段表（`FINANCE_TDX_FIELDS`）与 bin 数据（供多源复核 ✓），但**公式语言里不再提供** ✗
+        #   —— 两个函数本来就编号/含义完全一致 ⇒ 留着等于多一条会漂移的口径 ✓。
         if name == "FINANCE_TDX":
-            if len(e.args) != 1:
-                raise CodeGenError("FINANCE_TDX 需要 1 个参数：FINANCE_TDX(q)，q 为指标编号（常量整数）：\n"
-                                   + finance_tdx_help())
-            qt = _const_fold(e.args[0], allow_div=True)
-            if qt is None or not float(qt).is_integer():
-                raise CodeGenError("FINANCE_TDX(q) 的 q 必须是**常量整数**：\n" + finance_tdx_help()
-                                   + "\n  例：`PE:=FINANCE_TDX(1); 低估:PE<20;`")
-            qt = int(qt)
-            if not (1 <= qt <= len(FINANCE_TDX_FIELDS)):
-                raise CodeGenError("FINANCE_TDX(q) 的 q 需在 1~%d 之间，当前为 %d：\n%s"
-                                   % (len(FINANCE_TDX_FIELDS), qt, finance_tdx_help()))
-            return "$" + FINANCE_TDX_FIELDS[qt - 1][0]
+            raise CodeGenError(
+                "FINANCE_TDX 已**下线**（2026-10-10）✗ —— 请改用 FINANCE(q[,口径]) ✓\n"
+                "  · 两者编号/含义完全一致，现在只保留 FINANCE 这一个 ✓；\n"
+                "  · 口径：FINANCE(q,1) 单季 / FINANCE(q,2) 年化 / FINANCE(q,3) TTM（省略 = 1 单季 ✓）。\n"
+                "  （通达信源的 ftdx_* 数据仍在盘上，只供多源复核用，不再从公式里访问 ✓）")
         # 横向统计（2026-10-09）：BLOCKSETNUM('板块') / INSUM('板块','公式',输出,类型)
         # → 市场级物化字段（见文件上方 BLOCK_KEYS 段的说明）
         if name == "BLOCKSETNUM":

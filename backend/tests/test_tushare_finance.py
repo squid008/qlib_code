@@ -97,6 +97,13 @@ class TestFieldTable:
         """★ 换数据源**绝不能**改字段顺序（FINANCE(q) 按下标取 ✓）。"""
         assert [f for f, _u in M.FIN_FIELDS] == [f for f, _d in FINANCE_FIELDS]
 
+    def test_tier_fields_match_codegen(self):
+        """★ 三档口径字段名也必须与 codegen 完全一致（2026-10-10 ✓）——
+        两条链（米筐 / tushare）用的是**同一个** `finance_tiered_field_names()` ✓。"""
+        from app.factors.parser.codegen import finance_tiered_field_names
+        assert M.TIERED_FIELDS == finance_tiered_field_names()
+        assert M.ALL_FIELDS == [f for f, _d in FINANCE_FIELDS] + M.TIERED_FIELDS
+
 
 class TestDateAndCode:
     def test_d8_normalizes(self):
@@ -207,6 +214,38 @@ class TestReportMetrics:
         assert fixed and fixed[0] == pytest.approx(18.0 / 480.0 * 100.0), "--roe-guard 时被替换 ✓"
         M.ROE_GUARD = False
         M.ROE_SUSPECTS.clear()
+
+
+class TestTierMetrics:
+    """★ 三档口径（2026-10-10）：`_q` 单季 / `_ann` 年化 / `_ttm` TTM —— 与米筐链共用同一份公式 ✓。"""
+
+    def _at(self, rep, field, when, q):
+        for ann, qq, v in rep[field]:
+            if int(np.datetime64(ann, "D").astype(np.int64)) == when and qq == q:
+                return v
+        return float("nan")
+
+    def test_tiers_of_q1(self):
+        """2026q1：单季 = 累计（Q1 ✓）、年化 = 累计×4、TTM = 本期累计 + 上年年报 − 上年同期 ✓。"""
+        rep = M.build_report_metrics(M.TsPit(_sample_data()), code="sz000001")
+        n = int(np.datetime64("2026-04-25", "D").astype(np.int64))
+        assert self._at(rep, "fin_rev_yoy_q", n, "2026q1") == pytest.approx(25.0)      # 100/80 − 1
+        assert self._at(rep, "fin_rev_yoy_ann", n, "2026q1") == pytest.approx(25.0)    # 年化档退化成累计同比
+        assert self._at(rep, "fin_eps_q", n, "2026q1") == pytest.approx(1.8)
+        assert self._at(rep, "fin_eps_ann", n, "2026q1") == pytest.approx(7.2)         # 1.8 × 4/1
+        assert self._at(rep, "fin_eps_ttm", n, "2026q1") == pytest.approx(1.8 + 5.4 - 1.0)
+        assert self._at(rep, "fin_roe_q", n, "2026q1") == pytest.approx(18.0 / 480.0 * 100.0)
+        assert self._at(rep, "fin_fcf_ttm", n, "2026q1") == pytest.approx(108.0)        # 与旧档 fin_fcf 同值 ✓
+        # TTM 增长率要"上年同期的 TTM" ⇒ 样本缺 2024 年报 ⇒ NaN（宁 NaN 不瞎算 ✓）
+        assert not np.isfinite(self._at(rep, "fin_rev_yoy_ttm", n, "2026q1"))
+
+    def test_tiers_of_q2_use_difference(self):
+        """2026q2：单季 = 中报累计 − 一季报累计（220 − 100 = 120 ✓）；TTM 缺 2025q2 ⇒ NaN ✓。"""
+        rep = M.build_report_metrics(M.TsPit(_sample_data()), code="sz000001")
+        n = int(np.datetime64("2026-08-15", "D").astype(np.int64))
+        assert self._at(rep, "fin_eps_q", n, "2026q2") == pytest.approx(4.7 - 1.8)
+        assert self._at(rep, "fin_roe_q", n, "2026q2") == pytest.approx((47.0 - 18.0) / 500.0 * 100.0)
+        assert not np.isfinite(self._at(rep, "fin_eps_ttm", n, "2026q2"))
 
 
 class TestExpandDaily:
