@@ -732,5 +732,16 @@
     "updated_at": "2026-10-10 18:23:25",
     "author": "u-8bcb1f27",
     "author_user": "Administrator"
+  },
+  {
+    "id": "c0f0a3581162",
+    "name": "负市值对数1",
+    "text": "负市值对数1:-ln(market_cap);",
+    "expression": "Mul(-1,Log($market_cap))",
+    "codegen": "1.21.4",
+    "created_at": "2026-10-11 21:10:48",
+    "updated_at": "2026-10-11 21:10:48",
+    "author": "u-8bcb1f27",
+    "author_user": "Administrator"
   }
 ]
