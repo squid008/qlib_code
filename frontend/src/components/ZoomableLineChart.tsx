@@ -33,6 +33,8 @@ interface Props {
   /** 要画的曲线字段（顺序 = 图例顺序） */
   keys: string[]
   labelOf: (k: string) => string
+  /** 可选：图例悬停时的"这条线是什么口径/怎么调仓"说明（v2.1.10 ✓）——由调用方给文案 ✓ */
+  descOf?: (k: string) => string | undefined
   colorOf: (k: string, i: number) => string
   dashOf?: (k: string) => string | undefined
   /** 高亮加粗的那条（用户在下拉里选的） */
@@ -94,6 +96,7 @@ export default function ZoomableLineChart({
   data,
   keys,
   labelOf,
+  descOf,
   colorOf,
   dashOf,
   focus,
@@ -546,7 +549,11 @@ export default function ZoomableLineChart({
             <button
               key={k}
               type="button"
-              title={`${labelOf(k)}：点一下隐藏/显示`}
+              /* v2.1.10：图例悬停 = **这条线怎么调仓**（用户 2026-10-11 要求 ✓）——
+                 说明由调用方通过 `descOf` 提供 ✓，本组件不含业务文案 ✓。 */
+              title={[labelOf(k), descOf?.(k), '点一下隐藏/显示']
+                .filter(Boolean)
+                .join('\n\n')}
               onClick={() => onToggle?.(k)}
               className={`flex flex-col items-start leading-tight text-left ${dim ? 'opacity-40' : ''}`}
             >

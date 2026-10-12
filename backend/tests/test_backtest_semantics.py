@@ -47,14 +47,29 @@ def _events():
     return pd.DataFrame({"date": pd.to_datetime(dts), "code": codes, "side": 1})
 
 
-# 期望值 = 旧实现（v1.20.3 之前）的逐位输出 ✓（生成脚本 `ai_test/check_bt_ref.py`）
+# 期望值 = 基准实现的逐位输出 ✓（生成脚本 `ai_test/check_bt_ref.py`）
+# ★ v2.1.16 **有意的语义变更**（用户 2026-10-11："手续费最小 5 块加上不就行了" ✓）：
+#   手续费改为 `max(成交额 × 单边费率, 最低 5 元)` ✓ ⇒ **有成本**的用例里 `cash_even` 末值变了 ✓
+#   （`event_even` 不变 ⇒ 它的成交额都远超 5 元、最低佣金没触发 ✓；`cash_even` 的小额买入会触发 ✓）；
+#   `k5_cost0`（**无成本**档）**逐位不变** ✓ —— 最低佣金不会出现在"无成本"里 ✓（见 `_fee_of` ✓）。
+#   ⇒ 基准已用 `ai_test/check_bt_ref.py` 重新生成 ✓。
+# ★★ v2.1.30 **又一次有意的语义变更**（用户 2026-10-11："资金负也查" ✓）：
+#   三个买入点（`event_even` 买新信号 / 补低仓 / `rebalance_buy`）原来按
+#   **估费** `成交额 × (1+半费)` 查现金 ✗，而真实费用是 `max(成交额×半费, 最低 5 元)` ✓
+#   ⇒ 存在**现金透支**（实测用户数据 `event_even` 到 **−3216.71 元** ✗；`period_roll`、
+#   `cash_even` 也有小额负值 ✓）。现改为**成交前按真实费用硬校验**（买得起的最大手数 ✓）
+#   ⇒ 原本会透支的买单被缩量 ⇒ `trades`/净值末值**微变** ✓。
+#   ⚠ 与 v2.1.16 那次不同：**这次"无成本"档也会变** ✗（因为透支与费用无关 ✓，
+#     `cost=0` 时实测负得更多 −8078 ✓）—— 故 `k5_cost0` 的 `event_even` 变了 ✓，
+#     而三个用例的 `cash_even` 末值**逐位不变** ✓（它的买入本来就都买得起 ✓）。
+#   ⇒ 基准已用 `ai_test/regen_bt_ref_v2130.py` 重新生成 ✓。
 EXPECT = {
-    "k5_cost0": dict(hold_days=5, cost=0.0, n_trades=329, n_rejects=47,
-                     nav={"event_even": 1.12127641, "cash_even": 0.81812352}),
-    "k20_cost004": dict(hold_days=20, cost=0.004, n_trades=205, n_rejects=59,
-                        nav={"event_even": 1.0895344753, "cash_even": 1.0087137471}),
-    "k20_band5pct": dict(hold_days=20, cost=0.004, n_trades=174, n_rejects=59,
-                         nav={"event_even": 1.0881540819, "cash_even": 1.0087137471}),
+    "k5_cost0": dict(hold_days=5, cost=0.0, n_trades=330, n_rejects=47,
+                     nav={"event_even": 1.12178984, "cash_even": 0.81812352}),
+    "k20_cost004": dict(hold_days=20, cost=0.004, n_trades=214, n_rejects=59,
+                        nav={"event_even": 1.0895006776, "cash_even": 1.0087133918}),
+    "k20_band5pct": dict(hold_days=20, cost=0.004, n_trades=176, n_rejects=59,
+                         nav={"event_even": 1.0907490539, "cash_even": 1.0087133918}),
 }
 
 

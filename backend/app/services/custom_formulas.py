@@ -445,6 +445,14 @@ def list_custom_formulas() -> List[dict]:
                 if _key(it) in mine_keys:
                     mine = [it if _key(x) == _key(it) else x for x in mine]
             _save_my(mine)
+        # ★★ v2.1.47：**先按"是否置顶"分层 ✓，层内再按 `sort_key` ✓**（用户 2026-10-12：
+        #   "取消置顶后，它得放在**已经置顶的后面**" ✓）——
+        #     · `pinned` 层 ⇒ ★ 块**恒在最上面** ✓；
+        #     · 层内按 `sort_key`（越小越靠前 ✓）：置顶时取 `min − 1` ⇒ 新置顶的排最前 ✓；
+        #       取消置顶时取"未置顶段"的 `min − 1` ⇒ 正好落在 **★ 块正下方** ✓；
+        #     · 从没动过的条目没有键（按 0.0 参与 ✓，且 `sort` 稳定 ⇒ 保持文件里的原有次序 ✓）。
+        items.sort(key=lambda it: (0 if it.get("pinned") else 1,
+                                   float(it.get("sort_key") or 0.0)))
         return items
 
 
@@ -486,6 +494,54 @@ def update_custom_formula(formula_id: str, name: str, text: str, expression: str
         item["expression"] = expression
         item["codegen"] = CODEGEN_SEMANTICS     # ★ 手动保存 ⇒ 必然是最新的生成逻辑 ✓
         item["updated_at"] = _now()             # ★ 时间戳前进 ⇒ 按 LWW 胜出 ✓
+        item["author_modified_by"] = _AUTHOR
+        mine = _read_items(_MY_FILE)
+        if any(_key(x) == "id:" + formula_id for x in mine):
+            mine = [item if _key(x) == "id:" + formula_id else x for x in mine]
+        else:
+            mine.append(item)
+        _save_my(mine)
+        return item
+
+
+def set_pinned(formula_id: str, pinned: bool) -> Optional[dict]:
+    """★ v2.1.46：**置顶 / 取消置顶 = "移到最前 / 留在原处"**（用户 2026-10-12 ✓）。
+
+    用户原话："取消置顶后，不要还原成原来的位置，就放在上面好了，这样我可以利用置顶/取消置顶
+    来给公式排序" ✓。
+
+    ⇒ 语义从 v2.1.45 的"标记位 + 排序时浮到最前"**改成移动式排序** ✓：
+      · **置顶**（`pinned=True`）⇒ 给本条一个**比所有现有 `sort_key` 都小**的键 ✓ ⇒ 立刻排到最前 ✓；
+      · **取消置顶**（`pinned=False`）⇒ **只清 `pinned` 标记，`sort_key` 原样保留** ✓
+        ⇒ 它**留在当前位次** ✓（**不**还原 ✗）；`pinned` 从此只决定按钮图标 ★/☆ ✓。
+      ⇒ 连续"置顶 A、置顶 B、置顶 C"就能把顺序摆成 C、B、A ✓✓ —— 这正是用户要的"当排序用" ✓。
+
+    ⚠ 只用**条目的一个数值字段**（`sort_key` ✓）实现 ⇒ 每次**只写一条**（本装机文件 ✓）
+      ⇒ 不会像"整表重排"那样给别人的条目制造高时间戳副本 ✗✗（本模块最忌讳的那种 ✓）。
+    ⚠ 不动 `name`/`text`/`expression` ✓、**不重编译** ✗ ⇒ 调用方无需 `mark_dependents_stale` ✓。
+    """
+    with _lock:
+        merged = {_key(it): it for it in load_merged()}
+        cur = merged.get("id:" + formula_id)
+        if cur is None:
+            return None
+        item = dict(cur)
+        if pinned:
+            keys = [float(it["sort_key"]) for it in merged.values()
+                    if isinstance(it.get("sort_key"), (int, float))]
+            item["sort_key"] = (min(keys) - 1.0) if keys else -1.0
+        else:
+            # ★ v2.1.47（用户 2026-10-12："取消置顶后，它得放在**已经置顶的后面**" ✓）：
+            #   取消置顶 ⇒ 重新取一个键，**落在"未置顶那一段"的最前面** ✓
+            #   ⇒ 位置 = **置顶块的正下方** ✓（不是留在原处混在中间 ✗、也不回原处 ✗）。
+            #   ⚠ 只统计**同样未置顶**的条目的键 ✓（置顶块的键不算 ⇒ 不然会跑到置顶块里 ✗）；
+            #     本条目自身的旧键要**排除** ✓。
+            keys = [float(it["sort_key"]) for k, it in merged.items()
+                    if k != ("id:" + formula_id) and not it.get("pinned")
+                    and isinstance(it.get("sort_key"), (int, float))]
+            item["sort_key"] = (min(keys) - 1.0) if keys else -1.0
+        item["pinned"] = bool(pinned)
+        item["updated_at"] = _now()             # 时间戳前进 ⇒ 我这份按 LWW 胜出 ✓
         item["author_modified_by"] = _AUTHOR
         mine = _read_items(_MY_FILE)
         if any(_key(x) == "id:" + formula_id for x in mine):

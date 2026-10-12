@@ -30,7 +30,13 @@ class SignalTestRequest(BaseModel):
 
     # ---- 模式①：信号清单 ----
     horizon: int = Field(60, ge=1, le=250, description="预测周期 N：事件研究逐 k 1..N + 持有 N 日")
-    fill: str = Field("t1_open", description="成交时点：t_close(信号日收盘) / t1_open(次日开盘) / t1_close(次日收盘)")
+    # ★★ v2.1.74：**默认改 `None`** ✗→✓（审计 #9 ✓，与 `EventNavRequest.fill` 同一个坑 ✓）——
+    #   原来写 `"t1_open"` ⇒ pydantic 把"没传"填成非空 ✗ ⇒ `req.fill or 文件里的 fill` 的兜底
+    #   **永远不触发** ✗ ⇒ API 直连/老前端会**无声退回默认口径** ✓，与那份导出文件真正的口径分叉 ✓
+    #   （用户 2026-10-12："信号测试里有没有漏掉" ✓）。`None` = 跟随导出文件里记录的口径 ✓。
+    fill: Optional[str] = Field(
+        None, description="成交时点：t_close(信号日收盘) / t1_open(次日开盘) / t1_close(次日收盘)；"
+                          "None=跟随导出文件里记录的口径")
     capital: float = Field(1e9, description="初始资金（默认 10 亿：1000 只同时触发也能等权买）")
     strict_limit: bool = Field(True, description="严格涨跌停/停牌口径（买不进=放弃，卖不出=顺延）")
     alloc_default: str = Field("event_even", description="默认展示的资金方案：event_even / cash_even")
@@ -41,6 +47,20 @@ class SignalTestRequest(BaseModel):
     pool_codes: Optional[List[str]] = Field(None, description="池=@signals 时可由后端填（信号标的并集）")
     signals_only: bool = Field(False, description="只跑信号清单部分（跳过事件研究，最快）")
     backtest_only: bool = Field(False, description="只跑回测（跳过事件研究）")
+    # ★★ v2.1.54：**触发组的剔除开关**（用户 2026-10-12："要修。估计是这里有问题" ✓）——
+    #   它们直接决定**触发组样本** ⇒ 直接决定事件研究的数字 ✓（实测同一份信号
+    #   4.84% vs 5.9% ✓ 差的就是这条 ✓）。三个值语义：
+    #     `None`（默认 ✓）= **用导出文件里记的那个** ✓（新文件已写 ✓；旧文件没有 ⇒ 视为 False ✓）；
+    #     `True/False` = 显式覆盖 ✓（给手工对比用 ✓）。
+    #   ⚠ 与单因子测试面板同名同义 ✓（口径必须一致，否则又变成"两个页面两个数" ✗）。
+    exclude_limit_up_signal: Optional[bool] = Field(
+        None, description="剔除信号日(T)涨停样本：None=按导出文件；True/False=显式覆盖")
+    exclude_limit_up_trade: Optional[bool] = Field(
+        None, description="剔除成交日(T+1)涨停样本（一字板买不进）")
+    exclude_suspended: Optional[bool] = Field(None, description="剔除成交日(T+1)停牌样本")
+    exclude_st_t1: Optional[bool] = Field(None, description="剔除成交日(T+1) ST（本侧缺 IS_ST 字段 ⇒ 暂跳过并提示）")
+    exclude_stock_gem: Optional[bool] = Field(None, description="剔除创业板（SZ30 开头）")
+    exclude_stock_kcb: Optional[bool] = Field(None, description="剔除科创板（SH688 开头）")
 
     # ---- 模式②：聚宽流水 ----
     jq_capital: Optional[float] = Field(None, description="聚宽账户初始资金；缺省=首日买入总额（可手改）")

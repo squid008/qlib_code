@@ -91,7 +91,8 @@ def load_bench_close(codes: Iterable[str] = BENCH_CODES, start=None, end=None,
     return wide
 
 
-def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
+def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int,
+                       end_date: Optional[str] = None) -> dict:
     """`{code: {"name": …, "cum": [float|None, …], …}}`：各指数**逐调仓期收益的算术累加**。
 
     `close` —— `load_bench_close()` 的宽表（index 覆盖调仓日**及之后 h+1 个交易日**）。
@@ -138,6 +139,13 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
         nav_arr = np.ones(n, dtype=np.float64)
         gd, cur = 1.0, 0
         _begb = 0                        # 第一个有效期的 T+1 位置（裁掉预热段的平坦点）
+        # ★ v2.1.42：**最后一个"完整"持有期末**的位置 ✓ —— 用户 2026-10-12："基准也要对齐" ✓。
+        #   组合那条日频序列在最后一个完整期末收口（未走完的一期不平铺进样本 ✗）⇒ 基准的
+        #   **指标**也必须收在同一处 ✓，否则基准样本 1020 ✗ vs 组合 962 ✗ ⇒ 基准年化与
+        #   "相对基准的超额"依旧是不同窗口、不可比 ✗。
+        #   ⚠ 只影响 `net`（→ `perf` ✓）：曲线数组 `cums`/`cums_cmp` **照旧含末期部分持有期** ✓
+        #     —— 那是 2026-09-13 用户点名要的（"基准曲线怎么 8-14 就没了"）✗ 不能回退 ✓。
+        _cur_ok = 0
         for d in reb_dates:
             t = pd.Timestamp(d)
             pos = int(idx.searchsorted(t))
@@ -181,19 +189,41 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int) -> dict:
             gd = gd * rr
             nav_arr[i2c - 1] = gd
             cur = i2c
+            if not partial:
+                _cur_ok = i2c          # ★ v2.1.42：只有**完整**持有期才推进指标样本终点 ✓
         if cur < n:
             nav_arr[cur:] = gd
         # ⚠ 两边都要截：`close` 宽表带 warmup 前段（起点比组合面板早约 250 交易日）与尾部
         #   h+1+3 天延展；不截会把这两段平坦期计入样本数、摊薄年化/波动（实测 1471 → 1212）。
-        _endb = cur if 0 < cur < n else n
-        _b = _begb if 0 <= _begb < _endb else 0
+        # ★ v2.1.42（用户："基准也要对齐"）：**尾部截到"最后一个完整持有期末"** ✓
+        #   （`_cur_ok` ✓）—— 与组合/实盘同一口径 ✓；`cur`（含末期部分持有期）只用于曲线 ✓。
+        _endb = _cur_ok if 0 < _cur_ok <= n else (cur if 0 < cur < n else n)
+        # ★★ v2.1.42（用户："基准也要对齐" ✓）：**再按"组合的样本终点日期"硬截一刀** ✓ ——
+        #   本函数的 `close` 宽表带 warmup 前段 + 尾部延展（指数数据本身也到更晚 ✗）⇒
+        #   光看 `partial` 永远不触发 ✗（实测 `_cur_ok` 仍是 1021 ✗ vs 组合 962 ✗）。
+        #   `end_date` 由调用方按**组合最后一个完整持有期末**算出 ✓（`single_test.py` ✓）
+        #   ⇒ 截完两边天数一致 ⇒ 基准年化 / "相对基准的超额"才和组合在同一窗口上 ✓。
+        if end_date:
+            try:
+                _e = int(idx.searchsorted(pd.Timestamp(str(end_date)[:10]), side="right"))
+                _endb = min(_endb, _e)
+            except Exception:            # noqa: BLE001 —— 附加信息，绝不拖垮主流程
+                pass
+        # ★ v2.1.42：起点也**比首个 T+1 早一格** ✓（= 组合面板的首个交易日 ✓）——
+        #   组合的日频序列以区间首日的 0 收益起步 ✓，基准照抄 ⇒ 两边天数一致 ✓。
+        _b = max(_begb - 1, 0) if 0 <= _begb < _endb else 0
         net = np.empty(max(_endb - _b, 0), dtype=np.float64)
         if net.size:
             net[0] = 0.0                     # 起点当天无收益（相对起点）
             if net.size > 1:
                 net[1:] = nav_arr[_b + 1:_endb] / nav_arr[_b:_endb - 1] - 1.0
+        # ★★ v2.1.43：基准曲线**同样右移一格** ✓（用户 2026-10-12："点 T = T 日收盘时的净值" ✓）
+        #   —— 与组合曲线（`single_test.py::_shift_cum` ✓）**必须同法**，否则"相对基准的超额"
+        #   又会错一格 ✗（原口径：点 k = 从调仓日 k 开始那一期的结果 ✗）。
+        _cum_out = ([0.0] + list(cums[:-1])) if len(cums) else list(cums)
+        _cc_out = ([0.0] + list(cums_cmp[:-1])) if len(cums_cmp) else list(cums_cmp)
         out[str(code)] = {"name": BENCH_NAMES.get(str(code), str(code)),
-                          "cum": cums, "cum_compound": cums_cmp,
+                          "cum": _cum_out, "cum_compound": _cc_out,
                           # 用「最后价兜底」的期数（>0 ⇒ 末期持有窗口不足 h 日，与组合同口径；
                           # 前端据此提示用户，避免把部分持有期的收益当完整一期读）
                           "n_partial": n_partial,

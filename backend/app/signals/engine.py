@@ -27,6 +27,45 @@ import numpy as np
 import pandas as pd
 
 LOT_DEFAULT = 100
+# ★ v2.1.16（用户 2026-10-11："手续费最小5块加上不就行了" ✓）：
+#   A 股券商佣金有**最低 5 元/笔**的下限 ✓ —— 对小额单（例如每期等权重建时的零碎 trim ✓）
+#   影响巨大，不加的话"逐笔微调"几乎免费 ✗，与实盘差很远 ✓。
+#   ⚠ 这是**唯一**的费用计算入口（`_fee_of` ✓）：资金路径（买卖扣款/回款）与
+#   成交明细（`_trades_frame` 的 fee 列）必须走同一处 ✓，否则"明细与资金不一致" ✗。
+MIN_FEE = 5.0
+
+
+LOT_KCB = 200                     # ★ v2.1.17：科创板（688/689）**整手 200 股** ✓
+
+
+def _lot_of(code: str, lot_default: int = LOT_DEFAULT) -> int:
+    """该**标的**的整手股数 ✓：科创板 688/689 ⇒ 200 股，其余用 `lot_default`（默认 100 ✓）。
+
+    ⚠ 用户 2026-10-11："咱们本来不就有小于 100 股、科创板小于 200 股拒绝买吗" ——
+      实际上引擎原来只有 `LOT_DEFAULT = 100` ✗（`codes.py` 里的 `688` 只是**号段识别** ✓），
+      所以 688 的票一直按 100 股整手在买 ✗ ⇒ 这里补齐 ✓。
+    代码形态三种都要认（引擎内部是 `SH688001` 这种 ✓）：`SH688001` / `688001.SH` / `688001` ✓。
+    """
+    s = str(code).strip().upper()
+    if "." in s:                                   # 688001.SH
+        s = s.split(".")[0]
+    elif len(s) > 6 and s[:2] in ("SH", "SZ", "BJ"):
+        s = s[2:]                                  # SH688001
+    return LOT_KCB if s.startswith(("688", "689")) else int(lot_default)
+
+
+def _fee_of(amount: float, half: float) -> float:
+    """单笔手续费 = `max(成交额 × 单边费率, 最低 5 元)` ✓（`half` = 往返费率的一半 ✓）。
+
+    ⚠ `half <= 0`（界面的「**无成本**」档）⇒ **费用恒为 0** ✓ —— 否则"最低佣金 5 元"会凭空
+      出现在"无成本"档里 ✗（那这一档就不再是无成本了 ✗；实测冻结基准 `k5_cost0` 当场抓到 ✓）。
+    """
+    if half <= 0:
+        return 0.0
+    fee = amount * half
+    return fee if fee > MIN_FEE else MIN_FEE
+
+
 _FILL_LAG = {"t_close": 0, "t1_open": 1, "t1_close": 1}          # 决策日 → 成交日
 _FILL_PRICE = {"t_close": "close", "t1_open": "open", "t1_close": "close"}
 
@@ -265,7 +304,7 @@ def _trades_frame(rows, date_arr, codes, half):
         cols["shares"].append(int(_q))
         cols["price"].append(round(_p, 4))
         cols["amount"].append(round(_amt, 2))
-        cols["fee"].append(round(_amt * half, 2))
+        cols["fee"].append(round(_fee_of(_amt, half), 2))      # v2.1.16：与资金路径同一处 ✓
         cols["reason"].append(_r)
         cols["mode"].append(_m)
     # ⚠ 空输入保持 `pd.DataFrame()`（= 旧 `pd.DataFrame([])` ⇒ 0×0 ✓，不是 0×9 ✗）
@@ -307,6 +346,11 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     n_row = len(cal)
     # ★ v1.20.37：`PX` = 规范化成交价矩阵（见 `_limit_ctx` 说明 ✓）—— 供逐日聚合走数组 ✓
     _price, can_buy, can_sell, PX = _limit_ctx(prep, px_kind, strict_limit)
+    # ★ v2.1.18：**按列号预算"每个标的的整手股数"** ✓（科创板 688/689 ⇒ 200 股 ✓，其余 100 ✓）——
+    #   与 `period_roll` 同一套 `_lot_of` ✓（一处定义 ✓）。⚠ 逐票循环里绝不能现算字符串判断 ✗。
+    #   ⚠ 尚未切换的点：`event_even` 的"买新信号"取整、`rebalance_buy`、`run_batch_backtest`
+    #     （都在用统一 `lot` ✗）；本次先切 `cash_even` 一处（**整个模式切完** ✓ 不留半改 ✓）。
+    lot_arr = np.fromiter((_lot_of(c, lot) for c in codes), dtype=np.int64, count=len(codes))
     # ★ v1.20.37：**日期字符串一次预生成** ✓ —— 明细/拒绝逐条 `str(cal[i].date())` 会触发
     #   pandas `Timestamp` 装箱（实测 `_box_func`+3 层 `__getitem__` 合计 **11%** ✗）
     #   ⇒ 改走 numpy 字符串数组 O(1) 取值 ✓（格式 `%Y-%m-%d` 与 `str(...date())` **逐字相同** ✓）。
@@ -339,6 +383,13 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         dsz = np.zeros(len(codes), dtype=np.int64)
 
         basis: Dict[int, float] = {}                  # 列号 → 持仓成本（用于胜率统计）
+        # ★★ v2.1.51：**连续持有口径**（用户 2026-10-12："统一成连续持有" ✓）——
+        #   每只票的**现金净额累计**（买 −(含费)、卖 +(扣费)）✓，到"总持仓归零"时结算一笔 ✓；
+        #   持有天数直接用现成的 `dsz` 计数器 ✓（它按日累加持有天数 ✓，**不再**在信号刷新时清零 ✗）。
+        pnl_acc: Dict[int, float] = {}
+        # ★ v2.1.51：**连续持有的起点**（列号 → 首次建仓的交易日位置 ✓）——
+        #   只在"从无到有"时写 ✓、只在**总持仓归零**时结算并清 ✓（都是"逐笔"开销，不进逐日热循环 ✓）。
+        entry_c: Dict[int, int] = {}
         buy_q: Dict[int, List[Tuple[int, int]]] = {}  # 成交日位置 → [(列号, 决策日), …]
         sell_q: Dict[int, Tuple[int, str]] = {}       # 列号 → (决策日, 原因)
         trades: List[dict] = []
@@ -351,30 +402,43 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         min_cash = float(capital)          # 现金最低水位（<0 ⇒ 资金给少了，等效加杠杆）
 
         def _log_trade(i, c, side, qty, price, reason):
-            nonlocal cash, fee_sum, wins, losses
+            nonlocal cash, fee_sum, wins, losses, hold_sum, hold_n
             amt = qty * price
-            fee = amt * half
+            fee = _fee_of(amt, half)
             fee_sum += fee
             if side > 0:
                 cash -= amt + fee
+                if sh.get(c, 0) <= 0:
+                    entry_c[c] = i                                 # ★ v2.1.51：从无到有 ⇒ 记连续持有起点 ✓
                 sh[c] = sh.get(c, 0) + qty
                 basis[c] = basis.get(c, 0.0) + amt + fee          # 含买入费的成本
+                pnl_acc[c] = pnl_acc.get(c, 0.0) - (amt + fee)     # ★ v2.1.51：现金流累计 ✓
             else:
                 cash += amt - fee
                 held = sh.get(c, 0)
                 b = basis.get(c, 0.0)
                 avg = (b / held) if held > 0 else 0.0              # 每股成本（含费）
-                if avg > 0:
-                    if (amt - fee) - avg * qty > 0:
-                        wins += 1
-                    else:
-                        losses += 1
+                pnl_acc[c] = pnl_acc.get(c, 0.0) + (amt - fee)     # ★ v2.1.51：现金流累计 ✓
                 sh[c] = held - qty
                 basis[c] = max(0.0, b - avg * qty)
                 if sh[c] <= 0:
+                    # ★★ v2.1.51：**总持仓归零 ⇒ 才结算一笔** ✗→✓（用户 2026-10-12："统一成连续持有" ✓）
+                    #   原来：每次卖出都记一笔 ✗；再叠加"信号刷新就把 `dsz` 清零"✗ ⇒ 量出来的是
+                    #   **每轮"买入→到期卖出"的往返**（恒 = h = 60 ✗），**不是**"一只票被连续持有
+                    #   多少天" ✗（用户 2026-10-12 指出："事件驱动再平衡明显不是只持有 60 天" ✓）。
+                    #   现在：`dsz[c]` 不再在刷新时清零 ✗ ⇒ 这里它就是**首次建仓 → 清仓的交易日数** ✓；
+                    #   胜负也按**这一笔的现金净额**判 ✓（不再按每笔卖出判 ✓）。
+                    hold_sum += max(0, i - int(entry_c.get(c, i)))   # ★ v2.1.51：连续持有的交易日数 ✓
+                    hold_n += 1
+                    if pnl_acc.get(c, 0.0) > 0:
+                        wins += 1
+                    else:
+                        losses += 1
                     sh.pop(c, None)
                     dsz[c] = 0                 # ★ 2b：数组版 ⇒ 显式清 0 ✓（等价于原 `pop` ✓）
                     basis.pop(c, None)
+                    pnl_acc.pop(c, None)
+                    entry_c.pop(c, None)
             # ⚠⚠ v1.20.7 性能（2026-09-18 cProfile 实测）：**逐笔明细构造占总耗时约 26%** ✗
             #   （`str(cal[i].date())` 触发 pandas `Timestamp` 装箱 0.185s + 4 个 `round()` 0.128s ✓，
             #   而过顶有 **14.88 万笔** ⇒ 这是**最大的"逐笔开销"** ✓）。
@@ -450,13 +514,18 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 if px != px:                   # ★ 2b：`not np.isfinite(px)` ⟺ `px != px` ✓
                     _reject(i, c, "no_price", dec)
                     continue
-                hold_sum += dsz[c]             # ★ 2b：数组版（缺失恒 0 ✓ 等价于 `.get(c,0)` ✓）
-                hold_n += 1
+                # ⚠★ v2.1.51：**删掉这里的 `hold_sum += dsz[c]; hold_n += 1`** ✗→✓ ——
+                #   原来"每卖一次就记一笔" ✗ ⇒ 加上"刷新即清零" ⇒ 量出来是**每轮买卖往返**
+                #   （恒 = h = 60 ✗）。连续持有的结算已挪进 `_log_trade` 的"**持仓归零**"分支 ✓。
                 _log_trade(i, c, -1, sh[c], px, reason)
                 sell_q.pop(c, None)
             # ---- 2) 信号日：刷新持有天数（已持有 ⇒ 归零，卖单撤回）----
             for c in bk["buys"].get(i, []):
                 if c in sh:
+                    # ⚠★ v2.1.51：`dsz[c] = 0` **必须保留** ✗→✓（我一度删掉，实测会**天天挂到期卖单** ✗✗）——
+                    #   因为 `dsz` **兼任**"距上次信号是多少天"（第 4 步的到期判据 `dsz[c] >= thr` ✓）：
+                    #   不清零 ⇒ 刷新后第二天又满足到期条件 ⇒ 立刻卖出 ⇒ 行为被改坏 ✗。
+                    #   ⇒ "连续持有"改用**另一个**表 `entry_c` 记（见下 ✓），与 `dsz` 职责分开 ✓。
                     dsz[c] = 0
                     sell_q.pop(c, None)
                     n_refresh += 1
@@ -490,7 +559,8 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         per = (cash / len(ok)) / (1.0 + half)
                         for c, _dec in ok:
                             px = _price(i, c)
-                            q = int(per / px / lot) * lot
+                            _lt = int(lot_arr[c])           # v2.1.18：按标的自身手数取整 ✓
+                            q = int(per / px / _lt) * _lt
                             if q <= 0:
                                 _reject(i, c, "no_cash")
                                 continue
@@ -530,8 +600,9 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                             if px != px or k in _okc:     # ★ 2b：`!=` 判 NaN（等价更快 ✓）
                                 continue
                             dlt = sh[k] * px - tgt
-                            if dlt > _gap_bt and dlt > px * lot and can_sell(i, k) is None:
-                                q = min(int(dlt / px / lot) * lot, sh[k])
+                            _lt = int(lot_arr[k])          # v2.1.19：按标的自身手数（200/100 ✓）
+                            if dlt > _gap_bt and dlt > px * _lt and can_sell(i, k) is None:
+                                q = min(int(dlt / px / _lt) * _lt, sh[k])
                                 if q > 0:
                                     _log_trade(i, k, -1, q, px, "rebalance_sell")
                         # ② 买新信号（含费；现金不足则按比例缩减）
@@ -541,11 +612,23 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         need = 0.0
                         for c, _dec in ok:
                             _v = _pxr[c]
-                            need += int(tgt_eff / _v / lot) * lot * _v * (1 + half)
+                            _lt = int(lot_arr[c])      # v2.1.19：同上（预算是"该票的手数" ✓）
+                            need += int(tgt_eff / _v / _lt) * _lt * _v * (1 + half)
                         scale = 1.0 if need <= cash * 1.0001 else max(0.0, cash / max(need, 1e-9))
                         for c, _dec in ok:
                             px = _price(i, c)
-                            q = int(tgt_eff * scale / px / lot) * lot
+                            _lt = int(lot_arr[c])
+                            q = int(tgt_eff * scale / px / _lt) * _lt
+                            # ★★ v2.1.30：**成交前按「真实费用」硬校验一次现金** ✗→✓ ——
+                            #   上面所有估算都用 `成交额 × (1 + 半费)` ✗，而真实费用是
+                            #   `_fee_of(amt, half) = max(amt×half, 最低 5 元)` ✓ ⇒ 两者在小额成交上
+                            #   **不相等** ⇒ 现金会被花成**负数**（实测 `event_even` 到 **−3216.71 元** ✗，
+                            #   `period_roll`/`cash_even` 也有小额负值 ✓）。这里按"买得起的最大手数"截断 ✓
+                            #   —— 正常路径（钱够）**一位数字都不变** ✓（只有原本会透支的那些买单被缩量 ✓）。
+                            if q * px + _fee_of(q * px, half) > cash:
+                                q = int((cash / (1.0 + half)) / px / _lt) * _lt
+                                while q > 0 and q * px + _fee_of(q * px, half) > cash:
+                                    q -= _lt
                             if q <= 0:
                                 _reject(i, c, "no_cash")
                                 continue
@@ -564,9 +647,16 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                             if px != px:             # ★ 2b：`!=` 判 NaN（等价更快 ✓）
                                 continue
                             dlt = tgt - sh[k] * px
-                            if dlt > _gap_bt and dlt > px * lot and can_buy(i, k) is None:
-                                q = int(dlt / (px * (1 + half)) / lot) * lot
-                                if q > 0 and cash >= q * px * (1 + half):
+                            _lt = int(lot_arr[k])          # v2.1.19：补低配同样按标的自身手数 ✓
+                            if dlt > _gap_bt and dlt > px * _lt and can_buy(i, k) is None:
+                                q = int(dlt / (px * (1 + half)) / _lt) * _lt
+                                # ★★ v2.1.30：同 ② —— 用**真实费用**核对（含最低佣金 ✓），
+                                #   原来的 `cash >= q*px*(1+half)` 是估费 ⇒ 仍可小额透支 ✗
+                                if q > 0 and q * px + _fee_of(q * px, half) > cash:
+                                    q = int((cash / (1.0 + half)) / px / _lt) * _lt
+                                    while q > 0 and q * px + _fee_of(q * px, half) > cash:
+                                        q -= _lt
+                                if q > 0:
                                     _log_trade(i, k, 1, q, px, "rebalance_buy")
             # ---- 4) 到期卖出（在当日**开头状态**下判 days ≥ N − 成交延迟）----
             # ⚠ 决策日必须按成交延迟前移：`t1_open/t1_close` 的成交在决策日的**次日**，
@@ -775,7 +865,14 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     cash = {b: float(capital) * share for b in buckets}
     sh: Dict[str, Dict[int, int]] = {b: {} for b in buckets}
     basis: Dict[str, Dict[int, float]] = {b: {} for b in buckets}
-    entry: Dict[Tuple[str, int], int] = {}          # (批, 列号) → 建仓交易日位置（算平均持有）
+    # ★★ v2.1.51：**连续持有口径**（用户 2026-10-12："统一成连续持有" ✓）——
+    #   原来是 `(批, 列号) → 建仓日` ✗ ⇒ 同一只票被多个批次连续持有时**每批各算一次** ✗
+    #   （量出来恒 ≈ h = 60 ✓ 但"平均持有"读起来像"只持 60 天" ✗）。
+    #   现在按**票**记：`entry_c` = 首次建仓日（所有批次合计从 0 → >0 时 ✓）、
+    #   `nhold` = 有**几个批次**还持有它 ✓（归零才结算一笔 ✓）、`pnl_c` = 现金净额累计 ✓。
+    entry_c: Dict[int, int] = {}
+    nhold: Dict[int, int] = {}
+    pnl_c: Dict[int, float] = {}
     sell_q: Dict[Tuple[str, int], Tuple[int, str]] = {}
     # 待**减仓**（份数变少 ⇒ 超配部分要卖）：(批, 列号) → (决策日, 目标份数, 当期总份数)
     #   ⚠ 与 sell_q（移出名 ⇒ 全卖）分开：一个是"卖掉多出来的部分"、一个是"清仓"。
@@ -793,32 +890,43 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     def _log_trade(i, b, c, side, qty, px, reason):
         nonlocal fee_sum, wins, losses, hold_sum, hold_n
         amt = qty * px
-        fee = amt * half
+        fee = _fee_of(amt, half)
         fee_sum += fee
         if side > 0:
             cash[b] -= amt + fee
-            sh[b][c] = sh[b].get(c, 0) + qty
+            was = sh[b].get(c, 0)
+            sh[b][c] = was + qty
             basis[b][c] = basis[b].get(c, 0.0) + amt + fee
-            if (b, c) not in entry:              # 加仓不重置建仓日（持有期从首次建仓算）
-                entry[(b, c)] = i
+            pnl_c[c] = pnl_c.get(c, 0.0) - (amt + fee)      # ★ v2.1.51：现金流累计 ✓
+            if was <= 0:                                    # 该**批次**在这只票上新开一仓 ✓
+                if nhold.get(c, 0) <= 0:
+                    entry_c[c] = i                          # 所有批次合计从 0 起 ⇒ 记连续持有起点 ✓
+                nhold[c] = nhold.get(c, 0) + 1
         else:
             cash[b] += amt - fee
             held = sh[b].get(c, 0)
             b0 = basis[b].get(c, 0.0)
             avg = (b0 / held) if held > 0 else 0.0
-            if avg > 0:
-                if (amt - fee) - avg * qty > 0:
-                    wins += 1
-                else:
-                    losses += 1
-            if b0 > 0 and (b, c) in entry:
-                hold_sum += max(0, i - entry[(b, c)])
-                hold_n += 1
-            entry.pop((b, c), None)
+            pnl_c[c] = pnl_c.get(c, 0.0) + (amt - fee)      # ★ v2.1.51：现金流累计 ✓
             sh[b][c] = held - qty
             basis[b][c] = max(0.0, b0 - avg * qty)
             if sh[b][c] <= 0:
                 sh[b].pop(c, None)
+                if b0 > 0:
+                    nhold[c] = nhold.get(c, 0) - 1
+                if nhold.get(c, 0) <= 0:
+                    # ★★ v2.1.51：**所有批次都不再持有 ⇒ 才结算一笔** ✗→✓
+                    #   原来每笔卖出都记一次 ✗（同一票跨批次被拆成多笔、恒 ≈ 60 ✗）；
+                    #   现在 = 该票**连续持有**的交易日数 ✓，胜负按整段现金净额判 ✓。
+                    hold_sum += max(0, i - entry_c.get(c, i))
+                    hold_n += 1
+                    if pnl_c.get(c, 0.0) > 0:
+                        wins += 1
+                    else:
+                        losses += 1
+                    entry_c.pop(c, None)
+                    nhold.pop(c, None)
+                    pnl_c.pop(c, None)
                 basis[b].pop(c, None)
         trades.append({"date": str(cal[i].date()), "code": codes[c],
                        "side": "买" if side > 0 else "卖", "shares": int(qty),

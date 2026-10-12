@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:                       # 仅类型标注用（有 `from __future__ import annotations` ✓）
+    from .holdings_index import HoldingsIndex
 
 import numpy as np
 import pandas as pd
@@ -234,11 +237,13 @@ def _quantile_curves(mat: pd.DataFrame) -> dict:
         "groups": [{"quantile": q,
                     "mean_ret": round(float(means[q]), 6),
                     "excess": round(float(means[q]) - base, 6),
-                    "cum": [round(float(x), 6) for x in mat[q].cumsum()],
+                    # ★ v2.1.43：与持仓曲线**同一对齐点**（点 T = T 日收盘的净值 ✓，见
+                    #   `single_test.py::_shift_cum` 的说明 ✓）—— 否则十分位图与持仓曲线图
+                    #   相差一格、"超额"也会错位 ✗。
+                    "cum": _shift_cum(mat[q].cumsum()),
                     # v1.18.47 复利口径（前端默认展示）：各期收益滚入本金 ⇒ Π(1+r)−1
-                    "cum_compound": [
-                        round(float(x), 6)
-                        for x in (np.cumprod(1.0 + mat[q].to_numpy(dtype=np.float64)) - 1.0)]}
+                    "cum_compound": _shift_cum(
+                        np.cumprod(1.0 + mat[q].to_numpy(dtype=np.float64)) - 1.0)}
                    for q in qs],
         # ⚠ 多空 = **最强 − 最弱 的逐期价差**，两种口径都给（v1.19.5 起复利版也下发）：
         #   · `cum`          = `Σ(价差_t)`     —— 可加，"平均每期赚多少"的视角（读数=累计价差）
@@ -251,6 +256,25 @@ def _quantile_curves(mat: pd.DataFrame) -> dict:
                            round(float(x), 6)
                            for x in (np.cumprod(1.0 + spread.to_numpy(dtype=np.float64)) - 1.0)]},
     }
+
+
+def _shift_cum(_arr, nd: int = 6) -> list:
+    """★ v2.1.43：累计曲线**右移一格** ⇒ 点 k = "**截至调仓日 k 的累计**" ✓（点 T = T 日收盘的净值 ✓）。
+
+    为什么要移（用户 2026-10-12："把曲线改成『点 T = T 日收盘时的净值』，这个是肯定要改成这样的" ✓）：
+    原口径点 k = `cumsum(逐期收益)[k]` = "**从**调仓日 k 开始那一期"的结果 ✗ ⇒ 曲线**末点**其实是
+    "从最后一个调仓日**之后**那一期"的结果 ✗（那一期还没走完 ⇒ 代码用「最后可用价兜底」补齐 ✗）
+    ⇒ 图上标着 2025-12-19 的点里**混进了 12-19 之后的数据** ✗，而卡片/实盘都是"12-19 收盘"口径 ✓
+    ⇒ 两边差一个期 ✓（实测：全A/h=60/固定 K=10 下卡片 `nav_end = 0.188536` 恰好等于曲线的
+    **第 #15 个点（2025-09-18）** ✓，而末点 #16 是 0.188942 ✗）。
+
+    移位后：点 k = 原 k−1 的值 ✓、首点 = 0（净值 1.0 ✓）⇒ **末点 = 该调仓日收盘时的净值** ✓
+    ⇒ 组合卡 / 曲线末点 / 实盘截断点 / 基准 **四方同一天** ✓。
+    ⚠ 纯展示口径：调用方传入的是**已按老口径算好的数组** ✓，`cc` 本身不动 ⇒ 既有的
+      自检①②（对 `cc` 断言 ✓）与 K 敏感度表（用逐期收益 ✓）都不受影响 ✓。
+    """
+    _a = [round(float(x), nd) for x in _arr]
+    return ([0.0] + _a[:-1]) if _a else _a
 
 
 # 事件研究（v1.18.7）：0/1 稀疏信号顺带计算的最长持有交易日
@@ -295,8 +319,13 @@ def _full_wide_key(df_full: pd.DataFrame, inst_lv: int):
         dt = idx.get_level_values(dt_lv)
         n_inst = len(idx.levels[inst_lv]) if isinstance(idx, pd.MultiIndex) else 0
         px = df_full["PX"]
-        sample = float(px.iloc[0]) if len(px) else float("nan")
-        return (len(idx), n_inst, str(dt[0]), str(dt[-1]), inst_lv, sample)
+        _n = len(px)
+        sample = float(px.iloc[0]) if _n else float("nan")
+        # ★ v2.1.56：**多取一个中位样本** ✗→✓ —— 本进程缓存键原来只看首值 ✗，而"开盘表"
+        #   与"收盘表"的**首值有可能恰好相同** ✗（同日同股）⇒ 会把收盘宽表当开盘表返回 ✗✗
+        #   （v2.1.56 起 PX 会随成交时点切换 ⇒ 这个坑变成现实风险 ✓）。
+        _mid = float(px.iloc[_n // 2]) if _n else float("nan")
+        return (len(idx), n_inst, str(dt[0]), str(dt[-1]), inst_lv, sample, _mid)
     except Exception:
         return None
 
@@ -344,6 +373,65 @@ def _full_px_wide(df_full: pd.DataFrame, inst_lv: int):
     return w
 
 
+def _trigger_split(trig: Optional[pd.DataFrame], hold_days: int,
+                   cal: Optional[pd.Index] = None) -> Optional[dict]:
+    """触发样本按**首次/新开仓** vs **续期内再触发**分组统计（v2.1.31 ✓）。
+
+    ★ 为什么要它（用户 2026-10-11："加分组显示" ✓）：这两个子群收益差很大 ——
+      实测 `黄金坑启动`（全A / 2022-01~2026-01 / h=60）：**首次 +4.956% vs 续期 +0.707%** ✓，
+      条数比 **1 : 2.65** ✓（= 3770 信号 : 1039 个持仓生命周期 ✓）；而**组合（`event_even`）里
+      同一个名字只持一轮**（≈ 首次口径 ✓）⇒ 不分组时，"样本均值 +1.87%"与"组合 +27%/年"
+      看着像矛盾 ✗（我自己就误判过 ✗）⇒ 分组后一眼可辨 ✓。
+
+    判据：同一标的相邻两次触发，**交易日间隔 ≤ 持有期 N** ⇒ 后一次记为"续期内再触发" ✓
+      （引擎语义：再触发 ⇒ `dsz[c] = 0`、持有天数**重置为 N 天** ✓，见 `engine.py` 的
+       "信号日：刷新持有天数" ✓）。
+    ⚠ 规模保护：触发样本 > 20 万条 ⇒ **跳过**（Python 逐条循环 ✗；本字段只用于展示 ✓）。
+    """
+    try:
+        if trig is None or len(trig) == 0 or len(trig) > 200_000:
+            return None
+        names = list(trig.index.names)
+        ip = names.index("instrument") if "instrument" in names else 0
+        dp = names.index("datetime") if "datetime" in names else 1
+        codes = trig.index.get_level_values(ip).astype(str).to_numpy()
+        dts = trig.index.get_level_values(dp)
+        axis = cal if (cal is not None and len(cal)) else pd.Index(sorted(pd.unique(dts)))
+        pos = np.asarray(axis.get_indexer(dts), dtype=np.int64)
+        lab = trig["LABEL"].to_numpy(dtype=float)
+        order = np.lexsort((pos, codes))            # 按 (代码, 交易日) 排序 ✓
+        last: Dict[str, int] = {}
+        is_refresh = np.zeros(len(lab), dtype=bool)
+        _win = max(1, int(hold_days))
+        for k in order:
+            c = codes[k]
+            p = int(pos[k])
+            prev = last.get(c)
+            if prev is not None and 0 <= p - prev <= _win:
+                is_refresh[k] = True
+            last[c] = p
+        out: Dict[str, object] = {"hold_days": _win}      # ⚠ 别写 `Any`（本模块没导入 ✗，ruff F821 ✓）
+        for key, mask in (("first", ~is_refresh), ("refresh", is_refresh)):
+            v = lab[mask]
+            v = v[np.isfinite(v)]
+            out[key] = {
+                "count": int(v.size),
+                # ⚠⚠ **`LABEL` 本身就是百分数**（与 `trigger.mean_ret` 同单位 ✓）⇒ **不能再 ×100** ✗
+                #   实测踩到（用户 2026-10-12 截图："不对吧" ✓）：AR13 的首次收益显示 **365.020**
+                #   而触发收益是 **3.650** —— 正好 ×100 ✗ ⇒ 这里去掉乘 100 ✓。
+                "mean_ret": (round(float(np.mean(v)), 4) if v.size else None),
+                "median_ret": (round(float(np.median(v)), 4) if v.size else None),
+                # ⚠⚠ **本文件与 `trigger` 一致：一律返回「小数」**（前端 `fmt()` 负责 ×100 ✓）——
+                #   胜率也一样 ✗：曾返回 46.6（自以为是"百分数"）⇒ 前端再 ×100 ⇒ 悬停显示
+                #   **4660%** ✗（用户 2026-10-12："tag 里胜率没改啊，还是 4660%" ✓）。
+                #   ⇒ 统一成小数（0.466 ✓），与 `mean_ret`/`median_ret` 同一约定 ✓。
+                "win_rate": (round(float((v > 0).mean()), 4) if v.size else None),
+            }
+        return out
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
 def _test_one(
     df: pd.DataFrame,
     factor: dict,
@@ -356,6 +444,11 @@ def _test_one(
     exclude_stock_kcb: bool = False,   # 剔除科创板
     cancelled=None,  # 取消检查回调：返回 True 表示用户已取消，在重计算步骤间调用（可空）
     trig_index_out: Optional[list] = None,  # 出参：回传触发样本索引（供事件研究复用，可空）
+    # 出参：**每期持仓索引**（`HoldingsIndex` 实例，供 XLSX 导出复用，可空 ✓）
+    #   见 `factors/holdings_index.py`。⚠ 只在 `holdings_out is not None` 时才存 ——
+    #   导出要"按档位导持仓"，但持仓在测试进程内算完即丢 ✗ ⇒ 顺手存一份名次有序的
+    #   代码清单 ✓，导出时零重算 ✓（不存时开销为 0 ✓）。
+    holdings_out: Optional["HoldingsIndex"] = None,
     quantiles: int = 10,               # 连续因子分位组数（默认 10=十分位；5=旧五分位，保留兼容）
     rebalance_period: Optional[int] = None,  # 调仓期（交易日）；None ⇒ **跟随预测周期 horizon**
     #                                   （= 「用预测周期调仓换股」的默认口径，v1.18.45 起）
@@ -364,6 +457,10 @@ def _test_one(
     horizon: Optional[int] = None,     # 该次统计的预测周期 h（用于「调仓期默认 = h」；可空）
     bench_close: Optional[pd.DataFrame] = None,  # 指数收盘宽表（可切换基准；可空=不画基准）
     bench_default: Optional[str] = None,         # 默认基准代码（按股票池映射，见 benchmark_curves）
+    # ★ v2.1.22（B 主体）：**成交时点** ⇒ 决定"期初买入价"与"期内逐日盯市价"用哪个价 ✓ ——
+    #   `t1_open` = 次日开盘（用户选的统一口径 ✓）；其余（`t1_close` ✓ 默认）＝ 次日收盘 ✓。
+    #   ⚠ 默认值刻意取 `t1_close` ⇒ **不传参时行为逐位不变** ✓（老调用方零影响 ✓）。
+    fill: str = "t1_close",
 ) -> dict:
     """测试单个因子列（df 含 col 与 LABEL 两列）。
 
@@ -390,6 +487,12 @@ def _test_one(
         "quintile_ret": None,
         "trigger": None,
         "not_trigger": None,
+        # ★ v2.1.31：触发样本的**分组统计**（首次/新开仓 vs 续期内再触发 ✓）——
+        #   用户 2026-10-11 定："加分组显示" ✓。动机：这两个子群的收益**差很多**
+        #   （实测 `黄金坑启动`：首次 +4.956% vs 续期 +0.707% ✓，条数 1 : 2.65 ✓），
+        #   而**组合实际每个名字只持一轮**（≈ 首次触发口径 ✓）⇒ 不分组的话，
+        #   "样本均值 +1.87%"与"组合 +27%/年"看着像矛盾 ✗（我自己就误判过 ✗）。
+        "trigger_split": None,
         "diff": None,
         "p_value": None,
         "daily_diff": None,
@@ -459,7 +562,8 @@ def _test_one(
     # （位置操作，无 hash 查找/对齐），并把所需行情与标签列预取为 numpy 视图。
     _NR = {
         c: df[c].to_numpy(copy=False)
-        for c in (col, "LABEL", "CLOSE", "CLOSE_FF", "CHANGE", "T1_CLOSE", "T1_CHANGE",
+        for c in (col, "LABEL", "CLOSE", "CLOSE_FF", "OPEN", "OPEN_FF",
+                  "CHANGE", "T1_CLOSE", "T1_OPEN", "T1_CHANGE",
                   "T1_IS_ST", "LIMIT_UP", "T1_LIMIT_UP", "IS_ST")
         if c in df.columns
     }
@@ -587,6 +691,13 @@ def _test_one(
     result["not_limit_up_excluded_t1"] = n_lu_t1
     result["not_suspended_excluded"] = n_susp
     result["trigger"] = _stat_group(trig, t_lu_t, t_lu_t1, t_susp, t_extra)
+    # ★ v2.1.31：分组统计（首次/新开仓 vs 续期内再触发 ✓）—— 用**全历法**算交易日间隔 ✓
+    try:
+        _dt_lv_s = df.index.names.index("datetime") if "datetime" in df.index.names else 1
+        _cal_s = pd.Index(sorted(pd.unique(df.index.get_level_values(_dt_lv_s))))
+    except Exception:                                        # noqa: BLE001
+        _cal_s = None
+    result["trigger_split"] = _trigger_split(trig, int(horizon or 0), _cal_s)
     result["not_trigger"] = _stat_group(not_trig, n_lu_t, n_lu_t1, n_susp, n_extra)
     if len(trig) > 0 and len(not_trig) > 0:
         result["diff"] = round(float(trig["LABEL"].mean() - not_trig["LABEL"].mean()), 6)
@@ -732,6 +843,18 @@ def _test_one(
                     except Exception:
                         pass
                     break
+            # ★★ v2.1.25（B 修复）：**开盘价也要搬进 `tmp`** ✗→✓ ——
+            #   上面那一段只搬了收盘价系列 ✗ ⇒ `t1_open` 时 `_px_row` 取不到 `OPEN` ⇒ 全 NaN ⇒
+            #   期初价全 NaN ⇒ `_perf_of` 早退 ⇒ **"年化/回撤/夏普"整块消失** ✗
+            #   （实测 `perf 含档 = []` ✓；这与 v1.18.67 那次"perf 全空"是同一类症状 ✓，
+            #     所以这里按同样的取列方式补对称的一列 ✓）。
+            for _pxc in ("OPEN_FF", "OPEN"):
+                if _pxc in df.columns:
+                    try:
+                        tmp[_pxc] = _frame(_sub_pos, (_pxc,))[_pxc].reindex(tmp.index)
+                    except Exception:
+                        pass
+                    break
             # 组内名次**只算一次**（v1.18.45）：原实现把 `rank(method="first")` 放在 `_q` 的
             # lambda 里，下方 TopK 曲线又独立算一遍 ⇒ 同一次 226 万行组内排名算两遍（实测
             # item_s +1.6s）。现在显式算一次 `_rk`，`_q` 与 TopK 共用（数值完全不变：
@@ -849,6 +972,22 @@ def _test_one(
                     else:
                         # 缺价列 ⇒ 逐日盯市不可用（`_perf_of` 会据此返回 None），不抛异常
                         _close_row = np.full(len(tmp), np.nan)
+                    # ★★ v2.1.22（B 主体）：**价格基准按"成交时点"选** ✓ ——
+                    #   `fill == "t1_open"` ⇒ 开盘价（次日开盘成交 ✓）；否则收盘价 ✓（老口径 ✓）。
+                    #   ⚠ 买入价（`_tab_px0` ✓）与逐日盯市（`_f = px_t / px0` ✓）**必须同基准** ✗
+                    #      —— 混用就是另一个口径，数字会悄悄错 ✗。
+                    #   ⚠ `OPEN_FF`（前向填充 ✓）目前**上游还没生成** ✗ ⇒ 先退回未填充的 `OPEN` ✓；
+                    #     影响仅限于"停牌日"的估值（`_perf_of` 自身对缺值有前向填充 ✓），
+                    #     下一步在上游把 `OPEN_FF` 补成与 `CLOSE_FF` 同法 ✓（已记入 changelog ✓）。
+                    if str(fill) == "t1_open":
+                        if "OPEN_FF" in tmp.columns:
+                            _px_row = tmp["OPEN_FF"].to_numpy(dtype=np.float64)
+                        elif "OPEN" in tmp.columns:
+                            _px_row = tmp["OPEN"].to_numpy(dtype=np.float64)
+                        else:
+                            _px_row = np.full(len(tmp), np.nan)
+                    else:
+                        _px_row = _close_row
                     _rkr_row = np.full(len(tmp), np.nan)     # 期内首日（调仓日）名次
                     _qr_row = np.full(len(tmp), np.nan)      # 期内首日分位
                     _px0_row = np.full(len(tmp), np.nan)     # T+1 的价格（买入持有的期初价）
@@ -877,7 +1016,8 @@ def _test_one(
                             _tab_rk[_per_of_day[_is_reb], _inst_code[_is_reb]] = _rk_all[_is_reb]
                             _tab_q[_per_of_day[_is_reb], _inst_code[_is_reb]] = _q_all[_is_reb]
                         if _is_t1.any():
-                            _tab_px0[_px0_slot[_is_t1], _inst_code[_is_t1]] = _close_row[_is_t1]
+                            # v2.1.22：**期初买入价按成交时点取**（开盘 or 收盘 ✓）
+                            _tab_px0[_px0_slot[_is_t1], _inst_code[_is_t1]] = _px_row[_is_t1]
                         _rkr_row[_valid] = _tab_rk[_per_of_day[_valid], _inst_code[_valid]]
                         _qr_row[_valid] = _tab_q[_per_of_day[_valid], _inst_code[_valid]]
                         _px0_row[_valid] = _tab_px0[_per_of_day[_valid], _inst_code[_valid]]
@@ -946,7 +1086,8 @@ def _test_one(
                         if not _ok.any():
                             return None, 0
                         _f = np.full(len(tmp), np.nan)
-                        _f[_ok] = _close_row[_ok] / _px0_row[_ok]     # 相对 T+1 的价格比
+                        # v2.1.22：逐日盯市**与买入价同基准** ✓（开盘/收盘一致 ✓）
+                        _f[_ok] = _px_row[_ok] / _px0_row[_ok]        # 相对 T+1 的价格比
                         _fin = _ok & np.isfinite(_f)
                         _sm = np.bincount(_dp_col[_fin], weights=_f[_fin], minlength=_nd)
                         _cn = np.bincount(_dp_col[_fin], minlength=_nd)
@@ -959,6 +1100,7 @@ def _test_one(
                             _nav = np.full(_nd, 1.0)
                             _g = 1.0
                             _cur = 0
+                            _end_ok = _nd       # ★ v2.1.41：样本终点兜底（理论无完整期时用全样本 ✓）
                             for _i in range(len(_reb_pos)):
                                 _d0 = _reb_pos[_i] + 1
                                 if _d0 > _cur:
@@ -970,10 +1112,39 @@ def _test_one(
                                 #   口径）。路径末点 close_{T+h}/close_{T+1} 与期末之间隔着一处
                                 #   「最后一天收益」的自然跳变 —— 属真实收益，不是误差。
                                 _d1 = _d0 + _h_i
-                                if _d1 >= _nd:
+                                # ★★ v2.1.40（用户 2026-10-12 问："我明明测到 2026-01-31，怎么曲线/指标
+                                #   只到 2025-12-19？"✓）—— **两类问题分开**：
+                                #   ① **曲线只画到最后一个"完整调仓日"**：那是"每期一个点"的口径 ✓
+                                #      （h=60 ⇒ 下一个调仓日落在数据之外 ✓）⇒ **不是 bug** ✓；
+                                #   ② **年化的窗口不一致** ✗：最后一期没走完时，旧行为是
+                                #      **把净值铺平**（`_nav[_cur:] = _g` ✗）却 **照样把那几天计进样本**
+                                #      （`_endi` 取 `_nd` ✗）⇒ 分子停在上一个期末、分母算到区间末
+                                #      ⇒ **年化被系统性摊薄** ✗。实测（用户配置复现 ✓）：组合卡
+                                #      +40.3% vs 实盘 +43.7% ✗ —— 而实盘那条是**真盯市到区间末**的 ✓
+                                #      ⇒ 两者窗口不同、本就不该直接比 ✗。
+                                #   ⇒ 现在：**这一期也逐日盯市到区间末** ✓（复用与期内完全相同的
+                                #     路径 `_seg` = `px_t / px_期初` ✓）⇒ 组合卡与实盘**同窗口** ✓
+                                #     ⇒ 两个年化才真正可比 ✓。
+                                #   ⚠ 未走完的一期**没有"完整期收益 R"** ✗ ⇒ 末值直接用路径末值收口
+                                #     （**不补** `_g` 那一步 ✓）；自检④（期末逐日 = 曲线点）只对
+                                #     **完整期**成立 ✓（不完整期本来就没有曲线点 ✓）。
+                                _partial = _d1 >= _nd
+                                if _partial:
+                                    # ★★ v2.1.41（用户 2026-10-12 拍板 ✓）："曲线图年化**不要上修**，
+                                    #   实盘口径曲线**只出到跟组合时间一样**，年化计算也**只算到
+                                    #   12-19**，这样才是都对齐、有可比性" ✓
+                                    #   ⇒ **不做** v2.1.40 那种"未走完的一期也盯市到区间末"✗
+                                    #     （那会把年化上修 ✗），改为**两边都在最后一个完整期末对齐** ✓：
+                                    #     · 组合：期末之后净值**保持不动** ✓，且**样本只到该期末** ✓
+                                    #       （`_end_ok` = 期末值 `_g` 所在下标 ✓ = 最后一个
+                                    #        完整持有期末 + 1 个交易日 ✓）；
+                                    #     · 实盘：`routers/factors.py` 把那条 nav **截断到同一天** ✓
+                                    #       并用截断后的序列重算指标 ✓。
                                     _nav[_cur:] = _g
+                                    _end_ok = min(_cur + 1, _nd)
                                     _cur = _nd
                                     break
+                                _end_ok = _nd                        # 走完全程 ⇒ 全样本 ✓
                                 _seg = _seg_nav[_d0:_d1].copy()
                                 _lastv = np.nan               # 段内前向填充（缺值日净值不动）
                                 for _j in range(_seg.size):
@@ -1004,9 +1175,10 @@ def _test_one(
                                 _cur = _d1
                             if _cur < _nd:
                                 _nav[_cur:] = _g
-                            # ⚠ 只统计到「最后一个完整持有期末」（尾部不完整期的平坦段不计入
-                            #   样本数，否则会摊薄年化/波动）
-                            _endi = _cur if 0 < _cur < _nd else _nd
+                            # ★ v2.1.41：样本**只算到"最后一个完整持有期末"** ✓（`_end_ok` ✓）——
+                            #   未走完的那一期（净值平铺 ✗）**不计入**年化/波动 ✓；实盘那侧
+                            #   （`factors.py`）也**截断到同一天** ✓ ⇒ 两边同窗口、才可比 ✓。
+                            _endi = _end_ok if 0 < _end_ok <= _nd else _nd
                             _net = np.empty(_endi, dtype=np.float64)
                             _net[0] = _nav[0] - 1.0
                             if _endi > 1:
@@ -1027,6 +1199,29 @@ def _test_one(
                         _sets = {_d: set(_g.index.get_level_values(inst_pos))
                                  for _d, _g in _sub.groupby(level=dt_pos, sort=True)}
                         hold_seq = [_sets.get(_d) for _d in _reb_dates]
+                        # ★ 顺手存一份「每期持仓」给 XLSX 导出用（v2.1.0）：
+                        #   导出要"选的什么档位就导什么持仓"，而持仓算完即丢 ✗、导出时又
+                        #   绝不能重跑测试（几十秒 ✗）⇒ 这里存一份**名次有序**的代码清单 ✓。
+                        #   只对调仓日那一小片排序（几十期 × 几百只 ✓），开销可忽略 ✓；
+                        #   任何异常一律吞掉并落盘 —— 导出是**附加信息**，绝不拖垮统计
+                        #   （与 `perf` 同规矩：v1.18.49 的教训 ✓）。
+                        if holdings_out is not None:
+                            try:
+                                from .holdings_index import ordered_holdings
+
+                                holdings_out.put(
+                                    str(factor.get("expression") or name),
+                                    horizon,
+                                    ("high" if _side > 0 else "low"),
+                                    _reb_str,
+                                    {(_kind, _k, _quantile): ordered_holdings(
+                                        _sub.index.get_level_values(dt_pos).to_numpy(),
+                                        _sub.index.get_level_values(inst_pos).to_numpy(),
+                                        _sub[_rkcol].to_numpy(dtype=np.float64),
+                                        _reb_dates)},
+                                )
+                            except Exception as _hke:      # noqa: BLE001
+                                _dump_sft_error(_hke)
                         if _n_hold is None:
                             _n_hold = np.asarray([len(_s) if _s else 0 for _s in hold_seq],
                                                  dtype=np.float64)
@@ -1053,11 +1248,27 @@ def _test_one(
                             "kind": _kind,
                             "k": (int(np.median(_n_hold[_n_hold > 0]))
                                   if _kind == "decile" and np.any(_n_hold > 0) else int(_k)),
+                            # ⚠ `turnover` 保持"**该调仓日那一期**的换手"语义 ✓（前端按期读 ✓）——
+                            #   v2.1.43 只挪**累计曲线**的对齐点 ✓，不挪它的 ✓（挪了会与三档成本
+                            #   年化的口径错位 ✗）。
                             "turnover": [round(float(x), 6) for x in cc["turnover"]],
-                            "curves": {kk: [round(float(x), 6) for x in vv]
-                                       for kk, vv in cc["curves"].items()},
+                            # ★★ v2.1.43：**曲线点 = "该调仓日收盘时的净值"** ✗→✓（用户 2026-10-12：
+                            #   "把曲线改成『点 T = T 日收盘时的净值』，这个是肯定要改成这样的" ✓）。
+                            #   原口径：点 k = `cumsum(逐期收益)[k]` = **从调仓日 k 开始那一期**的
+                            #   结果 ✗ ⇒ 曲线末点其实是"从最后一个调仓日**之后**那一期"的结果 ✗
+                            #   （那一期还没走完 ⇒ 代码用「最后可用价兜底」把它补上 ✗）
+                            #   ⇒ 图上标 2025-12-19 的点里**混着 12-19 之后的数据** ✗。
+                            #   实测（全A / h=60 / 固定 K=10 / 2.1.42）：卡片 `nav_end = 0.188536`
+                            #   恰好等于曲线**第 #15 个点（2025-09-18）** ✓ —— 也就是说卡片（12-19
+                            #   收盘口径 ✓）与曲线末点（#16，标 12-19 却含 1 月数据 ✗）**差一个期** ✓。
+                            #   现在：**整体右移一格** ✓（点 k 取原 k−1 的值 ✓，首点 = 0 = 净值 1 ✓）
+                            #   ⇒ 曲线末点 = 截至该调仓日的累计 ✓ = 卡片的日频末值 ✓ = 实盘截断点 ✓
+                            #   ⇒ 组合卡 / 曲线末点 / 实盘 / 基准 **四方同一天** ✓。
+                            #   ⚠ 只改**展示口径**：`cc` 本身不动 ⇒ 自检①②（对 `cc` 的断言 ✓）
+                            #     与 K 敏感度表（用逐期收益 ✓）**都不受影响** ✓。
+                            "curves": {kk: _shift_cum(vv) for kk, vv in cc["curves"].items()},
                             # v1.18.47 复利口径（前端默认展示；与算术版同换手、同首期不计费规则）
-                            "curves_compound": {kk: [round(float(x), 6) for x in vv]
+                            "curves_compound": {kk: _shift_cum(vv)
                                                 for kk, vv in cc["curves_compound"].items()},
                         }
                         if _quantile is not None:
@@ -1144,10 +1355,28 @@ def _test_one(
                         try:
                             from app.factors.benchmark_curves import period_return_cums
 
+                            # ★★ v2.1.42：**基准指标必须与组合同窗口** ✗→✓（用户 2026-10-12：
+                            #   "基准也要对齐" ✓）—— 组合的日频样本收在**最后一个"完整持有期"
+                            #   的期末** ✓（`_perf_of` 的 `_end_ok` ✓）；基准原本跑满它自己的
+                            #   日历（含预热段与尾部延展 ✗）⇒ 样本 1020 ✗ vs 组合 962 ✗ ⇒
+                            #   基准年化与"相对基准的超额"都是不同窗口、不可比 ✗。
+                            #   ⇒ 这里按同一规则算出**组合的样本终点日** ✓ 传给基准 ✓
+                            #     （只影响 `net`→`perf` ✓；曲线数组照旧含末期部分持有期 ✓）。
+                            _hh = int(horizon)
+                            _eok, _curl = len(_dts), 0
+                            for _i2 in range(len(_reb_pos)):
+                                _d1p = _reb_pos[_i2] + 1 + _hh
+                                if _d1p >= len(_dts):
+                                    _eok = (_curl + 1) if _curl else len(_dts)
+                                    break
+                                _curl = _d1p
+                            _bench_end = str(_dts[_eok - 1])[:10]
+
                             result["topk_curves"]["benchmarks"] = {
                                 "default": (bench_default or None),
                                 "items": [{"code": c, **v} for c, v in period_return_cums(
-                                    bench_close, _reb_dates, int(horizon)).items()],
+                                    bench_close, _reb_dates, int(horizon),
+                                    end_date=_bench_end).items()],
                             }
                         except Exception as _e3:      # 与 `event_study_error` 同一处理风格
                             result["topk_curves"]["benchmark_error"] = "%r @ %s" % (
@@ -1340,6 +1569,12 @@ def run_single_factor_tests(
     rebalance_period: Optional[int] = None,
     topk_list: Optional[list] = None,
     events_out: Optional[Dict] = None,   # 出参：0/1 因子的**触发事件**（键=表达式）⇒ 供净值曲线复用
+    # 出参：**每期持仓索引**（`HoldingsIndex`）⇒ 供 XLSX 导出「每期持仓」页 ✓
+    # （持仓算完即丢 ✗ ⇒ 顺手存一份；见 `factors/holdings_index.py` 的取舍说明 ✓）
+    holdings_out: Optional["HoldingsIndex"] = None,
+    # ★ v2.1.22（B 主体）：**成交时点**透传给 `_test_one` ✓（决定"每期买入价 + 期内逐日盯市价" ✓）
+    #   默认 `t1_close` = 老口径 ✓ ⇒ 不传时行为逐位不变 ✓（老调用方零影响 ✓）。
+    fill: str = "t1_close",
 ) -> Dict[int, list]:
     """多预测周期单因子测试：所有周期【共享一次特征加载】，再逐周期分别统计。
 
@@ -1392,8 +1627,27 @@ def run_single_factor_tests(
     #   「价格量纲因子按后复权排序」后，若不在这里特判，**label 会跟着变成"真实价收益率"**
     #   ⇒ 把分红当成下跌 ✗✗ ⇒ 故 forward/backward 下强制后复权（`none` 保持原样 ✓）。
     _lab_mode = "none" if pa == "none" else "backward"
+    # ★★ v2.1.67（用户 2026-10-12 拍板 **方案 A** ✓）：**前瞻收益（LABEL）也跟随「成交时点」** ✗→✓
+    #   为什么（用户的诉求 ✓）："要让组合曲线也跟面板参数开盘/收盘" ✓ + "十分位也得跟着改" ✓。
+    #   为什么改 LABEL 而不是单开一列（**方案 A** ✓）：LABEL 是**所有收益类数字的唯一来源** ✓
+    #   （触发/未触发均值 ✓、IC/RankIC ✓、十分位逐日截面均值 ✓、组合曲线 `_ret` ✓、
+    #     K 档/cost_curves ✓、事件研究的触发组收益 ✓）⇒ 改它 = **一个口径全线一致** ✓；
+    #   若单开一列（方案 B ✗）则同页两套取价基准并存 ⇒ 今天那两个根因（重复剔除 ✗、fill 写死 ✗）
+    #   都属于"同一件事两份口径" ✓ ⇒ 按用户拍板走 A ✓。
+    #   口径（与 `signals/engine._FILL_LAG` 同义 ✓）：
+    #     `t1_open`  ⇒ 次日开盘买、T+1+h 开盘卖 = `Ref($open,-(h+1))/Ref($open,-1)-1` ✓
+    #     `t1_close` ⇒ 次日收盘买（= 老口径 ✓，逐位不变 ✓）
+    #     `t_close`  ⇒ 信号日收盘买、T+h 收盘卖 = `Ref($close,-h)/$close-1` ✓
+    _fl_lab = str(fill or "t1_close").strip().lower()
+    if _fl_lab == "t1_open":
+        _lab_px, _lab_lag = "$open", 1
+    else:
+        _lab_px, _lab_lag = "$close", (0 if _fl_lab == "t_close" else 1)
     label_exprs = {
-        h: adjust_expr(f"Ref($close, -{h + 1})/Ref($close, -1) - 1", _lab_mode) for h in horizons
+        h: adjust_expr(f"Ref({_lab_px}, -{h + _lab_lag})/Ref({_lab_px}, -{_lab_lag}) - 1"
+                       if _lab_lag else f"Ref({_lab_px}, -{h})/{_lab_px} - 1",
+                       _lab_mode)
+        for h in horizons
     }
     # 尾部加载长度：label 需 n_max+1 个交易日；冻结价 label 与事件研究另需尾部延展。
     # **统计区间不受影响**：默认 freeze_suspended_price=True 时面板会在统计前裁回
@@ -1496,11 +1750,29 @@ def run_single_factor_tests(
         adj_exprs = [_sr_wrap_expr(adjust_expr(e, pa, round_prices=price_round)) for e in ordered_exprs]
     else:
         adj_exprs = [adjust_expr(e, pa, round_prices=price_round) for e in ordered_exprs]
-    base_fields = ["$close/$factor", "$change", "Ref($close/$factor, -1)", "Ref($change, -1)"]
-    base_names = ["CLOSE", "CHANGE", "T1_CLOSE", "T1_CHANGE"]
+    # ★★ v2.1.21（B 的前置步骤 ✓）：**给面板加开盘价两列** `OPEN` / `T1_OPEN` ✓ ——
+    #   用户 2026-10-11 选了 B（把连续信号那条模型的"成交时点"统一到 **T+1 开盘** ✓
+    #   并做成可切换 ✓）。口径与 `CLOSE` **完全对称**（都是 `$xx/$factor` 的真实价 ✓，
+    #   涨停/停牌判定用真实价 ✓，收益率用后复权 ✓）。
+    #   ⚠ 本版**只加列、不改任何计算** ✓ ⇒ 所有既有数字**逐位不变** ✓；
+    #     面板磁盘缓存的 key 里含本模块的 mtime+size（`_sig` ✓）⇒ 自动失效 ✓
+    #     （不会命中"旧列布局"的坏面板 ✗ —— 那条血泪教训写在下面缓存段里 ✓）。
+    base_fields = ["$close/$factor", "$open/$factor", "$change",
+                   "Ref($close/$factor, -1)", "Ref($open/$factor, -1)", "Ref($change, -1)"]
+    base_names = ["CLOSE", "OPEN", "CHANGE", "T1_CLOSE", "T1_OPEN", "T1_CHANGE"]
     # 事件研究取价用（⚠ v1.19.96：与 label 同口径 —— 事件研究算的是**价格比/收益**，属比率类
     #   ⇒ 必须后复权 ✓；原先跟 `pa` 走，`forward` 改成真实价后会引入除权跳空 ✗）
-    px_field = adjust_expr("$close", _lab_mode, round_prices=price_round)
+    # ★★ v2.1.56：**「秒开」这条链的取价字段也要跟随「成交时点」** ✗→✓
+    #   （用户 2026-10-12："新版本锚点还是明显跟 EXCEL 不一样" ✓）
+    #   为什么：v2.1.52 只让**独立接口（弹窗"重算"）**跟随成交时点 ✓，而这里**写死了收盘** ✗
+    #   ⇒ 同一因子两条链两个口径（弹窗/导出走收盘 ✗ vs 信号测试/重算走开盘 ✓）
+    #   ⇒ 曲线不同 ⇒ 前端按 `verdictRules` 判的**锚点（紫点/红点）自然也不同** ✓。
+    #   `t1_open` ⇒ 取**开盘** ✓（与 `signals/pricing.FIELDS` 的 OPEN **同一表达式**
+    #   `adjust_expr("$open", _lab_mode)` ✓ ⇒ 与信号测试侧的触发组不会混合口径 ✓）；
+    #   其余（`t1_close` / `t_close`）⇒ 取收盘 ✓（= 老口径，数字逐位不变 ✓）。
+    #   ⚠ 字段换了 ⇒ 面板磁盘缓存 key 随之变化（key 由 `fields`/`all_cols` 构成 ✓ 自动失效 ✓）。
+    px_field = adjust_expr("$open" if str(fill) == "t1_open" else "$close",
+                           _lab_mode, round_prices=price_round)
     tag_fields: List[str] = []
     tag_names: List[str] = []
     if field_bin_available("limit_up") and field_bin_available("limit_down"):
@@ -1640,7 +1912,10 @@ def run_single_factor_tests(
         try:
             inst_lv = df.index.names.index("instrument")
             dt_lv = df.index.names.index("datetime")
-            cf = df.groupby(level=inst_lv)["CLOSE"].ffill()
+            # ★ v2.1.67：**兜底 label 的取价列也要跟随成交时点** ✗→✓ —— 否则停牌行会退回
+            #   收盘口径 ⇒ 与上面 `label_exprs` 不一致 ✗（同一列两种基准 ⇒ 悄悄错 ✓）。
+            _ff_px = "OPEN" if (_lab_px == "$open" and "OPEN" in df.columns) else "CLOSE"
+            cf = df.groupby(level=inst_lv)[_ff_px].ffill()
             last_c = cf.groupby(level=inst_lv).transform("last")
             for h in horizons:
                 exit_px = cf.groupby(level=inst_lv).shift(-(h + 1))
@@ -1663,8 +1938,14 @@ def run_single_factor_tests(
     try:
         _inst_lv_ff = df.index.names.index("instrument")
         df["CLOSE_FF"] = df.groupby(level=_inst_lv_ff)["CLOSE"].ffill()
+        # ★★ v2.1.26（B 修复第二步）：**开盘价也要 ffill 一份** ✗→✓ ——
+        #   `t1_open` 口径需要"次日开盘价"，停牌日照 `CLOSE_FF` 同法沿用上一有效价 ✓
+        #   （不生成它的话：`_px_row` 取不到价 ⇒ 全 NaN ⇒ 期初价全 NaN ⇒ `_perf_of` 早退
+        #    ⇒ **年化/回撤/夏普整块消失** ✗ —— 实测 `perf 含档 = []` ✓）。
+        df["OPEN_FF"] = df.groupby(level=_inst_lv_ff)["OPEN"].ffill()
     except Exception:
         df["CLOSE_FF"] = df["CLOSE"] if "CLOSE" in df.columns else np.nan
+        df["OPEN_FF"] = df["OPEN"] if "OPEN" in df.columns else np.nan
 
     out: Dict[int, list] = {}
     es_inst = df_full.index.names.index("instrument")
@@ -1683,6 +1964,12 @@ def run_single_factor_tests(
         need = [c for c in (factor_cols + base_names + tag_names + [lc]) if c in df.columns]
         if "CLOSE_FF" in df.columns:      # 逐日盯市用（v1.18.48）
             need.append("CLOSE_FF")
+        # ★ v2.1.26：开盘价两列也必须进 `sub` ✗→✓（`t1_open` 口径要用它当买入价/盯市价 ✓）——
+        #   与 `CLOSE_FF` 同理：它们不在上面那几个清单里（`base_names` 里是 `OPEN`/`T1_OPEN`
+        #   的**原始列**，而逐日盯市要的是 ffill 之后的 `OPEN_FF` ✓）。
+        for _oc in ("OPEN", "OPEN_FF"):
+            if _oc in df.columns and _oc not in need:
+                need.append(_oc)
         sub = df[need].copy()
         sub.rename(columns={lc: "LABEL"}, inplace=True)
         results = []
@@ -1709,6 +1996,8 @@ def run_single_factor_tests(
                 exclude_stock_kcb=exclude_stock_kcb,
                 cancelled=cancelled,
                 trig_index_out=trig_out,
+                holdings_out=holdings_out,      # 每期持仓索引（导出用；None ⇒ 零开销 ✓）
+                fill=fill,                      # v2.1.22：成交时点（开盘/收盘 ✓）
                 quantiles=quantiles,
                 rebalance_period=rebalance_period,
                 topk_list=topk_list,
@@ -1753,14 +2042,43 @@ def run_single_factor_tests(
                             # ⚠ 不进 HTTP 响应（几万行会撑大结果）。
                             if events_out is not None:
                                 events_out[str(f.get("expression") or col_name)] = _ev
-                            _es = build_event_stats(_px, _ev, es_k)
+                            # ★ v2.1.56：口径跟随成交时点 ✓ —— `t_close` = "信号日当天成交" ⇒ lag=0 ✓；
+                            #   `t1_open`/`t1_close` 都是次日成交 ⇒ lag=1 ✓，且价格表已由上面的
+                            #   `px_field` 选好（开盘/收盘 ✓）⇒ **买/卖同一张表** ✓ 不混合 ✓。
+                            _es = build_event_stats(_px, _ev, es_k,
+                                                    lag=(0 if str(fill) == "t_close" else 1),
+                                                    fill=str(fill))
                             # 补参数信息：前端头部展示用，并据此判断「最长持有」是否需要重算
                             _es["params"] = {
                                 "universe": universe,
                                 "start_date": start_date,
                                 "end_date": end_date,
                                 "max_k": es_k,
+                                # ★ v2.1.56：**口径回传** ✓ —— 前端图注据此写"T+1 开盘/收盘买入"✓
+                                #   （此前这里没有 `fill` ✗ ⇒ 图注只能回退写"T+1 收盘买入" ✗，
+                                #    与面板选的成交时点矛盾 ✓ —— 用户看到的就是这一处 ✓）
+                                "fill": str(fill),
+                                # ★★ v2.1.57：**剔除开关也要回传** ✗→✓（实测：导出的 `_meta` 里
+                                #   一直是 `None` ✗ ⇒ 回灌侧只能按页面默认跑 ⇒ 与弹窗对不上 ✓）。
+                                #   为什么漏了：v2.1.54 只在**重算**那条链（`factors/event_study.py
+                                #   ::run_event_study`）加了这几项 ✓，而**导出取的是「秒开」的结果** ✓
+                                #   ⇒ 只要没点过"重算"，文件里就永远缺这几项 ✗（用户 18:07 那份 ✓）。
+                                "exclude_limit_up_signal": bool(exclude_limit_up_signal),
+                                "exclude_limit_up_trade": bool(exclude_limit_up_trade),
+                                "exclude_suspended": bool(exclude_suspended),
+                                "exclude_st_t1": bool(exclude_st_t1),
+                                "exclude_stock_gem": bool(exclude_stock_gem),
+                                "exclude_stock_kcb": bool(exclude_stock_kcb),
                                 "price_adjust": pa,
+                                # ★★ v2.1.74（用户 2026-10-12："每个参数都仔细检查一下…导出有没有漏" ✓）：
+                                #   这几项**过去只在人读页出现** ✗（审计确认 ✓）⇒ 文件不自足 ⇒
+                                #   回灌只能按页面默认跑 ⇒ "导出的 ≠ 复现的" ✓。
+                                #   ⚠ 顺手清掉一处**重复键** ✗（`"price_adjust"` 写了两遍 ✓ ⇒ 后写的覆盖前者 ✓，
+                                #     数值上没炸但极易误导 ✓）。
+                                "price_round": bool(price_round),
+                                "suspend_remove": bool(suspend_remove),
+                                "freeze_suspended_price": bool(freeze_suspended_price),
+                                "warmup_days": (int(warmup_days) if warmup_days is not None else None),
                             }
                             r["event_study"] = _es   # 先挂主结果，保证基准失败不影响事件研究
                             # 基准（未触发组）+ 超额（日配对口径）：仅展示，不参与判定。

@@ -21,6 +21,7 @@ import {
   getSingleFactorTestTasks,
   getDatasets,
   switchDataset,
+  setFormulaPinned,          // ★ v2.1.45：置顶 / 取消置顶 ✓
 } from './api'
 import type { BacktestCapacity, CustomFormula, CustomFormulaConflict } from './api'
 import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog, DatasetsStatus } from './types'
@@ -42,16 +43,19 @@ import ModelParamsForm from './components/ModelParamsForm'
 import TaskStatusPanel from './components/TaskStatusPanel'
 
 export default function App() {
+  // ★★ v2.1.68（用户 2026-10-12："你把面板参数股票池默认改成全A，结束日期改成 2026-01-31，
+  //   预测周期 60 天，省得我每次都改" ✓）—— 只改**初始默认值** ✓（本 state 不做持久化 ✓
+  //   ⇒ 刷新即生效 ✓）。这三项也是他做对照测试时的固定配置（全A / 2022-01-01~2026-01-31 / h=60 ✓）。
   const [form, setForm] = useState<BacktestRequest>({
-    universe: 'csi300',
+    universe: 'all',           // v2.1.68：默认「全A」（原 csi300 ✗，每次都要手改 ✗）
     start_date: '2022-01-01',
-    end_date: '2023-12-31',
+    end_date: '2026-01-31',    // v2.1.68：默认到数据尾部（原 2023-12-31 ✗）
     model: 'LightGBM',
     model_params: {},
     topk: 50,
     topk_ratio: null,          // ★ v1.20.66：非空 ⇒ 按百分比选股（忽略 topk ✓）
     n_days_hold: 10,
-    label_horizon: 2,
+    label_horizon: 60,         // v2.1.68：默认预测周期 60 天（原 2 ✗）
     layer_rebalance: 1,
     data_source: 'qlib',
     feature: 'Alpha158',
@@ -560,6 +564,22 @@ export default function App() {
     if (editingId === id) {
       setEditingId(null)
       setEditingText('')
+    }
+  }
+
+  // ★ v2.1.46：**置顶 / 取消置顶 = "移到最前 / 留在原处"**（用户 2026-10-12："取消置顶后，
+  //   不要还原成原来的位置，就放在上面好了，这样我可以利用置顶/取消置顶来给公式排序" ✓）
+  //   ⇒ 顺序**由后端算**（条目的 `sort_key` ✓）⇒ 这里调完接口**重拉一次列表** ✓，
+  //     不再在前端自己按 `pinned` 浮顶 ✗（那样"取消置顶"会把它弹回顶部、与"留在原处"相反 ✗）。
+  //   失败 ⇒ 只提示、**不改本地状态** ✗（免得界面与后端不一致 ✓）。
+  const toggleFormulaPin = async (f: CustomFormula) => {
+    const want = !f.pinned
+    try {
+      await setFormulaPinned(f.id, want)
+      const { items } = await listCustomFormulas()
+      setCustomFormulas(items)
+    } catch {
+      setFormulaError(want ? '置顶失败（后端未响应）' : '取消置顶失败（后端未响应）')
     }
   }
 
@@ -1363,6 +1383,7 @@ export default function App() {
                 setEditingText('')
                 setFormulaError('')
               }}
+              onTogglePin={toggleFormulaPin}
               onRemove={removeCustomFormula}
             />
           )}

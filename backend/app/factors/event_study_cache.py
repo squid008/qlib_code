@@ -57,6 +57,16 @@ def fingerprint(params: dict) -> str:
     for k in _FINGERPRINT_KEYS:
         h.update(("|%s=%r" % (k, params.get(k))).encode("utf-8"))
     h.update(("|dv=%s" % _data_version()).encode("utf-8"))
+    # ★★ v2.1.61：**算法源码也进指纹** ✗→✓（用户 2026-10-12："没有加版本的哈希校验？" ✓）——
+    #   真正的口径都在 `factors/event_study.py`（+ 本模块）里 ✓ ⇒ 任一改动 ⇒ 指纹变 ⇒
+    #   旧缓存自动失效 ✓。此前只有手工 `CACHE_VERSION` ✗（docstring 自己也说"必须 +1" ✗
+    #   ⇒ 靠人记，忘了就会让新算法"看起来没生效" ✗✗）。手工版本号**保留**（仍是显式开关 ✓）。
+    try:
+        from ..engine.code_fp import code_fingerprint
+        h.update(("|src=%s" % code_fingerprint("app/factors/event_study.py",
+                                               "app/factors/event_study_cache.py")).encode("utf-8"))
+    except Exception:                                              # noqa: BLE001
+        h.update(b"|src=na")
     return h.hexdigest()[:32]
 
 

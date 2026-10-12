@@ -333,7 +333,12 @@ function verdictOf(r: TestResult): VerdictStats {
 // （对应界面"分位收益"列的双柱，即触发组 vs 未触发组的逐日截面收益均值）。两类分组口径不同故不混填 Q 列，
 // 避免"触发组与最低值组同列"的误读。
 const exportHeaders = (qCols: number) => [
-  '因子', '来源', '周期(天)', '公式', '覆盖率(%)', '信号', '触发数', '触发收益(%)', '未触发数', '未触发收益(%)',
+  '因子', '来源', '周期(天)', '公式', '覆盖率(%)', '信号', '触发数', '触发收益(%)',
+  // ★ v2.1.31：**首次/续期内再触发**分组（用户 2026-10-11："加分组显示" ✓）——
+  //   两组收益差很大（实测 `黄金坑启动`：首次 +4.956% vs 续期 +0.707% ✓），
+  //   而组合里同一只票只持一轮（≈ 首次口径 ✓）⇒ 不分列看会误判"样本均值 vs 组合净值" ✓
+  '首次触发数', '首次触发收益(%)', '续期触发数', '续期触发收益(%)',
+  '未触发数', '未触发收益(%)',
   '差值(%)', '日差值(%)', 't(HAC)', '相对收益胜率(%)', '配对日数', 'p值',
   ...Array.from({ length: qCols }, (_, i) => `Q${i + 1}收益(%)`),
   '触发组日均(%)', '未触发组日均(%)',
@@ -464,6 +469,18 @@ export default function SingleFactorTestPanel({
   // 预热缓冲（交易日，v1.18.6）：特征加载多前移 N 个交易日，长回看/动态窗口公式
   // （DYN_*/BARSCOUNT/HHVBARS+Ref 嵌套）在区间首日即有收敛值；0=关闭（旧口径）
   const [warmupDaysText, setWarmupDaysText] = useState('250')
+  // ★ v2.1.24（B ③）：**成交时点**（用户 2026-10-11 选定 B：统一到 T+1 开盘 ✓，且要能切换 ✓）——
+  //   决定「持仓期收益曲线」的**每期买入价**与**期内逐日盯市价**（两者必须同基准 ✓）。
+  //   默认 `t1_close` = 老口径 ✓（不选时数字逐位不变 ✓）。
+  // ★ v2.1.34（用户 2026-10-12）：**默认改成「次日开盘价」** ✗→✓ ——
+  //   原因：它是行业通行做法 ✓，且**面板净值引擎（`event_study_nav`）本来就用 `t1_open`** ✓
+  //   ⇒ 默认与净值引擎一致，用户不用再手动对齐（也少一处"口径分叉"的坑 ✓）。
+  //   ⚠ 老口径 `t1_close` 仍可选 ✓（选它会**改变**持仓期曲线的年化/回撤/夏普 ✓，属有意行为 ✓）。
+  const [fill, setFill] = useState('t1_open')
+  // ★ v2.1.27：**每期全仓滚动（实盘口径 · 逐点对拍专用）** —— 用户 2026-10-11 指定：
+  //   默认 **不开** ✓（很慢 ✓）、悬停注明用途 ✓、放在「成交时点」右边「预热缓冲」左边 ✓。
+  //   打开后后端会用与回灌侧同一个 `run_period_roll` 再算一条净值 ⇒ 可与回灌逐点对拍 ✓。
+  const [periodRoll, setPeriodRoll] = useState(false)
   // 持仓期曲线的「固定 K 档」（v1.18.45）：默认**一个都不勾** = 只算默认档（最强分位组 +
   // 10% 固定档），零额外开销；勾选的档随本次测试一起算出 ⇒ 弹窗里**纯前端切换**、不用重跑。
   const [detailKs, setDetailKs] = useState<number[]>([])
@@ -529,6 +546,11 @@ export default function SingleFactorTestPanel({
       suspend_remove: suspendRemove,
       freeze_suspended_price: true,
       warmup_days: wu,
+      // ★ v2.1.65：**成交时点必须一起发** ✗→✓（用户 2026-10-12："事件研究的净值曲线是跟随面板
+      //   参数走还是写死了？我怎么测下来两个数一模一样" ✓）—— 后端 v2.1.52 起就支持 `fill` ✓，
+      //   但**前端一直没发** ✗（类型里也没声明 ✗）⇒ 弹窗"重算"与净值曲线都只能吃到后端默认值
+      //   ⇒ 面板把「成交时点」从"次日开盘"改成"次日收盘"**没有任何效果** ✗✗。
+      fill,
     })
     setEstOpen(true)
   }
@@ -791,6 +813,11 @@ export default function SingleFactorTestPanel({
         price_round: priceRound,
         price_adjust: priceAdjust,
         warmup_days,
+        // v2.1.24（B ③）：**成交时点** —— 决定持仓期曲线的"每期买入价 + 期内逐日盯市价" ✓
+        //   （t1_close 默认 = 老口径 ✓；t1_open = 次日开盘 ✓）
+        fill,
+        // v2.1.27：**每期全仓滚动（逐点对拍专用）** —— 默认关 ✓（慢 ✓）；打开则多算一条实盘口径净值
+        period_roll: periodRoll || undefined,
         topk_list: detailKs.length ? detailKs : undefined,
       })
       const task_id = resp?.task_id
@@ -918,6 +945,11 @@ export default function SingleFactorTestPanel({
           r.is_binary ? '0/1' : '连续',
           r.trigger?.count != null ? String(r.trigger.count) : dash,
           fmt(r.trigger?.mean_ret, 3),
+          // ★ v2.1.31：首次 / 续期内再触发 分组（与上面两个表头一一对应 ✓）
+          r.trigger_split?.first?.count != null ? String(r.trigger_split.first.count) : dash,
+          fmt(r.trigger_split?.first?.mean_ret, 3),
+          r.trigger_split?.refresh?.count != null ? String(r.trigger_split.refresh.count) : dash,
+          fmt(r.trigger_split?.refresh?.mean_ret, 3),
           r.not_trigger?.count != null ? String(r.not_trigger.count) : dash,
           fmt(r.not_trigger?.mean_ret, 3),
           fmt(r.diff, 3),
@@ -1130,6 +1162,42 @@ export default function SingleFactorTestPanel({
 
       {/* 预热缓冲（v1.18.6）：长回看/动态窗口公式在评估区间首日的收敛保障 */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mb-3">
+        {/* ★ v2.1.24（B ③）：**成交时点** —— 用户 2026-10-11 指定放在「预热缓冲」**左边** ✓。
+            口径：`t1_open` = T 日收盘出信号、**T+1 开盘**成交（与「交易信号测试」面板统一 ✓）；
+            `t1_close` = 次日收盘（老口径 ✓ 默认，保证既有数字不变 ✓）。
+            ⚠ 改它会影响持仓期曲线的每期收益与年化/回撤/夏普 ✓，且会写进导出文件、回灌时自动对齐 ✓。 */}
+        <label
+          className="flex items-center gap-1"
+          title="成交时点：持仓期曲线的『每期买入价 + 期内逐日盯市价』都用它。次日开盘 = T 日收盘出信号、T+1 开盘成交（与交易信号测试统一）；次日收盘 = 老口径。⚠ 改它会改变曲线的年化/回撤等指标，也会写进导出文件并影响回灌对齐"
+        >
+          <span className="text-slate-500">成交时点：</span>
+          <select
+            className="border rounded px-2 py-0.5 text-xs"
+            value={fill}
+            onChange={(e) => setFill(e.target.value)}
+          >
+            <option value="t1_open">次日开盘价</option>
+            <option value="t1_close">次日收盘价</option>
+          </select>
+        </label>
+        {/* ★ v2.1.27：**每期全仓滚动（实盘口径 · 逐点对拍专用）** —— 用户 2026-10-11 指定：
+            ① 位置：在「成交时点」**右边**、「预热缓冲」**左边** ✓；
+            ② 悬停注明"速度会慢很多 + 只为了逐点对拍用" ✓；
+            ③ **默认不开** ✓。
+            用途：面板那条持仓曲线是**组合收益模型**（无资金约束/整手/涨跌停 ✗），
+            拖回「交易信号测试」跑的是**真金白银引擎** ⇒ 两者本该不同 ✗；打开本开关后
+            后端会用**同一个** `run_period_roll` 再跑一条实盘口径净值 ⇒ 那条才该与回灌**逐位一致** ✓。 */}
+        <label
+          className="flex items-center gap-1"
+          title="每期全仓滚动（实盘口径 · 只为了逐点对拍用）。⚠ 费率固定为『往返 0.004』（= 单边 0.002，与「交易信号测试」默认一致；对应持仓曲线三档里的『往返 0.004』档），另按引擎规则计『最低佣金 5 元/笔』、整手 100 股（科创板 200 股）、涨停买不进/跌停卖不掉顺延：打开后，后端会用『真金白银』回测再算一条净值 —— 在每个调仓日把当时的全部权益按当期名单等权重建（含初始资金约束、整手 100 股、涨跌停买不进/卖不掉顺延）。它才是『交易信号测试』里拖入导出文件后那条 period_roll 曲线的同口径版本，两边应当逐位一致。⚠ 速度会慢很多：每个档位要多取一次全池行情面板并逐日回测（全 A 约 10~20 秒/档）；它不参与任何统计口径与判定，只看净值。默认不开"
+        >
+          <input
+            type="checkbox"
+            checked={periodRoll}
+            onChange={(e) => setPeriodRoll(e.target.checked)}
+          />
+          <span className="text-slate-500">每期全仓滚动（逐点对拍）</span>
+        </label>
         <label
           className="flex items-center gap-1"
           title="特征加载时多前移 N 个交易日（预热缓冲），使 DYN_*/BARSCOUNT/HHVBARS+Ref 嵌套等『扩展天数无法静态推断』的长回看/动态窗口公式在区间首日即有收敛后的因子值。0=关闭（回到旧口径，与 qlib D.features 冷启动逐位对齐）；留空=后端默认 250 交易日（≈1年）。固定窗口公式（MA/REF 等）结果不受影响，出口仍只按评估区间统计。代价：加载耗时/内存随 N 近似线性增加"
@@ -1341,6 +1409,21 @@ export default function SingleFactorTestPanel({
                 <th className="text-right px-1">信号</th>
                 <th className="text-right px-1">触发数</th>
                 <th className="text-right px-1">触发收益</th>
+                {/* ★ v2.1.31：**首次 / 续期内再触发** 分组（用户 2026-10-12："加上" ✓）——
+                    两组收益常差很多（实测 `黄金坑启动`：首次 +4.956% vs 续期 +0.707% ✓），
+                    而组合里同一只票只持一轮（≈ 首次口径 ✓）⇒ 不分列会被"样本均值"误导 ✓ */}
+                <th
+                  className="text-right px-1"
+                  title="首次/新开仓触发：同一标的**上一次触发已不在持有期内**（间隔 > 持有期 N 个交易日）⇒ 组合里相当于持有一轮 ✓"
+                >
+                  首次收益
+                </th>
+                <th
+                  className="text-right px-1"
+                  title="续期内再触发：同一标的**上一次触发还在持有期内**（间隔 ≤ N）⇒ 引擎语义是把持有天数【重置为 N 天】（不是加 N）✓。⚠ 这类样本在统计里**每次触发各算一个**，而组合里只持一轮 ⇒ 它与组合净值的差异主要来自这里 ✓"
+                >
+                  续期收益
+                </th>
                 <th className="text-right px-1">未触发数</th>
                 <th className="text-right px-1">未触发收益</th>
                 <th className="text-right px-1">差值</th>
@@ -1421,7 +1504,7 @@ export default function SingleFactorTestPanel({
                 return (
                   <tr key={`${r.id}:${r.horizon ?? '-'}`} className="border-b border-slate-100 dark:border-slate-700">
                     {r.error ? (
-                      <td className="py-1 pr-2 text-red-500" colSpan={SHOW_TIMING_COL ? 18 : 17}>
+                      <td className="py-1 pr-2 text-red-500" colSpan={SHOW_TIMING_COL ? 20 : 19}>
                         {r.name}{r.horizon ? `（周期 ${r.horizon} 天）` : ''}：{r.error}
                       </td>
                     ) : (
@@ -1477,6 +1560,23 @@ export default function SingleFactorTestPanel({
                           </span>
                         </td>
                         <td className="text-right px-1">{fmt(r.trigger?.mean_ret, 3)}</td>
+                        {/* ★ v2.1.31：首次 / 续期内再触发（悬停给出条数 ✓；旧结果无该字段 ⇒ '-' ✓） */}
+                        <td
+                          className="text-right px-1"
+                          title={r.trigger_split?.first
+                            ? `首次/新开仓：${r.trigger_split.first.count ?? '-'} 条 ｜ 均值 ${fmt(r.trigger_split.first.mean_ret, 3)}% ｜ 中位 ${fmt(r.trigger_split.first.median_ret, 3)}% ｜ 胜率 ${fmt(r.trigger_split.first.win_rate, 1)}%`
+                            : '旧结果没有该字段（重跑一次即可看到 ✓）'}
+                        >
+                          {fmt(r.trigger_split?.first?.mean_ret, 3)}
+                        </td>
+                        <td
+                          className="text-right px-1"
+                          title={r.trigger_split?.refresh
+                            ? `续期内再触发：${r.trigger_split.refresh.count ?? '-'} 条 ｜ 均值 ${fmt(r.trigger_split.refresh.mean_ret, 3)}% ｜ 中位 ${fmt(r.trigger_split.refresh.median_ret, 3)}% ｜ 胜率 ${fmt(r.trigger_split.refresh.win_rate, 1)}% ｜ ⚠ 持有天数会被重置为 N 天 ✓`
+                            : '旧结果没有该字段（重跑一次即可看到 ✓）'}
+                        >
+                          {fmt(r.trigger_split?.refresh?.mean_ret, 3)}
+                        </td>
                         <td className="text-right px-1">
                           <span
                             title={
@@ -1691,6 +1791,9 @@ export default function SingleFactorTestPanel({
           onClose={() => setCurveOpen(false)}
           name={curveName}
           row={curveRow}
+          /* v2.1.0：导出 XLSX 要用任务 id 取"每期持仓"（后端任务状态里 ✓）。
+             ⚠ 与事件研究同一教训：用 `doneTaskId`（任务成功后保留），`taskIdRef` 会被清空 ✓。 */
+          taskId={doneTaskId ?? taskIdRef.current ?? ''}
         />
       </EsErrorBoundary>
     </div>

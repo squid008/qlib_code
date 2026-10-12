@@ -1,4 +1,5 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { captureSection } from '../captureChart'
 import { useModalScrollLock } from '../useModalScrollLock'
 import {
   CartesianGrid,
@@ -12,6 +13,8 @@ import {
   YAxis,
 } from 'recharts'
 import type { PerfMetrics, SingleFactorTestResult, TopKCurveItem } from '../api'
+import { blobErrorDetail, exportTopkCurveXlsx } from '../api'
+import { saveBlob, stamp } from '../downloadFile'
 
 /**
  * 连续因子「持仓期收益曲线」弹窗（v1.18.45）。
@@ -32,6 +35,9 @@ interface Props {
   onClose: () => void
   name: string
   row: SingleFactorTestResult | null
+  /** 单因子测试任务 id：导出 XLSX 要靠它取曲线 / 参数 / **每期持仓索引** ✓
+   *  （空 ⇒ 导出按钮禁用，并提示"任务上下文缺失"—— 后端不出半份文件 ✗）。 */
+  taskId?: string
 }
 
 /** 点数上限：1211 个点 × 11 条线对 Recharts 偏重，按等间隔抽样（累计曲线形状不变）。 */
@@ -142,7 +148,7 @@ function stride(n: number) {
  *  负市值对数 5 年：净值 4.38 vs 2.67），弱/无效策略复利**低于**算术（波动损耗）。 */
 type Basis = 'compound' | 'arith'
 
-export default function TopkCurveModal({ open, onClose, name, row }: Props) {
+export default function TopkCurveModal({ open, onClose, name, row, taskId }: Props) {
   const [sel, setSel] = useState(0)
   /** 绩效卡的成本档（v1.18.54）：默认**往返 0.004**（更贴近实盘；无成本档常被高估）。
    *  仅切换「年化 / 最大回撤 / 夏普 / 索提诺 / 卡玛」等指标卡，不影响曲线图（三档成本线始终都在图里、可显隐）。 */
@@ -151,6 +157,13 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
   const [hidden, setHidden] = useState<Record<string, boolean>>({})
   // 口径（v1.18.47）：**默认复利**（= 实盘）；后端旧版无 curves_compound 时自动回退算术
   const [basis, setBasis] = useState<Basis>('compound')
+  // v2.1.0：导出 XLSX（**后端生成** ⇒ 第 1 页有原生 Excel 图表、第 2 页是每期持仓明细 ✓）；
+  //   导的正是"当前看到的东西"：档位 / 曲线口径 / 基准 / 绩效成本档 ✓（用户 2026-10-11 需求）
+  const [expBusy, setExpBusy] = useState(false)
+  const [expMsg, setExpMsg] = useState<{ text: string; ok: boolean } | null>(null)
+  // 抓图容器：导出时把这两张图**按当前档位**（含用户显隐的曲线 ✓）抓成 PNG 传给后端 ✓
+  const navShotRef = useRef<HTMLDivElement | null>(null)
+  const decShotRef = useRef<HTMLDivElement | null>(null)
   // v1.19.18：弹窗打开期间锁定页面滚动 —— 修「滚到弹窗底部后继续滚会带动背后主页面滚动」
   // （scroll chaining，用户反馈）。
   useModalScrollLock(open)
@@ -172,6 +185,66 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
   // ⚠ **默认不选中**（默认仍按股票池映射到指数），仅在用户手动切换时启用 ——
   // 它与聚宽 / 外部检验脚本的「池内等权」口径一致，用来解释"相对指数 vs 相对等权"的差额。
   const EQW_CODE = '__eqw__'
+
+  /**
+   * 导出当前档位的曲线与每期持仓（v2.1.0）。
+   *
+   * ⚠ 三处刻意的取舍：
+   *   ① 数据**不从前端拼**：每期持仓只在后端（测试进程内算完即存在任务状态里 ✓）
+   *      ⇒ 请求只带"当前界面的选择"，本体由后端组装（导出的数值必然与页面逐位一致 ✓）；
+   *   ② 「池内等权」基准是**前端现算的伪基准**（`EQW_CODE`）⇒ 传空，让文件用后端默认指数 ✓
+   *      （否则后端找不到该代码，会静默少一列基准 ✗）；
+   *   ③ 失败原因走 `blobErrorDetail`：blob 请求的报错体是 JSON（否则界面上只能看到"导出失败" ✗）。
+   *   ④ **曲线图是"截图"**：把当前渲染的 `<svg>` 抓成 PNG 一起传 ⇒ 文件里的图就是你眼前的图
+   *      （档位/基准/显隐都一致 ✓）。抓图失败**不影响导出**（后端会写明"未附图"并指路数值页 ✓）。
+   */
+  const doExport = async () => {
+    if (!row || !item || !taskId || expBusy) return
+    setExpBusy(true)
+    setExpMsg(null)
+    try {
+      const effBench = bench && bench !== EQW_CODE ? bench : (tc?.benchmarks?.default ?? '')
+      let shots: { nav?: string; decile?: string } = {}
+      try {
+        // ⚠ 串行（不是 Promise.all）：`captureSection` 会临时滚动再恢复 ⇒ 并发会互相抄滚动位置 ✗
+        const nav = await captureSection(navShotRef.current)
+        const decile = await captureSection(decShotRef.current)
+        shots = { ...(nav ? { nav } : {}), ...(decile ? { decile } : {}) }
+      } catch (shotErr) {
+        // 抓图是"锦上添花"⇒ 绝不因为它把整个导出搞失败 ✗（后端会如实写"未附图" ✓）
+        console.warn('曲线截图失败，改为导出不含图的文件：', shotErr)
+      }
+      const { blob, filename } = await exportTopkCurveXlsx({
+        task_id: taskId,
+        factor_id: row.id || row.name || '',
+        horizon: row.horizon ?? null,
+        item_kind: item.kind === 'decile' ? 'decile' : 'topk',
+        item_k: item.kind === 'topk' ? item.k : null,
+        item_quantile: item.kind === 'decile' ? (item.quantile ?? null) : null,
+        basis: basis === 'compound' ? 'compound' : 'arithmetic',
+        benchmark: effBench,
+        cost_tier: perfCost,
+        shots,
+      })
+      saveBlob(blob, filename || `持仓曲线_${name}_${stamp()}.xlsx`)
+      const withShot = !!(shots.nav || shots.decile)
+      setExpMsg({
+        ok: true,
+        text:
+          (withShot
+            ? '已导出 ✓（第 1 页含**当前档位/基准/显隐的曲线截图** + 参数与公式）'
+            : '已导出 ✓（⚠ 抓图未成功 ⇒ 第 1 页只有参数与数值页，没有图）') +
+          '；第 2 页是本档位的每期持仓' +
+          (bench === EQW_CODE
+            ? '；「池内等权」是页面现算的伪基准 ⇒ 文件里的基准列用的是后端默认指数 ✓'
+            : ''),
+      })
+    } catch (e) {
+      setExpMsg({ ok: false, text: await blobErrorDetail(e) })
+    } finally {
+      setExpBusy(false)
+    }
+  }
   // 池内等权的**逐期收益序列**（各分位组 cum 差分后取平均；等频分组 ⇒ 等价池内成分等权）。
   // ⚠ 它与组合曲线**完全同口径**（同一批调仓日、同一持有 h、**同样含分红再投**）。
   const eqwPer = useMemo(() => {
@@ -253,31 +326,87 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
 
   // 图 1：选中档的三档累计曲线（0 / 0.004 / 0.008，均按调仓期扣费）+ 选中基准
   // 口径（basis）：复利取 `curves_compound` / `cum_compound`；后端旧版缺该字段时自动回退算术
+  /**
+   * ★ v2.1.27：**每期全仓滚动（实盘口径）** 净值（用户 2026-10-11 加的开关 ✓，**默认关** ✓）。
+   * 为什么要画在这张图上：面板这条是**组合收益模型**（无资金约束/整手/涨跌停 ✗），而
+   * 「交易信号测试」拖回灌的是**真金白银引擎** ⇒ 两者**本该不同** ✗ —— 这条是**同口径实盘版**
+   * （与回灌侧**同一个** `run_period_roll` ✓）⇒ **它才该与回灌那条 period_roll 逐点一致** ✓。
+   * ⚠ 取值口径：`row.period_roll.nav` 是**逐日**净值 ⇒ 按**调仓日**采样（= 每期期末值 ✓），
+   *    与组合曲线「每期一个点」同轴 ✓。
+   */
+  /**
+   * ★ v2.1.35：**实盘口径指标**（`row.period_roll.perf` ✓）—— 用户 2026-10-12 指定：
+   * 在图题与图之间的空白处显示「年化 / 最大回撤 / 夏普 / 索提诺 / 卡玛」✓。
+   * ⚠ 数据只在测试时勾了「每期全仓滚动（逐点对拍）」开关时才有 ✓（默认关 ⇒ 不显示 ✓），
+   *   它与「交易信号测试」回灌那条 `period_roll` 是**同一个实现的两次运行** ✓
+   *   ⇒ 这组指标才是"真金白银口径"的 ✓（上面那张卡的 组合 指标是**收益模型**口径 ✗）。
+   * ⚠ 单位：`perf.annual_return`/`max_drawdown` 是**小数** ⇒ `signedPct`（内部 ×100 ✓）；
+   *   `sharpe`/`sortino`/`calmar` 无量纲 ⇒ `fmtRatio` ✓ —— **与上面指标卡逐字同款** ✓
+   *   （单位这事我栽过两次 ✗，这次直接复用同一对函数，不再自己拼 ✓）。
+   */
+  /**
+   * ★ v2.1.38（用户 2026-10-12："应该是我测试的时候选了哪些档位就算哪些档位" ✓）：
+   * **按当前选中档取** ✓ —— `row.period_roll_items` 与 `topk_curves.items` **同序** ✓
+   * （`idx` 就是当前选中档的下标 ✓，已 clamp ✓）⇒ 在弹窗里切档位时，红线与这行指标
+   * **一起变** ✓（v2.1.27~v2.1.37 只算 `items[0]` ✗ ⇒ 切换时它们不动 ✗，用户实测发现 ✓）。
+   * 兜底：旧结果没有 `period_roll_items` ⇒ 退回 row 级 `period_roll`（= 默认档 ✓）。
+   */
+  const prObj = (row?.period_roll_items ?? [])[idx] ?? row?.period_roll ?? null
+  const prPerf = prObj?.perf ?? null
+  /**
+   * ★ v2.1.37：**最大回撤深于 −30% 才标红** ✓（用户 2026-10-12 指定："最大回撤≥30%就标红吧。
+   * 其他时候灰色" ✓）。
+   * ⚠ 单位（这次先查过再写 ✗→✓）：`perf.max_drawdown` 是**小数**（−0.461 ✓，同卡 `signedPct`
+   *   内部 `×100` 才成 −46.1% ✓）⇒ 阈值写 `0.30` ✓ **不能**写 `30` ✗。
+   * ⚠ 用 `Math.abs` ✓：不依赖它到底存的是负数（−0.461 ✓）还是幅度（0.461）⇒ 两种约定都对 ✓。
+   *   非数值/缺失 ⇒ 不红（走默认灰 ✓）。
+   */
+  const prDdDeep =
+    typeof prPerf?.max_drawdown === 'number'
+    && Number.isFinite(prPerf.max_drawdown)
+    && Math.abs(prPerf.max_drawdown) >= 0.30
+
+  const prMap = useMemo(() => {
+    const m = new Map<string, number>()
+    const ds = prObj?.dates ?? []
+    const vs = prObj?.nav ?? []
+    for (let i = 0; i < ds.length; i++) {
+      const v = vs[i]
+      if (typeof v === 'number' && Number.isFinite(v)) m.set(ds[i], v)
+    }
+    return m
+    // v2.1.38：依赖 `prObj`（= 当前选中档那条 ✓）⇒ 切档时红线跟着重取 ✓
+  }, [prObj])
+
   const detailData = useMemo(() => {
     if (!tc || !item) return []
     const cv = basis === 'compound' ? (item.curves_compound ?? item.curves) : item.curves
     const bv =
       basis === 'compound' ? (benchItem?.cum_compound ?? benchItem?.cum) : benchItem?.cum
     const st = stride(tc.dates.length)
+    const pr = (d: string): number | null => (prMap.size ? (prMap.get(d) ?? null) : null)
     const pick = (i: number) => ({
       d: tc.dates[i],
       c0: nav(cv['0.0000']?.[i]),
       c4: nav(cv['0.0040']?.[i]),
       c8: nav(cv['0.0080']?.[i]),
       b: nav(bv?.[i]),
+      pr: pr(tc.dates[i]),
     })
     // v1.18.56 起点对齐：后端 `curves` / 基准 `cum` 的**首值都是「第一期结束时」**
     // （实测 csi300：组合 −5.49%、沪深300 +2.47% 都在第 0 位）⇒ 直接画会让两条线起点
     // 各偏一边（0.945 / 1.025）。这里在序列**最前面补一个「起点」点（值 = 1）**，
     // 使组合 / 三档成本 / 基准的起点统一为 1。
-    const out: Record<string, number | string | null>[] = [{ d: '起点', c0: 1, c4: 1, c8: 1, b: 1 }]
+    const out: Record<string, number | string | null>[] = [
+      { d: '起点', c0: 1, c4: 1, c8: 1, b: 1, pr: prMap.size ? 1 : null },
+    ]
     for (let i = 0; i < tc.dates.length; i += st) out.push(pick(i))
     const last = tc.dates.length - 1
     if (last >= 0 && (out.length === 0 || out[out.length - 1].d !== tc.dates[last])) {
       out.push(pick(last))
     }
     return out
-  }, [tc, item, benchItem, basis])
+  }, [tc, item, benchItem, basis, prMap])
 
   /** 取序列末尾的有效值（跳过尾部的 null/缺失）。 */
   const lastOf = (arr: (number | null)[] | undefined) => {
@@ -426,8 +555,10 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   ① **「最强 / 最弱分位」是样本内 argmax** —— 事后从十档里挑出来的最优/最差那档，
                      不是样本外结论 ⇒ 不能拿它当"因子有效"的证据（十档不单调 = 没 alpha ✓）；
                   ② **但 TopK 的 K 不是平台挑的** —— K 由用户选择，平台只把整排 K 并列展示；
-                     TopK 选股 = **按最强分位所在的方向，取名次最头上的 K 只** ✓（不是 K 扫描后的 argmax ✗）。 */}
-              {qc ? '（最强/最弱为样本内最优，非样本外）' : ''}
+                     TopK 选股 = **按最强分位所在的方向，取名次最头上的 K 只** ✓（不是 K 扫描后的 argmax ✗）。
+                  ⚠ v2.1.0（用户 2026-10-11）：**这句提示不再显示在标题行**（太占宽度、且下面
+                     已经有"十档单调性 ρ"与"分段"两条更硬的证据 ⇒ 重复 ✗）。口径本身没变，
+                     只是不再写在标题里 ✓；导出文件同步去掉（见 `exports/topk_doc.py` ✓）。 */}
               {/* ★ 单调性（v1.19.94）：|ρ| 小 ⇒ 十档乱跳 = 没有横截面 alpha，`最强档`只是事后挑的噪声 ✗ */}
               {/* ★ 分段稳健性（v1.19.94，用户 2026-09-18）：用**已有的** `groups[].cum`（逐期算术累加）
                   看"最强档 − 最弱档"在几个起点之后**是不是每段都赢** —— 只在某一段赢的多半是
@@ -515,14 +646,52 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
               )}
             </span>
           </div>
-          {/* ⚠ `whitespace-nowrap shrink-0`（v1.20.19）：标题栏右侧被别的元素挤压时，
-              按钮宽度会被压到比"关闭"两个字还窄 ⇒ 文字**竖排换行**（用户 2026-09-18 报 ✓）。
-              与「事件研究」弹窗的关闭按钮保持一致：永远一行 ✓。 */}
-          <button onClick={onClose}
-                  className="px-2 py-1 text-xs rounded border whitespace-nowrap shrink-0">
-            关闭
-          </button>
+          {/* 两个按钮**必须同组靠右**（v2.1.0，用户 2026-10-11："导出按钮离关闭按钮太远了"）：
+              ⚠ 原先两个按钮是标题栏 `justify-between` 下的**两个独立子项** ⇒ 被均匀分摊到整行 ✗
+                （标题块越短、两个按钮被撑得越开 ✓ 实测就是这样）。⇒ 包一层 `flex gap-2` ✓。 */}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* 导出（v2.1.0）：放在「关闭」左边 ✓ —— 导当前档位/口径/基准】
+                `disabled`：任务 id 缺失（历史结果）或档位没有曲线时**禁用**，
+                宁可点不动也不出半份文件 ✗；`title` 说明为什么点不动 ✓。 */}
+            <button
+              onClick={doExport}
+              disabled={expBusy || !taskId || !item}
+              title={
+                !taskId
+                  ? '这次结果没有任务上下文（如页面刷新后从历史记录打开）⇒ 无法导出（持仓明细在后端任务状态里）'
+                  : !item
+                    ? '当前档位没有曲线数据 ⇒ 无法导出'
+                    : '导出 XLSX：第 1 页 = 参数/公式 + **当前档位的曲线截图**，第 2 页 = 本档位的每期持仓明细；' +
+                      '该文件可拖回「交易信号测试」复现净值曲线'
+              }
+              className="px-2 py-1 text-xs rounded border whitespace-nowrap disabled:opacity-50"
+            >
+              {expBusy ? '导出中…' : '导出'}
+            </button>
+            {/* ⚠ `whitespace-nowrap`（v1.20.19）：标题栏右侧被别的元素挤压时，
+                按钮宽度会被压到比"关闭"两个字还窄 ⇒ 文字**竖排换行**（用户 2026-09-18 报 ✓）。
+                与「事件研究」弹窗的关闭按钮保持一致：永远一行 ✓。 */}
+            <button onClick={onClose}
+                    className="px-2 py-1 text-xs rounded border whitespace-nowrap">
+              关闭
+            </button>
+          </div>
         </div>
+
+        {/* 导出结果提示：★ v2.1.48 —— **成功的那条不再显示** ✓（用户 2026-10-12：
+            "已导出 ✓（第 1 页含 5 张当前面板截图 + 参数与公式）；第 2 页是每次调仓的持仓明细
+             —— 把这个状态文字先隐藏掉吧" ✓）；
+            **失败照旧显示** ✓（否则出错只能靠猜 ✗ —— 当初加它就是为这个 ✓）。
+            ⚠ 想恢复成功提示：把下面的 `&& !expMsg.ok` 去掉即可 ✓（`setExpMsg` 那段仍原样保留 ✓）。 */}
+        {expMsg && !expMsg.ok && (
+          <div
+            className={`mx-4 mt-2 text-[11px] ${
+              expMsg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600 dark:text-red-400'
+            }`}
+          >
+            {expMsg.text}
+          </div>
+        )}
 
         {/* 口径切换（v1.18.47）：**默认复利** = 实盘满仓复投；算术累加 = "平均每期赚多少"的视角 */}
         <div className="mx-4 mt-3 flex items-center gap-2 flex-wrap text-[11px]">
@@ -619,7 +788,11 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
           </div>
         ) : (
           <div className="px-4 py-3">
-            {/* ---- 图 1：明细档（默认 = 最强分位组）---- */}
+            {/* ---- 图 1：明细档（默认 = 最强分位组）----
+                ⚠ 抓图 ref 必须包**整个区块**（标题 + 切换按钮 + 图 + 图例 + 区间累计行 ✓）：
+                  只抓 `<svg>` 会丢图例（recharts 的 Legend 是 HTML ✗）与「最强 Q2」标注 ✗
+                  —— 用户 2026-10-11 实测指出"图例、标题都没有""不知道看的是哪档" ✓ */}
+            <div ref={navShotRef} className="bg-white">
             <div className="flex items-center gap-2 mb-1 flex-wrap">
               <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
                 持仓期净值曲线（三档成本 · 同一组合 · <b>起点 = 1</b> ·{' '}
@@ -669,6 +842,33 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                 : `固定持仓 ${item?.k} 只（按名次取，与分位组口径略有差异）`}
               {'；点图例可显隐曲线'}
             </div>
+            {/* ★ v2.1.35：**实盘口径指标行**（用户 2026-10-12 指定位置 = 红框处的空白 ✓）——
+                只在勾了「每期全仓滚动（逐点对拍）」开关时才有数据 ✓；
+                它与「交易信号测试」回灌的 `period_roll` 同引擎同口径 ✓ ⇒ 这才是可落地口径的指标 ✓
+                （上面那张「组合」卡是**收益模型**口径：无资金约束/整手/涨跌停 ✗）。 */}
+            {prPerf && (
+              <div
+                className="text-[11px] text-slate-500 mb-1 text-center"
+                title="实盘口径 = 每期全仓滚动：含资金约束 / 整手 100 股 / 涨跌停买不进卖不掉；与「交易信号测试」拖回灌用的是同一个回测引擎（period_roll）⇒ 两者应当逐位一致。只在勾了上方「每期全仓滚动（逐点对拍）」时才有这组数字。"
+              >
+                <b className="text-rose-600">实盘口径</b>：
+                年化 <b>{signedPct(prPerf.annual_return, 1)}</b>
+                ｜ 最大回撤{' '}
+                {/* v2.1.37：**深于 −30% 才红** ✓，否则与其他数字同为默认灰 ✓（用户指定 ✓） */}
+                <b className={prDdDeep ? 'text-red-500' : ''}>
+                  {signedPct(prPerf.max_drawdown, 1)}
+                </b>
+                ｜ 夏普 <b>{fmtRatio(prPerf.sharpe)}</b>
+                ｜ 索提诺 <b>{fmtRatio(prPerf.sortino)}</b>
+                ｜ 卡玛 <b>{fmtRatio(prPerf.calmar)}</b>
+                {typeof prPerf.n_days === 'number' ? ` ｜ 样本 ${prPerf.n_days} 个交易日` : ''}
+              </div>
+            )}
+            {!prPerf && prObj?.error && (
+              <div className="text-[11px] text-amber-600 mb-1 text-center">
+                实盘口径指标不可用：{String(prObj.error)}
+              </div>
+            )}
             <div className="relative">
               {/* 图 1 右上角：醒目提示当前组合 = 最强分位组（红色） */}
               {item?.kind === 'decile' && (
@@ -681,6 +881,9 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   固定 K={item.k}
                 </span>
               ) : null}
+              {/* v2.1.0：抓图用容器（`ref` ⇒ 导出时把这个 `<svg>` 序列化成 PNG 贴进 XLSX ✓）。
+                  ⚠ 白底：Excel 里透明底会与单元格背景混着看，很脏 ✗（见 `captureSvgPng` ✓）。 */}
+              <div className="bg-white">
               <ResponsiveContainer width="100%" height={250}>
               <LineChart data={detailData} margin={{ top: 5, right: 12, left: 0, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
@@ -720,6 +923,19 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                   strokeWidth={1.6}
                   hide={!!hidden.c8}
                 />
+                {/* ★ v2.1.27：**每期全仓滚动（实盘口径）** —— 只在开关打开时才有数据 ✓。
+                    它的对拍对象是「交易信号测试」里那条 `period_roll`（同引擎同口径 ✓）。 */}
+                {prMap.size > 0 && (
+                  <Line
+                    type="monotone"
+                    dataKey="pr"
+                    name="每期全仓滚动（实盘口径）"
+                    stroke="#f43f5e"
+                    dot={false}
+                    strokeWidth={1.8}
+                    hide={!!hidden.pr}
+                  />
+                )}
                 {benchItem && (
                   <Line
                     type="monotone"
@@ -734,6 +950,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                 )}
               </LineChart>
               </ResponsiveContainer>
+              </div>
             </div>
             {benchItem && (
               <div className="text-[11px] text-slate-500 mt-1">
@@ -765,6 +982,8 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
 
             {/* 口径 / 免责（v1.18.52 下移至此：先看图与指标，再核对口径细则）——
                 与上方「绩效指标（年化 / 最大回撤）」面板对调了位置。 */}
+            </div>
+            {/* ---- 黄底"简化估算 · 口径说明"（**不**进截图：它是解释文字，不是面板内容 ✓）---- */}
             <div className="mt-3 px-3 py-2 rounded bg-amber-50 dark:bg-amber-900/20 text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">
               <b>简化估算 · 口径说明</b>（读图后可对照核对）：① 费率是<b>往返（买+卖）合计</b>，按<b>调仓期</b>扣、
               只扣<b>实际调仓</b>的股票（首期建仓不计费）；② <b>买入端</b>已按剔除开关剔除
@@ -783,6 +1002,8 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
             {/* ---- 图 2：十分位累计收益曲线 ---- */}
             {qc && (
               <>
+                {/* 抓图 ref 包整个区块（标题 + 图 + 图例 ✓，见上面图 1 的说明） */}
+                <div ref={decShotRef} className="bg-white">
                 <div className="flex items-center gap-2 mt-4 mb-1">
                   <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">
                     十分位累计收益曲线（<b>无成本</b> · 起点 0）
@@ -803,6 +1024,7 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                     ；点图例可显隐曲线
                   </span>
                 </div>
+                <div className="bg-white">
                 <ResponsiveContainer width="100%" height={250}>
                   <LineChart data={decileData} margin={{ top: 5, right: 12, left: 0, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
@@ -878,6 +1100,8 @@ export default function TopkCurveModal({ open, onClose, name, row }: Props) {
                     />
                   </LineChart>
                 </ResponsiveContainer>
+                </div>
+                </div>
               </>
             )}
 

@@ -29,6 +29,43 @@ def test_parse_reconstruct(expr, expect):
 
 
 # ---------------------------------------------------------------------------
+# ★ v2.1.28：一元负号 + 算子名大小写/别名归一（两个真实踩到的缺口 ✓）
+#   背景（2026-10-11 ✓）：用户公式库原文 `-log(market_cap)` 裸打 API 会
+#   ① `无法解析: -log(...)`（负号后接函数调用 ✗）→ 换成 `0-log(...)` 又
+#   ② `panel_expr 不支持算子 log`（解析出小写 ✗，而 `_apply` 只注册 `Log` ✓）
+#   ⇒ 两处都静默退到 qlib 回退路径 ⇒ 最后报**误导性**的 `operator [LN] is not registered` ✗。
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("expr,expect", [
+    ("-log($market_cap)", "Sub(0,Log($market_cap))"),   # ← 用户库原文那种写法 ✓
+    ("-Log($market_cap)", "Sub(0,Log($market_cap))"),
+    ("(-log($market_cap))", "Sub(0,Log($market_cap))"),
+    ("-$close", "Sub(0,$close)"),
+    ("-5", "-5"),                       # 负数字面量仍是 const ✓（老行为不变 ✓）
+    ("-1*log($close)", "Mul(-1,Log($close))"),          # 一元负号紧于 `*` ✓（数学一致 ✓）
+])
+def test_unary_minus_before_call(expr, expect):
+    """★ v2.1.28：`-函数(...)` / `-$字段` 以前一律"无法解析"✗ ⇒ 现在生成 `Sub(0,x)` ✓。
+
+    ⚠ 用 `Sub(0,x)` 而**不是** `Neg(x)`：`Sub` 在面板与 qlib 两边都注册 ✓，qlib 没有 `Neg` ✗。
+    """
+    assert reconstruct(parse_expr(expr)) == expect
+
+
+@pytest.mark.parametrize("expr,expect", [
+    ("log($close)", "Log($close)"),      # 小写 ⇒ 归一到 `_apply` 认的 `Log` ✓
+    ("LN($close)", "Log($close)"),
+    ("Ln($close)", "Log($close)"),
+    ("abs($close)", "Abs($close)"),
+    ("mean($close,3)", "Mean($close,3)"),
+    ("lg($close)", "lg($close)"),        # 非别名：原样保留 ✓（别把 LOG10 口径悄悄改成自然对数 ✗）
+])
+def test_op_name_case_and_alias(expr, expect):
+    """★ v2.1.28：算子名大小写不敏感 + `LN/LOG` 别名（口径 = 自然对数，与 codegen 一致 ✓）。"""
+    assert reconstruct(parse_expr(expr)) == expect
+
+
+# ---------------------------------------------------------------------------
 # 合成面板数值验证（不依赖真实行情数据）
 # ---------------------------------------------------------------------------
 

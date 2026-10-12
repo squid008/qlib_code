@@ -58,6 +58,9 @@ class ParseResult:
     perf: Optional[pd.DataFrame] = None      # 聚宽《收益概述》：date, strat_cum, bench_cum, nav…
     stats: Dict = field(default_factory=dict)
     issues: List[Dict] = field(default_factory=list)
+    # v2.1.0：**本工具自己导出的 XLSX** 回灌时用（见 `parsers/qlib_export.py` ✓）
+    origin: str = ""                          # "" | "qlib_export"（界面据此提示"来自导出文件" ✓）
+    aligned: Dict = field(default_factory=dict)   # 导出文件第 1 页的参数 ⇒ 界面"自动对齐设置" ✓
 
     def add_issue(self, row_no, raw, reason: str, cap: int = 300) -> None:
         if len(self.issues) < cap:
@@ -212,7 +215,18 @@ def excel_to_csv_text(raw) -> Optional[str]:
 
 
 def parse_csv(raw, filename: str = "") -> ParseResult:
-    """统一入口：自动识别格式并解析（**支持 CSV/文本 与 Excel `xlsx`/`xls`**）。"""
+    """统一入口：自动识别格式并解析（**支持 CSV/文本 与 Excel `xlsx`/`xls`**）。
+
+    ★ v2.1.0：先嗅探"**本工具自己导出的 XLSX**"（多页 + 隐藏 `_meta` ⇒ 通用 Excel 管线
+      只会读**第一页**、必然误判 ✗）⇒ 走专用适配器 ✓（见 `parsers/qlib_export.py`）。
+      ⚠ 必须排在 `excel_to_csv_text` 之前：后者只取 `sheet_name=0` ✗。
+    """
+    from .qlib_export import looks_like_export, parse_export   # 延迟 import：避免模块级成环 ✓
+
+    if looks_like_export(raw):
+        res = parse_export(raw, filename)
+        if res is not None:
+            return res
     xl_text = excel_to_csv_text(raw)
     if xl_text is not None:
         text, enc = xl_text, "excel"        # Excel：先归一化成 CSV 文本，再走**同一条**解析管线

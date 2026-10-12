@@ -22,30 +22,37 @@ def _frame(vals, start="2024-01-01"):
 
 class TestPeriodReturnCums:
     def test_full_window_and_arithmetic_sum(self):
-        """h=2：每期 = close[T+1] → close[T+3]，各期**算术**累加（非复利）。"""
+        """h=2：每期 = close[T+1] → close[T+3]，各期**算术**累加（非复利）。
+
+        ★ v2.1.43：曲线**右移一格** ⇒ 点 k = "**截至**调仓日 k 的累计"（首点恒 0 = 净值 1.0 ✓）。
+        所以 [0.21, 0.42] 变成 [0.0, 0.21] —— 末点 0.42 那期属于"下一个调仓日"，不再占位 ✓
+        （否则图上最后一个调仓日会显示"它之后那一期"的结果 ✗，与卡片/实盘差一个期 ✓）。
+        """
         close, days = _frame([100.0, 110.0, 121.0, 133.1, 146.41])
         cum = bc.period_return_cums(close, [days[0], days[1]], 2)["SH000300"]["cum"]
-        assert cum == [0.21, 0.42]          # 复利会是 0.4641
+        assert cum == [0.0, 0.21]           # 复利口径同样移位（此处恰好同值）
 
     def test_tail_overflow_uses_last_price_partial_period(self):
         """⚠ 卖点越界 ⇒ 最后价兜底（部分持有期），**不是 None**。"""
         close, days = _frame([100.0, 110.0, 121.0, 133.1, 146.41])
         out = bc.period_return_cums(close, [days[0], days[1], days[2]], 2)["SH000300"]
         # days[2]：i1=3(133.1)、i2=5 越界 ⇒ 用尾部价 146.41 ⇒ +10%
-        assert out["cum"] == [0.21, 0.42, 0.52]
+        # ★ v2.1.43：移位后 = [0.0, 0.21, 0.42]（末点仍是"截至该调仓日"的累计 ✓）
+        assert out["cum"] == [0.0, 0.21, 0.42]
         assert out["n_partial"] == 1
 
     def test_tail_overflow_does_not_truncate_later_periods(self):
         """越界只影响**该期**：乱序调仓日也不会把后面的期连带置 None。"""
         close, days = _frame([100.0, 110.0, 121.0, 133.1, 146.41])
         cum = bc.period_return_cums(close, [days[0], days[2], days[1]], 2)["SH000300"]["cum"]
-        assert cum == [0.21, 0.31, 0.52]
+        assert cum == [0.0, 0.21, 0.31]      # ★ v2.1.43：整体右移一格 ✓
 
     def test_entry_beyond_tail_is_none(self):
         """买点 T+1 就越界 ⇒ None（组合侧 entry_px 同为 NaN ⇒ label 亦 NaN），且不计 partial。"""
         close, days = _frame([100.0, 110.0, 121.0, 133.1, 146.41])
-        out = bc.period_return_cums(close, [days[4]], 2)["SH000300"]
-        assert out["cum"] == [None]
+        out = bc.period_return_cums(close, [days[4], days[0]], 2)["SH000300"]
+        # ★ v2.1.43：移位后首点恒 0 ✓ ⇒ 越界那一期的 None 落在**下一个点**上 ✓（用它才看得见 ✓）
+        assert out["cum"] == [0.0, None]
         assert out["n_partial"] == 0
 
     def test_h_zero(self):
@@ -56,8 +63,9 @@ class TestPeriodReturnCums:
     def test_non_trading_day_is_none(self):
         """调仓日不在交易日历（周末）⇒ None（不猜最近交易日）。"""
         close, days = _frame([100.0, 110.0, 121.0])
+        # ★ v2.1.43：移位后首点恒 0 ✓ ⇒ 把周末那个调仓日放前面才观察得到 None ✓
         assert bc.period_return_cums(
-            close, [days[0] + pd.Timedelta(days=5)], 1)["SH000300"]["cum"] == [None]
+            close, [days[0] + pd.Timedelta(days=5), days[0]], 1)["SH000300"]["cum"] == [0.0, None]
 
     def test_mid_hole_breaks_only_that_period(self):
         """⚠ 回归 2026-09-12：中间某期缺价只断**当期**，后续照算（曾整条断线）。"""
@@ -67,7 +75,7 @@ class TestPeriodReturnCums:
         # T=d2：i1=3(133.1)、i2=4(146.41) ⇒ +10% ⇒ 累计 0.31（后续照算 ⇒ 不再整条断线）
         # T=d3：i1=4、i2=5 越界 ⇒ 尾部价兜底 ⇒ +0% ⇒ 仍 0.31
         cum = bc.period_return_cums(close, [days[0], days[1], days[2], days[3]], 2)["SH000300"]["cum"]
-        assert cum == [0.21, None, 0.31, 0.31]
+        assert cum == [0.0, 0.21, None, 0.31]   # ★ v2.1.43：整体右移一格（None 照旧只断当期 ✓）
 
     def test_user_2026_09_13_repro(self):
         """⚠ 复现用户报障现场：数据尾 2026-08-21、调仓日 2026-08-14、h=40 ⇒ 只持有 4 个交易日。"""
@@ -77,10 +85,13 @@ class TestPeriodReturnCums:
         t0, t1 = pd.Timestamp("2026-06-18"), pd.Timestamp("2026-08-14")
         out = bc.period_return_cums(close, [t0, t1], 40)["SH000300"]
         e_full = px[dd.get_loc(t0) + 41] / px[dd.get_loc(t0) + 1] - 1.0
-        e_part = px[-1] / px[dd.get_loc(t1) + 1] - 1.0     # 08-17 买、数据尾 08-21 卖
-        assert out["cum"][1] == round(e_full + e_part, 6)
+        # ★ v2.1.43：点 k = "截至调仓日 k 的累计" ⇒ 末点 = **第一期**的结果 ✓；
+        #   最后一期是部分持有期 ⇒ 它的结果**不再出现在曲线上**（那属于"下一个调仓日" ✗），
+        #   但仍被**如实统计**在 `n_partial` 里 ✓ —— 这里断言"用到过尾部兜底、且没有 None" ✓
+        #   （旧实现在最后那个调仓日上给 None ⇒ 基准线提前断线 ✗ 2026-09-13 用户报障 ✓）。
+        assert out["cum"][1] == round(e_full, 6)
         assert out["n_partial"] == 1
-        assert None not in out["cum"]                      # 旧实现在这里是 None（基准提前断线）
+        assert None not in out["cum"]
 
     def test_compound_and_arithmetic_share_missing_semantics(self):
         """算术 `cum` 与复利 `cum_compound` 的缺失位置/部分持有期必须完全一致。"""
@@ -97,7 +108,7 @@ class TestPeriodReturnCums:
                               "SH000852": [100.0] * 5}, index=days)
         out = bc.period_return_cums(close, [days[0], days[1]], 2)
         assert out["SH000852"]["cum"] == [0.0, 0.0]
-        assert out["SH000300"]["cum"][0] == 0.21
+        assert out["SH000300"]["cum"] == [0.0, 0.21]   # ★ v2.1.43：首点恒 0 ✓
 
 
 class TestCatalog:

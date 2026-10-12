@@ -26,11 +26,13 @@ from ..services.custom_formulas import (
     delete_custom_formula as _delete_custom_formula,
     find_live_by_name as _find_live_by_name,          # ★ v1.20.82：保存查重 ✓
     mark_dependents_stale as _mark_dependents_stale,  # ★ v1.20.87：依赖自动失效 ✓
+    set_pinned as _set_pinned,                        # ★ v2.1.45：置顶/取消置顶 ✓
 )
 from .. import config
 from ..engine.task_manager import get_task_manager
 from ..factors.single_test import FactorTestCancelled, _bad_date_arg, run_single_factor_tests
 from ..factors.event_study import run_event_study
+from ..factors.holdings_index import HoldingsIndex      # v2.1.0：每期持仓索引（XLSX 导出用 ✓）
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
 
@@ -218,6 +220,24 @@ def delete_saved_formula(formula_id: str):
     return {"ok": True}
 
 
+class PinFormulaBody(BaseModel):
+    """置顶开关（v2.1.45 ✓）。"""
+    pinned: bool = True
+
+
+@router.post("/custom-formulas/{formula_id}/pin", summary="置顶 / 取消置顶自定义公式")
+def pin_saved_formula(formula_id: str, req: PinFormulaBody):
+    """★ v2.1.45（用户 2026-10-12："给公式加置顶/取消置顶按钮，加在编辑左边" ✓）。
+
+    ⚠ 这是**显示偏好**（不动 `name`/`text`/`expression` ✓，也不重编译 ✗）⇒ 不触发
+      `mark_dependents_stale`（引用它的公式无需重编 ✓）。
+    """
+    item = _set_pinned(formula_id, bool(req.pinned))
+    if item is None:
+        raise HTTPException(status_code=404, detail="公式不存在")
+    return item
+
+
 @router.get("/operators", summary="列出翻译器支持的算子分类")
 def list_operators():
     """返回翻译器支持的算子分类清单（供前端公式编辑器提示/灰显）。"""
@@ -258,6 +278,194 @@ class SingleFactorTestFactor(BaseModel):
     source_formula: str = ""  # 用户原文公式（custom=保存的原文；目录因子=表达式本身），仅随结果回传用于展示
 
 
+def _period_roll_pick(hk_state: dict, row: dict, item: dict) -> tuple:
+    """解析**某一档**（`item`）的每期名单（v2.1.38 ✓）。返回 `(err, dates, lists)`。
+
+    ⚠ `HoldingsIndex` 的键 = `(kind, k, quantile)`，而**分位档在结果里的 `k` 被改写成了
+      "中位持有只数"** ✗（`single_test.py` 组装 item 时 `int(np.median(...))`）⇒ 用 item 的 k
+      去查必然 miss ✗（实测就是这条：报"没有该档位的每期持仓"）⇒ 多键**依次尝试** ✓。
+    ⚠ 本函数**只解析名单、不取价** ✓ —— 取价是全流程唯一的"慢"来源（全 A 10~20s ✗），
+      必须由调用方**一次**取好（= 所有档位的并集 ✓）再喂进来（见 `_attach_period_roll` ✓）。
+    """
+    from ..factors.holdings_index import HoldingsIndex
+
+    tc = row.get("topk_curves") or {}
+    expr = str(row.get("expression") or row.get("name") or "")
+    h = row.get("horizon")
+    idx = HoldingsIndex.from_state(hk_state)
+    cands = [(item.get("kind"), item.get("k"), item.get("quantile")),
+             (item.get("kind"), 0, item.get("quantile")),
+             ("decile", 0, tc.get("default_quantile")),
+             ("decile", 0, None)]
+    lists = None
+    for _c in cands:
+        lists = idx.get(expr, h, _c[0], _c[1], _c[2])
+        if lists:
+            break
+    if not lists:
+        # 表达式对不上时（例如结果里是别名）⇒ 按 horizon 找唯一的那个桶 ✓
+        for _e, _v in (idx.factors or {}).items():
+            if str(h) in (_v or {}):
+                for _c in cands:
+                    lists = idx.get(_e, h, _c[0], _c[1], _c[2])
+                    if lists:
+                        expr = _e
+                        break
+            if lists:
+                break
+    dates = idx.dates(expr, h)
+    if not lists or not dates:
+        return ("没有该档位的每期持仓（HoldingsIndex 未记录 ⇒ 请确认已跑连续因子档位）", [], [])
+    return (None, dates, lists)
+
+
+def _attach_period_roll(req, hk_state: dict, row: dict) -> dict:
+    """给**本行的每个档位**各算一条实盘口径净值（v2.1.38 ✓）。
+
+    ★ 为什么改（用户 2026-10-12："应该是我测试的时候选了哪些档位就算哪些档位" ✓）：
+      v2.1.27 只算了 `items[0]`（= 默认档 = 最强分位组 ✗）⇒ 弹窗里切到「固定 K=967」时，
+      红线与那行指标**仍是默认档的** ✗（用户实测发现 ✓ —— 因为结果只挂在 row 级 ✓）。
+      现在：`row["period_roll_items"] = [与 `items` **同序**的每档结果 ✓]`，
+      前端按**当前选中档的下标**取 ✓ ⇒ 切档时曲线与指标一起变 ✓；
+      并保留 `row["period_roll"] = period_roll_items[0]` ✓（= 默认档 ✓，兼容旧取法/旧脚本 ✓）。
+
+    ⚠ **行情面板只取一次** ✓（这是关键 ✗→✓）：先解析出所有档位的名单、取**并集**代码去
+      `load_price_panel` ✓（10 档若各取一次 = 10~20s × 10 ✗ 不可接受 ✓）；
+      而 `run_period_roll` 只按**信号里出现的**标的建矩阵（`period_roll.py::_prepare` ✓
+      ⇒ `prep["codes"]` 来自 signals ✓）⇒ 面板里多出来的代码**不增加回测开销** ✓。
+    ⚠ 任何失败一律落**各自档位**的 `error` 字段 ✓ —— 它是附加信息，绝不拖垮统计（与 `perf` 同规矩 ✓）。
+    """
+    from ..signals.pricing import load_price_panel
+
+    tc = row.get("topk_curves") or {}
+    its = tc.get("items") or []
+    if not its:
+        row["period_roll"] = {"error": "该行没有持仓曲线档位（topk_curves.items 为空）"}
+        row["period_roll_items"] = []
+        return row["period_roll"]
+    picks: list = []                              # [(item, (err, dates, lists)), ...]
+    codes: set = set()
+    for _it in its:
+        try:
+            _p = _period_roll_pick(hk_state, row, _it)
+        except Exception as e:                    # noqa: BLE001
+            _p = (repr(e), [], [])
+        picks.append((_it, _p))
+        if not _p[0]:
+            for _lst in (_p[2] or []):
+                codes.update(str(c) for c in _lst)
+    panel, perr = None, None
+    if codes:
+        try:
+            panel = load_price_panel(sorted(codes), str(req.start_date), str(req.end_date),
+                                     need_open=True)
+        except Exception as e:                    # noqa: BLE001
+            perr = repr(e)
+    out: list = []
+    for _it, _p in picks:
+        if _p[0] or not panel:
+            out.append({"error": _p[0] or perr or "行情面板为空（取价失败）"})
+            continue
+        out.append(_panel_period_roll_nav(req, hk_state, row, item=_it, panel=panel))
+    row["period_roll_items"] = out
+    row["period_roll"] = out[0] if out else {}
+    return row["period_roll"]
+
+
+def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] = None,
+                           panel: Optional[dict] = None) -> dict:
+    """面板侧「每期全仓滚动」净值（v2.1.27 ✓，v2.1.38 加 `item`/`panel` ✓）。
+
+    ★ 为什么非要有它（用户 2026-10-11 追问"难道不该逐位一致" ✓）：
+      面板那条**持仓曲线**是**组合收益模型**（每期等权、按换手扣成本、复利累乘；
+      **无资金约束 / 无手数取整 / 无涨跌停** ✗），而「交易信号测试」拖文件回灌跑的是
+      **真金白银引擎** ⇒ 两者的差**不是 bug、也不可能靠补丁消掉** ✗。
+      要对拍就必须**两边同口径**：这里直接调**回灌侧同一个** `signals.period_roll.run_period_roll`
+      （含资金约束/整手/涨跌停 ✓），喂**同一批每期名单**（= 导出文件 `_signals` 的来源 ✓）
+      ⇒ 这两条才该**逐位一致** ✓。
+
+    `item` = 要算**哪一档** ✓（缺省 = `items[0]` = 默认档 ✓）；
+    `panel` = 调用方**预先取好**的面板 ✓（缺省 ⇒ 本函数自己取价，= 单档的老口径 ✓）。
+    ⚠ 任何异常一律吞进 `error` 字段 ✓ —— 它是**附加信息**，绝不拖垮统计（与 `perf` 同规矩 ✓）。
+    """
+    try:
+        from ..signals.period_roll import run_period_roll
+        from ..signals.pricing import load_price_panel
+
+        tc = row.get("topk_curves") or {}
+        it0 = item if item is not None else (tc.get("items") or [{}])[0]
+        _err, dates, lists = _period_roll_pick(hk_state, row, it0)
+        if _err:
+            return {"error": _err}
+        recs = [{"date": d, "code": c, "bucket": d}      # bucket = 调仓日 ⇒ 每期一批 ✓
+                for d, codes in zip(dates, lists) for c in codes]
+        # ★★ v2.1.27：**必须按 (日期, 代码) 排序** ✗→✓ —— 回灌侧的解析器就是这么给的
+        #   （`parsers/qlib_export.py` 用 `sorted({(date, code)})` ✓）。不排序的话：
+        #   现金在"快用完"时**按什么顺序买**就不同 ⇒ 同一批信号会跑出
+        #   buys 959 vs 956、min_cash 5.31 vs 3.6 ✗（实测：trades 总数一样、只是买卖拆分不同 ✓）
+        #   ⇒ 逐点差 2.6e-3 ✗。排序后两边喂给引擎的表**逐行相同** ✓。
+        recs.sort(key=lambda r: (r["date"], r["code"]))
+        if not recs:
+            return {"error": "每期持仓为空"}
+        sig = pd.DataFrame(recs)
+        if panel is None:                            # v2.1.38：调用方没预取 ⇒ 自己取（单档口径 ✓）
+            panel = load_price_panel(sorted(sig["code"].astype(str).unique().tolist()),
+                                     str(req.start_date), str(req.end_date), need_open=True)
+        if not panel:
+            return {"error": "行情面板为空（取价失败）"}
+        bt = run_period_roll(sig, panel, fill=str(req.fill), cost=float(req.cost),
+                             capital=float(req.capital), strict_limit=bool(req.strict_limit))
+        nav = getattr(bt, "nav", None)
+        if nav is None or not len(nav):
+            return {"error": "每期全仓滚动回测无净值"}
+        col = str(nav.columns[0])
+        stats = dict((getattr(bt, "stats", None) or {}).get(col) or {})
+        # ★★ v2.1.41：**截断到"组合曲线的最后一个完整调仓日"** ✗→✓ —— 用户 2026-10-12 拍板：
+        #   "实盘口径曲线只出到跟组合时间一样，年化计算也只算到 12-19，这样才是都对齐、有可比性" ✓。
+        #   为什么必须截：组合那条日频序列在**最后一个完整持有期末**收口 ✓（未走完的一期
+        #   不平铺进样本 ✗），而本函数原本跑满整段（例如到 2026-01-31 ✓）⇒ 一边算到 1-31、
+        #   一边算到 12-19 ⇒ **窗口不同、不可比** ✗（用户截图里"实盘年化反而高"正是这么来的 ✗）。
+        #   ⚠ 截断后必须**用截断序列重算指标** ✓（引擎的 `stats` 是全段的 ⇒ 不能用 ✗），
+        #     并把 `final_nav` / `total_return` 一起校正 ✓，保证"看到的曲线 = 看到的指标" ✓。
+        _cd = [str(x)[:10] for x in ((row.get("topk_curves") or {}).get("dates") or [])]
+        if _cd:
+            _last = _cd[-1]
+            try:
+                nav = nav.loc[[i for i in nav.index if str(i)[:10] <= _last]]
+            except Exception:                                    # noqa: BLE001
+                pass
+            if not len(nav):
+                return {"error": "截断到调仓日（%s）后无净值" % _last}
+            try:
+                from ..engine.perf_metrics import compute_perf
+                _trim = compute_perf(nav[col].pct_change().fillna(0.0).to_numpy())
+                if _trim.get("annual_return") is not None:
+                    stats["perf"] = _trim
+                    stats["final_nav"] = _trim.get("nav_end")
+                    stats["total_return"] = _trim.get("total_return")
+                    stats["trimmed_to"] = _last          # 自查用：截断到哪个调仓日 ✓
+            except Exception as e:                       # noqa: BLE001 —— 附加信息，绝不拖垮
+                try:
+                    from ..logger import get_logger
+                    get_logger("factors").warning("period_roll 截断后重算指标失败: %r", e)
+                except Exception:
+                    pass
+        return {"dates": [str(x)[:10] for x in nav.index],
+                # ⚠ 精度 9 位（不是 6 ✓）：对拍脚本要求"逐位一致"，取到 6 位会留下
+                #   ≤5e-6 的**纯取整**残差 ✗（实测 max|Δ| = 5e-6 ✓ 就是它）⇒ 提到 9 位 ✓。
+                "nav": [round(float(x), 9) for x in nav[col].to_numpy()],
+                "label": "每期全仓滚动（实盘口径）",
+                "stats": {k: v for k, v in stats.items() if k != "perf"},
+                "perf": stats.get("perf")}
+    except Exception as e:                                   # noqa: BLE001
+        try:
+            from ..logger import get_logger
+            get_logger("factors").warning("period_roll 面板侧计算失败: %r", e)
+        except Exception:
+            pass
+        return {"error": repr(e)}
+
+
 class SingleFactorTestRequest(BaseModel):
     universe: str = "csi300"
     start_date: str = ""
@@ -284,6 +492,26 @@ class SingleFactorTestRequest(BaseModel):
     #   BARSCOUNT/HHVBARS+Ref 嵌套）扩展天数无法静态推断，预热后区间首日即有收敛值；
     #   出口仍裁剪回 [start_date, ...]，固定窗口公式结果不变。
     # ---- 连续因子「分位 / 持仓期收益曲线」参数（v1.18.45 起由 API 传入，不再硬编码）----
+    # ★ v2.1.23（B 主体 ①）：**成交时点** —— 决定"每期买入价 + 期内逐日盯市价"用哪个价 ✓。
+    #   `t1_close`（默认 ✓ = 老口径，数字逐位不变 ✓）/ `t1_open`（次日开盘 ✓ 用户选的统一口径 ✓）。
+    # ★ v2.1.34（用户 2026-10-12）：**默认改成次日开盘** ✗→✓（与面板净值引擎 `t1_open` 一致 ✓，
+    #   也是行业通行做法 ✓）。⚠ 这会让**新任务**的持仓期曲线与旧结果不同 ✓（有意变更 ✓）；
+    #   显式传 `t1_close` 仍得老口径 ✓。
+    fill: str = "t1_open"
+    # ★★ v2.1.27：**每期全仓滚动（实盘口径 · 逐点对拍专用）** —— **默认关** ✗→✓（慢 ✓）
+    #   为什么要有它（用户 2026-10-11 定 ✓）：面板那条持仓曲线是**组合收益模型**（每期等权、
+    #   按换手扣成本、复利；**无资金约束 / 无手数取整 / 无涨跌停** ✗），而「交易信号测试」
+    #   回灌出来的是**真金白银引擎** ⇒ **原理上不可能逐点一致** ✗。
+    #   打开本开关 ⇒ 用**与回灌侧同一个** `signals.period_roll.run_period_roll`（含资金约束/
+    #   整手/涨跌停 ✓）把"每期名单"按实盘口径跑一遍 ✓ ⇒ 这两条才该**逐位一致** ✓（逐点对拍用 ✓）。
+    #   ⚠ 代价：每种档位要多取一次全池行情面板 + 逐日回测（全 A 实测 10~20s 量级 ✗）
+    #     ⇒ 故默认关、且不在任何统计口径里（纯附加 ✓，失败只落到 `error` 字段 ✓）。
+    period_roll: bool = False
+    # 下面三个只在 `period_roll=True` 时被用到（与「交易信号测试」回灌侧同名同义 ✓，
+    # 默认值取回灌侧的默认 ⇒ 两边不显式指定时也对得齐 ✓）。
+    cost: float = 0.004
+    capital: float = 1e9
+    strict_limit: bool = True
     quantiles: int = 10                   # 分位组数（默认 10=十分位；5=旧五分位，保留兼容）
     rebalance_period: Optional[int] = None
     #   调仓期（交易日）；**None ⇒ 跟随预测周期 h**（= 「用预测周期调仓换股」，默认口径）；
@@ -333,11 +561,27 @@ def _sft_trim_results() -> None:
                 _SFT_TASKS[k]["result"] = None
             if _SFT_TASKS[k].get("_evs") is not None:
                 _SFT_TASKS[k]["_evs"] = None
+            if _SFT_TASKS[k].get("_hk") is not None:      # v2.1.0：每期持仓索引同策略释放 ✓
+                _SFT_TASKS[k]["_hk"] = None
 
 
 def _sft_get(task_id: str):
     with _SFT_LOCK:
         return _SFT_TASKS.get(task_id)
+
+
+def est_export_state(task_id: str) -> Optional[dict]:
+    """**导出模块读取独立「事件研究」任务状态的唯一入口**（与 `sft_export_state` 对称 ✓）。"""
+    return _est_get(task_id)
+
+
+def sft_export_state(task_id: str) -> Optional[dict]:
+    """**导出模块读取单因子测试任务状态的唯一入口**（结果 / `_hk` 持仓索引 / `_req` 参数 ✓）。
+
+    ⚠ 为什么走函数、而不是让导出路由直接摸 `_SFT_TASKS`：那张表是**本模块的内部结构**
+      （键名会变、还带锁 ✓）⇒ 集中一处暴露，将来调整结构只动这里 ✓。
+    """
+    return _sft_get(task_id)
 
 
 def _json_safe(o):
@@ -607,8 +851,12 @@ def single_factor_test(req: SingleFactorTestRequest):
                         raise FactorTestCancelled()
 
                 _evs: dict = {}          # 出参：0/1 因子的触发事件（键=因子表达式）
+                # v2.1.0：出参 —— **每期持仓索引**（导出 XLSX 的「持仓明细」页用 ✓）。
+                # 持仓在测试进程内算完即丢 ✗ ⇒ 顺手存一份（`has()` 为假时任务状态里不落键 ✓）
+                _hks = HoldingsIndex()
                 res = run_single_factor_tests(
                     label_horizons=horizons,
+                    fill=req.fill,      # v2.1.23（B ①）：成交时点（t1_close 默认 / t1_open ✓）
                     universe=req.universe,
                     start_date=req.start_date,
                     end_date=req.end_date,
@@ -630,12 +878,19 @@ def single_factor_test(req: SingleFactorTestRequest):
                     rebalance_period=rebalance_period,
                     topk_list=topk_list,
                     events_out=_evs,     # v1.19.60：0/1 因子的触发事件（键=表达式）⇒ 供净值曲线复用
+                    holdings_out=_hks,   # v2.1.0：每期持仓索引 ⇒ 供 XLSX 导出复用
                 )
                 with lock:
                     if _evs:
                         # ⚠ 不进 HTTP 响应（几万行会撑大结果）：存任务状态，供 /factors/event-study/nav 复用
                         state["_evs"] = dict(_evs)
-                        state["_req"] = req.model_dump()
+                    # ⚠ v2.1.0：`_req` 由"仅在有事件时存"改为**无条件存** —— 导出（XLSX）要用它
+                    #   回显参数（池子/区间/成本口径…），而**连续因子没有触发事件** ⇒ 原实现下
+                    #   持仓曲线导不出来（参数全空 ✗）。它只是个几百字节的 dict ✓。
+                    state["_req"] = req.model_dump()
+                    if _hks.has():
+                        # 同 `_evs`：**不进 HTTP 响应**（几千~几万个代码会白白撑大每次轮询 ✗）
+                        state["_hk"] = _hks.as_state()
                     for h, rows in (res or {}).items():
                         per_h[h] = rows
                         if h not in done_set:
@@ -675,6 +930,8 @@ def single_factor_test(req: SingleFactorTestRequest):
                 return
             # 结果按"因子分组、组内周期升序"组织：对每个因子，遍历所有周期取同一下标的行
             items: list[dict] = []
+            # ★ v2.1.27：每期持仓索引（导出/逐点对拍复用 ✓；没落键 ⇒ 空 dict ✓）
+            hk_state = state.get("_hk") or {}
             n_factor = len(req.factors)
             for fi in range(n_factor):
                 for h in horizons:
@@ -683,6 +940,12 @@ def single_factor_test(req: SingleFactorTestRequest):
                         continue
                     row = dict(rows[fi])
                     row["horizon"] = h
+                    # ★ v2.1.27：**每期全仓滚动**（默认关 ✓，慢 ✓）—— 逐点对拍专用 ✓
+                    # ★ v2.1.38：**用户选了哪些档就都算哪些** ✓ —— 结果落
+                    #   `row["period_roll_items"]`（与 `topk_curves.items` **同序** ✓），
+                    #   前端按当前选中档的下标取 ✓（面板取一次价喂所有档 ✓）。
+                    if req.period_roll:
+                        row["period_roll"] = _attach_period_roll(req, hk_state, row)
                     items.append(row)
             state.update(
                 status="success",
@@ -805,6 +1068,9 @@ class EventStudyRequest(BaseModel):
     exclude_stock_kcb: bool = False
     price_adjust: str = "backward"      # v1.19.97：默认改后复权（收益率含分红、无除权跳空 ✓）
     price_round: bool = True
+    # ★★ v2.1.52：**成交时点**（用户 2026-10-12："事件研究要跟随『成交时点』" ✓）——
+    #   与单因子测试面板同名字段/同取值 ✓；默认 `t1_open`（面板默认，v2.1.34 起 ✓）。
+    fill: str = "t1_open"
     suspend_remove: bool = True
     freeze_suspended_price: bool = True
     warmup_days: Optional[int] = None
@@ -915,6 +1181,8 @@ def event_study(req: EventStudyRequest):
                 exclude_stock_kcb=req.exclude_stock_kcb,
                 price_adjust=req.price_adjust,
                 price_round=req.price_round,
+                # ★ v2.1.52：口径跟着面板的「成交时点」✓（t1_open ⇒ 开盘买/卖 ✓）
+                fill=req.fill,
                 suspend_remove=req.suspend_remove,
                 freeze_suspended_price=req.freeze_suspended_price,
                 warmup_days=req.warmup_days,
@@ -971,6 +1239,18 @@ class EventNavRequest(BaseModel):
     #   找回触发事件（用户 2026-09-15 报「净值曲线暂不可用：需要任务上下文」）。
     task_id: str = ""
     factor_id: Optional[str] = None
+    # ★★ v2.1.65：**成交时点**（用户 2026-10-12："事件研究的净值曲线是跟随面板参数次日收盘/开盘走的
+    #   还是写死了次日收盘价？我怎么测下来两个数一模一样" ✓ —— 观察**完全正确** ✓，实测根因 ✓）：
+    #   本端点原来把 `fill` **写死 `t1_open`** ✗（见 `run_backtest(...)` 调用 ✓，只是当年为对拍
+    #   硬编码的 ✗）⇒ 面板选"次日收盘"也照样开盘成交 ⇒ 两种设置**数字必然一模一样** ✗✗。
+    #   现在跟随面板/请求 ✓。
+    # ★★ v2.1.71：**默认从 `"t1_open"` 改成 `None`** ✗→✓ —— 否则"跟随面板那次口径"的兜底
+    #   **永远不触发** ✗：pydantic 会把"没传"填成 `"t1_open"` ✗ ⇒ 下面
+    #   `req.fill or rq["fill"]` 的左边恒为真 ✓。**实测证据**（`ai_test/check_export_fill2.log` ✓）：
+    #   任务按"次日收盘"提交 ✓，而净值请求**故意不传 `fill`** ⇒ 拿到的仍是 `t1_open` 那条
+    #   （期末 0.9981 vs 收盘那条 0.9999 ✗）⇒ 导出/净值一起写错口径 ✗（用户 2026-10-12 报的 ✓）。
+    #   ⇒ 语义：`None` = **跟随那次任务（面板）的口径** ✓；显式传三个取值仍照用 ✓（可切换 ✓）。
+    fill: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1002,6 +1282,41 @@ _NAV_PANEL_LOCK = threading.Lock()
 _NAV_BT_CACHE: dict = {}
 _NAV_BT_LOCK = threading.Lock()
 _NAV_BT_CAP = 4
+
+# ---------------------------------------------------------------------------
+# 「净值曲线那次回测」的**导出旁路**（v2.1.0；用户 2026-10-11 要"事件研究导出也要每期持仓"✓）
+#
+# 为什么需要它：每期持仓只能从 `bt.trades` 派生（回测产物 ✓），而 `bt` 对象**不进 HTTP 响应**
+#   （几万笔成交会撑爆 JSON ✗）⇒ 导出侧没法直接拿到 ✗。重新算一遍又要重跑回测（白烧 CPU ✗）、
+#   复制一份"取事件 + 取价面板 + 回测"的逻辑又是两处漂移 ✗（最坏的一种）。
+# ⇒ 这里让 `/event-study/nav` 把**刚算好的** `bt` 顺手按"调用方可复算的键"登记一份 ✓，
+#   导出端点先调同一个端点（命中缓存 ⇒ 秒回 ✓）再按同一个键取 `bt` ✓ —— 两侧**同一份实现** ✓。
+#   ⚠ 键里必须含 task/factor/k/cost/capital（不同参数是不同回测 ✗）；容量 4、FIFO ✓。
+# ---------------------------------------------------------------------------
+_NAV_BT_STASH: dict = {}
+_NAV_BT_STASH_CAP = 4
+
+
+def _nav_stash_key(task_id: str, factor_id: Optional[str], hold_days: int,
+                   cost: float, capital: float) -> tuple:
+    return (str(task_id or ""), str(factor_id or ""), int(hold_days), float(cost), float(capital))
+
+
+def nav_bt_stash_get(task_id: str, factor_id: Optional[str], hold_days: int,
+                     cost: float, capital: float):
+    """导出用：取回 `/event-study/nav` **刚算过的那次**结果（含 `bt` / `signals` / 输入参数 ✓）。
+
+    ★ v2.1.4：登记的东西从"只有 `bt`"扩成**"`bt` + 输入"** ✗→✓ —— 因为导出（XLSX）的意义
+      是"把面板这次回测**原样搬走**"：信号（触发日/代码 ✓）、`fill`、`strict_limit`、
+      `rebal_band`、`capital`、`cost`、`hold_days` 全都要跟着走 ✓，否则回灌方"看起来一样、
+      结果不一样" ✗（用户 2026-10-11 报的就是这个：面板 `t1_open` + 触发日信号 + 死区 0，
+      而文件里被我写成了 `t1_close` + **成交日**信号 + 界面死区 ⇒ 四个输入全不同 ✗）。
+
+    返回 `{"bt":…, "signals":DataFrame, "fill":…, "strict_limit":…, "rebal_band":…, …}`；没有 ⇒ None ✓。
+    ⚠ 调用方应**先调用一次** `event_study_nav(...)`（命中缓存 ⇒ 秒回 ✓）再取 ⇒ 保证有值 ✓。
+    """
+    with _NAV_BT_LOCK:
+        return _NAV_BT_STASH.get(_nav_stash_key(task_id, factor_id, hold_days, cost, capital))
 
 # ---------------------------------------------------------------------------
 # 取消源（v1.20.5；用户 2026-09-18：「先把取消源接通」✓）
@@ -1051,10 +1366,12 @@ _NAV_CANCEL: set = set()
 _NAV_CANCEL_MAX = 64
 
 
-def _nav_bt_key(codes, ev, start, end, k, cost, capital, modes):
+def _nav_bt_key(codes, ev, start, end, k, cost, capital, modes, fill: str = "t1_open"):
+    # ★ v2.1.65：**`fill` 必须进回测缓存键** ✗→✓ —— 否则面板从"次日开盘"切到"次日收盘"时
+    #   会**命中同一份缓存** ✗ ⇒ 净值不动 ⇒ 用户看到"两个数一模一样" ✗✓（就是这个现象 ✓）。
     return (len(codes), hash(tuple(codes)), str(start), str(end),
             len(ev), str(ev["dt"].iloc[0]), str(ev["dt"].iloc[-1]),
-            int(k), float(cost), float(capital), tuple(modes))
+            int(k), float(cost), float(capital), tuple(modes), str(fill))
 
 
 def _nav_cache_key(codes, start, end, strict: bool = True):
@@ -1160,9 +1477,32 @@ def event_study_nav(req: EventNavRequest):
         timings["prices_cached"] = bool(_hit)
         if panel is None or "CLOSE" not in panel:
             raise HTTPException(status_code=400, detail="取不到触发标的的行情数据")
+        # ★★ v2.1.73：**回退 v2.1.72 在这里的换价** ✗→✓ —— 用户实测（同一份「不复权」文件）：
+        #   面板净值期末 **1.8031** ✓ 而信号测试只剩 **0.831** ✗（"两个净值曲线也差很多" ✓）。
+        #   根因就是我 v2.1.72 把**回测/净值**的价表也换成了真实价 ✗：
+        #     · **比率类**（事件研究：价格比/收益 ✓）⇒ 口径跟文件走 ✓（不复权 ⇒ 真实价 ✓）；
+        #     · **金额类**（回测/净值/持仓 ✓）⇒ **必须后复权** ✓ —— 不复权价缺分红送转的**股份补偿**
+        #       ⇒ 除权/送转日直接记成亏损 ⇒ 净值被系统性打崩 ✗（与"是否跟随文件"无关 ✓，那是**财务上错**✓）。
+        #   ⇒ 本端点（净值曲线）**永远用面板的 `CLOSE`/`OPEN`（后复权 ✓）** ✓，
+        #     不复权只影响**事件研究**那条链（见 `signal_test.py` 的 `_px_es` ✓）。
         t0 = time.perf_counter()
         _modes = ("event_even", "cash_even")
-        _btk = _nav_bt_key(codes, ev, start, end, k, req.cost, req.capital, _modes)
+        # ★★ v2.1.66：**口径归一必须放在最外层** ✗→✓（用户 2026-10-12 实测报错：
+        #   `UnboundLocalError: local variable '_fill_nav' referenced before assignment` ✗）
+        #   —— v2.1.65 我把它定义在「回测**缓存未命中**」的 else 分支里 ✗，而下面
+        #   「登记给导出用」那步**命中缓存时也会用它** ⇒ 第二次同口径请求（命中缓存 ✓）必炸 ✗。
+        # ★★ v2.1.69：**兜底改成"跟随那次任务的请求"** ✗→✓（用户 2026-10-12 实测：
+        #   面板选「次日收盘」✓，导出的 XLSX 参数页却写「次日开盘」✗）。
+        #   根因：本函数要**三方**都同意口径 —— ① 本请求 `req.fill`（v2.1.65 起前端才发 ✗，
+        #   老 bundle 不发 ⇒ `None` ✗）② 那次任务自己的 `rq["fill"]`（= 面板真正用的 ✓）
+        #   ③ 默认 `t1_open` ✓。旧代码只认 ① ✗ ⇒ 老前端 ⇒ 退成 `t1_open` ✗ ⇒
+        #   净值/导出登记都写错 ✗（而**事件研究本身**用的是 `rq["fill"]` = 次日收盘 ✓
+        #   ⇒ 文件里"参数=开盘 ✗ / 曲线=收盘 ✓"自相矛盾 ✓，回灌必然对不上 ✓）。
+        #   ⇒ 现在按 ① > ② > ③ 取 ✓（任何一条链传了口径都认 ✓，绝不会无声退回默认 ✗）。
+        _fill_nav = str(req.fill or rq.get("fill") or "t1_open").strip().lower()
+        if _fill_nav not in ("t1_open", "t1_close", "t_close"):
+            _fill_nav = "t1_open"
+        _btk = _nav_bt_key(codes, ev, start, end, k, req.cost, req.capital, _modes, _fill_nav)
         # 取消源（v1.20.5）：登记本次请求序号；同事件指纹来了更新的请求 ⇒ 本次立即自停 ✓
         _seq = _nav_req_begin(_nav_req_key(codes, ev, start, end))
 
@@ -1178,15 +1518,21 @@ def event_study_nav(req: EventNavRequest):
                 raise _NavCancelled()
             if _nav_req_current(_nav_req_key(codes, ev, start, end)) != _seq:
                 raise _NavCancelled()
+        # ⚠ 信号表要在**缓存判断之前**建好 ✗→✓：v2.1.4 起它还要进"给导出用的登记"（stash ✓），
+        #   若只在"缓存未命中"分支里建 ⇒ 命中缓存时 `events` 未绑定 ⇒ UnboundLocalError ✗
+        #   （实测被 ai_test/check_replay_identical.py 抓出来：HTTP 400 ✓）。建表本身是 O(事件数) ✓
+        #   的浅拷贝级开销（几万行也就几毫秒 ✓），放在这里不亏 ✓。
+        events = pd.DataFrame({"date": pd.to_datetime(ev["dt"]),
+                               "code": ev["code"].astype(str), "side": 1})
         with _NAV_BT_LOCK:
             bt = _NAV_BT_CACHE.get(_btk)
         if bt is not None:
             timings["backtest_cached"] = True
         else:
             timings["backtest_cached"] = False
-            events = pd.DataFrame({"date": pd.to_datetime(ev["dt"]),
-                                   "code": ev["code"].astype(str), "side": 1})
-            bt = run_backtest(events, panel, hold_days=k, fill="t1_open", cost=float(req.cost),
+            # ★ v2.1.65：**fill 跟随请求** ✗→✓（原先写死 `"t1_open"` ✗ ⇒ 面板切"次日收盘"无效果 ✗）
+            #   ⚠ `_fill_nav` 由外层统一算好（v2.1.66 修：别在分支里定义 ✗，命中缓存时下面还要用 ✓）
+            bt = run_backtest(events, panel, hold_days=k, fill=_fill_nav, cost=float(req.cost),
                               capital=float(req.capital), strict_limit=True,
                               alloc_modes=_modes, cancel_cb=_cancel_cb)
             with _NAV_BT_LOCK:
@@ -1196,6 +1542,20 @@ def event_study_nav(req: EventNavRequest):
         timings["backtest"] = round(time.perf_counter() - t0, 3)
         if bt.nav is None:
             raise HTTPException(status_code=400, detail="回测没有产出净值：%s" % bt.diag.get("error"))
+        # v2.1.0：登记给导出用（**不进响应** ✗）—— 导出侧据此从 `bt.trades` 派生每期持仓 ✓
+        _stash_key = _nav_stash_key(req.task_id, req.factor_id, k, float(req.cost), float(req.capital))
+        with _NAV_BT_LOCK:
+            _NAV_BT_STASH.pop(_stash_key, None)
+            # ★ v2.1.4：连同**这次回测的输入**一起登记（导出要原样搬走 ⇒ 回灌才能逐位一致 ✓）
+            #   `signals` 是**信号日**（触发日 ✓）而不是成交日 —— 引擎会自己按 `fill` 成交 ✓
+            _NAV_BT_STASH[_stash_key] = {
+                "bt": bt, "signals": events,
+                # ★ v2.1.65：登记**本次真实用的**口径（原来写死 `"t1_open"` ✗ ⇒ 导出文件跟着写错 ✗）
+                "fill": _fill_nav, "strict_limit": True, "rebal_band": 0.0,
+                "hold_days": int(k), "cost": float(req.cost), "capital": float(req.capital),
+            }
+            while len(_NAV_BT_STASH) > _NAV_BT_STASH_CAP:
+                _NAV_BT_STASH.pop(next(iter(_NAV_BT_STASH)))
         t0 = time.perf_counter()
         bench = load_bench_wide([req.benchmark], start, end)
         nav = attach_benchmark(bt.nav, bench, req.benchmark)

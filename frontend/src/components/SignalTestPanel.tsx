@@ -39,6 +39,10 @@ import ZoomableLineChart from './ZoomableLineChart'
  *   **所有图的图例都可点击隐藏/复现**（`hidden` + `toggleSeries`）。
  */
 
+// v2.1.10：图例悬停说明（"这条线到底怎么调仓" ✓）—— 文案在**共享口径** `navSeries.ts` 里 ✓，
+// 不在这里再抄一份（同一件事两套口径正是本项目最忌讳的 ✓）。
+import { navDesc } from './navSeries'
+
 const FILL_LABEL: Record<string, string> = {
   t1_open: '次日开盘价',
   t_close: '信号日收盘价',
@@ -50,6 +54,9 @@ const ALLOC_LABEL: Record<string, string> = {
   cash_even: '现金等分（不主动再平衡）',
   // v1.19.76：按批次分片（有"持仓周期/批次"列时自动出现）——每批固定份额、批内等权、只动刷新的票
   batch_even: '按批次分片（每批固定份额·批内等权·只动刷新的票）',
+  // ★ v2.1.9：每期全仓滚动（**实盘口径**：调仓日按当期名单等权重建 ✓，含整手/涨跌停/资金约束 ✓）
+  //   —— 拖自家导出文件时**默认看这条** ✓（见改 `setNavFocus` 的那段注释 ✓）
+  period_roll: '每期全仓滚动（调仓日按当期名单等权重建 · 实盘口径）',
 }
 
 const NAV_LABEL: Record<string, string> = {
@@ -234,6 +241,8 @@ export default function SignalTestPanel() {
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<SignalTestRunResult | null>(null)
   const [error, setError] = useState('')
+  /** v2.1.0：拖入本工具导出的 XLSX 后，显示"已按文件参数对齐"（空串 = 未对齐 ✓）。 */
+  const [alignNote, setAlignNote] = useState('')
   const [showIssues, setShowIssues] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [perfDragOver, setPerfDragOver] = useState(false)
@@ -297,6 +306,7 @@ export default function SignalTestPanel() {
     setError('')
     setPerfName('')
     setPerfB64('')
+    setAlignNote('')
     try {
       const b = bufToBase64(await f.arrayBuffer())
       setB64(b)
@@ -306,6 +316,57 @@ export default function SignalTestPanel() {
       if (p.mode === 'jq_trades' && p.stats) {
         const sug = p.stats.suggest_capital as number | undefined
         if (sug) setJqCapital(sug)
+      }
+      /**
+       * v2.1.0：拖入的是**本工具导出的 XLSX**（单因子测试持仓曲线 / 事件研究）
+       * ⇒ 用第 1 页的参数**自动对齐设置**（用户 2026-10-11 需求 ✓）。
+       *
+       * ⚠ 只对齐「持仓周期 / 成本 / 基准」这三项 —— 它们正是"回灌复现净值曲线"必须一致的东西
+       *   （持有天数决定调仓节奏、成本决定扣费、基准决定对比线 ✓）；池子/区间由文件里的持仓
+       *   自带的标的与日期决定，界面不用改 ✓（改错反而会取不到行情 ✗）。
+       */
+      const al = p.aligned
+      if (p.origin === 'qlib_export' && al) {
+        const bits: string[] = []
+        if (typeof al.horizon === 'number' && al.horizon > 0) {
+          setHorizon(al.horizon)
+          bits.push(`持仓周期 ${al.horizon} 天`)
+        }
+        if (typeof al.cost === 'number') {
+          setCost(al.cost)
+          bits.push(`成本 ${al.cost}`)
+        }
+        // ★ 成交时点：搬**面板净值引擎真正用的**那个（v2.1.4 起文件里就是实参 ✓；
+        //   老文件按 `t1_close` 理解 ✓）。⚠ 注意：曲线标题写的"T+1 收盘买入"是**统计量口径**，
+        //   而净值引擎用的是 `t1_open`（次日开盘）⇒ 两者不同，搬运要搬引擎的 ✓。
+        if (al.fill) {
+          setFill(al.fill)
+          bits.push(`成交时点 ${al.fill === 't1_close' ? '次日收盘价' : '次日开盘价'}`)
+        }
+        // ★ v2.1.4：净值引擎的另三个实参也必须跟着对齐 —— 否则"同名方案 + 不同实参"仍是
+        //   两次不同回测 ✗（严格涨跌停影响一字板买不买得进、死区影响调平频率、
+        //   初始资金影响取整/手数 ✓）
+        if (typeof al.strict_limit === 'boolean') {
+          setStrictLimit(al.strict_limit)
+          bits.push(`严格涨跌停 ${al.strict_limit ? '开' : '关'}`)
+        }
+        if (typeof al.rebal_band === 'number') {
+          setRebalBand(al.rebal_band)
+          bits.push(`再平衡死区 ${(al.rebal_band * 100).toFixed(1)}%`)
+        }
+        if (typeof al.capital === 'number' && al.capital > 0) {
+          setCapital(al.capital)
+          bits.push(`初始资金 ${al.capital.toLocaleString('zh-CN')}`)
+        }
+        if (al.benchmark) {
+          setBenchmark(al.benchmark)
+          bits.push(`基准 ${al.benchmark}`)
+        }
+        setAlignNote(
+          `已按导出文件对齐参数（${al.origin_label ?? '导出文件'}${
+            al.factor_name ? ` · ${al.factor_name}` : ''
+          }）：${bits.join(' · ') || '文件里没有可对齐的参数'}`,
+        )
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -377,10 +438,37 @@ export default function SignalTestPanel() {
     setResult(null)
     setNavInfo('')
     try {
-      const r = await runSignalTest(buildReq())
+      /**
+       * ★★ v2.1.6：自家导出文件（`qlib_export`）拖进来的意图是「**复现净值曲线**」✓
+       * ⇒ **只跑回测**（`backtest_only`），不再连带跑事件研究 ✗ ——
+       * 否则界面上冒出来的是**01 信号**那套 k 图（用户 2026-10-11 报：
+       * 「怎么连续信号的回测变成 01 信号了？」✓），而文件里本就带着面板那次的事件研究结果 ✓。
+       */
+      const fromExport = parsed?.origin === 'qlib_export'
+      /**
+       * ★★ v2.1.12：对自家导出文件**也照常跑事件研究** ✓ —— 用户 2026-10-11：
+       * 「连续曲线的信号测试也有 01 信号的这个面板…我现在觉得不错，就留着吧」＋「你也加上吧」
+       * ⇒ 恢复完整结果（v2.1.6 曾为"只复现净值"跳过它 ✗）。
+       * ⚠ 代价：拖文件后要多等十几秒（事件研究那段）✓ —— 这些 k 图是用户明确要保留的 ✓。
+       * 净值区仍默认盯 `period_roll`（见下面 `setNavFocus` ✓）。
+       */
+      const r = await runSignalTest(buildReq({}))
       setResult(r)
       const cols = r.backtest?.nav_columns ?? []
-      setNavFocus(r.backtest?.alloc_default ?? cols[2] ?? '')
+      /**
+       * ★ v2.1.7：**不再默认盯 `batch_even`** ✗ —— 见 `parsers/qlib_export.py` 的长注释：
+       * 我们导出的每期组合是**单批次**（不存在"一周 5 个并发批次"），强行合成批次会让
+       * 引擎跑"每批固定 1/N 份额"✗ ⇒ 旧批到期后钱变成不再投入的现金 ⇒ 结果偏了一大截
+       * （用户 2026-10-11 实测：`batch_even` +95.38% vs `event_even` +42.2% ✗ 差 53pp ✓）。
+       */
+      /**
+       * ★ v2.1.9：拖自家导出文件（"每期一批组合"）⇒ **默认盯 `period_roll`** ✓ ——
+       * 用户 2026-10-11 定的用法：「连续信号面板那条模型不改，我就把导出的信号拖进来
+       * 看**接近实盘**的结果」✓。`period_roll`（每期全仓滚动 ✓）才是那条曲线的实盘口径 ✓
+       * （`event_even` 会把重复出现的票当新买入 ✗、`batch_even` 是固定份额 ✗）。
+       */
+      const wantRoll = fromExport && cols.includes('period_roll')
+      setNavFocus(wantRoll ? 'period_roll' : (r.backtest?.alloc_default ?? cols[2] ?? ''))
       // 净值周期跟随本次运行的「预测周期」（后端回的 diag.hold_days 是真正用上的那个）
       setNavHold(Number(r.backtest?.diag?.hold_days) || horizon)
     } catch (e: any) {
@@ -388,7 +476,7 @@ export default function SignalTestPanel() {
     } finally {
       setRunning(false)
     }
-  }, [b64, buildReq, horizon])
+  }, [b64, buildReq, horizon, parsed])      // v2.1.6：`parsed` 要进依赖（据它决定只跑回测 ✓）
 
   const appliedHold = Number((result?.backtest as { diag?: { hold_days?: number } } | undefined)
     ?.diag?.hold_days) || null
@@ -607,8 +695,14 @@ export default function SignalTestPanel() {
             />
           </div>
           <div className="text-[11px] text-slate-400">
-            支持 CSV / TXT / XLSX / XLS（GBK 或 UTF-8 都行）；拖入新文件会替换当前文件与结果
+            支持 CSV / TXT / XLSX / XLS（GBK 或 UTF-8 都行）；拖入新文件会替换当前文件与结果；
+            也可以直接拖**本工具导出的 XLSX**（单因子测试持仓曲线 / 事件研究）⇒ 自动对齐参数并按
+            第 2 页持仓复现净值曲线 ✓
           </div>
+          {/* v2.1.0：导出文件回灌 ⇒ 显示"已对齐哪些参数"（不让用户猜 ✓） */}
+          {alignNote && (
+            <div className="text-xs text-emerald-700 dark:text-emerald-300">{alignNote}</div>
+          )}
           {fileName && (
             <div className="text-xs text-slate-600 dark:text-slate-300 flex flex-wrap items-center gap-2">
               <span className="font-medium">{fileName}</span>
@@ -1023,6 +1117,7 @@ export default function SignalTestPanel() {
               data={navData}
               keys={navKeys}
               labelOf={navLabel}
+              descOf={navDesc}
               colorOf={navColor}
               dashOf={navDash}
               focus={navFocus}
@@ -1125,7 +1220,8 @@ export default function SignalTestPanel() {
             const downloadCsv = () => {
               const head = '成交日,代码,原因,原因码,信号日,方案,批次'
               const body = rows.map((r) => [r.date, r.code, r.text, r.reason, r.signal_date,
-                                            r.mode, r.batch].map(cell).join(','))
+                                            r.mode ? allocLabel(String(r.mode)) : '', r.batch]
+                                            .map(cell).join(','))
               const blob = new Blob(['\ufeff' + [head, ...body].join('\r\n')],
                                     { type: 'text/csv;charset=utf-8' })
               const url = URL.createObjectURL(blob)
@@ -1191,7 +1287,11 @@ export default function SignalTestPanel() {
                           <td className="py-0.5 pr-2">{r.code}</td>
                           <td className="py-0.5 pr-2">{r.text || rjReasonLabel(String(r.reason))}</td>
                           <td className="py-0.5 pr-2">{r.signal_date ?? '—'}</td>
-                          <td className="py-0.5 pr-2">{r.mode ?? '—'}</td>
+                          {/* v2.1.11：方案列**写中文**（用户 2026-10-11："方案这里写中文吧" ✓）——
+                              用共享的 `allocLabel` ✓（含 `event_even_band5` 这类自动展开 ✓）。 */}
+                          <td className="py-0.5 pr-2">
+                            {r.mode ? allocLabel(String(r.mode)) : '—'}
+                          </td>
                           <td className="py-0.5 pr-2">{r.batch || '—'}</td>
                         </tr>
                       ))}

@@ -55,11 +55,15 @@ def _r(v, nd: int = 6):
 
 
 def load_px_wide(codes, start_date: str, end_date: str, price_adjust: str,
-                 price_round: bool = True) -> pd.DataFrame:
-    """加载指定标的的收盘价并转宽表（index=交易日, columns=标的），停牌按前值冻结。
+                 price_round: bool = True, price: str = "$close") -> pd.DataFrame:
+    """加载指定标的的价格并转宽表（index=交易日, columns=标的），停牌按前值冻结。
 
-    价格口径与 label 一致：`adjust_expr("$close")` —— forward/backward 用数据原生
+    价格口径与 label 一致：`adjust_expr(price)` —— forward/backward 用数据原生
     后复权价、none 用真实价（可选按分取整），保证事件收益与单因子测试口径一致。
+
+    ★ v2.1.52：新增 `price`（`"$close"` 收盘 / `"$open"` 开盘 ✓）—— 由面板的**成交时点**
+      决定（`t1_open` ⇒ 用开盘 ✓），与「持仓曲线」那条链的规矩一致 ✓（用户 2026-10-12：
+      "事件研究要跟随成交时点" ✓）。默认 `$close` ⇒ 不传参时行为不变 ✓。
     """
     from qlib.data import D
 
@@ -69,7 +73,7 @@ def load_px_wide(codes, start_date: str, end_date: str, price_adjust: str,
     # ⚠ v1.19.96：事件研究算的是**价格比/收益**（比率类）⇒ 必须**后复权** ✓（前/后复权收益逐位
     #   等价 ✓ 含分红 ✓）；若跟 `price_adjust` 走，`forward` 现在是真实价 ⇒ 除权日跳空 ✗。
     _px_mode = "none" if (price_adjust or "none").lower() == "none" else "backward"
-    px_expr = adjust_expr("$close", _px_mode, round_prices=price_round)
+    px_expr = adjust_expr(str(price or "$close"), _px_mode, round_prices=price_round)
     df = D.features(codes, [px_expr], start_time=start_date, end_time=end_date, freq="day")
     if df is None or len(df) == 0:
         return pd.DataFrame()
@@ -78,15 +82,22 @@ def load_px_wide(codes, start_date: str, end_date: str, price_adjust: str,
 
 
 def _align_returns(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
-                   cancel_check=None):
-    """把事件对齐到「T+1 收盘买入、T+1+k 收盘卖出」，返回 (mat[事件×k], max_ret, min_ret)。
+                   cancel_check=None, lag: int = 1):
+    """把事件对齐到「T+`lag` 买入、T+`lag`+k 卖出」，返回 (mat[事件×k], max_ret, min_ret)。
+
+    ★ v2.1.52：`lag` 参数化（0 = 信号日当天成交 / 1 = 次日成交 ✓）—— 配合调用方选的
+      **价格表**（收盘 or 开盘 ✓）就实现了"事件研究跟随成交时点" ✓：
+        `t1_open`  ⇒ `price="$open"`, `lag=1` ✓（T+1 开盘买、T+1+k 开盘卖 ✓）
+        `t1_close` ⇒ `price="$close"`, `lag=1` ✓（= 老口径 ✓ 默认 ✓）
+        `t_close`  ⇒ `price="$close"`, `lag=0` ✓（信号日收盘买 ✓）
+      买/卖**同一张表、同一基准** ✓（与持仓曲线那条链的规矩一致 ✓）。
 
     v1.18.35 性能：原实现是「逐事件 Python 循环 + 内层逐 k 循环」（n_ev × max_k 次标量
     运算，且每个事件还要 `px_wide[c].values` 取一次整列）—— 触发事件上万时单次调用可达
     ~25s（全 A「趋势顶底离开底部」实测）。现改为：
       ① 列位置 / 日期位置一次性解析（`get_indexer`，无 Python 循环）；
       ② 价格宽表一次性转 numpy，逐 k 列向量化切片（40 次 O(n_ev) 运算）。
-    数值口径完全不变：T+1 相对 T+1+k（k=1..max_k）、买入价无效或越界的事件整行 NaN。
+    数值口径（`lag=1` 时）与原来逐位相同：T+1 相对 T+1+k、买入价无效或越界的事件整行 NaN。
     """
     cal = px_wide.index
     n_ev = len(events)
@@ -108,8 +119,9 @@ def _align_returns(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
     ev_idx = np.nonzero(ok)[0]
     cc = col_pos[ev_idx]
     pp = p_pos[ev_idx]
-    # 严格落在真实交易日上（与原实现 `cal[p] != dt → skip` 等价），且需存在 T+1
-    keep = (cal.take(pp) == pd.DatetimeIndex(dt_arr[ev_idx])) & (pp + 1 < len(cal))
+    # 严格落在真实交易日上（与原实现 `cal[p] != dt → skip` 等价），且需存在 T+lag
+    _lag = 0 if int(lag) <= 0 else 1
+    keep = (cal.take(pp) == pd.DatetimeIndex(dt_arr[ev_idx])) & (pp + _lag < len(cal))
     if not keep.any():
         return mat, max_ret, min_ret
     ev_idx = ev_idx[keep]
@@ -117,12 +129,12 @@ def _align_returns(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
     pp = pp[keep]
     F = px_wide.to_numpy(dtype=np.float64, copy=False)
     n_row = F.shape[0]
-    buy = F[pp + 1, cc]
+    buy = F[pp + _lag, cc]
     good = np.isfinite(buy) & (buy > 0.0)
     block = np.full((ev_idx.size, max_k), np.nan)
     with np.errstate(all="ignore"):
         for j in range(max_k):
-            q = pp + 2 + j
+            q = pp + _lag + 1 + j
             v = np.full(ev_idx.size, np.nan)
             inb = q < n_row
             if inb.any():
@@ -154,10 +166,13 @@ _DIST_EDGES = ([-1.0, -0.7, -0.5, -0.4, -0.3]
 
 
 def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
-                      n_raw: int = 0, cancel_check=None) -> dict:
+                      n_raw: int = 0, cancel_check=None, lag: int = 1,
+                      fill: str = "t1_close") -> dict:
     """由「价格宽表 + 事件表」计算事件研究结果。
 
-    口径：T 为信号日，T+1 收盘买入，T+1+k 收盘卖出（k = 1..max_k）。
+    口径（v2.1.52 起**跟随成交时点** ✓）：T 为信号日，**T+`lag` 买入、T+`lag`+k 卖出** ——
+    `lag`/`fill` 由调用方按面板的「成交时点」给出 ✓（价格表也用同一种：开盘 or 收盘 ✓）；
+    默认 `lag=1` + `"t1_close"` = 老口径（T+1 收盘）⇒ 不传参时行为不变 ✓。
     events：DataFrame，需含 `code` / `dt` 两列（dt 为 Timestamp）。
     返回 curve / prob / upside / top_events / worst_events 等（不含 factor/params）。
     """
@@ -166,7 +181,10 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
     n_ev = len(events)
     code_arr = events["code"].astype(str).values
     dt_arr = pd.to_datetime(events["dt"]).values
-    mat, max_ret, min_ret = _align_returns(px_wide, events, max_k, cancel_check)
+    # ⚠ 本函数**下面**有个局部变量也叫 `lag`（`np.fmin.accumulate` 的"期内最低" ✓，老代码 ✓）
+    #   ⇒ 这里先把参数归一成 `_lag_up` 再用 ✓，避免被它遮蔽造成"看起来用了、其实用了别的"✗。
+    _lag_up = 0 if int(lag) <= 0 else 1
+    mat, max_ret, min_ret = _align_returns(px_wide, events, max_k, cancel_check, lag=_lag_up)
 
     curve = []
     for j, k in enumerate(ks):
@@ -333,7 +351,7 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
 
 def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFrame,
                             events: pd.DataFrame, max_k: int,
-                            cancel_check=None) -> dict:
+                            cancel_check=None, lag: int = 1) -> dict:
     """计算「基准（未触发组）」与「超额」曲线（仅供展示）。
 
     **两套口径，不可混用**：
@@ -361,7 +379,9 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
     ev_dt = pd.to_datetime(events["dt"]).values
 
     # ---- 触发组：事件矩阵 → 按触发日聚合 → 配对日平均 ----
-    mat, _, _ = _align_returns(px_wide_trig, events, max_k, cancel_check)
+    # ★ v2.1.52：`lag` 跟着「成交时点」走 ✓（两条曲线必须同口径 ✓，否则**超额**没意义 ✓）
+    _blag = 0 if int(lag) <= 0 else 1
+    mat, _, _ = _align_returns(px_wide_trig, events, max_k, cancel_check, lag=lag)
     tdf = pd.DataFrame(mat, columns=ks)
     tdf["_d"] = ev_dt
     by_day = tdf.groupby("_d")[ks].mean()
@@ -411,7 +431,7 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
                     _tc.append(c)
             trig_i = np.asarray(_ti, dtype=np.intp)
             trig_c = np.asarray(_tc, dtype=np.intp)
-            entry_rows = rows + 1  # T+1（entry 行）
+            entry_rows = rows + _blag  # ★ v2.1.52：T+`lag`（entry 行 ✓；lag=1 时 = 原来的 T+1 ✓）
             # `entry_rows < n_row` 与 k 无关 → 提到循环外（原来每 k 重算一次布尔与）
             entry_ok = entry_rows < n_row
             # T+1（entry 行）取值矩阵一次算好（n_pair × n_inst）；循环内只按有效行取子集，
@@ -535,6 +555,13 @@ def run_event_study(
     exclude_stock_kcb: bool = False,
     price_adjust: str = "backward",     # v1.19.97：默认改后复权
     price_round: bool = True,
+    # ★★ v2.1.52：**成交时点**（用户 2026-10-12："事件研究要跟随『成交时点』" ✓）——
+    #   与持仓曲线那条链**同一套取值**（`routers/signal_test.FILLS` / 面板选择框 ✓）：
+    #     `t1_open`  ⇒ 用**开盘**价、T+1 买 / T+1+k 卖 ✓
+    #     `t1_close` ⇒ 用**收盘**价、T+1 买 / T+1+k 卖 ✓（= 老口径 ✓ 默认 ⇒ 行为不变 ✓）
+    #     `t_close`  ⇒ 用**收盘**价、信号日买 / 信号日+k 卖 ✓
+    #   ⚠ 买/卖必须**同一张表、同一基准** ✓（与 `_align_returns` 的 docstring 一致 ✓）。
+    fill: str = "t1_close",
     suspend_remove: bool = True,
     freeze_suspended_price: bool = True,
     warmup_days: Optional[int] = None,
@@ -553,6 +580,16 @@ def run_event_study(
     """
     import os
     import time
+
+    # ★★ v2.1.52：把「成交时点」归一成 **(lag, 价格字段)** ✓ —— 全流程只用这两个 ✓：
+    #   `t1_open` ⇒ 开盘表 + 次日成交；`t_close` ⇒ 收盘表 + 当日成交 ✓
+    #   ⚠ **进缓存键**（见下面 `_cache_params` ✓）：否则换了口径会命中旧缓存 ✗✗
+    #     —— 那正是本项目最忌讳的"口径漂移 + 看不见" ✓。
+    _fill = str(fill or "t1_close").strip().lower()
+    if _fill not in ("t1_open", "t1_close", "t_close"):
+        _fill = "t1_close"
+    _lag = 0 if _fill == "t_close" else 1
+    _px_field = "$open" if _fill == "t1_open" else "$close"
 
     from qlib.data import D
 
@@ -614,6 +651,8 @@ def run_event_study(
         "exclude_stock_gem": exclude_stock_gem,
         "exclude_stock_kcb": exclude_stock_kcb,
         "price_adjust": pa, "price_round": price_round,
+        # ★ v2.1.52：**口径必须进缓存键** ✗→✓（成交时点一变，结果就不同 ✓）
+        "fill": _fill,
         "suspend_remove": suspend_remove,
         "freeze_suspended_price": freeze_suspended_price,
         "warmup_days": warmup_days,
@@ -739,14 +778,15 @@ def run_event_study(
     # ---------- 5. 加载触发标的收盘价（仅涉及标的，数据量小） ----------
     codes = sorted(ev["code"].unique().tolist())
     _prog(45.0, "加载 %d 只触发标的的后续行情（至 %s）..." % (len(codes), ev_end))
-    piv = load_px_wide(codes, start_date, ev_end, pa, price_round)
+    piv = load_px_wide(codes, start_date, ev_end, pa, price_round, price=_px_field)
     if piv is None or len(piv) == 0:
         return {"error": "触发标的行情加载失败"}
     _check()
 
-    # ---------- 6. 对齐 + 统计（T+1 收盘买入，T+1+k 收盘卖出） ----------
+    # ---------- 6. 对齐 + 统计（口径跟随「成交时点」：T+lag 买、T+lag+k 卖 ✓） ----------
     _prog(60.0, "对齐 %d 个事件..." % len(ev))
-    stats = build_event_stats(piv, ev, max_k, n_raw=n_raw, cancel_check=_check)
+    stats = build_event_stats(piv, ev, max_k, n_raw=n_raw, cancel_check=_check,
+                              lag=_lag, fill=_fill)
     if stats.get("n_aligned", 0) == 0:
         _ns = int(stats.get("n_short") or 0)
         _na = int(stats.get("n_unaligned") or 0)
@@ -764,9 +804,11 @@ def run_event_study(
         _check()
         _prog(88.0, "计算基准（全样本收盘价宽表，%d 只）..." % len(instruments))
         full_codes = sorted({str(c).upper() for c in instruments})
-        full_piv = load_px_wide(full_codes, start_date, ev_end, pa, price_round)
+        full_piv = load_px_wide(full_codes, start_date, ev_end, pa, price_round,
+                                price=_px_field)
         if full_piv is not None and len(full_piv):
-            baseline = compute_baseline_curves(piv, full_piv, ev, max_k, cancel_check=_check)
+            baseline = compute_baseline_curves(piv, full_piv, ev, max_k,
+                                               cancel_check=_check, lag=_lag)
     except FactorTestCancelled:
         raise
     except Exception as _ble:      # 基准失败只影响展示，不拖垮事件研究主结果
@@ -783,6 +825,29 @@ def run_event_study(
         "params": {
             "universe": universe, "start_date": start_date, "end_date": end_date,
             "max_k": max_k, "price_adjust": pa,
+            # ★ v2.1.52：把**口径**一起回传 ✓ —— 前端图注按它写"T+1 开盘买入 / T+1 收盘买入"✓
+            #   （此前图注写死"T+1 收盘买入" ✗，与面板选的成交时点矛盾 ✓）
+            "fill": _fill, "fill_lag": _lag, "price_field": _px_field,
+            # ★★ v2.1.54：**剔除开关一起回传** ✗→✓ —— 它们决定**触发组样本**⇒ 直接决定数字 ✓；
+            #   导出侧据此写进 `_meta`✓（否则文件不自足：谁回灌都只能按页面默认跑 ✗，
+            #   实测同一份信号跑出 4.84% vs 5.9% ✓，用户 2026-10-12 抓出来的就是这条 ✓）。
+            "exclude_limit_up_signal": bool(exclude_limit_up_signal),
+            "exclude_limit_up_trade": bool(exclude_limit_up_trade),
+            "exclude_suspended": bool(exclude_suspended),
+            "exclude_st_t1": bool(exclude_st_t1),
+            "exclude_stock_gem": bool(exclude_stock_gem),
+            "exclude_stock_kcb": bool(exclude_stock_kcb),
+            "price_adjust": pa,
+            # ★★ v2.1.74：**其余"影响计算"的面板参数也一起回传** ✗→✓（用户 2026-10-12 要求
+            #   "每个参数都检查一遍、导出别漏" ✓；审计发现它们过去只在人读页出现 ✗ ⇒ 文件不自足 ✓）：
+            #   · `price_round` —— 仅不复权生效的"按分取整" ✓，回灌必须知道它才能逐位复现 ✓；
+            #   · `suspend_remove` / `freeze_suspended_price` —— 停牌行语义 ✓（影响未来收益 ✓）；
+            #   · `warmup_days` —— 预热缓冲 ✓（影响区间首日的长回看公式 ✓；
+            #     ⚠ 信号测试侧**不需要**它：那边不重算因子 ✓，只是记录口径 ✓）。
+            "price_round": bool(price_round),
+            "suspend_remove": bool(suspend_remove),
+            "freeze_suspended_price": bool(freeze_suspended_price),
+            "warmup_days": (int(warmup_days) if warmup_days is not None else None),
         },
         **stats,
         # 基准（未触发组）/超额曲线；None 或 {"error": ...} 时前端自动隐藏对应图

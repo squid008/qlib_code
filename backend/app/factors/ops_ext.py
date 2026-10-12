@@ -2009,7 +2009,56 @@ class Mod(ExpressionOps):
         return max(ll, rl), max(lr, rr)
 
 
+class LN(ExpressionOps):
+    """LN(X) / LOG(X)：**自然对数**（`np.log` ✓，与 qlib 内建 `Log` 同口径 ✓）。
+
+    ⚠ 为什么必须补（v2.1.28，2026-10-11 ✓）：用户公式库里有**旧编译产物**写成 `LN(...)`
+      （`-log(market_cap)` 这类原文在更早的编译链里落成的就是 `LN` ✗），而 qlib 注册表里
+      **只有 `Log`、没有 `LN`** ✗ ⇒ 一旦走到 **qlib 回退路径**就直接
+      `The operator [LN] is not registered` ✗ —— 更糟的是：这条报错把真正的根因
+      （**面板求值先失败了** ✗）完全掩盖掉 ✗，害我们绕了很久才定位 ✓。
+      ⇒ 注册 `LN`/`LOG`/`Ln` 三个名字，语义与 `parser/codegen.py` 的 `LOG/LN → Log`
+      **完全一致**（自然对数 ✓）—— 别在这里改成 10 为底 ✗（那会让"负市值对数"口径悄悄变 ✓）。
+    """
+
+    def __init__(self, feature):
+        self.feature = feature
+        super().__init__()
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        # ⚠ 与 Sqrt 同规矩：容忍**裸数字**参数（`LN(2)` ✓），否则常量参数会 AttributeError ✗
+        if not isinstance(self.feature, Expression):
+            return np.log(np.asarray(self.feature, dtype=float))
+        series = self.feature.load(instrument, start_index, end_index, *args)
+        with np.errstate(all="ignore"):              # ln(0) ⇒ -inf，不刷 RuntimeWarning ✓
+            return pd.Series(np.log(series.to_numpy(dtype=float)), index=series.index)
+
+    def __str__(self):
+        return "LN({})".format(self.feature)
+
+    def get_longest_back_rolling(self):
+        return self.feature.get_longest_back_rolling()
+
+    def get_extended_window_size(self):
+        return self.feature.get_extended_window_size()
+
+
+class LOG(LN):
+    """`LOG(X)`：`LN` 的**别名**（通达信口径两者都是自然对数 ✓，与 codegen 一致 ✓）。"""
+
+    def __str__(self):
+        return "LOG({})".format(self.feature)
+
+
+class Ln(LN):
+    """`Ln(X)`：混合大小写别名（qlib 的算子名**区分大小写** ⇒ 三种都要注册 ✓）。"""
+
+    def __str__(self):
+        return "Ln({})".format(self.feature)
+
+
 _ALL_OPS = [
+    LN, LOG, Ln,         # v2.1.28：qlib 只有 `Log`，旧编译产物里的 `LN(...)` 一用就炸 ✗
     FACTOR_END,          # v1.19.97：前复权用（$close / FACTOR_END($factor)）
     BARSLAST, BARSCOUNT, BARSSINCEN,
     DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM, DYN_MEAN, DYN_HHVBARS, DYN_LLVBARS,

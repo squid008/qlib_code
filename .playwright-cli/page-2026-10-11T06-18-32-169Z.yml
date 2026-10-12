@@ -1,0 +1,205 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - heading "Qlib 量化回测平台" [level=1] [ref=e6]
+    - paragraph [ref=e7]: Alpha158 因子 + LightGBM 模型 + TopK 策略 | 多数据源支持
+  - main [ref=e8]:
+    - generic [ref=e9]:
+      - heading "回测参数" [level=2] [ref=e11]
+      - generic [ref=e12]:
+        - generic [ref=e13]:
+          - text: 股票池
+          - combobox "股票池" [ref=e14]:
+            - option "沪深300" [selected]
+            - option "中证500"
+            - option "中证800"
+            - option "中证1000"
+            - option "全部A股"
+        - generic [ref=e15]:
+          - text: 模型
+          - combobox "模型" [ref=e16]:
+            - option "LightGBM" [selected]
+            - option "XGBoost"
+            - option "线性回归"
+        - generic [ref=e17]:
+          - text: 数据源（数据集）
+          - button "加载中…" [ref=e19]
+        - generic [ref=e21]:
+          - text: 特征集
+          - combobox [ref=e22]:
+            - option "Alpha158" [selected]
+            - option "Alpha360"
+            - option "混合(158+360+公式)"
+      - generic [ref=e23]:
+        - generic [ref=e24]:
+          - text: 开始日期
+          - generic [ref=e25]:
+            - generic [ref=e26]:
+              - textbox "开始日期 - 01 - 01" [ref=e27]:
+                - /placeholder: YYYY
+                - text: "2022"
+              - generic [ref=e28]: "-"
+            - generic [ref=e29]:
+              - textbox "MM" [ref=e30]: "01"
+              - generic [ref=e31]: "-"
+            - textbox "DD" [ref=e33]: "01"
+            - button "选择日期" [ref=e34] [cursor=pointer]
+        - generic [ref=e37]:
+          - text: 结束日期
+          - generic [ref=e38]:
+            - generic [ref=e39]:
+              - textbox "结束日期 - 12 - 31" [ref=e40]:
+                - /placeholder: YYYY
+                - text: "2023"
+              - generic [ref=e41]: "-"
+            - generic [ref=e42]:
+              - textbox "MM" [ref=e43]: "12"
+              - generic [ref=e44]: "-"
+            - textbox "DD" [ref=e46]: "31"
+            - button "选择日期" [ref=e47] [cursor=pointer]
+        - generic [ref=e50]:
+          - text: 选股方式
+          - generic [ref=e51]:
+            - combobox "选股方式 50" [ref=e52]:
+              - option "固定只数" [selected]
+              - option "按百分比"
+            - spinbutton "当日持有的股票只数" [ref=e53]: "50"
+        - generic [ref=e54]:
+          - button "自定义筛选特征 ▼" [ref=e55] [cursor=pointer]
+          - button "使用自定义公式因子 ▼" [ref=e56] [cursor=pointer]
+          - button "单因子测试 ▼" [ref=e57] [cursor=pointer]
+          - button "交易信号测试 ▼" [ref=e58] [cursor=pointer]
+        - generic [ref=e59]:
+          - generic [ref=e60]: 预测周期(天)
+          - spinbutton "预测周期(天) 模型预测未来N日收益" [ref=e61]: "2"
+          - generic [ref=e62]: 模型预测未来N日收益
+        - generic [ref=e63]:
+          - generic [ref=e64]: 分层持仓周期(天)
+          - spinbutton "分层持仓周期(天) 1=每日重排，>1=调仓日分组持有" [ref=e65]: "1"
+          - generic [ref=e66]: 1=每日重排，>1=调仓日分组持有
+        - generic [ref=e67]:
+          - generic [ref=e68]: 持仓周期(天)
+          - spinbutton "持仓周期(天)" [ref=e69]: "10"
+      - generic [ref=e70]:
+        - heading "LightGBM 模型参数（留空 = LightGBM 默认值）" [level=3] [ref=e71]
+        - generic [ref=e72]:
+          - generic [ref=e73]:
+            - text: 随机种子 seed
+            - spinbutton "随机种子 seed" [ref=e74]
+          - generic [ref=e75]:
+            - text: 最大深度 max_depth
+            - spinbutton "最大深度 max_depth" [ref=e76]
+          - generic [ref=e77]:
+            - text: 叶子节点数 num_leaves
+            - spinbutton "叶子节点数 num_leaves" [ref=e78]
+          - generic [ref=e79]:
+            - text: 叶子最少样本 min_child_samples
+            - spinbutton "叶子最少样本 min_child_samples" [ref=e80]
+          - generic [ref=e81]:
+            - text: 学习率 learning_rate
+            - spinbutton "学习率 learning_rate" [ref=e82]
+          - generic [ref=e83]:
+            - text: 树数量 n_estimators
+            - spinbutton "树数量 n_estimators" [ref=e84]
+          - generic [ref=e85]:
+            - text: 子采样 subsample
+            - spinbutton "子采样 subsample" [ref=e86]
+          - generic [ref=e87]:
+            - text: 特征采样 colsample_bytree
+            - spinbutton "特征采样 colsample_bytree" [ref=e88]
+          - generic [ref=e89]:
+            - text: L1正则 reg_alpha
+            - spinbutton "L1正则 reg_alpha" [ref=e90]
+          - generic [ref=e91]:
+            - text: L2正则 reg_lambda
+            - spinbutton "L2正则 reg_lambda" [ref=e92]
+        - paragraph [ref=e93]: 提示：深度过深 / 叶子数过多 / 学习率过高易过拟合；留空项自动使用 Qlib 默认值。复用历史回测参数时会自动带出这些设置。
+      - generic [ref=e94]:
+        - heading "交易设置" [level=3] [ref=e95]
+        - generic [ref=e96]:
+          - generic [ref=e97]:
+            - text: 起始总资产(万元)
+            - spinbutton "起始总资产(万元)" [ref=e98]: "10000"
+          - generic [ref=e99]:
+            - text: 成交价基准
+            - combobox "成交价基准" [ref=e100]:
+              - option "收盘价" [selected]
+              - option "开盘价"
+              - option "均价(成交量加权)"
+              - option "均价(开盘+收盘)/2"
+              - option "均价(开收高低)/4"
+          - generic "前复权与后复权在比率类因子/收益率上数学等价（仅价格绝对值不同）" [ref=e101]:
+            - text: 复权方式
+            - combobox "复权方式" [ref=e102]:
+              - option "不复权"
+              - option "前复权"
+              - option "后复权" [selected]
+          - generic [ref=e103]:
+            - text: 买入手续费(%)
+            - spinbutton "买入手续费(%)" [ref=e104]: "0.05"
+          - generic [ref=e105]:
+            - text: 卖出手续费(%)
+            - spinbutton "卖出手续费(%)" [ref=e106]: "0.15"
+          - generic [ref=e107]:
+            - text: 滑点/冲击成本(%)
+            - spinbutton "滑点/冲击成本(%)" [ref=e108]: "0.2"
+          - generic [ref=e109]:
+            - text: 最低手续费(元)
+            - spinbutton "最低手续费(元)" [ref=e110]: "5"
+          - generic [ref=e111]:
+            - text: 成交量限制(比例)
+            - spinbutton "成交量限制(比例)" [ref=e112]
+          - generic [ref=e113]:
+            - text: 涨跌停限制
+            - generic "自动识别：主板 10%、创业/科创 20%、北交 30%；数据有交易所涨跌停价标签时直接按标签（ST 5%/退市整理 10% 也自动正确）。取消=不设涨跌停（理想成交）" [ref=e114] [cursor=pointer]:
+              - checkbox "封板不可交易" [checked] [ref=e115]
+              - generic [ref=e116]: 封板不可交易
+          - generic [ref=e117]:
+            - text: 每手股数
+            - spinbutton "每手股数" [ref=e118]: "100"
+        - generic [ref=e119]:
+          - generic [ref=e120]: 日截面剔除：
+          - generic "调仓当日处于 ST/*ST/退市整理的股票不买入（模型打分时直接剔除，已持有的也会随调仓卖出）" [ref=e121] [cursor=pointer]:
+            - checkbox "剔除ST/退市" [ref=e122]
+            - generic [ref=e123]: 剔除ST/退市
+          - generic "剔除创业板（SZ30 号段，20% 涨跌幅），全程不参与选股" [ref=e124] [cursor=pointer]:
+            - checkbox "剔除创业板" [ref=e125]
+            - generic [ref=e126]: 剔除创业板
+          - generic "剔除科创板（SH688，20% 涨跌幅），全程不参与选股" [ref=e127] [cursor=pointer]:
+            - checkbox "剔除科创板" [ref=e128]
+            - generic [ref=e129]: 剔除科创板
+        - paragraph [ref=e130]: 提示：成交量限制填 0.25 表示单笔成交不超过当日成交量的 25%；留空表示不限量（理想成交）。
+      - generic [ref=e131]:
+        - heading "信号后处理 （默认全部关闭=复现旧行为）" [level=3] [ref=e132]
+        - generic [ref=e133]:
+          - generic [ref=e134]:
+            - text: 硬规则闸门：只允许满足以下条件的股票进入候选（留空=不限）
+            - generic [ref=e135]:
+              - generic [ref=e136]:
+                - text: 市值下限(亿)
+                - spinbutton "市值下限(亿)" [ref=e137]
+              - generic [ref=e138]:
+                - text: 市值上限(亿)
+                - spinbutton "市值上限(亿)" [ref=e139]
+              - generic [ref=e140]:
+                - text: 股价下限(元)
+                - spinbutton "股价下限(元)" [ref=e141]
+          - generic "主模型 topK 候选内训练二分类 gate（学'未来收益>0'），按日剔除 gate 概率最低的 reject_ratio 比例后回测；排序仍由主模型决定，gate 只做风控闸门。勾选下方'Gate 附加特征'（已保存的 01 触发 / 连续公式）即可把它们作为 gate 输入特征，由模型 feature importance 自动学习挑选——多个 01 因子就是走这个通道（无需再单独传表达式）" [ref=e143] [cursor=pointer]:
+            - checkbox "Meta-Gate 风控" [ref=e144]
+            - generic [ref=e145]: Meta-Gate 风控
+      - generic [ref=e146]:
+        - heading "训练/测试划分" [level=3] [ref=e147]
+        - generic [ref=e149]:
+          - text: 划分方式
+          - combobox "划分方式" [ref=e150]:
+            - option "一次性训练（回测前窗口训练）" [selected]
+            - option "自定义滚动训练（每周期重训）"
+      - generic [ref=e151]:
+        - button "开始回测" [ref=e152] [cursor=pointer]
+        - generic [ref=e153]: "已启用数据源: qlib"
+    - generic [ref=e154]:
+      - generic [ref=e155]:
+        - heading "历史回测" [level=2] [ref=e157]
+        - generic [ref=e158]:
+          - button "批量删除" [ref=e159] [cursor=pointer]
+          - button "加载中..." [disabled] [ref=e160]
+      - paragraph [ref=e161]: 暂无历史回测

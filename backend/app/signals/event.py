@@ -32,11 +32,13 @@ def _event_cache_dir() -> str:
 
 # ⚠ **改动事件研究算法的口径/实现时，必须把这个版本号 +1** —— 否则历史缓存会让"新算法"
 #   返回旧结果（本项目最忌讳的"口径漂移"变成"口径漂移 + 看不见"）。清缓存也可删目录。
-_EVENT_CACHE_VERSION = "v2"          # v2：基准池改走 `pricing.load_close_wide`（只取 CLOSE）
+_EVENT_CACHE_VERSION = "v3"          # v3：**口径跟成交时点走**（开盘/收盘 + lag ✓，见 v2.1.52 ✓）
+#                                      v2：基准池改走 `pricing.load_close_wide`（只取 CLOSE）
 
 
 def _event_fingerprint(cache_ns: str, events: pd.DataFrame, close_trig: pd.DataFrame,
-                       close_pool: Optional[pd.DataFrame], max_k: int) -> str:
+                       close_pool: Optional[pd.DataFrame], max_k: int,
+                       fill: str = "") -> str:
     """内容指纹：**同参数重跑必须命中、任一输入变了必须失效**。
 
     含：池/区间前缀、max_k、**事件集合**（信号文件内容）、触发组与基准池的**形状+日期范围+列集合**
@@ -44,6 +46,21 @@ def _event_fingerprint(cache_ns: str, events: pd.DataFrame, close_trig: pd.DataF
     不含数值本身 —— 数值由"数据版本 + 列集合 + 事件"唯一决定（宽表是行情派生物）。
     """
     h = hashlib.md5()
+    # ★ v2.1.52：**口径进指纹** ✗→✓ —— 开盘表与收盘表的形状/日期/列完全一样 ✗ ⇒ 不写进指纹
+    #   就会把 t1_close 的旧结果当成 t1_open 的缓存命中返回 ✗✗（"口径漂移 + 看不见" ✓）。
+    h.update(("|fill=%s" % str(fill or "")).encode("utf-8"))
+    # ★★ v2.1.61：**算法源码也进指纹** ✗→✓（用户 2026-10-12："没有加版本的哈希校验？" ✓）
+    #   本文件（`run_event_study` ✓）+ 共用的算法模块 `factors/event_study.py`（真正的口径 ✓）
+    #   + 取价模块 `signals/pricing.py` —— 任一改动 ⇒ 指纹变 ⇒ 旧缓存自动失效 ✓
+    #   （此前只有手工 `_EVENT_CACHE_VERSION` ✗ ⇒ 改了口径忘 +1 就会返回旧结果 ✗✗）。
+    try:
+        from ..engine.code_fp import code_fingerprint
+
+        h.update(("|src=%s" % code_fingerprint(
+            "app/signals/event.py", "app/factors/event_study.py",
+            "app/signals/pricing.py")).encode("utf-8"))
+    except Exception:                                              # noqa: BLE001
+        h.update(b"|src=na")
     h.update(("cv=%s|ns=%s|k=%d" % (_EVENT_CACHE_VERSION, cache_ns, max_k)).encode("utf-8"))
     try:
         from ..engine.feature_cache import _data_version
@@ -64,18 +81,26 @@ def _event_fingerprint(cache_ns: str, events: pd.DataFrame, close_trig: pd.DataF
 
 
 def _event_cache_path(cache_ns: str, events: pd.DataFrame, close_trig: pd.DataFrame,
-                      close_pool: Optional[pd.DataFrame], max_k: int) -> str:
+                      close_pool: Optional[pd.DataFrame], max_k: int,
+                      fill: str = "") -> str:
     return os.path.join(_event_cache_dir(),
-                        _event_fingerprint(cache_ns, events, close_trig, close_pool, max_k) + ".pkl")
+                        _event_fingerprint(cache_ns, events, close_trig, close_pool, max_k,
+                                           fill) + ".pkl")
 
 
 def run_event_study(events: pd.DataFrame, close_trig: pd.DataFrame,
                     close_pool: Optional[pd.DataFrame], max_k: int = 60,
-                    cancel_check=None, cache_ns: Optional[str] = None) -> Dict:
+                    cancel_check=None, cache_ns: Optional[str] = None,
+                    fill: str = "t1_close") -> Dict:
     """`events`（date, code）→ 事件研究结果 dict。
 
-    · `close_trig` —— 触发标的的**后复权收盘**宽表（`signals/pricing.load_price_panel` 的 CLOSE）；
+    · `close_trig` —— 触发标的的**后复权价格**宽表（`signals/pricing.load_price_panel` 的
+      CLOSE 或 **OPEN** ✓ —— 由 `fill` 决定：`t1_open` 传 OPEN ✓）；
     · `close_pool` —— 基准池全样本宽表（"未触发组"的口径来源；None ⇒ 只出触发组，不出超额）；
+      ⚠ 必须与 `close_trig` **同一种价** ✓，否则"超额"两边口径不同 ✗；
+    · `fill`（★ v2.1.52）—— **成交时点**（用户 2026-10-12："事件研究要跟随『成交时点』" ✓）：
+      `t1_open` ⇒ lag=1 且价格表应为**开盘** ✓；`t1_close` ⇒ lag=1（老口径 ✓ 默认）；
+      `t_close` ⇒ lag=0 ✓。
     · `cache_ns`（v1.19.48）—— **内容缓存**命名空间（如 `"all|2016-01-01|2024-12-30"`）。
       给定时把结果落盘到 `workdir/cache/signal_event/<指纹>.pkl`，**同参数重跑直接返回**。
 
@@ -91,10 +116,15 @@ def run_event_study(events: pd.DataFrame, close_trig: pd.DataFrame,
                        "dt": pd.to_datetime(events["date"])})
     max_k = max(1, min(int(max_k or 60), 250))
 
+    # ★ v2.1.52：口径归一（`fill` → lag ✓；价格表由**调用方**按同一种价传进来 ✓）
+    _fill = str(fill or "t1_close").strip().lower()
+    if _fill not in ("t1_open", "t1_close", "t_close"):
+        _fill = "t1_close"
+    _lag = 0 if _fill == "t_close" else 1
     path = None
     if cache_ns:
         try:
-            path = _event_cache_path(cache_ns, ev, close_trig, close_pool, max_k)
+            path = _event_cache_path(cache_ns, ev, close_trig, close_pool, max_k, _fill)
             if os.path.exists(path):
                 with open(path, "rb") as f:
                     hit = pickle.load(f)
@@ -105,13 +135,14 @@ def run_event_study(events: pd.DataFrame, close_trig: pd.DataFrame,
             path = None
 
     es = build_event_stats(close_trig, ev, max_k, n_raw=int(len(events)),
-                           cancel_check=cancel_check)
+                           cancel_check=cancel_check, lag=_lag, fill=_fill)
     base = None
     if close_pool is not None and len(close_pool):
         base = compute_baseline_curves(close_trig, close_pool, ev, max_k,
-                                       cancel_check=cancel_check)
+                                       cancel_check=cancel_check, lag=_lag)
     es["baseline"] = base
     es["n_events_used"] = int(len(ev))
+    es["fill"] = _fill                  # ★ v2.1.52：回传口径（前端图注据此写"T+1 开盘/收盘买入" ✓）
     es["cached"] = False
     if path:
         try:

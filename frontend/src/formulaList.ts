@@ -27,6 +27,8 @@ export type SortMode = 'original' | 'key'
 export interface NameText {
   name: string
   text: string
+  /** ★ v2.1.45：置顶标记（可选 ⇒ 纯函数不必依赖 `api.ts` ✓；缺省 = 未置顶 ✓）。 */
+  pinned?: boolean
 }
 
 /**
@@ -151,5 +153,9 @@ export function arrangeFormulas<T extends NameText>(
   } else if (mode === 'key') {
     rows.sort(compareKey)
   }
+  // ★ v2.1.46：**这里不再按 `pinned` 浮顶** ✗→✓（用户 2026-10-12："取消置顶后，不要还原成
+  //   原来的位置，就放在上面好了，这样我可以利用置顶/取消置顶来给公式排序" ✓）——
+  //   顺序由**后端**按条目的 `sort_key` 决定 ✓（置顶 = 键更小 ⇒ 靠前 ✓；取消置顶 = 键保留
+  //   ⇒ **留在原处** ✓）；`pinned` 字段从此只用于按钮图标 ★/☆ ✓。
   return rows.map((r) => r.f)
 }

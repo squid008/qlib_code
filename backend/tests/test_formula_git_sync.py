@@ -244,6 +244,12 @@ def test_real_save_path_writes_file_even_if_sync_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(custom_formulas, "_CUSTOM_FORMULAS_PATH", str(tmp_path / "cf.json"))
     # ★ v1.20.65：写操作改为**只写自己的文件**（`formulas/<user>.json` ✓）⇒ 单测一并指过去 ✓
     monkeypatch.setattr(custom_formulas, "_MY_FILE", str(tmp_path / "cf.json"))
+    # ★★ v2.1.47：**必须连 `_FORMULAS_DIR` 一起隔离** ✗→✓ —— 否则 `load_merged` 会去读**真实的**
+    #   公式库（`workdir/formulas/` ✓）⇒ 本单测断言的 `[0]` 位置就取决于**用户自己库里有没有置顶** ✗
+    #   （v2.1.47 起 ★ 恒在最上面 ⇒ 真实库里的 ★ 条目把「测试3」挤下去 ✗ ⇒ 单测挂 ✓）。
+    #   指向 tmp 下不存在的目录 ⇒ `_sources()` 里那次 `listdir` 抛 OSError 被吞 ⇒ 只读本单测自己的
+    #   文件 ✓（这才是"隔离"该有的样子 ✓）。
+    monkeypatch.setattr(custom_formulas, "_FORMULAS_DIR", str(tmp_path / "formulas"))
     monkeypatch.setattr(formula_git_sync, "DEBOUNCE", 3600.0)     # 别让定时器真触发 ✓
     monkeypatch.setattr(formula_git_sync, "_timer", None)
     item = custom_formulas.create_custom_formula("测试3", "OUT:CLOSE;", "Close($close)")

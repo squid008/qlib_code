@@ -852,6 +852,17 @@ def parse_expr(text: str) -> Node:
             tok = m.group(0)
             pos = m.end()
             return Node("const", [tok], tok)
+        # ★★ v2.1.28：**一元负号**（负号后**不是数字**的情形）✗→✓ ——
+        #   以前只支持 `-5` 这种字面量 ✗ ⇒ `-Log(x)` / `-$close` / `-(...)` 一律
+        #   `无法解析` ✗（2026-10-11 实测：用户库因子原文 `-log(market_cap)` 就撞在这里 ✓，
+        #   然后静默退到 qlib 回退路径、再报一个**误导性**的 `[LN] is not registered` ✗）。
+        #   ⚠ 生成 **`Sub(0,x)`** 而不是 `Neg(x)`：`Sub` 在面板与 qlib **两边都注册** ✓，
+        #     而 qlib 没有 `Neg` ✗（`reconstruct()` 出来的串也可能直接喂给 qlib ✓）。
+        #   优先级与数学一致（一元负号紧于 `*`）✓：`-a*b` ⇒ `Sub(0,a) * b` ✓。
+        if c == "-":
+            pos += 1
+            operand = parse_prefix()
+            return Node("Sub", [Node("const", ["0"], "0"), operand], "-")
         if c == "(":
             pos += 1
             inner = parse_expr_prec(0)
@@ -869,6 +880,12 @@ def parse_expr(text: str) -> Node:
             # 裸标识符（非常量函数/字段）：可能是除法等残留，容错为常量 0
             return Node("const", ["0"], name)
         pos += 1
+        # ★★ v2.1.28：**算子名大小写/别名归一** ✗→✓ ——
+        #   解析器原来把函数名**原样**当算子名 ✗ ⇒ 裸写小写 `log(x)` 会得到 op=`log`，
+        #   而 `_apply` 只注册了 `Log` ✗ ⇒ `panel_expr 不支持算子 log` ⇒ 静默退 qlib ✗
+        #   （用户库原文 `-log(market_cap)` 的另一半就撞在这里 ✓）。
+        #   ⚠ 只在**确认是函数调用**（后面跟着 `(` ✓）之后归一 ⇒ 裸字段名不受影响 ✓。
+        name = _OP_CANON.get(name.lower(), name)
         args = []
         while True:
             skip()
@@ -929,6 +946,23 @@ _BIN_ELEM = {
 _BIN_CMP = {"Gt": "gt", "Ge": "ge", "Lt": "lt", "Le": "le", "Eq": "eq", "Ne": "ne"}
 _UNARY = {"Abs": "abs", "Sqrt": "sqrt", "Log": "log", "Neg": "neg", "Sgn": "sign",
           "Exp": "exp"}          # v1.20.34：EXP(X)=e^X（向量化 ⇒ 与 Sqrt/Log 同路径 ✓）
+
+# ★★ v2.1.28：**算子名归一表**（大小写不敏感 + 别名）—— 供 `parse_prefix` 用 ✓。
+#   为什么必须有（2026-10-11 实测 ✓）：解析器原来把函数名**原样**当算子名 ✗ ⇒ 用户公式原文
+#   里的小写 `log(x)`（通达信/益盟写法 ✓）得到 op=`log` ✗，而 `_apply` 只注册了 `Log` ✓
+#   ⇒ `panel_expr 不支持算子 log` ⇒ 面板失败 ⇒ 静默退到 qlib 回退路径 ✗
+#   ⇒ 最后报一个**误导性**的 `The operator [LN] is not registered` ✗（查了很久才定位 ✓）。
+#   ⚠ 语义口径与 `parser/codegen.py` 的 `LOG/LN → Log` **保持一致** ✓（自然对数 ✓）——
+#     用户那条 `-log(market_cap)` 的口径就是 ln(市值) ✓，不能在这里改成 10 为底 ✗。
+_OP_ALIAS = {"ln": "Log", "log": "Log"}          # 通达信 LN/LOG 都按自然对数（与 codegen 一致 ✓）
+_OP_CANON: Dict[str, str] = {}
+for _o in (*_ROLL_FUNC, *_BIN_ELEM, *_BIN_CMP, *_UNARY,
+           "If", "ROUND", "And", "Or", "Ref", "SR", "Not",
+           "BARSLAST", "BARSCOUNT", "BARSSINCEN", "HHVBARS", "LLVBARS",
+           "DYN_REF", "DYN_MIN", "DYN_MAX", "DYN_SUM", "DYN_COUNT", "DYN_MEAN",
+           "DYN_HHVBARS", "DYN_LLVBARS"):
+    _OP_CANON.setdefault(_o.lower(), _o)
+_OP_CANON.update(_OP_ALIAS)
 
 # 逐元素算子的 numpy ufunc 直落表（v1.18.29）。
 # 本机无 numexpr，pandas 的 Series 算术分派走 operator.* + 重包 Series；当两列同 index
@@ -1449,6 +1483,32 @@ class PanelEvaluator:
                     vals = vals.astype(np.float64, copy=False)
                 return pd.Series(vals, index=idx)
             # ---- pandas 兜底（非常量非 Series 的入参；行为与改动前完全一致）----
+            # ★ v2.1.28：**两侧都是标量**（例如 `Sub(0,Log(0))`：用户写 `-log(x)` 而 `x`
+            #   不是带 `$` 的字段 ⇒ 被当常量 0 ⇒ `Log(0)` 是标量 ✓）时直接算标量 ✓ ——
+            #   否则 `_as_series` 会去取 `template.index` ⇒
+            #   `'numpy.float64' object has no attribute 'index'` ✗（实测踩到 ✓，
+            #   且报错完全看不出"是字段少写了 $" ✗）。
+            if not isinstance(a, pd.Series) and not isinstance(b, pd.Series):
+                _af, _bf = np.float64(a), np.float64(b)
+                with np.errstate(all="ignore"):
+                    if op in _BIN_ELEM:
+                        _fn = _BIN_ELEM[op]
+                        if _fn == "add":
+                            return _af + _bf
+                        if _fn == "sub":
+                            return _af - _bf
+                        if _fn == "mul":
+                            return _af * _bf
+                        if _fn == "div":
+                            return _af / _bf
+                        if _fn == "pow":
+                            return _af ** _bf
+                        if _fn == "max":
+                            return max(_af, _bf)
+                        if _fn == "min":
+                            return min(_af, _bf)
+                    if op in _BIN_CMP:
+                        return np.float64(1.0 if _NUM_UFUNC[_BIN_CMP[op]](_af, _bf) else 0.0)
             template = a if isinstance(a, pd.Series) else b
             # 常量右操作数（如 Power(x, 2) 的指数 2）：单独留下标量形态。
             # 若被 _as_series 广播成整列数组，np.power 会走「数组指数」的逐元素通用 pow，

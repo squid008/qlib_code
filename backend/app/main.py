@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 
 from . import config, __version__
 from .logger import get_logger
-from .routers import backtest, data, datasets, factors, signal_test
+from .routers import backtest, data, datasets, export_xlsx, factors, signal_test
 
 logger = get_logger(__name__)
 
@@ -36,6 +36,9 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # v2.1.0：导出接口回传 `X-Export-Filename`（中文文件名 ⇒ 前端显示用 ✓）。
+        # ⚠ 不 expose 的话浏览器**读不到**自定义响应头 ✗（跨源下默认只放行少数几个 ✓）。
+        expose_headers=["X-Export-Filename"],
     )
 
     # 确保工作目录存在
@@ -109,6 +112,7 @@ def create_app() -> FastAPI:
     app.include_router(data.router)
     app.include_router(datasets.router)
     app.include_router(factors.router)
+    app.include_router(export_xlsx.router)      # v2.1.0：XLSX 导出（沿 /api/factors/export/*）
     app.include_router(signal_test.router)
 
     @app.get("/", summary="服务健康检查")

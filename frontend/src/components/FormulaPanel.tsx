@@ -27,6 +27,8 @@ interface FormulaPanelProps {
   onSaveEdit: () => void
   onCancelEdit: () => void
   onRemove: (id: string) => void
+  /** ★ v2.1.45：置顶 / 取消置顶（按钮放在「编辑」**左边** ✓，用户 2026-10-12 指定 ✓）。 */
+  onTogglePin: (f: CustomFormula) => void
 }
 
 // 自定义公式编辑面板：左侧编辑区 + 右侧公式列表（跨整行）
@@ -51,6 +53,7 @@ export default function FormulaPanel({
   onSaveEdit,
   onCancelEdit,
   onRemove,
+  onTogglePin,
 }: FormulaPanelProps) {
   // 函数手册弹窗（弹窗开关/选中均为本组件局部 UI 状态，不进 App）
   const [handbookOpen, setHandbookOpen] = useState(false)
@@ -304,6 +307,21 @@ export default function FormulaPanel({
                               {f.name}
                             </span>
                             <span className="flex-1" />
+                            {/* ★ v2.1.46：**置顶 / 取消置顶** ✓（v2.1.45 加的按钮，位置在「编辑」左边 ✓）。
+                                语义 = **移动式排序**：置顶 ⇒ 立刻移到最前 ✓；
+                                取消置顶 ⇒ **位置不动** ✓（只清标记 ★→☆）⇒ 可以拿它反复调顺序 ✓。 */}
+                            <button
+                              type="button"
+                              onClick={() => onTogglePin(f)}
+                              title={f.pinned
+                                ? '取消置顶：移到「已置顶」那一块的正下方（不会回到它原来的位置）'
+                                : '置顶：移到「已置顶」那一块的最前面；连续置顶几条就能给公式排序'}
+                              className={`text-[11px] shrink-0 ${f.pinned
+                                ? 'text-amber-600 hover:text-amber-700 font-semibold'
+                                : 'text-slate-400 hover:text-slate-600'}`}
+                            >
+                              {f.pinned ? '★ 取消置顶' : '☆ 置顶'}
+                            </button>
                             <button
                               type="button"
                               onClick={() => onStartEdit(f)}

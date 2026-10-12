@@ -12,7 +12,10 @@ import {
   YAxis,
 } from 'recharts'
 import { cancelEventStudy, createEventStudy, getEventStudyProgress, runEventNav } from '../api'
+import { blobErrorDetail, exportEventStudyXlsx } from '../api'
 import type { EventNavResult, EventStudyRequest, EventStudyResult } from '../api'
+import { captureSection } from '../captureChart'
+import { saveBlob, stamp } from '../downloadFile'
 import { excessThresholdOf, isValidAt, isReverseValidAt, pairStabilityOf } from './verdictRules'
 import { navColor, navDash, navLabel } from './navSeries'
 import ZoomableLineChart from './ZoomableLineChart'
@@ -195,6 +198,17 @@ export default function EventStudyModal({
   //   （600 只抽样同机实测：k=5 → **0.68s**、k=60 → **1.48s**，**2.17×** ✓，被拒 3286 → 10200 ✓）。
   const NAV_SLOW_S = 10
   const [navCost, setNavCost] = useState(0.004)
+  // v2.1.0：导出 XLSX（后端生成，图用**当前面板截图** ⇒ 所见即所得 ✓）
+  const [expBusy, setExpBusy] = useState(false)
+  const [expMsg, setExpMsg] = useState<{ text: string; ok: boolean } | null>(null)
+  // 抓图容器：四个区块各一个（主曲线 / 超额 / 净值 / 分布）✓
+  // v2.1.1：摘要卡片（触发事件数/中位数/胜率…）也**截图**——用户 2026-10-11：
+  //   "触发事件统计这里也用截图的形式" ✓（原先是我用单元格复刻，列宽挤、还会与面板口径脱钩 ✗）
+  const kpiShotRef = useRef<HTMLDivElement | null>(null)
+  const curveShotRef = useRef<HTMLDivElement | null>(null)
+  const excessShotRef = useRef<HTMLDivElement | null>(null)
+  const navShotRef = useRef<HTMLDivElement | null>(null)
+  const distShotRef = useRef<HTMLDivElement | null>(null)
   const [navRes, setNavRes] = useState<EventNavResult | null>(null)
   const [navBusy, setNavBusy] = useState(false)
   const [navErr, setNavErr] = useState('')
@@ -237,7 +251,9 @@ export default function EventStudyModal({
     //   没理由让用户再点一次「重新计算」✗（旧顺序把它挡在门外 ⇒ 用户白点一下 ✗）。
     //   ⚠ 用户 2026-09-17 报的 bug 也在这里：命中缓存 ⇒ 曲线**立刻**出来，但此前没复位 busy
     //     ⇒ 界面上「曲线已算好、却一直显示计算中…」✗（缓存命中本就是"秒出" ⇒ busy=false ✓）。
-    const key = `${navK}|${navCost}|${tid ?? ''}`
+    // ★ v2.1.65：**键里必须带成交时点** ✗→✓ —— 否则面板切"次日开盘/次日收盘"时会命中同一份
+    //   前端缓存 ⇒ 净值**纹丝不动** ✗（用户 2026-10-12 实测"两个数一模一样" ✓ 的一层原因 ✓）。
+    const key = `${navK}|${navCost}|${tid ?? ''}|${reqRef.current?.fill ?? ''}`
     const hit = navCacheRef.current.get(key)
     if (hit) {
       setNavRes(hit)
@@ -273,7 +289,10 @@ export default function EventStudyModal({
        */
       const attempt = (left: number) => {
         if (cancelled) return
-        runEventNav({ task_id: tid ?? '', hold_days: navK, cost: navCost, factor_id: expr })
+        // ★ v2.1.65：**把面板的成交时点一起发过去** ✗→✓ —— 否则净值曲线永远是 `t1_open`
+        //   （后端写死 ✗）⇒ 面板切"次日收盘"也看不出任何变化 ✗（用户 2026-10-12 实测 ✓）。
+        runEventNav({ task_id: tid ?? '', hold_days: navK, cost: navCost, factor_id: expr,
+                      fill: req?.fill ?? undefined })
           .then((r) => {
             if (cancelled) return
             navCacheRef.current.set(key, r)
@@ -604,6 +623,21 @@ export default function EventStudyModal({
 
   const lastPoint = viewCurve.length > 0 ? viewCurve[viewCurve.length - 1] : null
 
+  /**
+   * ★ v2.1.52：**图注口径动态化**（用户 2026-10-12："事件研究要跟随『成交时点』" ✓）。
+   * 后端现在把口径回传在 `params.fill` ✓（`factors/event_study.py::run_event_study` ✓），
+   * 图注据此写"T+1 开盘买入 / T+1 收盘买入 / 信号日收盘买入" ✓ ——
+   * 此前是**写死**"T+1 收盘买入" ✗ ⇒ 面板选着"次日开盘"、图注却说收盘 ⇒ 用户一头雾水 ✓。
+   * ⚠ 单因子测试「秒开」那条内联路径**还没跟随**（仍用收盘 ✓）⇒ 它没有 `fill` ⇒
+   *   这里回退成"T+1 收盘买入" ✓ **正好和它实际口径一致** ✓（不会说谎 ✓）。
+   */
+  const fillLabel = (() => {
+    const f = String((result?.params as Record<string, unknown> | undefined)?.fill ?? '')
+    if (f === 't1_open') return 'T+1 开盘买入'
+    if (f === 't_close') return '信号日收盘买入'
+    return 'T+1 收盘买入'
+  })()
+
   // Top / 最差事件：取「逐 k 榜单」里当前 k 的那份，保证与表头「持有 k 日收益」口径一致。
   // 旧结果（无 top_by_k）回退到顶层字段（= max_k 期口径）。
   // 之所以逐 k 取：① 固定用 max_k 期会与表头写明的 k 不符（滑到 2 日却显示 40 日收益）；
@@ -741,6 +775,64 @@ export default function EventStudyModal({
 
   if (!open) return null
 
+  /**
+   * 导出当前事件研究（第 1 页 = 参数与面板截图，第 2 页 = 每次调仓的持仓明细 ✓）。
+   *
+   * ⚠ 三个关键点：
+   *   ① `hold_days`/`cost` 必须与**页面那条净值曲线**用同一组值 ⇒ 后端才能取到"刚算过的那次
+   *      回测"（命中缓存 ✓）并据它派生持仓 ✓；`capital`/`benchmark` **不传** ⇒ 与页面一样走
+   *      后端默认值 ✓（传个不一样的值会取不到、第 2 页就没持仓 ✗）；
+   *   ② `factor_id` 传**表达式**（与 `runEventNav` 同一个 ✓）⇒ 后端按它找回同一批触发事件 ✓；
+   *   ③ 抓图失败**不影响导出**：后端会写明"未附图"并指路数值 ✓（不给你一个坏文件 ✗）。
+   */
+  const doExport = async () => {
+    if (expBusy) return
+    setExpBusy(true)
+    setExpMsg(null)
+    try {
+      const shots: { kpi?: string; curve?: string; excess?: string; nav?: string; dist?: string } = {}
+      try {
+        // ⚠ 顺序发（不是 Promise.all）：`captureSection` 会临时 `scrollIntoView` 再恢复滚动位置 ✓
+        //   并发跑会让几个区块互相把滚动位置抄走 ⇒ 有的截成空白 ✗（实测风险，串行最稳 ✓）
+        const kpi = await captureSection(kpiShotRef.current)
+        const curve = await captureSection(curveShotRef.current)
+        const excess = await captureSection(excessShotRef.current)
+        const nav = await captureSection(navShotRef.current)
+        const dist = await captureSection(distShotRef.current)
+        if (kpi) shots.kpi = kpi
+        if (curve) shots.curve = curve
+        if (excess) shots.excess = excess
+        if (nav) shots.nav = nav
+        if (dist) shots.dist = dist
+      } catch (shotErr) {
+        console.warn('事件研究截图失败，改为导出不含图的文件：', shotErr)
+      }
+      const { blob, filename } = await exportEventStudyXlsx({
+        task_id: sourceTaskId || taskRef.current || '',
+        factor_id: req?.factor?.expression ?? null,
+        // `navK` 可能为 null（未解析出 k）⇒ 不传，后端按默认 20 算 —— 与页面上那次
+        // `runEventNav`（同样不传有效值）**取到同一次回测** ✓
+        hold_days: navK ?? undefined,
+        cost: navCost,
+        max_k: maxK ?? undefined,
+        shots,
+      })
+      saveBlob(blob, filename || `事件研究_${factorName}_${stamp()}.xlsx`)
+      const nShot = Object.keys(shots).length
+      setExpMsg({
+        ok: true,
+        text:
+          (nShot > 0
+            ? `已导出 ✓（第 1 页含 ${nShot} 张当前面板截图 + 参数与公式）`
+            : '已导出 ✓（⚠ 抓图未成功 ⇒ 第 1 页只有参数与数值）') + '；第 2 页是每次调仓的持仓明细',
+      })
+    } catch (e) {
+      setExpMsg({ ok: false, text: await blobErrorDetail(e) })
+    } finally {
+      setExpBusy(false)
+    }
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
@@ -812,7 +904,22 @@ export default function EventStudyModal({
                 取消
               </button>
             )}
-            <button onClick={onClose} className="px-2 py-1 text-xs rounded border">
+            {/* 导出（v2.1.0，用户 2026-10-11）：放在「关闭」左边 ✓；容器本来已是 `flex gap-2` ✓。
+                导的是**当前弹窗看到的**面板（最长持有 k / 净值持有周期 / 成本）+ 每次调仓的持仓明细 ✓ */}
+            <button
+              onClick={doExport}
+              disabled={expBusy || !(sourceTaskId || taskRef.current)}
+              title={
+                sourceTaskId || taskRef.current
+                  ? '导出 XLSX：第 1 页 = 参数/公式 + 面板各区块的**当前截图**，第 2 页 = 每次调仓的持仓明细；' +
+                    '该文件可拖回「交易信号测试」复现净值曲线'
+                  : '这次结果没有任务上下文（如页面刷新后打开）⇒ 无法导出（触发明细与持仓都在后端任务状态里）'
+              }
+              className="px-2 py-1 text-xs rounded border whitespace-nowrap disabled:opacity-50"
+            >
+              {expBusy ? '导出中…' : '导出'}
+            </button>
+            <button onClick={onClose} className="px-2 py-1 text-xs rounded border whitespace-nowrap">
               关闭
             </button>
           </div>
@@ -844,11 +951,24 @@ export default function EventStudyModal({
           </div>
         )}
 
+        {/* 导出结果提示：★ v2.1.49 —— **成功那条不再显示** ✓（用户 2026-10-12："事件研究里的还没隐藏呢" ✓，
+            与持仓曲线弹窗 v2.1.48 同法 ✓）；**失败照旧显示** ✓（不静默 ✗）。
+            ⚠ 想恢复成功提示：把下面的 `&& !expMsg.ok` 去掉即可 ✓（`setExpMsg` 那段原样保留 ✓）。 */}
+        {expMsg && !expMsg.ok && (
+          <div
+            className={`mx-4 mt-3 text-[11px] ${
+              expMsg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600 dark:text-red-400'
+            }`}
+          >
+            {expMsg.text}
+          </div>
+        )}
+
         {/* 结果 */}
         {status === 'success' && result && result.curve && result.upside && (
           <div className="px-4 py-3 text-xs">
-            {/* 摘要卡片 */}
-            <div className="grid grid-cols-6 gap-2 mb-3">
+            {/* 摘要卡片（v2.1.1：整块截图进导出文件 ⇒ 与页面完全一致 ✓） */}
+            <div ref={kpiShotRef} className="grid grid-cols-6 gap-2 mb-3 bg-white">
               <div className="rounded border border-slate-200 dark:border-slate-700 p-2">
                 <div className="text-slate-400">触发事件数</div>
                 <div className="text-base font-semibold">{result.n_events}</div>
@@ -926,9 +1046,9 @@ export default function EventStudyModal({
             )}
 
             {/* 曲线 */}
-            <div className="border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
+            <div ref={curveShotRef} className="bg-white border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
               <div className="text-slate-500 mb-1">
-                持有期收益曲线（T+1 收盘买入，持有 k 个交易日；单位 %）
+                持有期收益曲线（{fillLabel}，持有 k 个交易日；单位 %）
                 {/* v1.19.25：新增锚点图例（紫点 = 判定有效的持有日；悬停 tooltip 也会写 有效/待观察）
                     v1.19.40：**红点 = 判定「反向有效」的持有日**（研究线索，不是好消息） */}
                 <span className="text-violet-600 dark:text-violet-400 ml-2">
@@ -1022,7 +1142,7 @@ export default function EventStudyModal({
                 - 中位数：事件级口径（全部样本收益的中位数）→ 刻画「典型一次触发」的超额
                 点击图例可单独隐藏/显示。 */}
             {excessChart.length > 0 && (
-              <div className="border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
+              <div ref={excessShotRef} className="bg-white border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
                 <div className="text-slate-500 mb-1">
                   超额曲线（触发组 − 基准·未触发组；单位 %）
                   <span className="text-violet-600 dark:text-violet-400 ml-2">
@@ -1108,7 +1228,7 @@ export default function EventStudyModal({
 
             {/* 净值曲线（v1.19.60）：用**任务里已算好的触发事件** + 缓存价格面板跑一次回测
                 （实测 0.12~0.6s/次）⇒ 持仓周期可以自己调、净值跟着变；按 k 缓存 ⇒ 往回改秒开。 */}
-            <div className="border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
+            <div ref={navShotRef} className="bg-white border border-slate-200 dark:border-slate-700 rounded p-2 mb-3">
               <div className="flex flex-wrap items-center gap-3 text-xs mb-1">
                 <span className="text-slate-500">净值曲线（两种资金方案 + 基准）</span>
                 <label className="flex items-center gap-1 text-slate-500">
@@ -1198,12 +1318,12 @@ export default function EventStudyModal({
                 直方图 + 均值/中位数/尾部标注一次给全（形状 + 位置 + 两侧尾巴），并随上面的
                 「最长持有」滑动联动（换 k 就换一张分布）。
                 ⚠ 后端 `prob[]`（收益/亏损两侧分档）**保留**：旧结果兼容，且需要精确档位数字时仍可用。 */}
-            <div className="border border-slate-200 dark:border-slate-700 rounded p-2">
+            <div ref={distShotRef} className="bg-white border border-slate-200 dark:border-slate-700 rounded p-2">
               <div className="text-slate-500 mb-1">
                 持有 {lastPoint?.k ?? '-'} 日收益分布（每次触发一个样本；纵轴 = 该区间事件占比）
                 <span className="text-slate-400 ml-2">n={lastPoint?.n ?? '-'}</span>
                 <span className="text-slate-400 ml-2">
-                  （T+1 收盘买入；已剔除 T 涨停 / T+1 涨停 / T+1 停牌样本）
+                  （{fillLabel}；已剔除 T 涨停 / T+1 涨停 / T+1 停牌样本）
                 </span>
                 {result.n_short != null && result.n_short > 0 && (
                   <span className="text-amber-600 dark:text-amber-400">

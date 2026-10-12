@@ -247,6 +247,11 @@ export interface CustomFormula {
    * 提示（无影响时为空串/缺省 ✓）。用户 2026-10-09 实测「改了 `IS_GOLD_PIT` 看不到提示」✓。
    */
   materialize_warning?: string
+  /**
+   * ★ v2.1.45：**置顶**（用户 2026-10-12："给公式加置顶/取消置顶按钮，加在编辑左边" ✓）——
+   * 置顶的公式在列表里**始终排在最前面**（任何排序模式 / 搜索下都不沉底 ✓）。
+   */
+  pinned?: boolean
 }
 export async function listCustomFormulas(): Promise<{ items: CustomFormula[] }> {
   const { data } = await http.get<{ items: CustomFormula[] }>('/factors/custom-formulas')
@@ -278,6 +283,15 @@ export async function updateCustomFormula(id: string, formula: string): Promise<
 export async function deleteCustomFormula(id: string): Promise<void> {
   await http.delete(`/factors/custom-formulas/${id}`)
 }
+/**
+ * ★ v2.1.45：置顶 / 取消置顶（用户 2026-10-12 ✓）。
+ * 后端把它写进**本装机**的公式文件（与编辑同一套 LWW 规则 ✓），并让列表**置顶优先** ✓；
+ * 后端同时返回更新后的条目 ⇒ 前端可原地替换（不必重拉整个列表 ✓）。
+ */
+export async function setFormulaPinned(id: string, pinned: boolean): Promise<CustomFormula> {
+  const { data } = await http.post<CustomFormula>(`/factors/custom-formulas/${id}/pin`, { pinned })
+  return data
+}
 
 // ---------- 单因子测试（不训练模型，快速诊断因子预测力） ----------
 
@@ -289,6 +303,23 @@ export interface SingleFactorTestItem {
   source_formula?: string // 用户原文公式（custom=保存原文；目录因子=表达式本身），仅展示用
 }
 export interface SingleFactorTestRequest {
+  /**
+   * v2.1.24：**成交时点** —— 决定「持仓期收益曲线 / 每期净值」的买入价与逐日盯市价 ✓。
+   * `t1_close`（默认，老口径：次日收盘 ✓）/ `t1_open`（次日开盘 ✓）。
+   */
+  fill?: string
+  /**
+   * ★ v2.1.27：**每期全仓滚动（实盘口径 · 逐点对拍专用）** —— **默认关** ✓。
+   * 打开后用**与回灌侧同一个** `run_period_roll` 把"每期名单"按实盘口径再跑一遍
+   * （含资金约束/整手/涨跌停 ✓），结果挂在每行的 `row.period_roll = {dates, nav, stats}` 上
+   * ⇒ 用来和「交易信号测试」拖回灌得到的 `period_roll` 曲线**逐点对拍** ✓。
+   * ⚠ 很慢：每档多取一次全池行情面板 + 逐日回测（全 A 10~20s 量级）。
+   */
+  period_roll?: boolean
+  /** 仅 `period_roll` 时用到（与回灌侧同名同义；缺省即回灌默认 ⇒ 不传也能对齐 ✓） */
+  cost?: number
+  capital?: number
+  strict_limit?: boolean
   universe: string
   start_date: string
   end_date: string
@@ -314,6 +345,18 @@ export interface SingleFactorTestRequest {
   quantiles?: number // 分位组数（缺省 10 = 十分位；5 = 旧五分位）
   rebalance_period?: number | null // 调仓期（交易日）；**不传/null ⇒ 跟随预测周期 h**
   topk_list?: number[] // 明细曲线要算的 K：**<1 视为「日均只数的百分比」**（0.1=10%、0.2=20%），**≥1 视为只数**（1 = 1 只）
+}
+/** ★ v2.1.31：触发样本的分组统计（`首次/新开仓` 或 `续期内再触发` ✓）。 */
+export interface TriggerSplitGroup {
+  count: number | null
+  /**
+   * ⚠ **一律是小数**（与 `trigger.mean_ret` 同约定 ✓）—— 显示层用 `fmt()`（内部 ×100 ✓）
+   * 或自己 `×100` 后再加 `%` ✓。**不要再在后端乘 100** ✗（曾因此把胜率显示成 4660% ✗）。
+   */
+  mean_ret: number | null
+  median_ret: number | null
+  /** 胜率：**小数**（0.466 = 46.6% ✓，同上一律不预先 ×100 ✓） */
+  win_rate: number | null
 }
 export interface FactorTestGroupStats {
   count: number
@@ -424,11 +467,36 @@ export interface TopKSensitivity {
   rows: TopKSensitivityRow[]
   note: string // 口径/免责说明（买入端已按开关剔除 T/T+1 涨停与 T+1 停牌样本；未模拟跌停卖不出、未计流动性冲击）
 }
+/** 单档「每期全仓滚动（实盘口径）」净值（v2.1.27 起 ✓）—— 逐点对拍专用 ✓。 */
+export interface PeriodRollNav {
+  dates?: string[] // 逐日（交易日）
+  nav?: (number | null)[]
+  label?: string
+  stats?: Record<string, unknown>
+  perf?: Record<string, number | null> | null
+  error?: string // 计算失败时的可读原因（附加信息，不影响统计 ✓）
+}
 export interface SingleFactorTestResult {
   id: string
   name: string
   source: string
   expression: string
+  /**
+   * ★ v2.1.38：**每个选中档位各一条**实盘口径净值 —— 与 `topk_curves.items` **同序** ✓，
+   * 前端按「当前选中档的下标」取 ✓（用户 2026-10-12："应该是我测试的时候选了哪些档位就算哪些档位" ✓）。
+   * 为什么原来不行：v2.1.27 只算 `items[0]`（默认档 ✗）⇒ 切到「固定 K=867」时红线与指标
+   * **仍是默认档的** ✗（结果只挂 row 级 ✓）。
+   */
+  period_roll_items?: PeriodRollNav[]
+  /**
+   * ★ v2.1.27：面板侧「**每期全仓滚动（实盘口径 · 逐点对拍专用）**」净值 ——
+   * **只在测试请求里 `period_roll: true` 时才有** ✓（默认关 ✓，慢 ✓）。
+   * 它与「交易信号测试」拖回灌出来的 `period_roll` 是**同一个实现的两次运行** ⇒ 应当逐位一致 ✓；
+   * 而组合曲线（`topk_curves`）是收益模型口径，**与它本该不同** ✗（别拿错对象对拍 ✗）。
+   * ⚠ v2.1.38 起：本字段 = `period_roll_items[0]`（**默认档** ✓），仅为兼容旧取法保留 ✓
+   *   —— 前端一律优先用 `period_roll_items[idx]` ✓，别直接用这个 ✗。
+   */
+  period_roll?: PeriodRollNav
   horizon?: number // 该行对应的预测周期（批量测试时每 因子×周期 一行）
   source_formula?: string // 用户原文公式（custom=保存原文；目录因子=表达式本身）
   coverage: number | null // 覆盖率：因子非空行 ÷ CLOSE 有效行（v1.21.6 起；分母不再是"面板并集行数"）
@@ -438,6 +506,17 @@ export interface SingleFactorTestResult {
   grouping: 'binary' | 'quantile' | null // 触发分组方式
   quintile_ret: QuintileGroup[] | null // 分位平均收益（连续因子），识别U型/倒U型；组数=quantiles（默认 10）
   trigger: FactorTestGroupStats | null // 触发组（>0.5）未来N日收益
+  /**
+   * ★ v2.1.31：触发样本的**分组统计**（`首次/新开仓` vs `续期内再触发` ✓）。
+   * 为什么要看它：两组收益差很大（实测 `黄金坑启动`：**首次 +4.956% vs 续期 +0.707%** ✓，
+   * 条数 1 : 2.65 ✓），而**组合里同一只票只持一轮**（≈ 首次口径 ✓）⇒ 拿"样本均值"
+   * 去推组合净值会严重低估 ✓（我自己就误判过 ✗）。`hold_days` = 判定用的持有期 N ✓。
+   */
+  trigger_split?: {
+    hold_days?: number
+    first?: TriggerSplitGroup
+    refresh?: TriggerSplitGroup
+  } | null
   not_trigger: FactorTestGroupStats | null // 未触发组（<=0.5）
   diff: number | null // 触发均值 - 未触发均值
   p_value: number | null // Mann-Whitney U p 值
@@ -535,6 +614,109 @@ export async function getSingleFactorTestTasks(
     { params: { limit } },
   )
   return data
+}
+
+// ---------- XLSX 导出（v2.1.0）----------
+// ⚠ 由**后端**生成（不是前端 SheetJS）：① 面板要"把曲线画出来" ⇒ 需要原生 Excel 图表，
+//   SheetJS 社区版画不了图 ✗；② 「每期持仓明细」根本没下发给前端（测试进程内算完即丢 ✓）
+//   ⇒ 只能后端取；③ 文件还能被「交易信号测试」拖回去复现净值 ⇒ 读写共用同一份契约 ✓。
+export interface TopkCurveExportRequest {
+  /** 单因子测试任务 id（拿曲线 / 参数 / 每期持仓索引 ✓） */
+  task_id: string
+  /** 因子 id / 名称 / 表达式（三者任一 ✓） */
+  factor_id: string
+  horizon?: number | null
+  /** 当前选中的档位：decile（最强分位组）/ topk（固定 K） */
+  item_kind: 'decile' | 'topk'
+  item_k?: number | null
+  item_quantile?: number | null
+  /** 曲线口径：compound（复利，页面默认）/ arithmetic（算术累加） */
+  basis?: 'compound' | 'arithmetic'
+  /** 基准代码（空 ⇒ 不导基准列；「池内等权」是前端算的伪基准 ⇒ 也传空 ✓） */
+  benchmark?: string
+  /** 绩效指标用哪一档成本（"0.0000"/"0.0040"/"0.0080" ✓） */
+  cost_tier?: string
+  /**
+   * 面板截图（**base64 PNG**，键 `nav`/`decile` ✓）—— 由 `captureChart.ts` 把当前渲染的
+   * recharts `<svg>` 抓成 PNG ⇒ 文件里的图 = 你眼前的图（档位/基准/显隐 全部一致 ✓）。
+   * 抓图失败时**不传**即可（后端会写明"未附图"并指路数值页 ✓）。
+   */
+  shots?: { nav?: string; decile?: string }
+}
+
+/** 事件研究导出的请求（v2.1.0 ✓）。 */
+export interface EventStudyExportRequest {
+  task_id: string
+  /** 因子表达式/id（后端按它在任务里找触发明细与事件研究结果 ✓） */
+  factor_id?: string | null
+  /** 净值曲线的持有周期（第 2 页每期持仓也按它派生 ✓） */
+  hold_days?: number
+  cost?: number
+  capital?: number
+  benchmark?: string
+  /** 面板的「最长持有」（回显用 ✓） */
+  max_k?: number | null
+  /** 面板截图（base64 PNG）：摘要卡片 / 主曲线 / 超额 / 净值 / 分布 ✓（整块截图，含图例与数值行 ✓） */
+  shots?: { kpi?: string; curve?: string; excess?: string; nav?: string; dist?: string }
+}
+
+/**
+ * 导出接口共用：**POST 取 xlsx，并读回后端建议的文件名**（响应头 `X-Export-Filename` ✓）。
+ *
+ * ⚠ 两个导出（持仓曲线 / 事件研究）走同一个后端形态 ⇒ 只维护这一处（否则超时、错误体解析
+ *   这类细节会在两处各写一遍、慢慢就不一样了 ✗）。
+ */
+async function postXlsx(path: string, body: unknown): Promise<{ blob: Blob; filename: string | null }> {
+  const res = await http.post(path, body, {
+    responseType: 'blob',
+    // 生成工作簿要几秒（含几千行持仓解析 + 贴图）⇒ 单独放宽，不用全局 30s ✓
+    timeout: 180000,
+  })
+  const raw = res.headers?.['x-export-filename']
+  let filename: string | null = null
+  if (typeof raw === 'string' && raw) {
+    try {
+      filename = decodeURIComponent(raw)
+    } catch {
+      filename = raw
+    }
+  }
+  return { blob: res.data as Blob, filename }
+}
+
+/** 导出「持仓期收益曲线」为 XLSX：返回 blob + 后端建议的文件名（响应头 ✓）。 */
+export async function exportTopkCurveXlsx(
+  req: TopkCurveExportRequest,
+): Promise<{ blob: Blob; filename: string | null }> {
+  return postXlsx('/factors/export/topk-xlsx', req)
+}
+
+/** 导出「事件研究」为 XLSX（第 1 页参数与面板截图，第 2 页每期持仓 ✓）。 */
+export async function exportEventStudyXlsx(
+  req: EventStudyExportRequest,
+): Promise<{ blob: Blob; filename: string | null }> {
+  return postXlsx('/factors/export/event-study-xlsx', req)
+}
+
+/** 后端出错时**响应体是 JSON**（blob 请求下要手动解一下）⇒ 取出可读 detail ✓。 */
+export async function blobErrorDetail(err: unknown): Promise<string> {
+  const anyErr = err as { response?: { data?: unknown; status?: number } }
+  const data = anyErr?.response?.data
+  try {
+    if (data instanceof Blob) {
+      const text = await data.text()
+      const obj = JSON.parse(text) as { detail?: string }
+      if (obj?.detail) return obj.detail
+      return text.slice(0, 300)
+    }
+    if (typeof data === 'object' && data && 'detail' in data) {
+      return String((data as { detail?: unknown }).detail)
+    }
+    if (typeof data === 'string' && data) return data.slice(0, 300)
+  } catch {
+    /* 解析失败就走兜底文案 ✓ */
+  }
+  return '导出失败（后端未返回可读原因，请查看后端日志）'
 }
 
 // ---------- 事件研究（0/1 稀疏信号：触发事件对齐 T=0 的收益分布） ----------
@@ -688,6 +870,13 @@ export interface EventStudyRequest {
   suspend_remove?: boolean
   freeze_suspended_price?: boolean
   warmup_days?: number
+  /**
+   * ★ v2.1.65：**成交时点**（`t1_open` 次日开盘 / `t1_close` 次日收盘 / `t_close` 信号日收盘 ✓）。
+   * 后端 `EventStudyRequest` 从 v2.1.52 起就有这个字段 ✓，**前端类型漏了** ✗ ⇒ 弹窗
+   * 「重新计算」与净值曲线都只能拿到后端默认值 ⇒ 面板切口径**没有任何效果** ✗
+   * （用户 2026-10-12："我怎么测下来两个数一模一样" ✓ 的同一类问题 ✓）。
+   */
+  fill?: string
 }
 export async function createEventStudy(req: EventStudyRequest): Promise<{ task_id: string }> {
   const { data } = await http.post<{ task_id: string }>('/factors/event-study', req)
@@ -764,6 +953,38 @@ export interface SignalTestParseResult {
   issues: SignalTestIssue[]
   preview?: Record<string, unknown>[]
   elapsed?: number
+  /**
+   * v2.1.0：拖入的是**本工具导出的 XLSX**（单因子测试持仓曲线 / 事件研究）时为 `'qlib_export'` ✓
+   * —— 此时 `aligned` 带上导出文件第 1 页的参数 ⇒ 界面**自动对齐设置**（用户 2026-10-11 需求 ✓）。
+   */
+  origin?: string
+  aligned?: {
+    kind?: string
+    origin_label?: string
+    factor_name?: string
+    expression?: string
+    universe?: string
+    start?: string
+    end?: string
+    horizon?: number | null
+    /**
+     * 成交时点 = **面板净值引擎真正用的**那个（v2.1.4 ✓）。
+     * ⚠ 别和"曲线标题里的 T+1 收盘买入"混为一谈：那是**统计量口径**，净值引擎用的是
+     *   `t1_open`（次日开盘）⇒ 搬运时必须搬引擎的，否则回灌对不上 ✓。
+     */
+    fill?: string | null
+    /** 严格涨跌停约束（v2.1.4：一字板买不进 ⇒ 影响净值 ✓） */
+    strict_limit?: boolean | null
+    /** 再平衡死区（v2.1.4：影响调平频率 ✓） */
+    rebal_band?: number | null
+    /** 初始资金（v2.1.4：影响取整/手数 ✓） */
+    capital?: number | null
+    cost?: number | null
+    benchmark?: string
+    max_k?: number | null
+    app_version?: string
+    generated_at?: string
+  } | null
 }
 
 export interface SignalTestOptions {
@@ -860,6 +1081,13 @@ export interface EventNavRequest {
   benchmark?: string
   /** 单因子测试任务里按**因子表达式**存触发事件（"秒开"路径没有独立事件研究任务） */
   factor_id?: string
+  /**
+   * ★ v2.1.65：**成交时点**（`t1_open` 次日开盘 / `t1_close` 次日收盘 / `t_close` 信号日收盘 ✓）。
+   * 用户 2026-10-12："事件研究的净值曲线是跟随面板参数走还是写死了次日收盘价？我怎么测下来
+   * 两个数一模一样" ✓ —— 后端原来**写死 `t1_open`** ✗（且 `_NAV_BT_CACHE` 键里没有它 ✗）
+   * ⇒ 面板切口径时净值**纹丝不动** ✗。现在跟随面板 ✓（不传 ⇒ 仍是 `t1_open`，数字不变 ✓）。
+   */
+  fill?: string
 }
 
 export interface EventNavResult {

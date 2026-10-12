@@ -19,6 +19,21 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+def _src_fp() -> str:
+    """取价链路的**源码指纹**（v2.1.61 ✓）—— 拼进磁盘缓存 key ✓（改口径 ⇒ 自动失效 ✓）。
+
+    为什么要它（用户 2026-10-12："信号测试是不是有缓存功能？没有加版本的哈希校验？" ✓）：
+      原先这两处缓存只用**手工版本号**（`_POOL_WIDE_VERSION="v1"` / `"signals|v1"` ✗）
+      ⇒ 改了取价口径但忘了 +1，就会把旧宽表当新的返回 ✗✗（"口径漂移 + 看不见" ✓）。
+      与 `single_test.py` v1.19.97 的做法一致（源码 mtime+size ✓，不会忘 ✓）。
+    """
+    try:
+        from app.engine.code_fp import code_fingerprint
+        return code_fingerprint("app/signals/pricing.py", "app/engine/feature_cache.py")
+    except Exception:                                              # noqa: BLE001
+        return "na"
+
+
 FIELDS = (
     ("$close", "CLOSE"),            # 后复权收盘（= 前复权收益率口径）
     ("$open", "OPEN"),              # 后复权开盘
@@ -59,7 +74,22 @@ def resolve_universe(universe: str, start: str, end: str) -> List[str]:
                                    start_time=start, end_time=end, as_list=True)
     except Exception:
         return []
-    return sorted(str(i).upper() for i in insts)
+    # ★★ v2.1.60：**与单因子测试面板同口径** ✗→✓（用户 2026-10-12，根因实测 ✓）
+    #   事件研究的「基准（未触发组）」池在本函数取列 ✓，而单因子测试是 `single_test.py:117`
+    #   的 `_resolve_instruments` 取的 ✓ —— 它**排除北交所 `BJ…` 与指数代码**
+    #   （`SH000` / `SH88` / `SH89` / `SZ39` ✓ 见 126-134 行 ✓），本函数原来**不排** ✗
+    #   ⇒ 同一份事件、同一个函数、同样的配对日（145 ✓），只有**池的列集**不同 ⇒
+    #     基准均值 1.9466%（我 ✗）vs 1.5250%（弹窗/秒开 ✓）⇒ 超额随之 4.0369% vs 4.4585% ✗。
+    #   ⇒ 这里按**同一套规则**过滤 ✓（口径必须一致，否则"两个页面两个数" ✓）。
+    out: List[str] = []
+    for i in insts:
+        c = str(i).upper()
+        if c.startswith("BJ"):
+            continue
+        if c.startswith(("SH000", "SH88", "SH89", "SZ39")):
+            continue
+        out.append(c)
+    return sorted(out)
 
 
 def _wide(pdf: pd.DataFrame, name: str, ffill: bool = True) -> Optional[pd.DataFrame]:
@@ -105,7 +135,10 @@ def load_price_panel(codes: Sequence[str], start: str, end: str,
 
         cache_path = _cache_path(all_codes, [e for e, _ in fields], [n for _, n in fields],
                                  start, end,
-                                 extra="signals|v1|%s" % ("open" if need_open else "noopen"))
+                                 # ★ v2.1.61：**取价源码进 key** ✗→✓（改口径 ⇒ 自动失效 ✓，
+                                 #   不再靠手工 `signals|v1` 版本号 ✗）
+                                 extra="signals|v1|%s|src=%s"
+                                       % ("open" if need_open else "noopen", _src_fp()))
         pdf = _load_cache(cache_path)
     except Exception:
         cache_path = None
@@ -173,8 +206,19 @@ def _pool_wide_cache_dir() -> str:
         os.path.abspath(__file__)))), "workdir", "cache", "signal_pool_wide")
 
 
-def load_close_wide(codes: Sequence[str], start: str, end: str) -> Optional[pd.DataFrame]:
-    """基准池 → 后复权收盘宽表（**只取 CLOSE**，带宽表磁盘缓存）。失败返回 None。"""
+def load_close_wide(codes: Sequence[str], start: str, end: str,
+                    price: str = "$close") -> Optional[pd.DataFrame]:
+    """基准池 → 后复权价格宽表（**只取一个字段**，带宽表磁盘缓存）。失败返回 None。
+
+    ★ v2.1.55（修 v2.1.52 的回归 ✗→✓，用户 2026-10-12："你修坏了啊兄弟" ✓）：
+      参数化 `price`（`"$close"` 默认 / `"$open"`）✓ —— 事件研究**跟随成交时点**后
+      （`t1_open` ⇒ 触发组用开盘 ✓），基准池（未触发组）**也必须用开盘** ✓；
+      而 v2.1.52 当时因为"本函数只有收盘" ✗ 就把开盘口径下的池置成了 `None` ✗
+      ⇒ 用户看到的「基准/超额」整块消失 ✗。现在同一条快路径按 `price` 取 ✓
+      （表达式与 `load_price_panel` 的 OPEN/CLOSE **逐字相同** ✓ ⇒ 不会混合口径 ✓）。
+    ⚠ `price` **必须进缓存 key** ✗→✓（开/收盘宽表**形状完全相同** ✗，不进 key 就会把
+      收盘表当开盘表返回 ✗✗ —— 与 `signals/event.py` 的指纹同一个坑 ✓）。
+    """
     import hashlib
     import os
     import pickle
@@ -186,7 +230,10 @@ def load_close_wide(codes: Sequence[str], start: str, end: str) -> Optional[pd.D
     if not want:
         return None
     h = hashlib.md5()
-    h.update(("%s|%s|%s|%d" % (_POOL_WIDE_VERSION, start, end, len(want))).encode("utf-8"))
+    _px = str(price or "$close")
+    h.update(("%s|%s|%s|%s|%d" % (_POOL_WIDE_VERSION, _px, start, end, len(want))).encode("utf-8"))
+    # ★★ v2.1.61：**取价源码也进 key** ✗→✓（用户 2026-10-12："没有加版本的哈希校验？" ✓）
+    h.update(("|src=%s" % _src_fp()).encode("utf-8"))
     h.update(("|" + "|".join(want)).encode("utf-8"))          # 列集合进 key：池子变了必须失效
     try:
         from app.engine.feature_cache import _data_version
@@ -202,10 +249,10 @@ def load_close_wide(codes: Sequence[str], start: str, end: str) -> Optional[pd.D
                 return w
         except Exception:                                  # 坏缓存当未命中
             pass
-    pdf = panel_features(want, [("$close", "CLOSE")], start, end, warmup_days=0)
+    pdf = panel_features(want, [(_px, "PX")], start, end, warmup_days=0)
     if pdf is None or not len(pdf):
         return None
-    w = _wide(pdf, "CLOSE", ffill=True)
+    w = _wide(pdf, "PX", ffill=True)
     if w is None or not len(w):
         return None
     try:
