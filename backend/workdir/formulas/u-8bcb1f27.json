@@ -598,10 +598,12 @@
     "expression": "Lt(Less(40,Mul(Sub(Div(EMA($low,3),Mul(EMA($low,30),0.849)),1),100)),0)",
     "codegen": "1.21.4",
     "created_at": "2026-10-09 01:50:10",
-    "updated_at": "2026-10-09 17:02:47",
+    "updated_at": "2026-10-12 13:01:34",
     "author": "u-8bcb1f27",
     "author_user": "Administrator",
-    "author_modified_by": "u-8bcb1f27"
+    "author_modified_by": "u-8bcb1f27",
+    "sort_key": -4.0,
+    "pinned": true
   },
   {
     "id": "24be667ba74e",
@@ -621,10 +623,12 @@
     "expression": "If(Gt(Mul(Div($mkt_insum_all_is_gold_pit_7758f0_1_0,$mkt_num_all),100),40),40,Mul(Div($mkt_insum_all_is_gold_pit_7758f0_1_0,$mkt_num_all),100))",
     "codegen": "1.21.4",
     "created_at": "2026-10-09 02:03:21",
-    "updated_at": "2026-10-09 17:20:43",
+    "updated_at": "2026-10-12 13:01:33",
     "author": "u-8bcb1f27",
     "author_user": "Administrator",
-    "author_modified_by": "u-8bcb1f27"
+    "author_modified_by": "u-8bcb1f27",
+    "sort_key": -3.0,
+    "pinned": true
   },
   {
     "id": "a3449bf4e736",
@@ -647,11 +651,12 @@
     "expression": "And(And(And(And(And(And(And(And(And(And(Gt($fin_pe_ttm,0),Gt($fin_pb,0)),Gt($fin_rev_yoy_q,0)),Gt($fin_np_yoy_q,0)),Gt($fin_gross_margin_q,0)),Gt($fin_roe_q,0)),Gt($fin_roa_q,0)),Gt($fin_eps_q,0)),And(Ge($volume,Mul(Ref($volume,1),1.1)),Gt($close,Ref($close,1)))),Ge($close,Mul(Ref($close,1),1.05))),Ge(And(And(Ge(Ref(Sum(Gt(Abs(Lt(Less(40,Mul(Sub(Div(EMA($low,3),Mul(EMA($low,30),0.849)),1),100)),0)),0),120),1),6),Ge(Ref(Sum(Gt(Abs(And(Gt(Mul(EMA(Div($mf_amount_xl,$market_cap),60),60),EMA(Mul(EMA(Div($mf_amount_xl,$market_cap),60),60),10)),Lt($close,Mul(0.8,Ref($close,60))))),0),120),1),6)),Ge(Ref(Sum(Gt(Abs(And(And(Gt(Mul(Sub(1,Div($close,Ref($close,55))),100),27),Eq($low,Min($low,34))),Ge(Mul(Sub(Div($close,$low),1),100),1))),0),120),1),1)),1))",
     "codegen": "1.21.4",
     "created_at": "2026-10-09 11:16:31",
-    "updated_at": "2026-10-12 12:55:58",
+    "updated_at": "2026-10-12 13:01:30",
     "author": "u-8bcb1f27",
     "author_user": "Administrator",
     "author_modified_by": "u-8bcb1f27",
-    "pinned": true
+    "pinned": true,
+    "sort_key": -2.0
   },
   {
     "id": "586d0f987b97",
