@@ -126,6 +126,16 @@ def load_price_panel(codes: Sequence[str], start: str, end: str,
     fields = list(FIELDS if need_open else [f for f in FIELDS if "OPEN" not in f[1]])
     if not field_bin_available("limit_up"):
         fields = [f for f in fields if not f[1].startswith("LIMIT_")]
+    # ★★ v2.1.76：**ST 标签也一起取** ✗→✓（用户 2026-10-12 的审计待办 ③ ✓）——
+    #   回灌侧要执行「剔除成交日(T+1) ST」就必须有 `$is_st` ✓（此前本侧**完全取不到** ✗
+    #   ⇒ 勾了也白勾、只给一句 warning ✓，与面板口径分叉 ✓）。
+    #   ⚠ 只在**有 dump 标签**的机器上加 ✓（`tools/dump_states.py` 同步过才有 ✓），
+    #     没有就干脆不加字段 —— 否则 `D.features` 会因缺 bin 直接崩 ✗（与 LIMIT_* 同一套降级逻辑 ✓）。
+    #   ⚠ 语义用**当日**值（不做 ffill ✓）：面板的「剔除成交日 ST」本来就是取 T+1 **当日**状态 ✓。
+    if field_bin_available("is_st"):
+        fields = fields + [("$is_st", "IS_ST")]
+    else:
+        fields = [f for f in fields if f[1] != "IS_ST"]
     all_codes = want + cal_codes
     # ---- 磁盘缓存（"秒出"的关键：同池同区间第二次直接命中）----
     pdf = None

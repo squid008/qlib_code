@@ -196,8 +196,25 @@ def _apply_excludes(ev: "pd.DataFrame", panel: Dict, flags: Dict, warnings: List
                 keep &= ~hit1
         except Exception as _e:                                     # noqa: BLE001
             warnings.append("涨停剔除执行失败（%r）⇒ 本次未剔除涨停样本 ✓" % (_e,))
+    # ★★ v2.1.76：**「剔除成交日(T+1) ST」现在真的执行** ✗→✓（审计待办 ③ ✓）
+    #   判据与面板一致：取 **T+1 当日**的 `$is_st`（`pricing.load_price_panel` 新增 ✓，不做 ffill ✓）
+    #   ⇒ `is_st > 0.5` 即剔除 ✓。缺字段（没同步 dump 的机器 ✓）⇒ **保留 warning 明说未执行** ✓（不静默 ✗）。
     if flags.get("exclude_st_t1"):
-        warnings.append("「剔除成交日 ST」需要 IS_ST 字段，本侧行情取不到 ⇒ 本次未执行该项 ✓")
+        stw = panel.get("IS_ST")
+        if stw is not None and len(stw):
+            S = _arr(stw)
+            if S is not None:
+                q = np.clip(pos + 1, 0, max(len(cal) - 1, 0))
+                hit = valid & (pos + 1 < len(cal)) & np.isfinite(S[q, c]) & (S[q, c] > 0.5)
+                if hit.any():
+                    keep &= ~hit
+                    warnings.append("按文件口径剔除「成交日 ST」样本 %d 条 ✓（T+1 当日 is_st ✓）"
+                                    % int(hit.sum()))
+            else:
+                warnings.append("「剔除成交日 ST」：IS_ST 宽表构造失败 ⇒ 本次未执行该项 ✓")
+        else:
+            warnings.append("「剔除成交日 ST」需要 IS_ST 字段，本机行情没有（未同步 dump 标签）"
+                            "⇒ 本次未执行该项 ✓")
     out = ev.loc[keep].reset_index(drop=True)
     if int(len(out)) != n0:
         warnings.append("按文件口径剔除触发样本：%d → %d 条（信号日涨停/成交日涨停/成交日停牌/"

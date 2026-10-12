@@ -218,6 +218,19 @@ def _contract_params(row: dict, tc: dict, item: dict, rq: dict, bench: Optional[
         #   ⚠ 绝不能写死 ✗：文件里必须是"面板**真正用的那个**" ✓，
         #     否则回灌"看起来一样、结果不一样" ✗（这正是 2026-10-11 那串问题的总根源 ✓）。
         spec.P_FILL: str((rq.get("fill") or "t1_close")),
+        # ★★ v2.1.76：**持仓曲线导出也把口径写进 `_meta`** ✗→✓（审计待办 ② ✓）——
+        #   此前这一路（`/factors/export/topk-xlsx` ✓）**一个口径键都没写** ✗（只在第 1 页人读块 ✓）
+        #   ⇒ 拿它回灌只能按页面默认跑 ⇒ "导出的 ≠ 复现的" ✓。取值来源与事件研究导出**同一批** ✓
+        #   （`rq` = 那次任务请求 ✓ ⇒ 面板真正用过的参数 ✓）。
+        spec.P_PRICE_ADJUST: str(rq.get("price_adjust") or "backward"),
+        spec.P_PRICE_ROUND: bool(rq.get("price_round", True)),
+        spec.P_SUSPEND_REMOVE: bool(rq.get("suspend_remove", True)),
+        spec.P_EXCLUDE_LIMIT_UP_SIGNAL: bool(rq.get("exclude_limit_up_signal", True)),
+        spec.P_EXCLUDE_LIMIT_UP_TRADE: bool(rq.get("exclude_limit_up_trade", True)),
+        spec.P_EXCLUDE_SUSPENDED: bool(rq.get("exclude_suspended", True)),
+        spec.P_EXCLUDE_ST_T1: bool(rq.get("exclude_st_t1", False)),
+        spec.P_EXCLUDE_STOCK_GEM: bool(rq.get("exclude_stock_gem", False)),
+        spec.P_EXCLUDE_STOCK_KCB: bool(rq.get("exclude_stock_kcb", False)),
         spec.P_COST: float(tier),
         # ★★ v2.1.27：**净值引擎的另三个实参也必须一起搬走** ✗→✓ ——
         #   v2.1.4 只给**事件研究导出**补了这三个键 ✗，持仓曲线这条路径漏了 ✗ ⇒ 实测
