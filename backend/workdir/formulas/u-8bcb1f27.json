@@ -45,15 +45,6 @@
     "codegen": "1.21.4"
   },
   {
-    "id": "93ba51835c61",
-    "name": "市值对数",
-    "text": "市值对数:log(market_cap);",
-    "expression": "Log($market_cap)",
-    "created_at": "2026-08-31 17:54:16",
-    "updated_at": "2026-08-31 17:54:16",
-    "codegen": "1.21.4"
-  },
-  {
     "id": "64612fdff099",
     "name": "负市值",
     "text": "负市值:-market_cap;",
@@ -741,6 +732,13 @@
     "codegen": "1.21.4",
     "created_at": "2026-10-11 21:10:48",
     "updated_at": "2026-10-11 21:10:48",
+    "author": "u-8bcb1f27",
+    "author_user": "Administrator"
+  },
+  {
+    "id": "93ba51835c61",
+    "deleted": true,
+    "updated_at": "2026-10-12 11:47:27",
     "author": "u-8bcb1f27",
     "author_user": "Administrator"
   }
