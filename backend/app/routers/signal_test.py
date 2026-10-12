@@ -206,10 +206,13 @@ def _apply_excludes(ev: "pd.DataFrame", panel: Dict, flags: Dict, warnings: List
             if S is not None:
                 q = np.clip(pos + 1, 0, max(len(cal) - 1, 0))
                 hit = valid & (pos + 1 < len(cal)) & np.isfinite(S[q, c]) & (S[q, c] > 0.5)
-                if hit.any():
-                    keep &= ~hit
-                    warnings.append("按文件口径剔除「成交日 ST」样本 %d 条 ✓（T+1 当日 is_st ✓）"
-                                    % int(hit.sum()))
+                keep &= ~hit
+                # ★★ v2.1.78：**命中 0 条也要报** ✗→✓ —— 2026-10-13 实测：文件里
+                #   `exclude_st_t1=True` ✓，但这个因子恰好没触发到 ST 样本 ⇒ 旧写法
+                #   （`if hit.any(): 才 append` ✗）**一声不吭** ✓ ⇒ 我根本分不清
+                #   "执行了但 0 命中" 还是 "压根没执行" ✗（自证的坑 ✓）。现在恒报条数 ✓。
+                warnings.append("按文件口径剔除「成交日 ST」样本 %d 条 ✓（T+1 当日 is_st ✓）"
+                                % int(hit.sum()))
             else:
                 warnings.append("「剔除成交日 ST」：IS_ST 宽表构造失败 ⇒ 本次未执行该项 ✓")
         else:
