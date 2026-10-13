@@ -176,6 +176,13 @@ python backend/tools/dump_finance_tdx.py --force        # 改了口径后全量�
 - ⚠ `FINANCE_TDX(q)` 函数本身**已下线**（2026-10-10 ✓）—— `ftdx_*` 数据仍照常 dump，只作**多源复核** ✓；
 - 口径戳：`features/_finance_meta.json`（含 `tier_fields` / `tier_note` ✓）/ `features/_finance_tdx_meta.json`（重跑后自动刷新 ✓）；
 - ⚠ 两个 dump 工具写盘成功后会自动**落数据戳**（`feature_cache.bump_data_version` ✓）⇒ 否则面板缓存继续"有效" ✗。
+- ⚠⚠ **用 `--codes` 局部重跑 tushare 链时，务必带 `--mc-tushare`** ✗→✓（2026-10-13 实测踩到 ✓）：
+  不带它时 `fin_pe_ttm`/`fin_pb` 的分母只能吃到**本地 `market_cap` bin** ⇒ 实测 1500 只的 PE/PB
+  **掉回米筐日历末日 2026-08-21** ✗（带参数重跑即恢复 ✓，且缓存命中 ⇒ **零 API 调用** ✓）。
+- ⚠ **PIT 去重规则（2026-10-13 修 ✓）**：同一 (报告期, 公告日) 多行时，**非空值永不被空值行覆盖** ✓ ——
+  tushare `fina_indicator` 对不少股票会返回"一行有 `roe_waa` ✓ + 一行 null ✗"的重复行，且两行
+  `update_flag` 都缺 ⇒ 旧规则"相等则后者胜"把有值行顶掉 ✗（实测 `fin_roe` 因此对 **325 只活跃股**
+  停在 2026 中报公告日 ✗，历史里另有 1570 只的**中间洞** ✗）。回归测试：`backend/tests/test_tushare_pit_dedup.py` ✓。
 
 ### 数据修复：`cn_data` 的 `open/high/low`（2026-10-10，v1.21.5）
 

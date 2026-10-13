@@ -295,14 +295,34 @@ class TsPit:
                     continue
                 v = r.get(col)
                 rows.append((fld, ann, q, v, int(r.get("update_flag") or 0)))
-        # (字段, 报告期, 公告日) 去重：同日多行取 update_flag 大者（更正后为准 ✓）
+        # (字段, 报告期, 公告日) 去重：**有值行必须压过空值行** ✓，都空/都有值时再比
+        # `update_flag`（同日多行取大者 = 更正后为准 ✓）。
+        # ⚠⚠ 2026-10-13 修（实测根因 ✓，用户口径"与量价对齐到 10-09"）：
+        #   tushare 的 `fina_indicator` 对相当一部分股票会**同一 (end_date, ann_date) 返回两行**，
+        #   其中后一行 `roe_waa` 是 **null** ✗ —— 实测 `sh600000` 2026q2：一行 3.96 ✓、一行 None ✗，
+        #   且两行 `update_flag` **都是空** ⇒ 旧规则 `uf >= best[k][0]` 判"相等" ⇒ **后一行胜** ⇒
+        #   2026 中报公告日起全变 NaN ✗✗。
+        #   后果两处（都用 `ai_test/` 的只读体检实测 ✓）：
+        #     ① `fin_roe` 对 **325 只活跃股**停在 2026-08-24~08-28（中报公告日）✗
+        #        （`ai_test/fin_tail_probe_1009.py` ✓）；
+        #     ② 历史里还有**中间洞** ✗：1570 只股票、2008 个 `roe_waa` 键（`ai_test/scan_dup_null_fin.py` ✓）。
+        #   ⇒ 现在：非空值**永远**不被空值覆盖 ✓（空值行只有在"先前也是空"时才可能顶上去 ✓）。
         best: Dict[Tuple[str, str, str], Tuple[int, float]] = {}
         for fld, ann, q, v, uf in rows:
-            if v is None or (isinstance(v, float) and not np.isfinite(v)):
-                v = float("nan")
+            try:
+                fv = float(v)                                     # None/字符串 ⇒ NaN ✓
+            except (TypeError, ValueError):
+                fv = float("nan")
+            if not np.isfinite(fv):
+                fv = float("nan")
             k = (fld, q, ann)
-            if k not in best or uf >= best[k][0]:
-                best[k] = (uf, float(v))
+            cur = best.get(k)
+            if cur is None:
+                best[k] = (uf, fv)
+                continue
+            has_new, has_cur = bool(np.isfinite(fv)), bool(np.isfinite(cur[1]))
+            if (has_new and not has_cur) or (has_new == has_cur and uf >= cur[0]):
+                best[k] = (uf, fv)
         self.by_quarter: Dict[str, Dict[str, Tuple[np.ndarray, np.ndarray]]] = {}
         for (fld, q, ann), (_uf, v) in best.items():
             self.by_quarter.setdefault(fld, {}).setdefault(q, ([], []))
