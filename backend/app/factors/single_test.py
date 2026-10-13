@@ -1032,6 +1032,20 @@ def _test_one(
                         · 自检④：每期期末的逐日净值必须等于 `curves_compound` 对应点（atol 1e-6）。
                         ⚠ 仅当 **调仓期 ≥ 预测周期** 时各期持有区间不重叠；否则返回 None（前端标注）。
                         """
+                        # ★★ v2.1.83：**入口标记**（bisect 用 ✓）—— 2026-10-13 我插在
+                        #   `_seg_nav` 之后的诊断块**连续 3 次都没落盘、也没报错** ✗ ⇒ 先确认
+                        #   "这个函数到底有没有被调用" ✓（先前的教训就写在下面这条注释里 ✓：
+                        #   探针必须放**函数入口**，否则早退时什么都不留 ✓）。标记文件可数次数 ✓。
+                        try:
+                            if __import__("os").path.exists(
+                                    r"D:\quant\qlib_code\ai_test\sft_perf_debug.flag"):
+                                with open(r"D:\quant\qlib_code\ai_test\marker_perf_entry.txt",
+                                          "a", encoding="utf-8") as _mf:
+                                    _mf.write("%s enter kind=%s k=%s h=%s REBAL=%s nd=%s\n"
+                                              % (__import__("time").strftime("%H:%M:%S"),
+                                                 _k_kind, _k_val, horizon, _REBAL, _nd))
+                        except Exception:                              # noqa: BLE001
+                            pass
                         _h_i = int(horizon or 0)
                         # ★ 探针（2026-09-18）：放在**函数入口**，早退也要留下痕迹 ——
                         #   上一轮插桩放在早退之后 ⇒ perf 全空时什么都没打印 ✗（无法判断为什么空）。
