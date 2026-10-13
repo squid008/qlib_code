@@ -413,6 +413,29 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
                                      str(req.start_date), str(req.end_date), need_open=True)
         if not panel:
             return {"error": "行情面板为空（取价失败）"}
+        # ★★ v2.1.79（用户 2026-10-13 拍板 ✓）：**「每期全仓滚动（实盘口径）」也跟随复权口径** ✗→✓
+        #   —— 他要与聚宽对齐 ⇒ **一个口径走全链** ✓；否则"模型曲线走真实价、实盘走复权价" ✗
+        #   ⇒ 「实盘 vs 模型」的结论会**随复权口径翻转** ✗（实测：backward 下实盘 −1.31pp ✓、
+        #     none 下反而 +1.84pp ✗，用户当场发现 ✓）。
+        #   口径来源：**那次任务自己算出来的** 事件研究参数 `row["event_study"]["params"]` ✓
+        #   （它就是"面板真正用过的那个" ✓）；⚠ 浅拷贝 ✓（`panel` 由 `_attach_period_roll`
+        #   在**多档之间共享** ✓，就地改会串档 ✓）。
+        # ⚠⚠ v2.1.80：**优先读那次任务请求自己的 `price_adjust`** ✗→✓ —— 实测
+        #   （`ai_test/ab_fuquan.py` ✓）：只读 `row["event_study"]["params"]` 时**拿不到值** ✗
+        #   （该字段在装配顺序上**晚于**本函数 ✓）⇒ 换价静默失效 ⇒ 「实盘」在两种复权口径下
+        #   **一动不动** ✗（与用户"不复权 → 实盘也要用不复权"的要求正好相反 ✓）。
+        #   `req` 就是那次单因子测试请求 ✓（同一对象的 `fill`/`cost`/`capital` 本函数已在用 ✓）。
+        _pa_row = str(getattr(req, "price_adjust", None)
+                      or ((row.get("event_study") or {}).get("params") or {})
+                      .get("price_adjust") or "").strip().lower()
+        if _pa_row == "none":
+            panel = dict(panel)
+            _cr = panel.get("CLOSE_RAW")
+            if _cr is not None and len(_cr):
+                panel["CLOSE"] = _cr.ffill().round(2)
+                _orr = panel.get("OPEN_RAW")
+                if _orr is not None and len(_orr):
+                    panel["OPEN"] = _orr.ffill().round(2)
         bt = run_period_roll(sig, panel, fill=str(req.fill), cost=float(req.cost),
                              capital=float(req.capital), strict_limit=bool(req.strict_limit))
         nav = getattr(bt, "nav", None)
@@ -1477,14 +1500,25 @@ def event_study_nav(req: EventNavRequest):
         timings["prices_cached"] = bool(_hit)
         if panel is None or "CLOSE" not in panel:
             raise HTTPException(status_code=400, detail="取不到触发标的的行情数据")
-        # ★★ v2.1.73：**回退 v2.1.72 在这里的换价** ✗→✓ —— 用户实测（同一份「不复权」文件）：
-        #   面板净值期末 **1.8031** ✓ 而信号测试只剩 **0.831** ✗（"两个净值曲线也差很多" ✓）。
-        #   根因就是我 v2.1.72 把**回测/净值**的价表也换成了真实价 ✗：
-        #     · **比率类**（事件研究：价格比/收益 ✓）⇒ 口径跟文件走 ✓（不复权 ⇒ 真实价 ✓）；
-        #     · **金额类**（回测/净值/持仓 ✓）⇒ **必须后复权** ✓ —— 不复权价缺分红送转的**股份补偿**
-        #       ⇒ 除权/送转日直接记成亏损 ⇒ 净值被系统性打崩 ✗（与"是否跟随文件"无关 ✓，那是**财务上错**✓）。
-        #   ⇒ 本端点（净值曲线）**永远用面板的 `CLOSE`/`OPEN`（后复权 ✓）** ✓，
-        #     不复权只影响**事件研究**那条链（见 `signal_test.py` 的 `_px_es` ✓）。
+        # ★★ v2.1.79（用户 2026-10-13 拍板 ✓）：**不复权时净值曲线也用不复权** ✗→✓
+        #   为什么改（用户的规矩 ✓）：他要"**与聚宽对齐**" ⇒ **一个口径走全链** ✓
+        #   （因子/事件研究/回测/净值/回灌 全都不复权 ✓），而不是我 v2.1.73 自己定的
+        #   "金额类永远后复权" ✗ —— 那条虽然是"财务正确" ✓，但**破坏了对拍** ✗：
+        #   实测（`ai_test/ab_fuquan.py` ✓，只改复权口径 ✓）：
+        #     组合卡 Q10 年化 backward 24.18% → none 21.03%（−3.15pp ✗ 真实价的除权跳空 ✓）
+        #     实盘口径    backward 22.87% → none 22.87%（0.00pp ✓ 因为当时它被写死后复权 ✗）
+        #   ⇒ 两边基准不同 ⇒ "实盘 vs 模型"的结论会**随复权口径翻转** ✗（用户当场发现 ✓）。
+        #   ⚠ **必须浅拷贝** ✓：`_nav_panel_cached` 返回的是**进程内缓存对象** ✗，
+        #     就地改 `panel["CLOSE"]` 会污染后续所有请求 ✓✓（比 bug 本身更糟 ✗）。
+        #   ⚠ `CLOSE_RAW`/`OPEN_RAW` **不动** ✓（停牌/涨跌停判定仍按真实价 ✓）。
+        if str(rq.get("price_adjust") or "").strip().lower() == "none":
+            panel = dict(panel)
+            _cr = panel.get("CLOSE_RAW")
+            if _cr is not None and len(_cr):
+                panel["CLOSE"] = _cr.ffill().round(2)
+                _orr = panel.get("OPEN_RAW")
+                if _orr is not None and len(_orr):
+                    panel["OPEN"] = _orr.ffill().round(2)
         t0 = time.perf_counter()
         _modes = ("event_even", "cash_even")
         # ★★ v2.1.66：**口径归一必须放在最外层** ✗→✓（用户 2026-10-12 实测报错：
