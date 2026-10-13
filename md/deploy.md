@@ -199,6 +199,25 @@ python backend/tools/dump_finance_tdx.py --force        # 改了口径后全量�
   补成完整序列 ✓）、抽样**值→NaN 0 格** ✓。
   ⚠ 依赖 `FINANCE(6)` 的因子/回测在**历史区间**会有变化 ✓（原来 NaN 的格子现在有值 ✓）。
 
+### 数据修复 / 体检工具（2026-10-13，v2.1.96 ✓ —— 全部**带闸门 + 备份 + 零 API 或极少量调用** ✓）
+
+```bash
+python backend/tools/build_index_turn.py --qlib-dir data/cn_data2            # 指数 turn：有源重建 / 无源置空
+python backend/tools/fill_market_cap.py  --qlib-dir data/cn_data2            # market_cap 补到 close 末日
+python backend/tools/fill_vwap_tail.py   --qlib-dir data/cn_data2            # vwap/prevwap 按洞补
+python backend/tools/fill_amount_gap.py  --qlib-dir data/cn_data2            # amount 缝补（volume>0 却缺的）
+# 全部默认 dry-run ✓，加 --apply 才写 ✓；各自把旧 bin 备份到 data/<ds>/_backup_*_20261013/ ✓
+python ai_test/health_both_1013.py --datasets cn_data,cn_data2               # ★ 两套数据集全面体检（本地）
+python ai_test/hole_probe_1013.py --dataset cn_data2                         # 空洞形态（洞 vs 尾巴 ✓）
+```
+
+- ⚠ **"缺口"的正确定义** ✓：`该字段绝对末日 < 该股自己的 close 绝对末日` ✓ ——
+  用「< 日历末日」会大批误报退市股 ✗；用「全股票取 max」会把个股落后**藏起来** ✗（两处大缺口因此漏了很久 ✓）。
+  比的时候**必须带 header** ✓（各字段 header 不同 ✗，`market_cap`/`vwap` 就是被这两条掩盖的 ✓）；
+- ⚠ **"洞"和"尾巴"是两种病** ✗：补尾巴的脚本补不了中间洞 ✓（`vwap` 的 62 天洞就是补完 `amount` 后才暴露的 ✓）；
+- 现状与已知缺口（北交所无源 / 中证800·全指无 `turn` 源 / 米筐侧未同步 / `mkt_num_all` 待定 等）✓
+  已逐条写进 `md/数据源接入.md` 的「★ 两套数据集的现状与已知缺口」一节 ✓（同事的 AI 直接读那节 ✓）。
+
 ### 数据修复：`cn_data` 的 `open/high/low`（2026-10-10，v1.21.5）
 
 ```bash
