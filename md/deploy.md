@@ -203,9 +203,12 @@ python backend/tools/dump_finance_tdx.py --force        # 改了口径后全量�
 
 ```bash
 python backend/tools/build_index_turn.py --qlib-dir data/cn_data2            # 指数 turn：有源重建 / 无源置空
+python backend/tools/rebuild_turn.py     --qlib-dir data/cn_data2 --apply     # ★ 个股 turn 全量重建（daily_basic.turnover_rate）
 python backend/tools/fill_market_cap.py  --qlib-dir data/cn_data2            # market_cap 补到 close 末日
-python backend/tools/fill_vwap_tail.py   --qlib-dir data/cn_data2            # vwap/prevwap 按洞补
-python backend/tools/fill_amount_gap.py  --qlib-dir data/cn_data2            # amount 缝补（volume>0 却缺的）
+python backend/tools/fill_vwap_tail.py   --qlib-dir data/cn_data2            # vwap/prevwap 按洞补 + 整条建
+python backend/tools/fill_amount_gap.py  --qlib-dir data/cn_data2            # amount 共同窗口缝补（按天取数）
+python backend/tools/fill_amount_history.py --qlib-dir data/cn_data2 --apply  # amount 个股整条历史（退市股 ✓，按股票取数）
+python backend/tools/materialize_market.py --overwrite                        # ★ mkt_* 横向统计重新物化（2026-10-14 跑过 ✓）
 # 全部默认 dry-run ✓，加 --apply 才写 ✓；各自把旧 bin 备份到 data/<ds>/_backup_*_20261013/ ✓
 python ai_test/health_both_1013.py --datasets cn_data,cn_data2               # ★ 两套数据集全面体检（本地）
 python ai_test/hole_probe_1013.py --dataset cn_data2                         # 空洞形态（洞 vs 尾巴 ✓）

@@ -77,16 +77,25 @@ def main():
             n_nosrc += 1
             continue
         lv, lc = last_finite(hv[1]), last_finite(hc[1])
-        if lv is None or lc is None:
+        if lc is None:
             n_nosrc += 1
             continue
+        # ★★ 2026-10-14 修 ✗→✓：`last_finite` 返回的是**数组内相对下标** ✗，而 `hv[0]` 是**绝对** header ✓
+        #   ⇒ 拿"相对的 close 末日"去减"绝对的 vwap header"会算错范围 ✗
+        #   （全 NaN 的 vwap + close header=0 的股票 ⇒ `hi_i` 变负 ⇒ 一个洞都找不到 ✗，
+        #    退市股因此整条建不出来 ✗）。⇒ 统一换成**绝对下标** ✓。
+        lv = (hv[0] + lv) if lv is not None else None
+        lc = hc[0] + lc
+        # ★ 2026-10-14：`vwap` **整条全 NaN**（退市股 ✓，如 `sh600145`）⇒ 不再是"补洞"而是"**建整条**" ✓
+        #   （用户："退市股的 amount 和 vwap 得到退市那天才对吧？" ✓）
+        if lv is None:
+            lv = hv[0] - 1                              # 下限设成 header 之前 ⇒ 全部可算日都是"洞" ✓
         # ★ 判据（2026-10-13 修 ✗→✓）：不是"只看尾巴" ✗，而是"**该有值却缺**" ✓ ——
         #   `vwap` 是 NaN、但 `10×amount÷volume` 算得出来 ⇒ 该补 ✓（含**中间洞** ✓：amount 补完后
         #   2026-05-27~08-21 那 62 天正是这种情况 ✗；只看尾巴会报"待补 0" 而放过 ✗）。
         gaps = []
-        for i in range(lv + 1):
-            if lv is not None and i > lc:
-                break
+        hi_i = min(hv[1].size - 1, lc - hv[0])           # ★ 从数组头扫到该股 close 末日 ✓（不越界 ✓）
+        for i in range(0, hi_i + 1):
             gi = hv[0] + i
             ja, jm = gi - ha[0], gi - hm[0]
             am = ha[1][ja] if 0 <= ja < ha[1].size else np.nan
@@ -99,7 +108,8 @@ def main():
         fin = np.nonzero(np.isfinite(hf[1]))[0]
         flast = float(hf[1][int(fin[-1])]) if fin.size else float("nan")
         # ---- 闸门：在已有段上验两条恒等式 ✓
-        idx = [i for i in range(max(0, lv - a.verify_days + 1), lv + 1) if np.isfinite(hv[1][i])]
+        lv_rel = lv - hv[0]                              # 绝对 ⇒ 相对 ✓（闸门按数组下标取 ✓）
+        idx = [i for i in range(max(0, lv_rel - a.verify_days + 1), lv_rel + 1) if np.isfinite(hv[1][i])]
         e1 = e2 = 0.0
         for i in idx:
             gi = hv[0] + i
@@ -135,7 +145,7 @@ def main():
         n_ok += 1
         plan[c] = {"hdr": hv[0], "v": hv[1], "p": hp[1] if hp else None, "phdr": hp[0] if hp else None,
                    "idx": gaps, "vv": vv, "pp": pp, "miss": miss, "nd": len(gaps),
-                   "tail": int(sum(1 for i in gaps if i > lv))}
+                   "tail": int(sum(1 for i in gaps if i > lv_rel))}
     print("⇒ 待补 %d 只 ｜ 无洞 %d 只 ｜ 缺依赖 bin %d 只 ｜ **闸门不过** %d 只"
           % (n_ok, n_uptodate, n_nosrc, n_gate))
     if bad:
@@ -166,6 +176,12 @@ def main():
             src = (p["hdr"], p["v"]) if fld == "vwap" else (p["phdr"], p["p"])
             hdr, v = src
             arr = v.copy()
+            # ★ 若最早要写的日子在现有 header **之前** ⇒ 往前补 NaN 并把 header 前移 ✓（全 NaN bin 会这样 ✓）
+            first_target = p["hdr"] + p["idx"][0]
+            if first_target < hdr:
+                pad = hdr - first_target
+                arr = np.concatenate([np.full(pad, np.nan), arr])
+                hdr = first_target
             need = (p["hdr"] + p["idx"][-1] + 1) - hdr
             if arr.size < need:
                 arr = np.concatenate([arr, np.full(need - arr.size, np.nan)])

@@ -51,6 +51,10 @@ def main():
     ap.add_argument("--qlib-dir", required=True, help="★ 必填（防写错数据集 ✗）")
     ap.add_argument("--codes", default="", help="默认全部沪深北股票 ✓")
     ap.add_argument("--end", default="", help="补到哪天（默认 = 日历末日 ✓）")
+    ap.add_argument("--tol", type=float, default=TOL,
+                    help="重叠闸门容差 ✓（默认 %.3f）。★ 2026-10-14 用户口径："
+                         "「**tushare 数据集就用 tushare 的**」✓ ⇒ 那 5 只米筐/tushare 股本口径不同的股票，"
+                         "用 `--tol 0.2 --codes <5 只>` 显式放行 ✓（会打印真实**接缝幅度** ✓ 以便记录 ✓）" % TOL)
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
     qlib = Path(a.qlib_dir)
@@ -96,10 +100,14 @@ def main():
             rec = day_cache[k]
             src0 = (rec or {}).get(to_ts_code(c), {}).get("total_mv") if isinstance(rec, dict) else None
         loc0 = float(v[last - hdr])
-        if src0 and loc0 and abs(loc0 / float(src0) - 1) > TOL:
+        seam = (loc0 / float(src0)) if (src0 and loc0) else float("nan")
+        if src0 and loc0 and abs(seam - 1) > a.tol:
             n_skip_gate += 1
-            gate_bad.append((c, d0, round(loc0, 3), float(src0), round(loc0 / float(src0), 6)))
+            gate_bad.append((c, d0, round(loc0, 3), float(src0), round(seam, 6)))
             continue
+        if src0 and loc0 and abs(seam - 1) > TOL:
+            print("   ⚠ %s 放行（接缝 %.4f%% ✗，用户口径：tushare 数据集用 tushare 值 ✓）"
+                  % (c, (seam - 1) * 100.0))
         # 收集要补的天 ✓
         days = [cal[j] for j in range(last + 1, i_end + 1)]
         vals = np.full(len(days), np.nan)
