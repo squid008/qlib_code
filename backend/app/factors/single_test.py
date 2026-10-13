@@ -1111,10 +1111,32 @@ def _test_one(
                         #   ⇒ 现在恢复"当日有效样本均值 + 当日有效数做分母"（原口径 ✓ 数字不变 ✓），
                         #     待办 ④ **仍未解决** ⏳ —— 下一步用**逐日 dump**（把组合卡那条日序列
                         #     打出来，看哪些日子异常）来定位，而不是再猜机制 ✓。
-                        _fin = _ok & np.isfinite(_f)
-                        _sm = np.bincount(_dp_col[_fin], weights=_f[_fin], minlength=_nd)
-                        _cn = np.bincount(_dp_col[_fin], minlength=_nd)
-                        _seg_nav = np.where(_cn > 0, _sm / np.maximum(_cn, 1), np.nan)
+                        # ★★ v2.1.84（用户 2026-10-13 拍板 **方案 B** ✓）：**逐股前向填充 +
+                        #   "当天已有有效价"的只数做分母** ✗→✓ —— 待办 ④ 的**定因修法** ✓。
+                        #   定因（`ai_test/diag_perf4.py` 实测 ✓）：期内日序列用 `$open`（次日开盘 ✓）
+                        #   ⇒ **停牌/无成交日没有开盘价** ✗ ⇒ 该股当天掉出均值、隔天又回来 ✓ ⇒
+                        #   实测「每天有效只数 **379~483**」（在手 483 ⇒ 每天抖掉约 100 只 ✗）
+                        #   ⇒ 段内日波动被抬到 **41.30%** ✗（离线同持仓用收盘价 31.41% ✓、实盘 33.9% ✓）。
+                        #   修法 = **保留开盘价** ✓ + 同一持仓**逐股前向填充**（缺价冻结上一有效价 ✓，
+                        #   与价格表 ffill 同语义 ✓），**分母 = 当天已有有效价的只数** ✓ ——
+                        #   ⚠ 分母这一条正是我 v2.1.77 漏掉的关键 ✗（那次用了"固定在手只数" ✗ ⇒
+                        #     期初尚未出现有效价的股把净值系统性压低 ⇒ 波动 46.7%→105.4% ✗、
+                        #     回撤 −46%→−75.8% ✗）。
+                        #   `_ok` 已要求 T+1 有价 ✓ ⇒ 集合与"可买入的持仓"一致 ✓、不会中途进出 ✓。
+                        _sel = np.where(_ok)[0]
+                        if _sel.size:
+                            _g = pd.Series(_f[_sel],
+                                           index=pd.MultiIndex.from_arrays(
+                                               [_inst_code[_sel], _dp_col[_sel]]))
+                            _g = _g[~_g.index.duplicated(keep="last")].sort_index()
+                            _g = _g.groupby(level=0).ffill()             # 逐股冻结（停牌 ✓）
+                            _g = _g[np.isfinite(_g.to_numpy())]
+                            _nb = _g.index.get_level_values(1).to_numpy()
+                            _sm = np.bincount(_nb, weights=_g.to_numpy(), minlength=_nd)
+                            _cn = np.bincount(_nb, minlength=_nd)
+                            _seg_nav = np.where(_cn > 0, _sm / np.maximum(_cn, 1), np.nan)
+                        else:
+                            _seg_nav = np.full(_nd, np.nan)
                         # ★★ v2.1.81：**诊断闸门**（用户 2026-10-13 待办 ④ 的"逐日 dump" ✓）
                         #   离线复算（`ai_test/dump_daily_variants.py` ✓）用**同一批持仓**得到
                         #   日级年化波动 **31.41%** ✓，而本函数报 **49.0%** ✗ ⇒ 差 18pp ⇒ 本函数
@@ -1135,8 +1157,12 @@ def _test_one(
                                 _ret_s = np.full(_nd, np.nan)
                                 with np.errstate(all="ignore"):
                                     _ret_s[1:] = _nav_s[1:] / _nav_s[:-1] - 1.0
-                                _r1 = _px_row[_fin] / np.where(_px0_row[_fin] != 0,
-                                                               _px0_row[_fin], np.nan)
+                                # ⚠ v2.1.84 修：`_fin` 在方案 B 里已不再定义 ✗ ⇒ 诊断块自己算 ✓
+                                #   （本次实测就吃了这个 NameError ✓，但**没拖垮主流程** ✓ ——
+                                #    诊断块的 try/except + 落盘机制按设计生效 ✓）。
+                                _fin_d = _ok & np.isfinite(_f)
+                                _r1 = _px_row[_fin_d] / np.where(_px0_row[_fin_d] != 0,
+                                                                 _px0_row[_fin_d], np.nan)
                                 _out_dbg = {
                                     "k_kind": _k_kind, "k": str(_k_val), "nd": int(_nd),
                                     "n_hold": int(_ok.sum()), "horizon": int(_h_i),
