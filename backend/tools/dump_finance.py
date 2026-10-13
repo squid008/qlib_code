@@ -2,10 +2,10 @@
 """把米筐 rqalpha 的 **pit 财报表 + 总市值** 转成 qlib 基本面字段 bin（`fin_*`）。
 
 用法：
-    python tools/dump_finance.py                     # 全量 dump（5567 只 / 9 个字段）
+    python tools/dump_finance.py                     # 全量 dump（34 个字段）
     python tools/dump_finance.py --limit 20          # 冒烟：只处理前 N 只
     python tools/dump_finance.py --codes sz300073,sh600519   # 只处理指定股票
-    python tools/dump_finance.py --verify sz300073,sh600519  # 只打印核对值，**不写盘**
+    python tools/dump_finance.py --verify --codes sz300073,sh600519  # 核对，不写盘
     python tools/dump_finance.py --force             # 已存在也覆盖重写
     python tools/dump_finance.py --pit-dir E:/rq/finance/pit --mc E:/rq/others/market-cap/market_cap.h5
 
@@ -13,20 +13,23 @@
 - `E:/rq/finance/pit/{code}.h5`：**point-in-time 财报**。每个 h5 的结构
   `quarter`(报告期，如 2026q2) / `info_date`(公告日) / `if_adjusted`(0=首次披露,1=追溯调整后)
   / `rice_create_tm` / `fields`(394 个字段的并列数组)。**同一个报告期会有多行**（每次后续定期报告
-  都会把同期数字作为可比期再披露一次）⇒ 「某日能看到的最新数字」= info_date ≤ 该日 的最后一行 ✓。
+  都会把同期数字作为可比期再披露一次）。必须先选当时已披露的最新报告期，
+  再在各报告期内取 `info_date <= T` 的最新版本，不能直接取整张表最后公告的一行。
 - `E:/rq/others/market-cap/market_cap.h5`：日频总市值（元）。
 
 产物：`{qlib_dir}/features/{code}/{field}.day.bin`（header=起始日历下标 + float32，与其它字段同格式）
       + `{qlib_dir}/features/_finance_meta.json`（口径戳，便于事后核对是哪个口径、什么时候 dump 的）。
 
-## 口径（★ 全部按**公告日**对齐 ⇒ 无未来函数）
-对某个交易日 T：只用 `info_date <= T` 的财报行（同一报告期取 info_date 最新的一行）
-⇒ T 日看到的永远是"当时已经公告过"的数字；财报被追溯调整时，调整后的行 info_date 更晚，
-也只有在它的公告日之后才生效 ✓（**修改期**同样处理 ✓）。
+## 时间口径（2026-10-13 修正）
+对交易日 T，只用 `info_date <= T` 的财报行；当前报告期取这些行中最大的 quarter。
+历史报告重述时，只更新该报告期的可见版本，并重算当前报告期的同比、单季、TTM；
+不会把当前报告期退回旧年度，也不会把修订值回填至公告前。
+字段按公告日生效，尚未内置交易日延迟。本研究的交易公式继续用 `REF(FINANCE(...),1)`，
+避免把公告当日日终才可用的财务/市值用于当日开盘。源公告日期未逐份对照交易所原文核验。
 
 | q | 字段 | 单位 | 口径 |
 |---|------|------|------|
-| 1 | fin_pe_ttm      | 倍 | 当日总市值 / 最新已披露**归母净利润TTM**（TTM=米筐滚动四季；亏损为负值，同益盟） |
+| 1 | fin_pe_ttm      | 倍 | 当日总市值 / 自算归母净利润TTM（本期累计+上年年报−上年同期累计；Q4直接取本期；亏损保留负值） |
 | 2 | fin_pb          | 倍 | 当日总市值 / 最新已披露**归母所有者权益**（净资产为负 ⇒ NaN） |
 | 3 | fin_rev_yoy     | %  | 报告期**营业总收入** / 去年同期同报告期 - 1（**累计**同比，同益盟"营业收入增长率"） |
 | 4 | fin_np_yoy      | %  | 报告期**归母净利润** / 去年同期同报告期 - 1（累计同比） |
@@ -62,8 +65,9 @@
   要跨链比 EPS 三档，请**先对齐股本口径**（或改用 `归母净利 ÷ 期末股本` 自算 ✓）。
 
 注意事项：
-- 3~9 是**报告期口径**：日频序列只在**公告日**跳变（公告日前向填充），与益盟盘口显示一致 ✓。
-- 1/2 是**日频**：用当日市值 ÷ 最新已披露的财务数字 ⇒ 每天都会变（与益盟"整体量TTM"一致 ✓）。
+- 3~10 是报告期口径：日频序列在公告日（包括历史报告修订日）更新。
+- 1/2 是日频：用当日总市值除以当前报告期的财务数字；市值非正或所需分量缺失时为 NaN。
+- PE 不再依赖可能全空的 `np_parent_company_ownersTTM` 列；TTM 分量不足时保留 NaN。
 - 与益盟可能存在的差异（可接受，已在公式手册写明）：① 益盟 ROA 可能用平均总资产；
   ② 益盟"市盈率"口径可能是整体法（含少数股东）而本表用归母；③ 米筐 pit 是**快照**（本机为
   2026-08 的 bundle），报告期覆盖到 2026q2，更晚的公告需要重新下载 bundle 后重跑本脚本。
@@ -139,6 +143,8 @@ FIN_META_NAME = "_finance_meta.json"
 # 口径语义版本：改口径（字段含义 / 对齐方式 / 派生公式）必须递增并重跑 dump
 #   `2.0.0` = 2026-10-10 加三档口径（单季 / 年化 / TTM）；旧值是 `1.0.0`（只有累计档 ✓）
 FINANCE_SEMANTICS = "2.0.0"
+# 两条来源共用上面的字段/档位定义；仅米筐 PIT 的选期与 PE 实现版本记在这里。
+PIT_MAPPING_VERSION = "2026-10-13.latest-report.derived-pe"
 
 
 # ---------------------------------------------------------------------------
@@ -409,15 +415,12 @@ def _dec(x) -> str:
 # 派生序列
 # ----------------------------------------------------------------------------
 def build_report_metrics(tab: PitTable) -> Dict[str, np.ndarray]:
-    """报告期口径指标（行级数组，与 tab.info 对齐）。
+    """每个公告日重算当前最新报告期，数组仍与 tab.info 对齐。
 
-    · 旧"累计"档（`fin_rev_yoy` … ✓）口径**一行未改** ✓（盘上保留，公式语言不再取它 ✓）；
-    · ★ 三档口径（`_q` / `_ann` / `_ttm` ✓）由**共享纯函数** `tiered_report_values()` 算 ✓
-      —— 与 tushare 链用的是同一份代码 ⇒ 两条链口径逐项一致 ✓。
+    同日多行共享当天最后可见的版本。两个下划线字段供 PE/PB 作分母，不落盘。
     """
     n = len(tab.info)
-    out = {k: np.full(n, np.nan) for k in ALL_FIELDS}
-    # 三档口径：本链的"量名 → pit 字段名"映射（共享函数按 canonical 名取数 ✓）
+    out = {k: np.full(n, np.nan) for k in ALL_FIELDS + ["_net_parent_ttm", "_equity"]}
     name_map = {
         "rev": "revenue", "gp": "gross_profit", "np": "net_profit",
         "np_parent": "net_profit_parent_company", "op": "profit_from_operation",
@@ -429,56 +432,29 @@ def build_report_metrics(tab: PitTable) -> Dict[str, np.ndarray]:
     def qget(name: str, quarter: str, when: int) -> float:
         return tab.val_at(name_map[name], quarter, when)
 
-    rev = tab.vals.get("revenue")
-    gp = tab.vals.get("gross_profit")
-    np_all = tab.vals.get("net_profit")
-    np_parent = tab.vals.get("net_profit_parent_company")
-    op = tab.vals.get("profit_from_operation")
-    ta = tab.vals.get("total_assets")
-    roe = tab.vals.get("return_on_equity_weighted_average")
-    eps = tab.vals.get("basic_earnings_per_share")
-    for i in range(n):
-        q = tab.quarter[i]
+    _, starts = np.unique(tab.info, return_index=True)
+    latest = ""
+    for start, end in zip(starts, [*starts[1:], n]):
+        latest = max(latest, max(tab.quarter[start:end]))
+        q, t = latest, int(tab.info[start])
         pq = prev_year_quarter(q)
-        t = int(tab.info[i])
-        if rev is not None and np.isfinite(rev[i]) and pq:
-            base = tab.val_at("revenue", pq, t)
-            if np.isfinite(base) and base > 0:
-                out["fin_rev_yoy"][i] = (rev[i] / base - 1.0) * 100.0
-        if np_parent is not None and np.isfinite(np_parent[i]) and pq:
-            base = tab.val_at("net_profit_parent_company", pq, t)
-            if np.isfinite(base) and base > 0:
-                out["fin_np_yoy"][i] = (np_parent[i] / base - 1.0) * 100.0
-        if op is not None and np.isfinite(op[i]) and pq:
-            base = tab.val_at("profit_from_operation", pq, t)
-            if np.isfinite(base) and base > 0:
-                out["fin_op_yoy"][i] = (op[i] / base - 1.0) * 100.0
-        if gp is not None and rev is not None and np.isfinite(gp[i]) and np.isfinite(rev[i]) and rev[i] > 0:
-            out["fin_gross_margin"][i] = gp[i] / rev[i] * 100.0
-        if roe is not None and np.isfinite(roe[i]):
-            out["fin_roe"][i] = roe[i]
-        if np_all is not None and ta is not None and np.isfinite(np_all[i]) and np.isfinite(ta[i]) and ta[i] > 0:
-            out["fin_roa"][i] = np_all[i] / ta[i] * 100.0
-        if eps is not None and np.isfinite(eps[i]):
-            out["fin_eps"][i] = eps[i]
-        # ---- 自由现金流TTM（元，v1.20.81）----
-        #   FCF_ttm = 经营现金流净额TTM − 资本开支TTM，两者都用**累计 → TTM** 的标准式：
-        #       TTM(Q) = 累计(Q) + 累计(上年年报) − 累计(上年同期 Q)
-        #   （对 Q4 该式自动退化为"累计(Q)" ✓）—— 四个取值都按 `info_date <= t` 取 ✓（PIT 安全 ✓）
-        ocf_c = tab.val_at("cash_flow_from_operating_activities", q, t)
-        capex_c = tab.val_at("cash_paid_for_asset", q, t)
-        fy_prev = "%dq4" % (int(q[:4]) - 1)
-        ocf_f = tab.val_at("cash_flow_from_operating_activities", fy_prev, t)
-        capex_f = tab.val_at("cash_paid_for_asset", fy_prev, t)
-        ocf_p = tab.val_at("cash_flow_from_operating_activities", pq, t) if pq else float("nan")
-        capex_p = tab.val_at("cash_paid_for_asset", pq, t) if pq else float("nan")
-        _vals = (ocf_c, capex_c, ocf_f, capex_f, ocf_p, capex_p)
-        if all(np.isfinite(v) for v in _vals):
-            out["fin_fcf"][i] = (ocf_c - capex_c) + (ocf_f - capex_f) - (ocf_p - capex_p)
-        # ---- ★ 三档口径（2026-10-10 用户定稿）----
-        #   与 tushare 链共用 `tiered_report_values()` ✓；这里只提供"量名 → pit 字段"的取值适配 ✓
-        for fld, v in tiered_report_values(qget, q, t).items():
-            out[fld][i] = v
+        values = tiered_report_values(qget, q, t)
+        for name, field in (("rev", "fin_rev_yoy"), ("np_parent", "fin_np_yoy"),
+                            ("op", "fin_op_yoy")):
+            cur, base = qget(name, q, t), qget(name, pq, t)
+            values[field] = ((cur / base - 1.0) * 100.0
+                             if np.isfinite(cur) and np.isfinite(base) and base > 0 else np.nan)
+        values.update({
+            "fin_gross_margin": _ratio(qget("gp", q, t), qget("rev", q, t)),
+            "fin_roe": tab.val_at("return_on_equity_weighted_average", q, t),
+            "fin_roa": _ratio(qget("np", q, t), qget("ta", q, t)),
+            "fin_eps": qget("eps", q, t),
+            "fin_fcf": values["fin_fcf_ttm"],
+            "_net_parent_ttm": tier_value(qget, "np_parent", q, t, 3),
+            "_equity": qget("equity", q, t),
+        })
+        for field, value in values.items():
+            out[field][start:end] = value
     return out
 
 
@@ -505,13 +481,11 @@ def write_bin(path: Path, cal_pos: int, values: np.ndarray) -> None:
 # 主流程
 # ----------------------------------------------------------------------------
 def dump_one(code_file: Path, mc: Dict[str, Tuple[int, np.ndarray]], cal_int: np.ndarray,
-             qlib_dir: Path, force: bool, verify: bool) -> Dict[str, Optional[float]]:
+             qlib_dir: Path, force: bool, verify: bool) -> Dict[str, object]:
     """处理一只股票；返回 {字段: 最新有效值}（verify 用）或 {}。"""
     rq_code = code_file.stem
     qcode = to_qlib_code(rq_code)
     tab = PitTable(code_file)
-    if tab.is_empty():
-        return {}
     report = build_report_metrics(tab)
 
     # 报告期口径 → 日频（旧累计档 + 三档口径 **全部** ✓）
@@ -526,13 +500,11 @@ def dump_one(code_file: Path, mc: Dict[str, Tuple[int, np.ndarray]], cal_int: np
     if hit is not None:
         start, arr = hit
         mc_daily[start:start + arr.size] = arr
-    ttm = expand_daily(tab, tab.vals.get("np_parent_company_ownersTTM",
-                                         np.full(len(tab.info), np.nan)), cal_int)
-    eq = expand_daily(tab, tab.vals.get("equity_parent_company",
-                                       np.full(len(tab.info), np.nan)), cal_int)
+    ttm = expand_daily(tab, report["_net_parent_ttm"], cal_int)
+    eq = expand_daily(tab, report["_equity"], cal_int)
     pe = np.full(len(cal_int), np.nan)
     pb = np.full(len(cal_int), np.nan)
-    m_ok = np.isfinite(mc_daily)
+    m_ok = np.isfinite(mc_daily) & (mc_daily > 0.0)
     t_ok = np.isfinite(ttm) & (ttm != 0.0)
     np.divide(mc_daily, ttm, out=pe, where=m_ok & t_ok)
     e_ok = np.isfinite(eq) & (eq > 0.0)
@@ -540,31 +512,36 @@ def dump_one(code_file: Path, mc: Dict[str, Tuple[int, np.ndarray]], cal_int: np
     daily["fin_pe_ttm"] = pe
     daily["fin_pb"] = pb
 
-    result: Dict[str, Optional[float]] = {}
+    result: Dict[str, object] = {}
     written = 0
     for field in ALL_FIELDS:
         arr = daily[field]
         finite = np.isfinite(arr)
-        if not finite.any():
-            continue
-        last = int(np.where(finite)[0][-1])
-        result[field] = round(float(arr[last]), 4)   # 供 --verify 核对 / 统计"有数据的字段数"
+        valid = np.flatnonzero(finite)
+        if valid.size:
+            result[field] = round(float(arr[valid[-1]]), 4)
         if verify:
             continue
         bin_path = qlib_dir / "features" / qcode / f"{field}.day.bin"
         if bin_path.exists() and not force:
             continue
-        first = int(np.where(finite)[0][0])
-        write_bin(bin_path, first, arr[first:last + 1])
+        if valid.size:
+            first, last = int(valid[0]), int(valid[-1])
+            write_bin(bin_path, first, arr[first:last + 1])
+        elif force and bin_path.exists():
+            # 全空也覆盖，避免修正后本应缺失的字段继续残留旧值。
+            write_bin(bin_path, 0, arr)
+        else:
+            continue
         written += 1
     result["_written"] = written
     if verify:
-        # 附带报告期，便于核对"当前能看到的是哪一期"。
-        # ⚠ 用**最后一个** info_date 最大的行（同一天可能公告多个报告期，如年报+一季报）
-        #   —— `np.argmax` 返回**第一个**最大位置，会把"2025q4"当成本期 ✗（踩过一次）。
-        last_i = len(tab.info) - 1 - int(np.argmax(tab.info[::-1]))
-        result["_latest_quarter"] = tab.quarter[last_i]
-        result["_latest_info_date"] = tab.info_str[last_i]
+        visible = np.flatnonzero(tab.info <= cal_int[-1])
+        if visible.size:
+            latest = max(tab.quarter[i] for i in visible)
+            last_i = next(i for i in reversed(visible) if tab.quarter[i] == latest)
+            result["_latest_quarter"] = latest
+            result["_latest_info_date"] = tab.info_str[last_i]
         result["_rows"] = len(tab.info)
     return result
 
@@ -572,6 +549,10 @@ def dump_one(code_file: Path, mc: Dict[str, Tuple[int, np.ndarray]], cal_int: np
 def write_meta(qlib_dir: Path, stats: Dict) -> None:
     payload = dict(stats)
     payload["finance_semantics"] = FINANCE_SEMANTICS
+    payload["pit_mapping_version"] = PIT_MAPPING_VERSION
+    payload["report_selection"] = "max quarter with info_date <= T; latest visible vintage per component"
+    payload["pe_denominator"] = "parent profit YTD + previous FY - previous same YTD; Q4 = current FY"
+    payload["availability"] = "effective on info_date; no trading-bar lag built in"
     payload["written_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     # 旧"累计"档（盘上保留；`FINANCE` 语言里已无口径能取到 ✓）
     payload["fields"] = [{"q": i + 1, "field": f, "unit": u} for i, (f, u) in enumerate(FIN_FIELDS)]
@@ -583,7 +564,7 @@ def write_meta(qlib_dir: Path, stats: Dict) -> None:
     payload["tier_note"] = (
         "FINANCE(q,口径)：1=单季（累计差分）/ 2=年化（累计÷季度数×4）/ 3=TTM（累计(Q)+上年年报−上年同期Q）；"
         "省略口径 = 1 单季。字段名 = 基名 + {1:'_q',2:'_ann',3:'_ttm'}。"
-        "比率类（毛利率/ROA/ROE）分母一律取报告期期末存量；EPS/FCF 同流量折算。"
+        "毛利率分母为同档营业收入；ROA/ROE 分母为报告期期末资产/权益；EPS/FCF 同流量折算。"
     )
     try:
         p = qlib_dir / "features" / FIN_META_NAME
@@ -656,11 +637,11 @@ def main():
             empty += 1
             continue
         n_fields = sum(1 for k in res if not k.startswith("_"))
+        n_bins += int(res.get("_written", 0))
         if n_fields == 0:
             empty += 1
         else:
             written += 1
-            n_bins += int(res.get("_written", 0))
             if int(res.get("_written", 0)) == 0:
                 skipped += 1
         if i % 200 == 0 or i == len(files):

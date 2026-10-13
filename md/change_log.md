@@ -3,6 +3,39 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.1.93] - 2026-10-13
+
+### 数据补齐：Tushare（`cn_data2`）标签/派生字段**全部对齐到 2026-10-09** ✓ + 米筐 PIT 财务修复落地 ✓
+
+**背景** ✓：Tushare 侧增量 dump 只扩"行情类"字段 ✗ ⇒ `turn` / 涨跌停 / `is_st` / `mf_*` / `chip_*`
+停在 **2026-08-19~08-21** ✗（用户 2026-10-13："tushare 也要物化到 10 月 9 日跟量价对齐" ✓）。
+
+**补齐结果（实测"落后 = 0" ✓，`ai_test/worklist_missing_1009.py` ✓）**：
+- `turn` → **2026-10-09** ✓（5510 只有 bin ✓，含按股票拉新建 3123 只 ✓）；
+- `limit_up` / `limit_down` → 10-09 ✓（5920 只 ✓）；`is_st` 补空档 **368 只** ✓（用户口径：**只补空档、不换语义** ✓）；
+- `mf_*` **45 个** → 10-09 ✓（**重叠日 08-19 对拍：4635 个数值、超差 0 个** ✓）；
+- `chip_cost_*` / `chip_win_*` 7 个 → 10-09 ✓（本地 `materialize_chip.py --overwrite` 重跑 ✓，依赖 `turn` ✓）。
+
+**新增工具 / 方案** ✓：`backend/tools/dump_tushare_tags.py`（turn/limit/is_st ✓，默认 dry-run ✓、
+备份 ✓、原子替换 ✓、**按同 header 的 close bin 等长对齐** ✓）；`backend/tools/dump_tushare_mf.py`
+（45 字段 ✓，**重叠日对拍为硬门槛** ✓，快法写盘 ✓）；`ai_test/fill_is_st_1009.py`；
+`ai_test/plan_fill_1009.md`（方案 + 我 4 处错推的如实订正 ✓）。
+
+**米筐 PIT 财务（同事 AI 审查 ✓）**：我们旧 `backend/tools/dump_finance.py` 与同事 `before` 版
+**逐字节相同**（MD5 `81CAF0D9` ✓）⇒ **两个问题我们都有** ✗：① 把"后发布的旧季度修订"当成当前财报 ✗；
+② 依赖**供应商预计算 TTM 列** ⇒ 缺失时 PE 算不出 ✗。**已换同事修后版**（MD5 `154375BC` ✓）
++ 回归测试入 `backend/tests/test_finance_pit_mapping.py` ✓（**12 passed** ✓）+ **全量重建**
+（5567 只 / **188,397** 个 bin ✓）。**验收**：`fin_pe_ttm` 非空率 **95.87%** ✓（2022-01~2026-01 ✓），
+缺口**清一色北交所** ✓（源数据限制 ✓，沪深侧基本满覆盖 ✓）。⚠ Tushare 侧**无此病因** ✓
+（其 TTM 为**自算**：`ttm()` = 累计(Q)+上年年报−上年同期Q ✓，`daily["fin_pe_ttm"] = pe` ✓）。
+
+**今天新增的方法学坑（已写入对照记录 ✓）**：① `Start-Process -RedirectStandard*` 时**子进程默认 GBK**
+⇒ 必须显式 `PYTHONIOENCODING=utf-8` ✗→✓（否则中文/`⇒` 直接 `UnicodeEncodeError` 秒崩 ✗）；
+② 判"任务起没起"**先看 `.err` 文件** ✓（我被 GBK 崩溃骗过一次 ✗）；③ PS1 里**别用嵌套引号/反引号** ✓；
+④ 长活一律**后台 + `*>>` 抓全流 + `PYTHONUNBUFFERED`** ✓。
+
+**版本** 2.1.92 → **2.1.93** ✓；`ruff` ✓、PIT 回归测试 ✓。
+
 ## [2.1.92] - 2026-10-13
 
 ### 加固：`compute_baseline_curves` 把 **价格 `≤ 0`** 也当无效 ✗→✓（inf 追查的收口 ✓）
