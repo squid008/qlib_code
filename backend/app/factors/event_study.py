@@ -381,6 +381,15 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
     # ---- 触发组：事件矩阵 → 按触发日聚合 → 配对日平均 ----
     # ★ v2.1.52：`lag` 跟着「成交时点」走 ✓（两条曲线必须同口径 ✓，否则**超额**没意义 ✓）
     _blag = 0 if int(lag) <= 0 else 1
+    # ★★ v2.1.90：**触发组价格表也先清 ±inf** ✗→✓（必须**用之前**清 ✓）
+    #   触发组与基准组共用同一批价格 ⇒ 只清一边会出现"两条曲线口径不同"✗ ⇒ 必须都清 ✓。
+    if px_wide_trig is not None and len(px_wide_trig):
+        try:
+            # ★ v2.1.92：同上 —— 触发组一侧也要把 `≤ 0` 当无效 ✓（两条曲线必须同口径 ✓）
+            _tv = px_wide_trig.to_numpy(dtype=np.float64, copy=False)
+            px_wide_trig = px_wide_trig.mask(~np.isfinite(_tv) | (_tv <= 0.0))
+        except Exception:                                      # noqa: BLE001
+            pass
     mat, _, _ = _align_returns(px_wide_trig, events, max_k, cancel_check, lag=lag)
     tdf = pd.DataFrame(mat, columns=ks)
     tdf["_d"] = ev_dt
@@ -395,6 +404,25 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
     # 无全表 shift 与整表 reindex 拷贝）。数值口径不变：ret[t] = F[t+1+k]/F[t+1] − 1，
     # 剔除当日触发股后「先按日截面均值、再对配对日平均」/ 中位数取配对日全部样本。
     full = px_wide_full
+    # ★★ v2.1.90：**入口处把 ±inf 一律变 NaN** ✗→✓
+    #   根因（用户 2026-10-13 实测 ✓）：Tushare（cn_data2）的 `$factor` 有 **0 值** ✗ ⇒
+    #   `$close/$factor` = **inf** ✗ ⇒ 均值口径被击穿（见下 `~np.isfinite` 注释 ✓）。
+    #   中位数口径一直没事 ⇒ 因为那里本来就用 `np.isfinite(num)` 过滤 ✓。
+    #   ⚠ 为什么在这里清洗而不是只清洗 `num`：`num` 只覆盖"基准"一侧 ✓，而**触发组**一侧
+    #   （`_align_returns` → 逐日均值 ✓）同样会被 inf 污染 ✗ ⇒ 在**入口**清一次，
+    #   两条曲线都干净 ✓（代价：两张表各扫一遍 ✓，全A 约 5.7M 元素 ⇒ 毫秒级 ✓）。
+    if full is not None and len(full):
+        try:
+            # ★ v2.1.92：**`≤ 0` 也算无效** ✗→✓ —— 价格永远 > 0 ✓，出现 0/负数只可能是脏值 ✓；
+            #   而 `有限价 / 0 = inf` ✗ 正是"均值那条整条变 None"的机制 ✓（`np.nanmean` 不滤 inf ✗）。
+            #   实测排除过的来源（都不成立 ✓）：`factor==0`（0 行 ✓）、`close==0`（0 行 ✓）、
+            #   `±inf`（0 ✓）、极小 factor（0 只 ✓）、"极低价被 ROUND 舍成 0"（0 行 ✓，见
+            #   `ai_test/round_zero_check.py` ✓）⇒ 来源**仍未定位** ✓，故在**出口**统一兜住 ✓
+            #   （语义无歧义 ✓，不会误伤任何真实价格 ✓）。
+            _fv = full.to_numpy(dtype=np.float64, copy=False)
+            full = full.mask(~np.isfinite(_fv) | (_fv <= 0.0))
+        except Exception:                                      # noqa: BLE001
+            pass
     base_arr = np.full(len(ks), np.nan, dtype=float)
     base_med_arr = np.full(len(ks), np.nan, dtype=float)
     # v1.19.24：逐 k 的日配对稳定性（HAC t / 日胜率 / 有效配对日数）
@@ -476,13 +504,22 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
                     vals = num[_finite]
                     if vals.size:
                         base_med_arr[j] = float(np.median(vals))
+
                     # v1.18.37 性能：等价 `np.nanmean(num, axis=1)`（NaN 不计入计数、inf 仍
                     # 参与求和），但用「原地 NaN→0 + sum/count」替代 nanmean 内部的整表
                     # `_replace_nan`（`np.where(mask, 0, a)` 会额外分配一份 635 万 float64）。
                     # 注意**不要**用 `np.nan_to_num`：它内部还要 isposinf/isneginf/isnan 各扫
                     # 一遍（实测 1.67s，比 `_replace_nan` 的 1.16s 还贵）；`np.copyto(where=)`
                     # 复用已算好的掩码，一遍原地写入。
-                    _isnan = np.isnan(num)
+                    # ★★ v2.1.90：**`inf` 必须与 NaN 同等对待** ✗→✓（用户 2026-10-13 实测 ✓）
+                    #   旧写法 `np.isnan(num)` ✗ ⇒ **只滤 NaN、把 inf 当有效样本** ✗ ⇒
+                    #   `cnt` 把 inf 记进去 ✓ ⇒ `sum/cnt` = **inf** ✗ ⇒ 逐日 `daily` 里出现 inf ✗
+                    #   ⇒ `np.nanmean(daily)`（nanmean **不滤 inf** ✗）= inf ✗ ⇒ `base_arr[j]`
+                    #   非有限 ⇒ 下面 `_r()` 归成 `None` ✗ ⇒ **`baseline`/`excess` 整条消失** ✗
+                    #   （仅 9 个 inf 就能毁掉 700 个有效配对日 ✓）。
+                    #   而中位数口径用的是 `np.isfinite(num)` ✓（本就滤掉 inf ✓）⇒ 它一直正常 ✓
+                    #   —— 这正是"同一个 `num`、中位数有值而均值全空"的谜底 ✓。
+                    _isnan = ~np.isfinite(num)
                     cnt = n_col - _isnan.sum(axis=1)
                     if _isnan.any():
                         np.copyto(num, 0.0, where=_isnan)

@@ -230,6 +230,36 @@ def main():
             else:
                 continue                                   # 老的没接到日历 ⇒ 交人工 ✓
             write_bin(bp, s, np.concatenate([v, new_vals[f].astype(np.float64)]))
+        # ★★ v2.1.91：**`factor` 必须与 `close` 等长** ✗→✓（用户 2026-10-13："把这个校验加进 dump 脚本" ✓）
+        #   事故复盘（2026-10-13 实测 ✓）：本工具扩行情时，**5 只指数**
+        #   （`sh000300/sh000852/sh000905/sh000906/sz399300`）的 `close.day.bin` 被延到新日期，
+        #   而 `factor.day.bin` **没跟着延** ✗ ⇒ 长 5256 vs 5285（差 29 天 = 新交易日 ✓；
+        #   指数在 tushare 里**没有 `adj_factor`** ⇒ `fd` 算不出来 ⇒ 该字段没进 `new_vals` ✓
+        #   而 `close` 进了 ⇒ 只有一边被扩 ✗✓ ⇒ 这就是根因 ✓）。
+        #   危害：引擎/面板层一旦越界或错配读到，就会造出天文数字 ⇒ 参与"未触发组"基准均值
+        #   求和时**溢出成 inf** ✗ ⇒ 整条 `baseline`/`excess` 变 None（用户报的"少一条曲线"✓）。
+        #   （引擎侧 v2.1.90 已兜底 ✓，这里**从源头拦** ✓，免得下次更新再复发 ✓）
+        #   处理：`close` 比 `factor` 长且**头部索引一致** ⇒ 用 **factor 最后一个有效值**补齐 ✓
+        #   （复权因子是累积量、只在除权日跳变 ⇒ 无除权期间不变 ✓）；其余不齐一律**报警不改** ✓。
+        _bclose = read_bin(feats / c / "close.day.bin")
+        _bfac = read_bin(feats / c / "factor.day.bin")
+        if _bclose is not None and _bfac is not None:
+            _nc, _nf = int(_bclose[1].size), int(_bfac[1].size)
+            if _nc != _nf:
+                if _nc > _nf and int(_bclose[0]) == int(_bfac[0]):
+                    _fin = _bfac[1][np.isfinite(_bfac[1])]
+                    _pad = float(_fin[-1]) if _fin.size else 1.0
+                    if args.apply:
+                        write_bin(feats / c / "factor.day.bin", _bfac[0],
+                                  np.concatenate([_bfac[1], np.full(_nc - _nf, _pad)]))
+                        print("  ⚠ %s：factor 比 close 短 %d ⇒ 已按末值 %g 补齐 ✓"
+                              % (c, _nc - _nf, _pad), flush=True)
+                    else:
+                        print("  ⚠ %s：factor 比 close 短 %d（dry-run 不写 ✓，将按 %g 补齐 ✓）"
+                              % (c, _nc - _nf, _pad), flush=True)
+                else:
+                    print("  ✗ %s：factor(%d) 与 close(%d) 长度不齐且头部不同 ⇒ **交人工** ✓"
+                          % (c, _nf, _nc), flush=True)
         written += 1
 
     if args.apply:
