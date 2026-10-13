@@ -183,6 +183,17 @@ python backend/tools/dump_finance_tdx.py --force        # 改了口径后全量�
   tushare `fina_indicator` 对不少股票会返回"一行有 `roe_waa` ✓ + 一行 null ✗"的重复行，且两行
   `update_flag` 都缺 ⇒ 旧规则"相等则后者胜"把有值行顶掉 ✗（实测 `fin_roe` 因此对 **325 只活跃股**
   停在 2026 中报公告日 ✗，历史里另有 1570 只的**中间洞** ✗）。回归测试：`backend/tests/test_tushare_pit_dedup.py` ✓。
+- ★ **`fin_roe` 缺则自算兜底（2026-10-13 定 ✓，默认开 ✓）**：`roe_waa` 缺失时
+  `fin_roe = 累计归母净利 ÷ 期末归母权益 × 100` ✓，**硬门槛 权益 > 0** ✓（资不抵债 ⇒ 分母为负
+  ⇒ 数值反向、毫无意义 ✗ ⇒ 保持 NaN ✓）。开关 `--roe-fill-missing`（默认开）/ `--no-roe-fill-missing`（复现旧结果 ✓）；
+  兜底格子会记进 `features/_finance_warnings.json`（`roe_filled_cells` / `roe_filled_codes` ✓）。
+  **Why**：tushare 的 `roe_waa` 覆盖与"亏损/资不抵债"强相关 —— 2026 中报四象限实测
+  （`ai_test/fin39_probe.py` ✓）：净资产<0 的 108 只中 **80 只无 roe** ✓，净资产>0 的 5569 只中**仅 12 只无** ✓。
+  实测效果：39 只缺口 → **31 只**（剩下的正是 31 只净资产为负 ✓，保持 NaN 正确 ✓）。
+  回归测试：`backend/tests/test_tushare_roe_fallback.py` ✓。
+  ⚠ 该兜底是**全量规则**（任何股票、任何报告期只要 `roe_waa` 缺、权益>0 就补 ✓）——
+  本次只重跑了那 39 只 ✓；若做全量重跑，历史**中间洞**会被一并填上（零 API ✓，约 8 分钟 ✓），
+  需要先想清楚"依赖 `fin_roe` 的因子/回测结果会变" ✓。
 
 ### 数据修复：`cn_data` 的 `open/high/low`（2026-10-10，v1.21.5）
 

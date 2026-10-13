@@ -21,7 +21,7 @@ PIT / 无未来函数 ✓。先对拍（`ai_test/probe_crosscheck_fin.py` ✓）
 | 3 | fin_rev_yoy | `revenue` 累计同比 |
 | 4 | fin_np_yoy | `n_income_attr_p`（归母净利）累计同比 |
 | 5 | fin_gross_margin | (revenue − oper_cost) ÷ revenue |
-| 6 | fin_roe | `fina_indicator.roe_waa`（加权平均 ROE，与米筐同名口径 ✓） |
+| 6 | fin_roe | `fina_indicator.roe_waa`（加权平均 ROE，与米筐同名口径 ✓）；★2026-10-13 起**缺失则自算兜底**＝累计归母净利 ÷ 期末归母权益（要求**权益>0** ✓，见 `--roe-fill-missing` ✓）|
 | 7 | fin_roa | `n_income`（净利润，含少数股东）÷ `total_assets` |
 | 8 | fin_eps | `income.basic_eps`（基本每股收益，累计） |
 | 9 | fin_op_yoy | `operate_profit`（营业利润）累计同比 |
@@ -62,6 +62,13 @@ MC_TUSHARE_CACHE = ROOT / "data" / "tushare_cache" / "total_mv.json"
 ROE_SUSPECTS: List[dict] = []
 # `--roe-guard`：把毛刺 ROE **替换**成自算值（默认 False = 只记录、不动数据 ✓）
 ROE_GUARD = False
+# ★ `fin_roe` **缺则自算兜底**（2026-10-13 用户同意 ✓，默认 **开** ✓ —— 数据规则要可复现，
+#   不能靠隐藏开关 ✗）：`roe_waa` 缺失时用 **累计归母净利 ÷ 期末归母权益 × 100** ✓，
+#   ⚠ 硬门槛 **权益 > 0** ✓（资不抵债 ⇒ ROE 分母为负 ⇒ 数值反向、毫无意义 ✗ ⇒ 保持 NaN ✓）。
+#   这与既有 `--roe-guard`、以及**三档 ROE**（`fin_roe_q/_ann/_ttm` 一律用自算式 ✓）口径一致 ✓。
+ROE_FILL_MISSING = True
+# 兜底填充计数（code → 填了几格 ✓）⇒ 收尾写进 `_finance_warnings.json` ✓（"改了什么"必须响 ✓）
+ROE_FILLED: Dict[str, int] = {}
 # 「本地缓存 JSON 损坏、已删除并重新下载」的股票清单（进度行 / 收尾统计 ✓）
 CORRUPT_CACHE: List[str] = []
 # ★★ 本轮**真失败**（重试耗尽）的清单 ⇒ 收尾写 `features/_finance_failures.json` ✓
@@ -409,8 +416,11 @@ def build_report_metrics(tab: TsPit, code: str = "") -> Dict[str, List[Tuple[str
                 "fin_fcf": fcf,
             }
             eq_end = tab.val_at("equity_parent_company", q, t)
-            if np.isfinite(roe) and np.isfinite(np_parent) and np.isfinite(eq_end) and eq_end > 0:
-                roe_calc = np_parent / eq_end * 100.0
+            # 自算累计 ROE（分母必须 > 0 ✓；资不抵债 ⇒ NaN ✓ 不造假 ✗）
+            roe_calc = (np_parent / eq_end * 100.0
+                        if (np.isfinite(np_parent) and np.isfinite(eq_end) and eq_end > 0)
+                        else float("nan"))
+            if np.isfinite(roe) and np.isfinite(roe_calc):
                 if abs(roe - roe_calc) > max(1.0, 0.5 * abs(roe_calc)):
                     ROE_SUSPECTS.append({"code": code, "quarter": q, "ann_date": ann,
                                          "roe_reported": round(float(roe), 4),
@@ -418,6 +428,14 @@ def build_report_metrics(tab: TsPit, code: str = "") -> Dict[str, List[Tuple[str
                                          "action": "replaced" if ROE_GUARD else "kept"})
                     if ROE_GUARD:                              # --roe-guard：用自算值顶上 ✓
                         vals["fin_roe"] = roe_calc
+            elif not np.isfinite(roe) and np.isfinite(roe_calc) and ROE_FILL_MISSING:
+                # ★ 2026-10-13：`roe_waa` **没有**（源不给，实测多为亏损/资不抵债股 ✗）但自算得出 ✓
+                #   ⇒ 自算兜底 ✓（用户同意 ✓）。实测根因：tushare 对 `roe_waa` 的覆盖与
+                #   "净资产为负/亏损"高度相关 —— 2026 中报四象限（`ai_test/fin39_probe.py` ✓）：
+                #   净资产<0 的 108 只里 **80 只无 roe** ✓；净资产>0 的 5569 只里**仅 12 只无** ✓。
+                vals["fin_roe"] = roe_calc
+                if code:
+                    ROE_FILLED[code] = ROE_FILLED.get(code, 0) + 1
             # ---- ★ 三档口径（2026-10-10 用户定稿）----
             #   与米筐链**共用** `dump_finance.tiered_report_values()` ✓ ⇒ 两条链口径逐项一致 ✓。
             #   ⚠ 这里**不用** tushare 的 `roe_waa`（它有毛刺 ✓，见 ROE_SUSPECTS）⇒
@@ -777,10 +795,17 @@ def main():
                     help="★ 允许往**非 tushare 口径**的数据集里写（会混源 ✗；默认拒绝 ✓ 见 guard_convention）")
     ap.add_argument("--roe-guard", action="store_true",
                     help="把明显毛刺的 ROE（tushare roe_waa）替换成自算值 累计归母净利/期末归母权益")
+    ap.add_argument("--roe-fill-missing", dest="roe_fill", action="store_true", default=True,
+                    help="★ 默认开 ✓：`roe_waa` 缺失时用自算值兜底（累计归母净利/期末归母权益，"
+                         "要求权益>0 ✓）—— 否则这些格子会一直 NaN（实测 2026 中报有 89 只亏损股"
+                         "源不给 roe ✓）")
+    ap.add_argument("--no-roe-fill-missing", dest="roe_fill", action="store_false",
+                    help="关掉兜底（回到「源没有就 NaN」✗；仅供对拍/复现旧结果 ✓）")
     args = ap.parse_args()
 
-    global ROE_GUARD, MC_FROM
+    global ROE_GUARD, ROE_FILL_MISSING, MC_FROM
     ROE_GUARD = bool(args.roe_guard)
+    ROE_FILL_MISSING = bool(args.roe_fill)
     MC_FROM = int(args.mc_from) or _default_mc_from()
 
     qlib_dir = Path(args.qlib_dir)
@@ -796,8 +821,9 @@ def main():
                        if d.is_dir() and d.name[:2] in ("sh", "sz", "bj") and d.name[2:].isdigit())
     if args.limit:
         codes = codes[:args.limit]
-    print("日历 %d 天（%s ~ %s）| 待处理 %d 只 | rate=%.2fs | verify=%s | mc_tushare=%s"
-          % (len(cal), cal[0], cal[-1], len(codes), args.rate, args.verify, args.mc_tushare), flush=True)
+    print("日历 %d 天（%s ~ %s）| 待处理 %d 只 | rate=%.2fs | verify=%s | mc_tushare=%s | roe_fill_missing=%s"
+          % (len(cal), cal[0], cal[-1], len(codes), args.rate, args.verify,
+             args.mc_tushare, args.roe_fill), flush=True)
     if args.mc_tushare:
         print("市值续更下限 mc_from=%d（该日之后才动 daily_basic ✓；下限之前一律留 NaN ✗ 不猜）"
               % MC_FROM, flush=True)
@@ -862,16 +888,28 @@ def main():
     else:
         print("✓ 本轮无失败（tushare 调用 %d 次，重试 %d 次）" % (TS_CALLS, TS_RETRIES))
     print("口径戳：%s" % write_meta(qlib_dir, done, n_bins, args.force, cal[-1]))
-    if ROE_SUSPECTS:
+    if ROE_SUSPECTS or ROE_FILLED:
         wp = qlib_dir / "features" / "_finance_warnings.json"
+        top = sorted(ROE_FILLED.items(), key=lambda kv: -kv[1])[:50]
         with open(wp, "w", encoding="utf-8") as f:
             json.dump({"roe_suspects": ROE_SUSPECTS, "roe_guard": ROE_GUARD,
+                       "roe_fill_missing": ROE_FILL_MISSING,
+                       "roe_filled_cells": int(sum(ROE_FILLED.values())),
+                       "roe_filled_codes": len(ROE_FILLED),
+                       "roe_filled_top": [{"code": c, "cells": n} for c, n in top],
                        "written_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                       "note": "tushare roe_waa 与自算值(累计归母净利/期末归母权益)偏离 >50% 的格子；"
-                               "默认只记录不替换（--roe-guard 才替换）"},
+                       "note": "① roe_suspects = tushare roe_waa 与自算值(累计归母净利/期末归母权益)"
+                               "偏离 >50% 的格子（默认只记录不替换，--roe-guard 才替换）；"
+                               "② roe_filled_* = `roe_waa` **缺失**时用自算值兜底的格子"
+                               "（默认开 ✓，--no-roe-fill-missing 可关；要求权益>0，"
+                               "资不抵债一律保持 NaN ✗）"},
                       f, ensure_ascii=False, indent=2)
         print("⚠ ROE 毛刺 %d 处 ⇒ %s（%s）"
               % (len(ROE_SUSPECTS), wp, "已替换" if ROE_GUARD else "仅记录、未改数据"))
+        if ROE_FILLED:
+            print("★ ROE 缺失自算兜底：%d 只 / %d 格（%s）"
+                  % (len(ROE_FILLED), sum(ROE_FILLED.values()),
+                     "已开 ✓" if ROE_FILL_MISSING else "已关 ✗"))
     # ★ 落数据戳（2026-10-10 ✓）：原地重写 bin **不会**改数据集根目录 mtime ✗ ⇒ 不落戳的话
     #   面板缓存会继续"有效"、平台拿旧数据跑 ✗（`feature_cache.bump_data_version` ✓）
     if n_bins > 0:
