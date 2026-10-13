@@ -1125,18 +1125,38 @@ def _test_one(
                         #   `_ok` 已要求 T+1 有价 ✓ ⇒ 集合与"可买入的持仓"一致 ✓、不会中途进出 ✓。
                         _sel = np.where(_ok)[0]
                         if _sel.size:
-                            _g = pd.Series(_f[_sel],
-                                           index=pd.MultiIndex.from_arrays(
-                                               [_inst_code[_sel], _dp_col[_sel]]))
-                            _g = _g[~_g.index.duplicated(keep="last")].sort_index()
-                            _g = _g.groupby(level=0).ffill()             # 逐股冻结（停牌 ✓）
-                            _g = _g[np.isfinite(_g.to_numpy())]
-                            _nb = _g.index.get_level_values(1).to_numpy()
-                            _sm = np.bincount(_nb, weights=_g.to_numpy(), minlength=_nd)
-                            _cn = np.bincount(_nb, minlength=_nd)
-                            _seg_nav = np.where(_cn > 0, _sm / np.maximum(_cn, 1), np.nan)
+                            # ★★ v2.1.87：**先补网格、再逐股前向填充** ✗→✓ —— v2.1.84 那版
+                            #   ffill 只能填"**已存在的行**" ✗，而面板对**停牌日整行缺失** ✓
+                            #   （不是 NaN ✓）⇒ 缺格填不上 ⇒ 有效只数仍从 379 爬到 483 ✓
+                            #   （实测 `cnt=379~483` ✓）⇒ 均值被"爬坡"抬高 ⇒ 段内波动 41.3% ✗。
+                            #   `_ok` 已保证 **T+1 那一行有价**（`_px0_row` 就取自它 ✓ `:1020` ✓）
+                            #   ⇒ 每只在**第 1 天**都有值 ✓ ⇒ 补齐后 ffill 即得**恒定集合** ✓。
+                            _insts = np.unique(_inst_code[_sel])
+                            _d0p = int(_dp_col[_sel].min())
+                            _d1p = int(_dp_col[_sel].max())
+                            _grid = pd.DataFrame(
+                                np.nan, index=_insts, columns=np.arange(_d0p, _d1p + 1))
+                            _ri = np.searchsorted(_insts, _inst_code[_sel])
+                            _grid.values[_ri, _dp_col[_sel] - _d0p] = _f[_sel]
+                            _m = _grid.ffill(axis=1).to_numpy(dtype=float)   # 逐股冻结 ✓
+                            _okm = np.isfinite(_m)
+                            _cntp = _okm.sum(axis=0)
+                            _smp = np.nansum(np.where(_okm, _m, np.nan), axis=0)
+                            _seg_nav = np.full(_nd, np.nan)
+                            _seg_nav[_d0p:_d1p + 1] = np.where(_cntp > 0,
+                                                               _smp / np.maximum(_cntp, 1), np.nan)
                         else:
                             _seg_nav = np.full(_nd, np.nan)
+                        # ★★ v2.1.86：**哨兵测试**（刀 A ✓，用户 2026-10-13 "继续" ✓）——
+                        #   目的：判定"这一段的日序列到底算不算那一行 `perf`" ✓。
+                        #   做法：另开一个标记文件 ⇒ 把 `_seg_nav` 置成**常数 1**（极端值 ✓）：
+                        #     · 若面板 Q10 的 `perf` 随之大变 ⇒ **这里就是**那行的来源 ✓；
+                        #     · 若 `perf` **纹丝不动**（仍 0.490357 ✗）⇒ 说明 `item["perf"]`
+                        #       **不是由本函数这段**算的 ✓ ⇒ 我此前一直在找错地方 ✗。
+                        #   ⚠ 只在哨兵文件存在时生效 ✓（默认关 ✓，绝不进生产 ✓）。
+                        if __import__("os").path.exists(
+                                r"D:\quant\qlib_code\ai_test\sft_perf_sentinel.flag"):
+                            _seg_nav = np.ones(_nd)
                         # ★★ v2.1.81：**诊断闸门**（用户 2026-10-13 待办 ④ 的"逐日 dump" ✓）
                         #   离线复算（`ai_test/dump_daily_variants.py` ✓）用**同一批持仓**得到
                         #   日级年化波动 **31.41%** ✓，而本函数报 **49.0%** ✗ ⇒ 差 18pp ⇒ 本函数
@@ -1170,7 +1190,7 @@ def _test_one(
                                                 for x in _seg_nav],
                                     "seg_ret": [None if not np.isfinite(x) else round(float(x), 8)
                                                 for x in _ret_s],
-                                    "cnt": [int(x) for x in _cn],
+                                    "cnt": [int(x) for x in _cntp],
                                     "seg_first10": [None if not np.isfinite(x) else round(float(x), 6)
                                                     for x in _seg_nav[:10]],
                                     "ratio_min": (float(np.nanmin(_r1)) if _r1.size else None),
