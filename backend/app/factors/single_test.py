@@ -1101,6 +1101,60 @@ def _test_one(
                         _sm = np.bincount(_dp_col[_fin], weights=_f[_fin], minlength=_nd)
                         _cn = np.bincount(_dp_col[_fin], minlength=_nd)
                         _seg_nav = np.where(_cn > 0, _sm / np.maximum(_cn, 1), np.nan)
+                        # ★★ v2.1.81：**诊断闸门**（用户 2026-10-13 待办 ④ 的"逐日 dump" ✓）
+                        #   离线复算（`ai_test/dump_daily_variants.py` ✓）用**同一批持仓**得到
+                        #   日级年化波动 **31.41%** ✓，而本函数报 **49.0%** ✗ ⇒ 差 18pp ⇒ 本函数
+                        #   的日序列被算高 ✗（不是"等权重建 vs 买入持有"的经济差异 ✓）。
+                        #   闸门 = **标记文件**（`ai_test/sft_perf_debug.flag` ✓）—— 用它而**不是**
+                        #   环境变量 ✓：重启脚本不方便传 env ✓，而文件开关"建/删即生效" ✓。
+                        #   ⚠ 默认关 ✓、只写文件 ✓、**绝不动算法** ✓（上两次"先改再验"都翻车了 ✗）。
+                        _gate = __import__("os").path.exists(
+                            r"D:\quant\qlib_code\ai_test\sft_perf_debug.flag")
+                        if _gate:
+                            # ⚠ v2.1.81：本块**只引用到此为止已存在的变量** ✓（`_seg_nav`/`_cn`/`_ok`/
+                            #   `_px_row`/`_px0_row`/`_dp_col` ✓），**段内日收益就地自算** ✓ ——
+                            #   上一版我引用了循环里的 `_rate`/`_net`/`_endi` ✗ ⇒ ruff F821 ✓（正是
+                            #   "闸门块放错位置"这个坑 ✓）。段内序列与离线参考**同构** ✓ 才好逐日对比 ✓。
+                            try:
+                                import json as _json
+                                _nav_s = np.asarray(_seg_nav, dtype=float)
+                                _ret_s = np.full(_nd, np.nan)
+                                with np.errstate(all="ignore"):
+                                    _ret_s[1:] = _nav_s[1:] / _nav_s[:-1] - 1.0
+                                _r1 = _px_row[_fin] / np.where(_px0_row[_fin] != 0,
+                                                               _px0_row[_fin], np.nan)
+                                _out_dbg = {
+                                    "k_kind": _k_kind, "k": str(_k_val), "nd": int(_nd),
+                                    "n_hold": int(_ok.sum()), "horizon": int(_h_i),
+                                    "seg_nav": [None if not np.isfinite(x) else round(float(x), 8)
+                                                for x in _seg_nav],
+                                    "seg_ret": [None if not np.isfinite(x) else round(float(x), 8)
+                                                for x in _ret_s],
+                                    "cnt": [int(x) for x in _cn],
+                                    "seg_first10": [None if not np.isfinite(x) else round(float(x), 6)
+                                                    for x in _seg_nav[:10]],
+                                    "ratio_min": (float(np.nanmin(_r1)) if _r1.size else None),
+                                    "ratio_max": (float(np.nanmax(_r1)) if _r1.size else None),
+                                    "px0_nan": int((~np.isfinite(_px0_row[_ok])).sum()),
+                                    "px0_min": (float(np.nanmin(_px0_row[_ok]))
+                                                if _ok.any() else None),
+                                    "px0_max": (float(np.nanmax(_px0_row[_ok]))
+                                                if _ok.any() else None),
+                                }
+                                with open(r"D:\quant\qlib_code\ai_test\perf_debug.json", "w",
+                                          encoding="utf-8") as _jf:
+                                    _json.dump(_out_dbg, _jf, ensure_ascii=False)
+                            except Exception as _de:      # noqa: BLE001 —— 诊断绝不拖垮主流程
+                                # ⚠ v2.1.82：**错误必须落文件** ✗→✓ —— 上一版只 `print` ✓，
+                                #   而后端是**隐藏窗口**启动的 ⇒ stdout 我看不到 ✗ ⇒ 白跑一轮 ✓。
+                                import traceback as _tb
+                                try:
+                                    with open(r"D:\quant\qlib_code\ai_test\perf_debug_err.txt",
+                                              "w", encoding="utf-8") as _ef:
+                                        _ef.write(repr(_de) + "\n" + _tb.format_exc())
+                                except Exception:                 # noqa: BLE001
+                                    pass
+                                print("[SFT-PERF-DBG] 落盘失败: %r" % (_de,), flush=True)
                         _tv = np.asarray(_k_cc["turnover"], dtype=np.float64)
                         _kret = np.asarray(_k_ret, dtype=np.float64)
                         _out = {}
