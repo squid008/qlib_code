@@ -1191,6 +1191,14 @@ def _test_one(
                                     "seg_ret": [None if not np.isfinite(x) else round(float(x), 8)
                                                 for x in _ret_s],
                                     "cnt": [int(x) for x in _cntp],
+                                    # ★★ v2.1.89：**把疑点变成数字** ✗→✓ —— v2.1.88 实测
+                                    #   `cnt 476~1173`，而"在手"只有 483 ✗ ⇒ 超过物理上限 ⇒
+                                    #   说明我这张网格的**行集合可能不是"当期持仓"** ✓。
+                                    #   三个字段一次说清：网格行数 / `_sel` 跨了几期 / 日内跨度 ✓。
+                                    "grid_insts": int(len(_insts)),
+                                    "sel_periods": int(np.unique(_per_of_day[_sel]).size),
+                                    "day_span": [int(_d0p), int(_d1p), int(_nd)],
+                                    "sel_rows": int(_sel.size),
                                     "seg_first10": [None if not np.isfinite(x) else round(float(x), 6)
                                                     for x in _seg_nav[:10]],
                                     "ratio_min": (float(np.nanmin(_r1)) if _r1.size else None),
