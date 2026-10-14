@@ -248,4 +248,6 @@ def main():
           % (n_ok, n_skip))
 
 
-main()
+if __name__ == "__main__":                                                # ★ 2026-10-14 补守卫 ✓
+    main()                                                                #   以前是裸 `main()` ✗ ⇒ 被 import 时会
+    #   **顺手执行整个流程** ✗（连 argparse 都用调用方的 argv ✗）⇒ 带 `--apply` 的 import 会**意外写盘** ✗✗
