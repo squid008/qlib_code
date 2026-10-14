@@ -21,8 +21,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +47,10 @@ def main() -> int:
     ap.add_argument("--since", default="", help="只补这一天（含）之后的洞 ✓ —— "
                                                 "**推荐**：历史洞（2016~2025）是**米筐/东财源本身缺行** ✗，"
                                                 "用 tushare 值去填会**掺另一套口径** ✗；近期洞才是我们该补的 ✓")
+    ap.add_argument("--override-gate", default="",
+                    help="★ 显式放行（逗号分隔的 qlib 代码 ✓）：这些股票**即使对拍不过也接** ✓ —— "
+                         "只在用户拍板后使用 ✓，且**必须**把结果落进 "
+                         "`features/_mf_source_notes.json` ✓（数据层面留痕 ✗ 不能只写在 md 里 ✗）")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
     qlib = Path(a.qlib_dir)
@@ -163,6 +169,8 @@ def main() -> int:
     n_ok = n_gate = 0
     final: dict = {}
     bad = []
+    overridden: dict = {}
+    ov_set = {c.strip() for c in a.override_gate.split(",") if c.strip()}
     for c, holes in plan.items():
         err, cnt = 0.0, 0
         for fl in list(holes):
@@ -178,6 +186,11 @@ def main() -> int:
                 cnt += 1
                 err = max(err, abs(float(h[1][j]) - float(v)) / max(1e-9, abs(float(h[1][j]))))
         if cnt < 5 or err > a.tol:
+            if c in ov_set:                              # ★ 用户拍板放行 ✓（**必落标注** ✓）
+                n_ok += 1
+                final[c] = holes
+                overridden[c] = (cnt, round(err, 6))
+                continue
             n_gate += 1
             bad.append((c, cnt, round(err, 8)))
             continue
@@ -186,6 +199,8 @@ def main() -> int:
     print("⇒ 待补 %d 只 ｜ **闸门不过** %d 只" % (n_ok, n_gate))
     if bad:
         print("   闸门不过样例 ✓：%s" % bad[:5])
+    if overridden:
+        print("   ★ **放行（对拍不过也接）** %d 只 ⇒ %s" % (len(overridden), overridden))
     n_cell = sum(len(v) for hs in final.values() for v in hs.values())
     print("   合计将补 %d 格（**只写当前为 NaN 的格子** ✓ 永不覆盖 ✓）" % n_cell)
     if not a.apply:
@@ -195,6 +210,7 @@ def main() -> int:
     backup = qlib / "_backup_mf_gap_20261014"
     backup.mkdir(parents=True, exist_ok=True)
     wrote = 0
+    filled: dict = {}                                    # code → {"days": [...], "cells": n}
     for c, holes in final.items():
         touched = False
         for fl, idxs in holes.items():
@@ -212,12 +228,54 @@ def main() -> int:
                     arr[j] = float(v)
                     wrote += 1
                     touched = True
+                    e = filled.setdefault(c, {"days": set(), "cells": 0})
+                    e["days"].add(cal[gi])
+                    e["cells"] += 1
             if touched:
                 p = feat / c / ("%s.day.bin" % fl)
                 (backup / c).mkdir(parents=True, exist_ok=True)
                 shutil.copy2(p, backup / c / ("%s.day.bin" % fl))
                 write_bin(p, h[0], arr)
-    print("完成 ✓ %d 只 / 写 %d 格 ⇒ 备份 %s ✓" % (len(final), wrote, backup))
+    print("完成 ✓ %d 只 / 写 %d 格 ⇒ 备份 %s ✓" % (len(filled), wrote, backup))
+
+    # ★★ 数据层面留痕 ✓（`features/_mf_source_notes.json` ✓）——
+    #   "这段 mf 是 tushare 接在东财段之后的" 必须**写在数据旁边** ✓，不能只写进 md ✗：
+    #   下游（因子/回测/同事的 AI）读数据文件时看不到 md ✗。
+    if filled:
+        np_path = feat / "_mf_source_notes.json"
+        try:
+            old = json.loads(np_path.read_text(encoding="utf-8")) if np_path.exists() else {}
+            if not isinstance(old, dict):
+                old = {}
+        except Exception:                                                    # noqa: BLE001
+            old = {}
+        entries = old.get("splices") or []
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        for c, e in sorted(filled.items()):
+            days = sorted(e["days"])
+            gate = overridden.get(c)
+            entries.append({
+                "code": c,
+                "from": days[0], "to": days[-1],
+                "n_days": len(days), "n_cells": e["cells"],
+                "source": "tushare moneyflow（`dump_tushare_mf.py` 的口径 ✓）",
+                "preceded_by": "东财 `E:\\rq\\moneyflow3`（2013-01-04 ~ 2026-08-19 ✓）",
+                "gate": ("**未过闸门、用户 2026-10-14 拍板放行** ✗→✓：与东财段重叠处逐字段比了 "
+                         "%d 个值（该股最近有值日 × 45 字段 ✓），最大相对差 %.4f ✗（= 东财与 tushare "
+                         "的**系统性口径差** ✗，不是 float32 舍入 ✓）" % (gate[0], gate[1]))
+                if gate else "已过闸门 ✓（相对差 ≤1e-3 ✓）",
+                "note": "该股原有 `mf_*` 止于停牌前 ✓，从 %s 起由 **tushare** 续上 ✓ —— "
+                        "**同一段序列里存在两个源** ✓，用 `mf_*` 做因子/回测时知悉 ✓" % days[0],
+                "written_at": stamp,
+            })
+        old["splices"] = entries
+        old["note"] = ("`mf_*` 的源头是东财 `E:\\rq\\moneyflow3`（2013-01-04 ~ 2026-08-19 ✓）；"
+                       "此后（含本次补齐的洞/尾 ✓）由 tushare `moneyflow` 续 ✓（口径已在 "
+                       "2026-08-19 重叠日对拍通过 ✓）。本列表逐条记明**哪些股票、哪段区间**是 "
+                       "tushare 接的 ✓；其中标 `未过闸门` 的 = 东财段与 tushare 对拍存在系统性差异 ✗，"
+                       "经用户 2026-10-14 拍板仍接入 ✓（用前先看 `gate` ✓）。")
+        np_path.write_text(json.dumps(old, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("★ 数据层面标注已落 ✓ %s（%d 条 ✓）" % (np_path, len(entries)))
     try:
         b = ROOT / "backend"
         if str(b) not in sys.path:

@@ -119,6 +119,13 @@ pip install pyqlib
 
 **数据更新（服务器每天跑）**：更新行情日历后执行 `python backend/tools/dump_moneyflow.py --force`（幂等全量重写）即可补新交易日资金流；若行情 bin 重建（日历重排/前插日期），需与 moneyflow 基于同一天历一起重 dump，否则字段错位。
 
+- ⚠ **东财源止于 2026-08-19** ✓：此后由 **tushare `moneyflow`** 续 ✓（`backend/tools/dump_tushare_mf.py` 先与 08-19 逐字段对拍再写 ✓），
+  续尾的洞/尾用 `backend/tools/fill_mf_gap.py` 补 ✓（判据「`volume>0` 却没有 `mf`」✓，**带重叠闸门** ✓）。
+- ★★ **有 4 只是"东财 + tushare 两源拼接"** ✓（`sh600984`/`sz002084`/`sz002445`/`sz300176`，2026-10-14 用户拍板放行 ✓）：
+  它们**对拍不过闸门** ✗（与东财段重叠处最大相对差 **1184.7% / 12.1% / 22.9% / 12.3%** ✓ = 两家系统性口径差 ✓）
+  ⇒ **用 `mf_*` 做因子/回测前先读** `data/<ds>/features/_mf_source_notes.json` ✓（逐条记明区间 + 差异 ✓；
+  由 `fill_mf_gap.py --override-gate` **自动写** ✓，代码里绑死 ✓）。细表见 `md/数据源接入.md` ✓。
+
 > 校验：`mf_amount_main = mf_amount_xl + mf_amount_l`、`mf_vol_<档> = mf_vol_<档>_b − mf_vol_<档>_s`（勾稽）；源 h5 vs bin 逐日比对已一致（开发机验证）。
 
 ### 物化字段：前复权价（`pre*`）+ 筹码（`chip_*`）—— **每台机器必须各做一次**
