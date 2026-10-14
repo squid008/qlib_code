@@ -177,6 +177,47 @@ def item_key(kind: str, k: Any = None, quantile: Any = None) -> str:
     )
 
 
+# ---------------------------------------------------------------- 当前数据集（★ 2026-10-14 ✓）
+K_DATASET = "dataset"                    # `_meta` 行：数据集目录名（cn_data / cn_data2 …）
+K_DATASET_LABEL = "dataset_label"        # `_meta` 行：人读口径（如 `cn_data（米筐/qlib 口径）`）
+
+
+def dataset_tag() -> Dict[str, str]:
+    """读**当前生效**的数据集（`data/active_dataset.json` 解析结果 ✓）⇒ 写进导出文件 ✓。
+
+    Why（用户 2026-10-14："**EXCEL 里好像分辨不出是米筐还是 TUSHARE**" ✗）：导出文件的
+    `_meta.params_json` 有 26 个参数却**一个都不提数据集** ✗ ⇒ **米筐与 tushare 两份导出长得一模一样** ✗，
+    回头对照"今天结果为什么高"时**第一步就卡住**（无法判断手上这份是哪个源 ✓）。
+    ∴ ① 隐藏页 `_meta` 加 `dataset` / `dataset_label` 两行（机器可读 ✓）；
+      ② 第 1 页小灰字标题行追加「数据集 X（口径）」（人读 ✓）；
+      ③ 回灌时若文件的数据集与当前不一致 ⇒ 记一条 `warning` ✓（不阻断 ✓）。
+    口径名来自数据集目录里的 `.dataset.json`（`name`/`label`/`convention` ✓，与 `md/数据源接入.md` 同源 ✓）。
+    """
+    out = {"name": "", "label": "", "convention": ""}
+    try:
+        import os
+        from ..config import QLIB_PROVIDER_URI                     # 本地 import ✓（避免环）
+        d = str(QLIB_PROVIDER_URI or "")
+        out["name"] = os.path.basename(d.rstrip("/\\"))
+        p = os.path.join(d, ".dataset.json")
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                j = json.load(f)
+            out["label"] = str(j.get("label") or "")
+            out["convention"] = str(j.get("convention") or "")
+    except Exception:                                              # noqa: BLE001
+        pass
+    return out
+
+
+def dataset_line() -> str:
+    """人读一行：`数据集 cn_data（米筐/qlib 口径）` ✓（拿不到就退化成 `数据集 -` ✓）。"""
+    t = dataset_tag()
+    if not t["name"]:
+        return "数据集 -"
+    return "数据集 %s（%s）" % (t["name"], t["label"] or t["convention"] or "口径未标注")
+
+
 # ---------------------------------------------------------------- 写：隐藏元数据页
 def write_meta_sheet(wb, params: Dict[str, Any]) -> None:
     """把**机器可读**元数据写进隐藏 sheet `_meta`（回灌唯一权威来源 ✓）。
@@ -194,6 +235,10 @@ def write_meta_sheet(wb, params: Dict[str, Any]) -> None:
         (P_APP_VERSION, params.get(P_APP_VERSION, "")),
         (P_GENERATED_AT, params.get(P_GENERATED_AT, "")),
     ]
+    # ★ 数据集（2026-10-14 ✓）：写进 `_meta` ⇒ 米筐/tushare 两份导出**一眼可辨** ✓
+    _ds = dataset_tag()
+    rows.append((K_DATASET, _ds["name"]))
+    rows.append((K_DATASET_LABEL, dataset_line()))
     if len(payload) <= 32000:
         rows.append(("params_json", payload))
     else:
@@ -214,6 +259,8 @@ class ExportDoc:
     format_version: str = ""
     app_version: str = ""
     generated_at: str = ""
+    dataset: str = ""                                             # ★ 2026-10-14：导出时的数据集 ✓
+    dataset_label: str = ""                                       #   人读口径（如 `cn_data（米筐/qlib 口径）`✓）
     params: Dict[str, Any] = field(default_factory=dict)          # 英文键 → 值（权威 ✓）
     params_labeled: Dict[str, Any] = field(default_factory=dict)   # 中文标签 → 值（回显用）
     holdings: List[Dict[str, Any]] = field(default_factory=list)   # 每行：英文键 → 值
@@ -283,6 +330,17 @@ def read_export(src: Any, *, expect_kind: Optional[str] = None) -> ExportDoc:
                     params_json = _cell_str(val)
                 elif key == "params_json_truncated":
                     doc.warnings.append("导出文件的参数元数据被截断 ⇒ 已退回按中文标签解析")
+                elif key == K_DATASET:                             # ★ 2026-10-14 ✓
+                    doc.dataset = _cell_str(val)
+                elif key == K_DATASET_LABEL:
+                    doc.dataset_label = _cell_str(val)
+        # ★ 数据集对不上就**报一声** ✗→✓（不阻断 ✓）：一份 tushare 的导出拿到米筐上回灌，
+        #   数值必然对不上 ✗ ⇒ 别让人以为是算法变了 ✓（2026-10-14 的教训 ✓）。
+        _cur = dataset_tag()["name"]
+        if doc.dataset and _cur and doc.dataset != _cur:
+            doc.warnings.append(
+                "导出文件来自数据集 **%s** ✓，当前生效的是 **%s** ✗ ⇒ 数值不会逐位一致 ✓"
+                "（要复现请先切回 `%s` ✓）" % (doc.dataset, _cur, doc.dataset))
         if not doc.format_id:
             doc.warnings.append("未找到隐藏页 `%s`（不是本工具导出的文件，或隐藏页被删）" % SHEET_META)
 

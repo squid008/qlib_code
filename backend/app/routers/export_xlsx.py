@@ -321,9 +321,9 @@ def export_topk_xlsx(req: TopkExportRequest) -> Response:
         sens=row.get("topk_sensitivity") or {}, bench=bench, rq=rq, params=params,
         basis=basis, tier=tier, holdings=hold_rows, extra_notes=notes,
         nav_png=nav_png, dec_png=dec_png,
-        subtitle="因子公式：%s ｜ 导出时间 %s ｜ 工具版本 v%s ｜ 格式 %s v%s"
+        subtitle="因子公式：%s ｜ 导出时间 %s ｜ 工具版本 v%s ｜ 格式 %s v%s ｜ %s"
                  % (expr or "-", params[spec.P_GENERATED_AT], __version__,
-                    spec.FORMAT_ID, spec.FORMAT_VERSION),
+                    spec.FORMAT_ID, spec.FORMAT_VERSION, spec.dataset_line()),
     ))
     filename = "单因子测试_持仓曲线_%s_%s.xlsx" % (_safe_name(row.get("name")), time.strftime("%Y%m%d_%H%M"))
     try:
@@ -462,9 +462,9 @@ def export_event_study_xlsx(req: EventStudyExportRequest) -> Response:
                  % (params[spec.P_UNIVERSE] or "-", params[spec.P_START_DATE] or "-",
                     params[spec.P_END_DATE] or "-", params[spec.P_MAX_K],
                     es.get("n_events"), es.get("n_aligned")),
-        subtitle="导出时间 %s ｜ 工具版本 v%s ｜ 格式 %s v%s ｜ 净值持有周期 %d 日 · 成本 %.4f"
+        subtitle="导出时间 %s ｜ 工具版本 v%s ｜ 格式 %s v%s ｜ 净值持有周期 %d 日 · 成本 %.4f ｜ %s"
                  % (params[spec.P_GENERATED_AT], __version__, spec.FORMAT_ID,
-                    spec.FORMAT_VERSION, k, cost),
+                    spec.FORMAT_VERSION, k, cost, spec.dataset_line()),
         params=params,
         formula_pairs=[("因子名称", fac_name or "-", None),
                        ("因子 ID", str(fac.get("id") or fac_row.get("id") or "-"), None),
