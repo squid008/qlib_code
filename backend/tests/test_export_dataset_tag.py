@@ -31,8 +31,11 @@ def _wb_with(dataset: str):
 def test_dataset_tag_matches_active_dataset():
     t = spec.dataset_tag()
     assert t["name"], "拿不到当前数据集名 ✗（active_dataset.json / QLIB_PROVIDER_URI 出问题了 ✓）"
-    # 与 `data/<ds>/.dataset.json` 同源 ⇒ 口径名应能读到 ✓（cn_data = 米筐 / cn_data2 = tushare ✓）
-    assert t["label"] or t["convention"]
+    # 与 `data/<ds>/.dataset.json` 同源（cn_data = 米筐 / cn_data2 = tushare ✓）——
+    # ⚠ 但 **CI / 新机器上没有 `data/`**（不入库 ✓）⇒ 那时读不到口径名 ⇒ 允许兜底成"口径未标注" ✓
+    #   （2026-10-14 CI 实测踩到 ✗：原断言写死"必须有 label" ⇒ CI 红 ✗）
+    if not (t["label"] or t["convention"]):
+        assert "口径未标注" in spec.dataset_line(), spec.dataset_line()
 
 
 def test_dataset_line_is_human_readable():
