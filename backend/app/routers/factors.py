@@ -10,6 +10,7 @@ import time
 import uuid
 from typing import List, Optional
 
+import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -1248,8 +1249,74 @@ def event_study(req: EventStudyRequest):
     return {"task_id": task_id}
 
 
+# ★★ 2026-10-14（用户：「加一条**未触发组等权**参照线，我看看到底咋样」✓）
+#   为什么必须有它 ✗→✓：旧图里只有「沪深300」灰虚线 + 两条策略曲线 ✗，而**事件研究的真实基准
+#   其实是「未触发组等权」**（超额曲线用的就是它 ✓）⇒ 同一张图上**没有可比参照** ✓，
+#   实测用户把灰线当成"全 A 等权" ✗（沪深300 0.957 vs 池内等权 1.4125 ✓ 差 48% ✗ ⇒ 结论会看反 ✓）。
+#   本函数产出一条**与超额曲线同源**的净值曲线 ✓：每日把「全池 − 当日触发股」等权持有一天的收益累积 ✓
+#   （收盘对收盘 ✓、无成本 ✓ —— 与策略曲线的口径差异在曲线名里注明 ✓）。
+#   缓存 ✓：key = (universe, 起止, 复权, 整分, 价字段, 事件数) ✓，容量 4 ✓（同一任务反复改 k 只算一次 ✓）。
+_UNTRIG_CACHE: dict = {}
+_UNTRIG_LOCK = threading.Lock()
+_UNTRIG_CAP = 4
+
+
+def _untrig_nav_series(state: dict, ev, start: str, end: str) -> List[tuple]:
+    """未触发组等权净值序列 ✓（`[(日期, 净值), ...]`；起点 1.0 ✓）。"""
+    rq = (state or {}).get("_req") or {}
+    universe = str(rq.get("universe") or "all")
+    pa = str(rq.get("price_adjust") or "backward")
+    price_round = bool(rq.get("price_round", True))
+    price_field = "$open" if str(rq.get("fill") or "").startswith("t1_open") else "$close"
+    key = (universe, str(start), str(end), pa, price_round, price_field, int(len(ev)))
+    with _UNTRIG_LOCK:
+        got = _UNTRIG_CACHE.get(key)
+    if got is not None:
+        return got
+    # ⚠ `_resolve_instruments` 的**家在 `single_test`** ✓（`event_study` 只是把它 import 进来 ✓
+    #   ⇒ 单测要 monkeypatch 时打 `app.factors.event_study._resolve_instruments` ✓ 也有效 ✓）
+    from ..factors.event_study import load_px_wide
+    from ..factors.single_test import _resolve_instruments
+
+    full_codes = sorted({str(c).upper() for c in _resolve_instruments(universe, start)})
+    piv = load_px_wide(full_codes, str(start), str(end), pa, price_round, price=price_field)
+    if piv is None or not len(piv) or len(piv) < 3:
+        return []
+    arr = piv.to_numpy(dtype=np.float64, copy=False)
+    arr = np.where(np.isfinite(arr) & (arr > 0.0), arr, np.nan)
+    with np.errstate(all="ignore"):
+        ret = arr[1:] / arr[:-1] - 1.0
+    valid = np.isfinite(ret)
+    # ---- 剔除「前一日触发」的标的（与超额曲线同一约定：触发日 T ⇒ 从 T+1 起不在这条线上 ✓）----
+    dates = list(piv.index)
+    pos = {str(d)[:10]: i for i, d in enumerate(dates)}
+    col = {str(c).upper(): j for j, c in enumerate(piv.columns)}
+    _r: List[int] = []
+    _c: List[int] = []
+    for d, c in zip(list(ev["dt"]), list(ev["code"])):
+        i = pos.get(str(d)[:10])
+        j = col.get(str(c).upper())
+        if i is None or j is None:
+            continue
+        if i + 1 < len(dates):                     # 信号日 T ⇒ 剔除 T+1 那一格收益 ✓
+            _r.append(i)                           # ret 的第 i 行 = (T → T+1) ✓
+            _c.append(j)
+    if _r:
+        valid[np.asarray(_r, dtype=np.intp), np.asarray(_c, dtype=np.intp)] = False
+    with np.errstate(all="ignore"):
+        means = np.nanmean(np.where(valid, ret, np.nan), axis=1)
+    nav = np.cumprod(np.where(np.isfinite(means), 1.0 + means, 1.0))
+    nav = np.concatenate([[1.0], nav])             # ret 比 dates 少一行 ✓ ⇒ 首日补 1.0 ✓
+    out = [(str(d)[:10], float(v)) for d, v in zip(dates, nav)]
+    with _UNTRIG_LOCK:
+        while len(_UNTRIG_CACHE) >= _UNTRIG_CAP:
+            _UNTRIG_CACHE.pop(next(iter(_UNTRIG_CACHE)))
+        _UNTRIG_CACHE[key] = out
+    return out
+
+
 class EventNavRequest(BaseModel):
-    """「事件研究」面板里再画一条净值曲线（两种资金方案 + 基准）。"""
+    """「事件研究」面板里再画一条净值曲线（两种资金方案 + 基准 + 未触发组等权）。"""
     task_id: str
     hold_days: int = 20
     cost: float = 0.004
@@ -1594,7 +1661,30 @@ def event_study_nav(req: EventNavRequest):
         bench = load_bench_wide([req.benchmark], start, end)
         nav = attach_benchmark(bt.nav, bench, req.benchmark)
         timings["benchmark"] = round(time.perf_counter() - t0, 3)
-        return {"hold_days": k, "nav": nav_rows(nav), "stats": bt.stats, "diag": bt.diag,
+        stats = dict(bt.stats or {})
+        # ★★ 2026-10-14（用户："加一条未触发组等权参照线" ✓）：
+        #   为什么需要它 ✗→✓：面板上原来只有「沪深300」（灰虚线 ✓）与两条策略曲线 ✓ ——
+        #   而**"事件研究"里的基准其实是「未触发组等权」**（超额曲线用的就是它 ✓），
+        #   两者在同一张图上**没有可比参照** ⇒ 用户实测时把灰线当成了"全 A 等权" ✗
+        #   （实测沪深300 = 0.957，而池内等权 = 1.4125 ✓ 差 48% ✗ ⇒ 结论会看反 ✓）。
+        #   ∴ 把「未触发组等权」也画成一条曲线 ✓（同日剔除当日触发股 ✓、等权 ✓、无成本 ✓），
+        #     与超额曲线**同源** ✓ ⇒ "事件到底跑没跑赢它自己的基准"一眼可见 ✓。
+        try:
+            _un = _untrig_nav_series(state, ev, start, end)
+            if _un is not None and len(_un):
+                _s = pd.Series({pd.Timestamp(d): float(v) for d, v in _un})
+                nav = nav.copy()
+                nav["bench_equal"] = _s.reindex(nav.index).ffill()
+                try:
+                    from ..engine.perf_metrics import compute_perf      # 与上面净值统计同一个 ✓
+                    _ret = nav["bench_equal"].pct_change().fillna(0.0).to_numpy()
+                    stats["bench_equal"] = compute_perf(_ret)
+                except Exception:                                  # noqa: BLE001
+                    pass
+        except Exception as _ue:                                  # noqa: BLE001
+            # 参照线失败只影响展示（与基准失败同一策略 ✓）⇒ 不拖垮净值曲线 ✓
+            timings["untrig_error"] = repr(_ue)[:160]
+        return {"hold_days": k, "nav": nav_rows(nav), "stats": stats, "diag": bt.diag,
                 "nav_columns": [str(c) for c in nav.columns],
                 "alloc_default": "event_even", "timings": timings}
     except _NavCancelled:
