@@ -218,15 +218,81 @@ def dataset_line() -> str:
     return "数据集 %s（%s）" % (t["name"], t["label"] or t["convention"] or "口径未标注")
 
 
+# ---------------------------------------------------------------- 超长文本（★ 2026-10-14 ✓）
+CELL_MAX = 32767                     # Excel 单元格**硬上限** ✓（超了 openpyxl 会**静默截断** ✗）
+CELL_SAFE = 30000                    # 我们自己截（留余量 ✓ ⇒ 能**在文本里注明**已截断 ✓）
+META_BUDGET = 32000                  # `params_json` 的写入预算 ✓
+META_VALUE_CAP = 4000                # 单个字符串值在 `_meta` 里的软上限 ✓
+
+
+def short_text(s: Any, limit: int = CELL_SAFE, *, where: str = "因子库／数据文件") -> str:
+    """超长就截断**并打标** ✓（不静默 ✗）—— 旧行为是被 Excel 静默截到 32767 ✗。
+
+    实测触发点（2026-10-14 ✓）：`AR13_ID60` 的表达式 **92,933 字符** ✗ ⇒ 导出文件里第 1 页的
+    「原文公式」正好 32767 字符 ✓（= 单元格上限 ✓）⇒ 谁拿它去复现**必然对不上** ✗。
+    """
+    t = "" if s is None else str(s)
+    if len(t) <= limit:
+        return t
+    mark = "……（已截断：原始 %d 字符，完整文本见%s）" % (len(t), where)
+    return t[: max(0, limit - len(mark))] + mark
+
+
+def trim_params_for_meta(params: Dict[str, Any], *,
+                         budget: int = META_BUDGET,
+                         cap: int = META_VALUE_CAP) -> Tuple[Dict[str, Any], List[str], List[str]]:
+    """把超长 `params` 裁成**能写进 `_meta` 且尽量可用** ✓：返回 (参数, 被截断的键, 被丢掉的键) ✓。
+
+    ① 超长字符串值 ⇒ `short_text` 截断打标 ✓；② 仍超预算 ⇒ 从**最长的键**开始丢 ✓（记名 ✓）。
+    """
+    p: Dict[str, Any] = dict(params)
+    trimmed: List[str] = []
+    for k, v in list(p.items()):
+        if isinstance(v, str) and len(v) > cap:
+            p[k] = short_text(v, cap)
+            trimmed.append(k)
+    dropped: List[str] = []
+    # ★ 丢弃顺序 ✓：**先丢"非契约键"**（批量/临时字段 ✓），契约键（`PARAM_LABELS` 里的 ✓）留到最后 ✓
+    #   —— 否则可能把 `factor_expression` 这类关键字段丢掉 ✗（2026-10-14 实测踩到 ✓，单测锁住 ✓）。
+    contract = set(PARAM_LABELS)
+    while len(json.dumps(p, ensure_ascii=False, default=str)) > budget and p:
+        cand = [k for k in p if k not in contract] or list(p)
+        k = max(cand, key=lambda kk: len(json.dumps(p[kk], ensure_ascii=False, default=str)))
+        dropped.append(k)
+        del p[k]
+    return p, trimmed, dropped
+
+
+def formula_cells(source_formula: Any, expression: Any,
+                  *, where: str = "因子库／数据文件") -> List[Tuple[str, str, Any]]:
+    """第 1 页的「原文公式 / 具体公式（表达式）」两格 ✓ + 超长时的说明行 ✓（两处导出共用 ✓）。
+
+    为什么要共用：单因子测试（`topk_doc.py`）与事件研究（`routers/export_xlsx.py`）**都要写**这两格 ✓，
+    旧代码在两边各写一遍 ✗ ⇒ 一处修一处漏 ✗（2026-10-14 的截断问题正是两边都有 ✓）。
+    """
+    src = "" if source_formula is None else str(source_formula)
+    expr = "" if expression is None else str(expression)
+    rows: List[Tuple[str, str, Any]] = [
+        ("原文公式", short_text(src or expr or "-", where=where), None),
+        ("具体公式（表达式）", short_text(expr or "-", where=where), None),
+    ]
+    longest = max(len(src), len(expr))
+    if longest > CELL_SAFE:
+        rows.append(("公式长度（★ 已截断 ✗）",
+                     "%d 字符 ⇒ 上面两格只展示前 %d 字符 ✓；**完整表达式见%s** ✓"
+                     "（导出文件的单元格上限只有 %d ✗）" % (longest, CELL_SAFE, where, CELL_MAX), None))
+    return rows
+
+
 # ---------------------------------------------------------------- 写：隐藏元数据页
 def write_meta_sheet(wb, params: Dict[str, Any]) -> None:
     """把**机器可读**元数据写进隐藏 sheet `_meta`（回灌唯一权威来源 ✓）。
 
-    ⚠ 单元格上限 32767 字符：参数 JSON 正常只有几百字节 ✓；真的超了就**不写**并留一行
-      `params_json_truncated=True` ⇒ 回灌会自动退回"按中文标签匹配"兜底 ✓（不静默 ✗）。
+    ⚠ 单元格上限 32767 字符：参数 JSON 正常只有几百字节 ✓；超长时**先截断长字段再写** ✓
+      （`params_json_trimmed` / `params_json_dropped` 记明动了哪些键 ✓）；真写不下才退回
+      `params_json_truncated=True` ⇒ 回灌按中文标签兜底 ✓（**一切都不静默** ✗→✓，见 2026-10-14 修 ✓）。
     """
     ws = wb.create_sheet(SHEET_META)
-    payload = json.dumps(params, ensure_ascii=False, default=str)
     ws["A1"] = FORMAT_ID
     ws["B1"] = "格式标识"
     rows: List[Tuple[str, Any]] = [
@@ -239,9 +305,21 @@ def write_meta_sheet(wb, params: Dict[str, Any]) -> None:
     _ds = dataset_tag()
     rows.append((K_DATASET, _ds["name"]))
     rows.append((K_DATASET_LABEL, dataset_line()))
+    # ★★ 2026-10-14 修（用户："小毛病改一下" ✓）—— 超长**不再整份丢弃** ✗→✓：
+    #   旧行为：`payload > 32000` ⇒ 只写 `params_json_truncated=True` ✗ ⇒ 回灌**一个参数都读不到** ✗
+    #   （实测 `AR13_ID60` 的导出就是这样 ✓：`factor_expression` **92,933 字符** ✗）。
+    #   新行为：① 超长的**字符串值**先**截断并打标** ✓（`…（已截断：原始 N 字符，完整见因子库）` ✓）；
+    #          ② 还超就**从最长的键开始丢** ✓ 并把丢掉的键名落进 `params_json_dropped` ✓；
+    #          ③ 两行都写出来 ⇒ 回灌**能用** ✓ 且**知道少了什么** ✓（不静默 ✗）。
+    trimmed_params, trimmed_keys, dropped_keys = trim_params_for_meta(params)
+    payload = json.dumps(trimmed_params, ensure_ascii=False, default=str)
     if len(payload) <= 32000:
         rows.append(("params_json", payload))
-    else:
+        if trimmed_keys:
+            rows.append(("params_json_trimmed", ",".join(trimmed_keys)))
+        if dropped_keys:
+            rows.append(("params_json_dropped", ",".join(dropped_keys)))
+    else:                                                          # 兜底（正常走不到 ✓）
         rows.append(("params_json_truncated", True))
     for i, (k, v) in enumerate(rows, start=2):
         ws.cell(row=i, column=1, value=k)
@@ -330,6 +408,14 @@ def read_export(src: Any, *, expect_kind: Optional[str] = None) -> ExportDoc:
                     params_json = _cell_str(val)
                 elif key == "params_json_truncated":
                     doc.warnings.append("导出文件的参数元数据被截断 ⇒ 已退回按中文标签解析")
+                elif key == "params_json_trimmed":                 # ★ 2026-10-14 ✓
+                    doc.warnings.append(
+                        "导出文件的参数里有**超长字段被截断** ✗（`%s` ✓，值结尾带"
+                        "「已截断…完整文本见因子库」标记 ✓）⇒ 要用原值请回因子库取 ✓" % _cell_str(val))
+                elif key == "params_json_dropped":
+                    doc.warnings.append(
+                        "导出文件的参数里**有字段因过长被丢弃** ✗（`%s` ✓）⇒ 回灌时这些参数走默认值 ✓，"
+                        "别当成\"本来就该这样\" ✓" % _cell_str(val))
                 elif key == K_DATASET:                             # ★ 2026-10-14 ✓
                     doc.dataset = _cell_str(val)
                 elif key == K_DATASET_LABEL:

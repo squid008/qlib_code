@@ -172,9 +172,8 @@ def build_doc(src: PanelSource) -> TopkExportDoc:
     formula_pairs: List[Pair] = [
         ("因子名称", row.get("name") or "-", None),
         ("因子 ID", row.get("id") or "-", None),
-        ("原文公式", row.get("source_formula") or row.get("expression") or "-", None),
-        ("具体公式（表达式）", row.get("expression") or "-", None),
-    ]
+    ] + spec.formula_cells(row.get("source_formula") or row.get("expression"),
+                           row.get("expression"))
     _skip = {spec.P_FACTOR_NAME, spec.P_FACTOR_EXPR, spec.P_KIND, spec.P_APP_VERSION,
              spec.P_GENERATED_AT, spec.P_FORMAT_VERSION}
     param_pairs: List[Pair] = [p for p in spec.param_display_rows(src.params)

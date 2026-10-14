@@ -467,9 +467,8 @@ def export_event_study_xlsx(req: EventStudyExportRequest) -> Response:
                     spec.FORMAT_VERSION, k, cost, spec.dataset_line()),
         params=params,
         formula_pairs=[("因子名称", fac_name or "-", None),
-                       ("因子 ID", str(fac.get("id") or fac_row.get("id") or "-"), None),
-                       ("原文公式", str(fac.get("source_formula") or fac_expr or "-"), None),
-                       ("具体公式（表达式）", fac_expr or "-", None)],
+                       ("因子 ID", str(fac.get("id") or fac_row.get("id") or "-"), None)]
+                      + spec.formula_cells(fac.get("source_formula") or fac_expr, fac_expr),
         param_pairs=es_param_pairs(params, skip=(spec.P_FACTOR_NAME, spec.P_FACTOR_EXPR)),
         buy_signals=buys,
         kpi_title="触发事件统计",
