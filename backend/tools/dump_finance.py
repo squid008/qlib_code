@@ -31,13 +31,13 @@
 |---|------|------|------|
 | 1 | fin_pe_ttm      | 倍 | 当日总市值 / 自算归母净利润TTM（本期累计+上年年报−上年同期累计；Q4直接取本期；亏损保留负值） |
 | 2 | fin_pb          | 倍 | 当日总市值 / 最新已披露**归母所有者权益**（净资产为负 ⇒ NaN） |
-| 3 | fin_rev_yoy     | %  | 报告期**营业总收入** / 去年同期同报告期 - 1（**累计**同比，同益盟"营业收入增长率"） |
-| 4 | fin_np_yoy      | %  | 报告期**归母净利润** / 去年同期同报告期 - 1（累计同比） |
+| 3 | fin_rev_yoy     | %  | **(本期 − 去年同期) ÷ ｜去年同期｜ × 100**（累计同比；★2026-10-14 起分母取**绝对值**，同 tushare/Wind ✓）|
+| 4 | fin_np_yoy      | %  | 同上（**归母净利润**累计同比）—— 扭亏股因此**有值** ✓（旧口径给 NaN ✗） |
 | 5 | fin_gross_margin| %  | 报告期**毛利 / 营业总收入**（累计；金融股无毛利 ⇒ NaN） |
 | 6 | fin_roe         | %  | 报告期**加权平均净资产收益率**（米筐 return_on_equity_weighted_average，累计） |
 | 7 | fin_roa         | %  | 报告期**净利润 / 期末总资产**（累计；未用平均总资产，见下方"口径差异"） |
 | 8 | fin_eps         | 元 | 报告期**基本每股收益**（累计） |
-| 9 | fin_op_yoy      | %  | 报告期**营业利润** / 去年同期同报告期 - 1（累计同比；益盟同列指标） |
+| 9 | fin_op_yoy      | %  | **营业利润**累计同比，同 q=3/4（分母取 ｜去年同期｜ ✓）|
 | 10 | fin_fcf        | 元 | **自由现金流TTM** = 经营现金流净额TTM − 资本开支TTM（CAPEX=购建固定资产、无形资产和其他长期资产支付的现金）；TTM = 累计(Q)+累计(上年年报)−累计(上年同期Q) |
 
 ### ★★ 三档口径（2026-10-10 用户定稿；`FINANCE(q,口径)` 的第二参数 ✓）
@@ -142,7 +142,9 @@ FIELD_UNITS.update({f: FIELD_UNITS[_base_of_tiered(f)] for f in TIERED_FIELDS})
 FIN_META_NAME = "_finance_meta.json"
 # 口径语义版本：改口径（字段含义 / 对齐方式 / 派生公式）必须递增并重跑 dump
 #   `2.0.0` = 2026-10-10 加三档口径（单季 / 年化 / TTM）；旧值是 `1.0.0`（只有累计档 ✓）
-FINANCE_SEMANTICS = "2.0.0"
+#   `2.1.0` = ★ 2026-10-14 同比类**分母改取绝对值**（`|去年同期|` ✓，用户定稿「选 B」✓；
+#             影响 `fin_rev_yoy` / `fin_np_yoy` / `fin_op_yoy` 及其三档 = 共 12 个字段 ✓）
+FINANCE_SEMANTICS = "2.1.0"
 # 两条来源共用上面的字段/档位定义；仅米筐 PIT 的选期与 PE 实现版本记在这里。
 PIT_MAPPING_VERSION = "2026-10-13.latest-report.derived-pe"
 
@@ -228,13 +230,15 @@ def tiered_report_values(qget, q: str, t: int) -> Dict[str, float]:
 
     for tier in (1, 2, 3):
         suf = FINANCE_TIER_SUFFIX[tier]
-        # 增长率类（q=3/4/9）= 本期 / **去年同档** − 1（分母须为正，与旧档同一规则 ✓）
+        # 增长率类（q=3/4/9）= **(本期 − 去年同档) ÷ |去年同档| × 100** ✓
+        # ★ 2026-10-14 用户定稿「选 B」✓：分母取**绝对值**（旧规则"分母须为正" ✗ ⇒ 扭亏股整段丢 ✗）；
+        #   与 tushare 供应商 `netprofit_yoy` 口径一致 ✓（实测 600029.SH 2026 中报 = −141.0959 ✓）。
         for name, base_field in (("rev", "fin_rev_yoy"), ("np_parent", "fin_np_yoy"),
                                  ("op", "fin_op_yoy")):
             cur = val(name, q, tier)
             base = val(name, yq, tier)
-            out[base_field + suf] = ((cur / base - 1.0) * 100.0
-                                     if (np.isfinite(cur) and np.isfinite(base) and base > 0)
+            out[base_field + suf] = (((cur - base) / abs(base)) * 100.0
+                                     if (np.isfinite(cur) and np.isfinite(base) and abs(base) > 0)
                                      else float("nan"))
         # 比率类（q=5/6/7）：分子按档取流量、分母一律取**报告期期末存量** ✓
         rev = val("rev", q, tier)
@@ -442,8 +446,9 @@ def build_report_metrics(tab: PitTable) -> Dict[str, np.ndarray]:
         for name, field in (("rev", "fin_rev_yoy"), ("np_parent", "fin_np_yoy"),
                             ("op", "fin_op_yoy")):
             cur, base = qget(name, q, t), qget(name, pq, t)
-            values[field] = ((cur / base - 1.0) * 100.0
-                             if np.isfinite(cur) and np.isfinite(base) and base > 0 else np.nan)
+            # ★ 2026-10-14 用户定稿「选 B」✓：分母取**绝对值**（见 `tiered_report_values` 的注释 ✓）
+            values[field] = (((cur - base) / abs(base)) * 100.0
+                             if np.isfinite(cur) and np.isfinite(base) and abs(base) > 0 else np.nan)
         values.update({
             "fin_gross_margin": _ratio(qget("gp", q, t), qget("rev", q, t)),
             "fin_roe": tab.val_at("return_on_equity_weighted_average", q, t),

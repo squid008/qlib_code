@@ -18,13 +18,13 @@ PIT / 无未来函数 ✓。先对拍（`ai_test/probe_crosscheck_fin.py` ✓）
 |---|------|--------------|
 | 1 | fin_pe_ttm | 当日总市值 ÷ 最新已披露**归母净利润TTM**（TTM=累计(Q)+累计(上年年报)−累计(上年同期Q)） |
 | 2 | fin_pb | 当日总市值 ÷ `total_hldr_eqy_exc_min_int`（归母权益） |
-| 3 | fin_rev_yoy | `revenue` 累计同比 |
-| 4 | fin_np_yoy | `n_income_attr_p`（归母净利）累计同比 |
+| 3 | fin_rev_yoy | `total_revenue` 累计同比 = **(本期 − 去年同期) ÷ ｜去年同期｜ × 100** ✓（★2026-10-14 改，分母取绝对值 ✓） |
+| 4 | fin_np_yoy | `n_income_attr_p`（归母净利）累计同比，同 q=3 ✓（扭亏股因此有值 ✓） |
 | 5 | fin_gross_margin | (revenue − oper_cost) ÷ revenue |
 | 6 | fin_roe | `fina_indicator.roe_waa`（加权平均 ROE，与米筐同名口径 ✓）；★2026-10-13 起**缺失则自算兜底**＝累计归母净利 ÷ 期末归母权益（要求**权益>0** ✓，见 `--roe-fill-missing` ✓）|
 | 7 | fin_roa | `n_income`（净利润，含少数股东）÷ `total_assets` |
 | 8 | fin_eps | `income.basic_eps`（基本每股收益，累计） |
-| 9 | fin_op_yoy | `operate_profit`（营业利润）累计同比 |
+| 9 | fin_op_yoy | `operate_profit`（营业利润）累计同比，同 q=3/4 ✓ |
 | 10 | fin_fcf | (经营现金流净额 − 资本开支) 的 TTM，资本开支=`c_pay_acq_const_fiolta` |
 
 ★ 2026-10-10：与米筐链一起加**三档口径**（`FINANCE(q,口径)` 的第二参数 ✓）——
@@ -469,9 +469,20 @@ def _tushare_qget(tab: "TsPit"):
 
 
 def yoy2(cur: float, tab: TsPit, fld: str, pq: Optional[str], t: int) -> float:
+    """累计同比（%）：**(本期 − 去年同期) ÷ |去年同期| × 100** ✓（2026-10-14 用户定稿「选 B」✓）。
+
+    ⚠ 为什么不是"分母须为正" ✗（旧口径 ✓，两个毛病）：
+      ① **扭亏股被整段丢掉** ✗（去年同期亏、今年赚 ⇒ 旧口径给 NaN ⇒ "低估值+扭亏"这类因子**永远选不出来** ✗）；
+      ② 亏损扩大/收窄也全丢 ✗。
+    改后 ✓：分母取**绝对值** ⇒ 符号语义与正常情形**一致** ✓（本期 < 去年同期 ⇒ 负 ✓，不论两者正负 ✓），
+    且与**供应商口径相同** ✓ —— 实测 tushare `fina_indicator.netprofit_yoy`：`600029.SH` 2026 中报
+    （归母 −36.96 亿、去年同期 −15.33 亿）给 **−141.0959** ✓ = `(−36.96+15.33)/15.33` ✓，
+    正是 `÷|base|` ✓（`ai_test/probe_1014.py` / 2026-10-14 实测 ✓）。
+    仅当 `base == 0`（或缺失）⇒ NaN ✓（无意义 ✓）。
+    """
     base = tab.val_at(fld, pq, t) if pq else float("nan")
-    if np.isfinite(cur) and np.isfinite(base) and base > 0:
-        return (cur / base - 1.0) * 100.0
+    if np.isfinite(cur) and np.isfinite(base) and abs(base) > 0:
+        return (cur - base) / abs(base) * 100.0
     return float("nan")
 
 
