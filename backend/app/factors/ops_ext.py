@@ -36,6 +36,7 @@ from qlib.data.ops import EMA as _QLIB_EMA
 
 __all__ = [
     "BARSLAST", "BARSCOUNT", "BARSSINCEN",
+    "RecurOut", "RecurPrev",
     "DYN_MIN", "DYN_MAX", "DYN_COUNT", "DYN_REF", "DYN_SUM", "DYN_MEAN",
     "DYN_HHVBARS", "DYN_LLVBARS",
     "And", "Or", "If",
@@ -2057,8 +2058,59 @@ class Ln(LN):
         return "Ln({})".format(self.feature)
 
 
+class RecurOut(ExpressionOps):
+    """递推组（v2.4.0）在 **qlib 逐股路径**上的**占位算子**：一求值就报清楚的错 ✓。
+
+    为什么不在 qlib 侧也实现一遍（用户 2026-10-15 定稿：先只走面板路径 ✓）：
+      · 递推组最快的形态是**按 (日期 × 股票) 矩阵一次 O(N) 推进** ✓（`factors/recursion.py`，
+        全 A 实测秒级 ✓）；而 qlib 的算子是**逐股调用**的 ⇒ 同样逻辑要再写一遍且慢一个量级 ✗，
+        两套数值路径并存必然漂移 ✗（筹码 `COST/WINNER` 与横向统计 `mkt_*` 都为此选择了
+        "物化字段 / 面板派生"而不是算子 ✓）；
+      · 面板路径（**单因子测试 / 事件研究**）**完整支持** ✓；qlib 路径（模型特征 / 训练）
+        暂不支持 ✗ —— 这里的作用是**别让用户看到 `The operator [RecurOut] is not registered` 天书** ✗。
+    """
+
+    def __init__(self, *args):
+        self.recur_args = args
+        super().__init__()
+
+    def __str__(self):
+        # qlib 用 str(self) 做进程内缓存 key ⇒ 必须带全部子表达式（否则互相污染 ✗）
+        return "RecurOut({})".format(",".join(str(a) for a in self.recur_args))
+
+    def _load_internal(self, instrument, start_index, end_index, *args):
+        raise RuntimeError(RECUR_QLIB_HINT)
+
+    def get_longest_back_rolling(self):
+        return 0
+
+    def get_extended_window_size(self):
+        return (0, 0)
+
+
+class RecurPrev(RecurOut):
+    """`RecurPrev(j,k)`：递推组**组内**取上一根（由 `REF(变量,k)` 编译而来 ✓，用户不用写 ✓）。"""
+
+    def __str__(self):
+        return "RecurPrev({})".format(",".join(str(a) for a in self.recur_args))
+
+
+class RecurCur(RecurOut):
+    """`RecurCur(j)`：组内取成员 j 的**本根**值（= 同根引用**先定义**的成员 ✓，用户不用写 ✓）。"""
+
+    def __str__(self):
+        return "RecurCur({})".format(",".join(str(a) for a in self.recur_args))
+
+
+RECUR_QLIB_HINT = (
+    "这条公式用了**递推变量**（自己引用自己的上一根，如 `A:=REF(A,1)+1;`）✗\n"
+    "  · 目前**只在面板路径**支持：**单因子测试 / 事件研究**里能照常算出来 ✓；\n"
+    "  · 当作**模型特征**（训练 / 模型回测）暂时不支持 ✗ —— 那种场合走的是 qlib 逐股求值，\n"
+    "    递推要在那里再实现一遍；需要的话请让开发排期 ✓。")
+
 _ALL_OPS = [
     LN, LOG, Ln,         # v2.1.28：qlib 只有 `Log`，旧编译产物里的 `LN(...)` 一用就炸 ✗
+    RecurOut, RecurPrev, RecurCur,  # v2.4.0：递推组占位（面板才是真实现 ✓，这里只负责报得清楚 ✓）
     FACTOR_END,          # v1.19.97：前复权用（$close / FACTOR_END($factor)）
     BARSLAST, BARSCOUNT, BARSSINCEN,
     DYN_MIN, DYN_MAX, DYN_COUNT, DYN_REF, DYN_SUM, DYN_MEAN, DYN_HHVBARS, DYN_LLVBARS,

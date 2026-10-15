@@ -464,6 +464,17 @@ def insum_help() -> str:
             "  `python tools/materialize_market.py`（详见公式手册）" % (BLOCK_KEYS_HELP, INSUM_CALC_HELP))
 
 
+# ---- ★ v2.4.0：递推组（自引用/互引变量）的内部算子名 ----
+# `semantic` 把 `REF(自己,k)` 编译成 `__RECUR_PREV` / `__RECUR_OUT` 节点 ✓，这里生成
+# **用户看不见的**算子名（面板求值器认它们 ✓；qlib 侧注册了同名占位算子、一求值就报清楚 ✗）。
+# ⚠ 列成表是为了让 `tests/test_operator_names_registered.py` **自动守住**"必须已注册" ✓
+#   （那套守卫只扫"大写 ASCII 键的 dict"⇒ 写死字符串会被漏掉 ✗）。
+RECUR_OPS = {
+    "OUT": "RecurOut",       # 算整组、取成员 j 的当前值
+    "PREV": "RecurPrev",     # 组内取成员 j 的 k 根前
+    "CUR": "RecurCur",       # 组内取成员 j 的**本根**值（= 同根引用先定义的成员 ✓）
+}
+
 # ---- 二元运算 → qlib 表达式 ----
 BINOP_MAP = {
     "ADD": "Add", "SUB": "Sub", "MUL": "Mul", "DIV": "Div",
@@ -810,6 +821,24 @@ class CodeGen:
 
     def _gen_func(self, e: FuncCall) -> str:
         name = e.name
+        # ---- ★ 2026-10-15：递推组（v2.4.0，见 parser/semantic.py 顶部与 factors/recursion.py）----
+        # `__RECUR_OUT(j, N, body_0…body_{N-1})` ⇒ `RecurOut(j,N,…)`：面板侧按 (日期×股票)
+        #   矩阵一次 O(N) 推进整组，再取成员 j 的**当前值** ✓；
+        # `__RECUR_PREV(j, k)` ⇒ `RecurPrev(j,k)`：只在组内出现（= 取成员 j 的 k 根前 ✓），
+        #   面板侧**不会**单独求值它（单独出现就直接报错 ✓，避免用户手写出个"没头没尾"的引用）。
+        if name in (RECUR_OPS["OUT"], "__RECUR_OUT"):
+            args = e.args
+            if len(args) < 2 or not all(isinstance(a, Num) for a in args[:2]) \
+                    or len(args) != int(args[1].value) + 2:
+                raise CodeGenError("递推组编译结果异常（RecurOut 参数不匹配）—— 请把公式反馈给开发 ✓")
+            idx, n = int(args[0].value), int(args[1].value)
+            if not (0 <= idx < n):
+                raise CodeGenError("递推组成员下标越界（%d/%d）—— 请把公式反馈给开发 ✓" % (idx, n))
+            return "%s(%s)" % (RECUR_OPS["OUT"], ",".join(self._g(a) for a in args))
+        if name in (RECUR_OPS["PREV"], "__RECUR_PREV"):
+            return "%s(%s)" % (RECUR_OPS["PREV"], ",".join(self._g(a) for a in e.args))
+        if name in (RECUR_OPS["CUR"], "__RECUR_CUR"):
+            return "%s(%s)" % (RECUR_OPS["CUR"], ",".join(self._g(a) for a in e.args))
         # 忽略绘图/颜色
         if name in IGNORED_OPS:
             raise CodeGenError(f"函数 {name} 是绘图/颜色指令，不生成因子（已忽略）")

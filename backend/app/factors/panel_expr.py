@@ -796,6 +796,11 @@ _INFIX_PREC = {"+": 10, "-": 10, "*": 20, "/": 20}
 # 词法正则（v1.18.4 性能）：必须用 `match(text, pos)` 而非 `match(text[pos:])`——
 # 巨型公式（CUP_POOL 24.6 万字符 / ~10 万 token）下每次切片都是 O(剩余长度) 复制，
 # 累计复制量以 GB 计（实测 parse_expr 1.85s/块）。带 pos 匹配为零拷贝，语义等价。
+# ★ 2026-10-15（v2.4.0）：**递推组**的两个内部算子（不是给用户写的 ✓，由 `REF(变量,k)` 编译而来 ✓）
+_RECUR_OP = "RecurOut"        # RecurOut(j, N, body_0 … body_{N-1}) ⇒ 算整组、取成员 j 的当前值
+_RECUR_PREV_OP = "RecurPrev"  # RecurPrev(j, k) ⇒ 组内取成员 j 的 k 根前（只在组内出现 ✓）
+_RECUR_CUR_OP = "RecurCur"    # RecurCur(j) ⇒ 组内取成员 j 的**本根**值（同根引用先定义的成员 ✓）
+
 _RE_FIELD = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
 _RE_NUM = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
 _RE_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -1305,6 +1310,61 @@ class PanelEvaluator:
         st.index = st.index.set_names([names[ld], names[li]])
         return st.reorder_levels(names).reindex(c.index)
 
+    # ---- 递推组（v2.4.0，用户 2026-10-15 定稿 ✓；内核在 factors/recursion.py ✓）----
+    def _recur_out(self, node, sr: bool, active) -> pd.Series:
+        """`RecurOut(j, N, body_0…body_{N-1})` ⇒ 算整组、返回成员 j 的当前值 ✓。
+
+        ⚠ 缓存键必须**只含整组定义**（不含 j ✗）：同一条公式里 `RecurOut(0,…)` 与
+        `RecurOut(1,…)` 是同一个组 ⇒ 不这样就会把整组算两遍（实测趋势线那种 3 成员要 ×3 ✗）。
+        """
+        j = int(node.args[0].args[0])
+        n = int(node.args[1].args[0])
+        members = node.args[2:]
+        cache = getattr(self, "_recur_cache", None)
+        if cache is None:
+            cache = self._recur_cache = OrderedDict()
+        key = (bool(sr), n, tuple(m.key for m in members))
+        got = cache.get(key)
+        if got is None:
+            pre: list = []
+            skels = [_recur_split(self, m, sr, pre) for m in members]
+            got = self._recur_group(skels, n, pre, sr, active)
+            cache[key] = got
+            while len(cache) > 3:                      # 组结果很大（(日期×股票) 矩阵）⇒ 只留最近几组 ✓
+                cache.popitem(last=False)
+        return got[j]
+
+    def _recur_group(self, skels, n_members: int, pre: list, sr: bool, active):
+        """按"日期 × 股票"矩阵一次 O(N) 推进整组，返回每个成员的 Series（面板顺序 ✓）。
+
+        做法与筹码派生字段同构（`_chip_field` ✓）：面板是 (股票, 日期) 两级 index，递归必须
+        **按日推进**且一次算全池 ⇒ `unstack` 成 (日期 × 股票) 后逐根推进 ✓。
+        ⚠ 停牌/未上市的行（`$close` 为 NaN）⇒ 状态**冻结**、输出 NaN ✓（= 益盟"无停牌行"口径 ✓）。
+        """
+        from .recursion import run_group
+
+        idx = pre[0].index if pre else active
+        names = list(idx.names)
+        li = names.index("instrument") if "instrument" in names else 0
+        ld = 1 - li
+        close = self.field("$close")
+        ref = close.unstack(level=li)                  # (日期 × 股票)：日期轴/股票轴基准 ✓
+        dates, codes = ref.index, ref.columns
+        pre_mats = []
+        for s in pre:
+            w = s.unstack(level=li)
+            if not (w.index.equals(dates) and w.columns.equals(codes)):
+                w = w.reindex(index=dates, columns=codes)   # 停牌日/缺股 ⇒ NaN ✓（该行随后被冻结 ✓）
+            pre_mats.append(w.to_numpy(dtype=np.float64))
+        valid = ~np.isnan(ref.to_numpy(dtype=np.float64))
+        vals = run_group(skels, n_members, pre_mats, valid)
+        mi = pd.MultiIndex.from_product([dates, codes], names=[names[ld], names[li]])
+        out = []
+        for m in vals:
+            s = pd.Series(m.ravel(), index=mi).reorder_levels(names).reindex(idx)
+            out.append(s)
+        return out
+
     # ---- 节点 ----
     def eval(self, node: Node, sr: bool = False) -> pd.Series:
         """在 active 行集上求值一个节点。
@@ -1352,6 +1412,15 @@ class PanelEvaluator:
             if inner is None:
                 raise ValueError("SR 内层不能是常量")
             out = inner
+        elif op == _RECUR_OP:
+            # ★★ v2.4.0：递推组（用户 2026-10-15 定稿 ✓）—— **必须在通用参数求值之前**处理 ✗：
+            #   组内成员体里含 `RecurPrev(j,k)`，它单独求值没有意义（"上一根"要整组一起推 ✓）
+            #   ⇒ 这里直接接手整组：按 (日期×股票) 矩阵一次 O(N) 推进，取成员 j ✓。
+            return self._recur_out(node, sr, active)
+        elif op in (_RECUR_PREV_OP, _RECUR_CUR_OP):
+            raise ValueError(
+                "%s 只能出现在递推组内部 ✗（它由 `REF(变量,k)` / 组内同根引用自动编译而来）—— "
+                "请在公式里写 `REF(变量,1)`（k≥1 的常量）✓" % op)
         else:
             args = [self.eval(a, sr=sr) for a in node.args]
             out = self._apply(op, args, sr=sr, active=active)
@@ -1630,6 +1699,9 @@ class PanelEvaluator:
         # 读盘 LRU，不受影响）。清空对数值零影响，只改缓存生命周期。
         self._node_cache.clear()
         self._node_bytes = 0
+        # ★ v2.4.0：递推组缓存同生命周期（整组结果是 (日期×股票) 量级的内存 ⇒ 不能跨公式累积 ✗）
+        if getattr(self, "_recur_cache", None):
+            self._recur_cache.clear()
         _SEG_CACHE.clear()          # 段边界缓存与节点缓存同生命周期（v1.18.22）
         _SEG_RC_CACHE.clear()       # 段→矩阵布局缓存（v1.18.30，同上）
         node = parse_expr(expr)
@@ -2162,6 +2234,35 @@ def _corr_pair_panel(a: pd.Series, b: pd.Series, N: int) -> pd.Series:
         e = bnd[gi + 1]
         out[s:e] = _pair_seg_corr(arr_a[s:e], arr_b[s:e], N)
     return pd.Series(out, index=idx)
+
+
+def _node_has_recur(node) -> bool:
+    """该子树里有没有组内引用（`RecurPrev` / `RecurCur`）⇒ 不能预计算、必须留在骨架里 ✓。"""
+    if getattr(node, "op", None) in (_RECUR_PREV_OP, _RECUR_CUR_OP):
+        return True
+    return any(_node_has_recur(a) for a in node.args if isinstance(a, Node))
+
+
+def _recur_split(ev: "PanelEvaluator", node, sr: bool, pre: list):
+    """把成员表达式拆成"**骨架 + 预计算子树**"（v2.4.0 ✓，格式见 `factors/recursion.py`）。
+
+    为什么不能整棵逐根算 ✗：成员体里大多数子树（字段 / MA / 比较…）与"上一根的自己"无关
+    ⇒ 用现成的面板算子**整条一次算完**（`("a", k)` 叶子 ✓），逐根循环里只留少量标量骨架 ✓
+    —— 否则全 A 6000 股 × 6000 根 × 每次重算 MA 会慢到不可用 ✗（与筹码派生字段同一个道理 ✓）。
+    """
+    if node.op == _RECUR_PREV_OP:
+        return ("p", int(node.args[0].args[0]), int(node.args[1].args[0]))
+    if node.op == _RECUR_CUR_OP:
+        return ("m", int(node.args[0].args[0]))
+    if node.op == "const":
+        return ("c", float(node.args[0]))
+    if not _node_has_recur(node):
+        s = ev.eval(node, sr=sr)
+        if not isinstance(s, pd.Series):
+            return ("c", float(s))
+        pre.append(s)
+        return ("a", len(pre) - 1)
+    return (node.op, [_recur_split(ev, a, sr, pre) for a in node.args])
 
 
 def _by_group(s: pd.Series, ns, fn, seg_fn=None) -> pd.Series:
