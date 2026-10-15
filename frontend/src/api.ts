@@ -328,7 +328,13 @@ export interface SingleFactorTestRequest {
    *  ④ 勾了离场 ⇒ 后端**自动打开 `period_roll`** ✓（离场只作用在真金白银那条回测上 ✓）。
    */
   exit_factor?: SingleFactorTestItem
-  /** 离场判据阈值（因子值 > 它 ⇒ 离场 ✓，默认 0 ✓） */
+  /**
+   * ★★ v2.5.0（用户 2026-10-15：\"这个离场因子能不能搞成多选啊，要矩阵化\" ✓）：
+   * **多个离场因子** ⇒ 结果变成矩阵 `进场 × (1 + 离场数)`（`1` = 必算的"不离场"对照 ✓），
+   * 每行结果的 `exit_rolls` 里逐条给同源同口径的实盘回测 ✓ ⇒ 前端出对比表（含 Δ ✓）。
+   */
+  exit_factors?: SingleFactorTestItem[]
+  /** 离场判据阈值（因子值 > 它 ⇒ 离场 ✓，默认 0 ✓；多个离场**共用**这一个 ✓） */
   exit_threshold?: number
   /** 仅 `period_roll` 时用到（与回灌侧同名同义；缺省即回灌默认 ⇒ 不传也能对齐 ✓） */
   cost?: number
@@ -518,6 +524,12 @@ export interface SingleFactorTestResult {
    */
   exit_roll_items?: PeriodRollNav[]
   exit_roll?: PeriodRollNav
+  /**
+   * ★ v2.5.0（多选 · 矩阵化 ✓）：**每个离场各一组**（与 `exit_roll_items` 同构 ✓）——
+   * `exit_rolls[i].items[档下标]` = 第 i 个离场在该档位的实盘口径结果 ✓；
+   * `exit_rolls[0]` 与上面的 `exit_roll_items` 是同一份（兼容旧取法 ✓）。
+   */
+  exit_rolls?: ExitRollGroup[]
   horizon?: number // 该行对应的预测周期（批量测试时每 因子×周期 一行）
   source_formula?: string // 用户原文公式（custom=保存原文；目录因子=表达式本身）
   coverage: number | null // 覆盖率：因子非空行 ÷ CLOSE 有效行（v1.21.6 起；分母不再是"面板并集行数"）
@@ -581,6 +593,41 @@ export interface FactorTiming {
   item_s: number
   total_s: number
 }
+/**
+ * ★ v2.5.0：**离场事件研究**（第 2 步 ✓）—— 把"离场触发"当事件，看**触发之后** h 日收益
+ * 与同期**未触发**样本的差 ✓（用的是面板里本来就有 `LABEL_h` ⇒ 零额外取数 ✓）。
+ * 这才回答"离场是躲开了下跌，还是砍掉了上涨" ✓（比拿两条净值相除可靠得多 ✓）。
+ */
+export interface ExitEffect {
+  horizon?: number
+  n_trig?: number
+  n_ctrl?: number
+  mean_trig?: number | null
+  mean_ctrl?: number | null
+  median_trig?: number | null
+  median_ctrl?: number | null
+  /** 触发 − 未触发（**负数** = 触发后确实更差 ⇒ 离场有价值 ✓） */
+  diff_mean?: number | null
+  diff_median?: number | null
+}
+/** ★ v2.5.0：一个离场的完整回显（触发率预检 + 事件研究 ✓） */
+export interface ExitFactorPayload {
+  index?: number
+  id?: string
+  name?: string
+  source?: string
+  expression?: string
+  stats?: ExitPrecheckStats | null
+  /** 键 = 预测周期（如 "60" ✓） */
+  effect?: Record<string, ExitEffect> | null
+  error?: string
+}
+/** ★ v2.5.0：矩阵的一列 —— 一个离场在**当前档位**下的实盘口径结果（含它自己的近次回测 ✓） */
+export interface ExitRollGroup {
+  exit?: { index?: number; name?: string; id?: string; expression?: string }
+  items?: PeriodRollNav[]
+  first?: PeriodRollNav
+}
 /** ★ v2.4.3：离场因子的**触发率预检**（用户定的 > 50% 前端黄字提示 ✓）。 */
 export interface ExitPrecheckStats {
   threshold?: number
@@ -603,9 +650,11 @@ export interface SingleFactorTestProgress {
   result?: {
     items: SingleFactorTestResult[]
     total: number
-    /** ★ v2.4.3：离场触发率预检（没勾离场 ⇒ 无此字段 ✓） */
+    /** ★ v2.4.3：离场触发率预检（没勾离场 ⇒ 无此字段 ✓；= `exit_factors[0].stats` ✓） */
     exit_stats?: ExitPrecheckStats | null
     exit_factor?: { name?: string; id?: string } | null
+    /** ★ v2.5.0：**逐个离场**的触发率预检 + 离场事件研究（多选 ✓） */
+    exit_factors?: ExitFactorPayload[]
     exit_threshold?: number
   } | null
   error?: string | null

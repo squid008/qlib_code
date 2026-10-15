@@ -12,7 +12,7 @@ import type {
   CustomFormula,
   EventStudyRequest,
   EventStudyResult,
-  ExitPrecheckStats,   // ★ v2.4.3：离场因子触发率预检 ✓
+  ExitFactorPayload,   // ★ v2.5.0：离场（多选）的触发率预检 + 事件研究 ✓
   SingleFactorTestResult,
 } from '../api'
 import type { FactorCatalog, FactorField } from '../types'
@@ -482,15 +482,24 @@ export default function SingleFactorTestPanel({
   //   默认 **不开** ✓（很慢 ✓）、悬停注明用途 ✓、放在「成交时点」右边「预热缓冲」左边 ✓。
   //   打开后后端会用与回灌侧同一个 `run_period_roll` 再算一条净值 ⇒ 可与回灌逐点对拍 ✓。
   const [periodRoll, setPeriodRoll] = useState(false)
-  // ★★ v2.4.3（用户 2026-10-15 拍板 ✓）：**离场因子**（单因子测试的"卖出侧"第一步 ✓）
-  //   · `exitKey` = 选中的**自定义公式** key（'' = 不启用 ✓）；第一步**单选** ✓（矩阵化放第二步 ✓）；
-  //   · 口径 = 「因子值 > exitThreshold（默认 0）」✓（二值公式与连续因子**通用** ✓）；
-  //   · 与某个进场因子是**同一公式** ⇒ 前端**直接拦**（红字 + 禁用提交 ✓，后端也会 400 ✓）；
+  // ★★ v2.4.3 / v2.5.0（用户 2026-10-15 拍板 ✓）：**离场因子**（单因子测试的"卖出侧" ✓）
+  //   · `exitKeys` = 选中的**自定义公式** key 集合（空 = 不启用 ✓）；v2.5.0 起**多选** ✓
+  //     （用户："这个离场因子能不能搞成多选啊，要矩阵化" ✓）；
+  //   · 口径 = 「因子值 > 阈值（默认 0）」✓（二值公式与连续因子**通用** ✓；多个离场**共用一个阈值** ✓）；
+  //   · 与任一进场因子是**同一公式** ⇒ 前端**直接拦**（红字 + 禁用提交 ✓，后端也会 400 ✓）；
   //   · 勾了离场 ⇒ 后端自动开 `period_roll` ✓（这里也把那个勾打上，免得用户困惑 ✓）；
-  //   · 结果里永远有**对照列**（不离场 ✓）与**含离场**两条 ✓，并给触发率预检（> 50% 黄字 ✓）。
-  const [exitKey, setExitKey] = useState('')
+  //   · 结果 = **矩阵**：`进场 × (1 + 离场数)` 条同源同口径回测 ✓（"不离场"对照必算 ✓），
+  //     并给**逐个离场**的触发率预检（> 50% 黄字 ✓）与**离场事件研究**（触发后 h 日 vs 未触发 ✓）。
+  const [exitKeys, setExitKeys] = useState<Set<string>>(new Set())
   const [exitThresholdText, setExitThresholdText] = useState('0')
-  const [exitPrecheck, setExitPrecheck] = useState<ExitPrecheckStats | null>(null)
+  const [exitsInfo, setExitsInfo] = useState<ExitFactorPayload[]>([])
+  const toggleExit = (k: string) =>
+    setExitKeys((cur) => {
+      const n = new Set(cur)
+      if (n.has(k)) n.delete(k)
+      else n.add(k)
+      return n
+    })
   // 持仓期曲线的「固定 K 档」（v1.18.45）：默认**一个都不勾** = 只算默认档（最强分位组 +
   // 10% 固定档），零额外开销；勾选的档随本次测试一起算出 ⇒ 弹窗里**纯前端切换**、不用重跑。
   const [detailKs, setDetailKs] = useState<number[]>([])
@@ -727,8 +736,8 @@ export default function SingleFactorTestPanel({
           setDoneTaskId(taskId)          // 先记下来再 stopPolling（它会把 taskIdRef 清空）
           stopPolling()
           setResults(p.result?.items ?? [])
-          // ★ v2.4.3：离场因子触发率预检（没勾离场 ⇒ 后端不回该字段 ⇒ 置空 ✓）
-          setExitPrecheck(p.result?.exit_stats ?? null)
+          // ★ v2.4.3 / v2.5.0：逐个离场的触发率预检 + 事件研究（没勾离场 ⇒ 后端不回该字段 ✓）
+          setExitsInfo(p.result?.exit_factors ?? [])
           setRunning(false)
           setCancelling(false)
           // 任务结束，立即刷新并发显示（占用名额 -1）
@@ -790,20 +799,20 @@ export default function SingleFactorTestPanel({
       setError('请至少勾选一个因子')
       return
     }
-    // ★ v2.4.3：离场因子（用户定的"同公式⇒直接拦"✓ —— 前端先拦，后端再 400 兜底 ✓）
-    const exitItem = exitKey
-      ? (groups.find((g) => g.source === 'custom')?.items ?? []).find((it) => it.key === exitKey)
-      : undefined
-    if (exitItem && selected.has(exitItem.key)) {
+    // ★ v2.4.3 / v2.5.0：离场因子（**多选** ✓；用户定的"同公式⇒直接拦"✓ —— 前端先拦，后端再 400 ✓）
+    const exitItems = (groups.find((g) => g.source === 'custom')?.items ?? [])
+      .filter((it) => exitKeys.has(it.key))
+    const exitDup = exitItems.find((it) => selected.has(it.key))
+    if (exitDup) {
       setError(
-        `离场因子「${exitItem.name}」与某个已勾选的进场因子是同一个公式 ✗\n` +
+        `离场因子「${exitDup.name}」与某个已勾选的进场因子是同一个公式 ✗\n` +
           '按「同日进+出 ⇒ 不交易」规则会永远开不了仓（净值恒 1 一条线），照做则买完就卖、' +
           '被手续费磨掉 ⇒ 请换一个公式 ✓',
       )
       return
     }
     const exitThresholdNum = Number(exitThresholdText)
-    if (exitItem && !Number.isFinite(exitThresholdNum)) {
+    if (exitItems.length > 0 && !Number.isFinite(exitThresholdNum)) {
       setError('离场阈值要填数字（默认 0）')
       return
     }
@@ -826,7 +835,7 @@ export default function SingleFactorTestPanel({
     setError('')
     setResults([])
     setDoneTaskId(null)
-    setExitPrecheck(null)                            // ★ v2.4.3：上一轮的离场预检清掉 ✓
+    setExitsInfo([])                                 // ★ v2.5.0：上一轮的离场预检/事件研究清掉 ✓
     setProgress(1)
     setProgressMsg('提交任务...')
     startedAtRef.current = Date.now()               // ★ v2.4.2：新任务重新计时 ✓
@@ -854,18 +863,18 @@ export default function SingleFactorTestPanel({
         // v2.1.27：**每期全仓滚动（逐点对拍专用）** —— 默认关 ✓（慢 ✓）；打开则多算一条实盘口径净值
         // ★ v2.4.3：勾了离场因子 ⇒ **必须开** ✓（离场只作用在这条真金白银回测上 ✓；
         //   后端也会自动打开兜底 ✓ —— 这里显式传，免得"看起来没生效"✗）
-        period_roll: periodRoll || !!exitItem || undefined,
-        // ★ v2.4.3：离场因子 + 阈值（阈值默认 0 ⇒ 二值公式/连续因子同一套口径 ✓）
-        exit_factor: exitItem
-          ? {
-              id: exitItem.id,
-              name: exitItem.name,
-              expression: exitItem.expression,
+        period_roll: periodRoll || exitItems.length > 0 || undefined,
+        // ★ v2.4.3 / v2.5.0：**多个**离场因子 + 共用阈值（阈值默认 0 ⇒ 二值/连续同一套口径 ✓）
+        exit_factors: exitItems.length
+          ? exitItems.map((it) => ({
+              id: it.id,
+              name: it.name,
+              expression: it.expression,
               source: 'custom',
-              source_formula: exitItem.original ?? exitItem.expression,
-            }
+              source_formula: it.original ?? it.expression,
+            }))
           : undefined,
-        exit_threshold: exitItem ? exitThresholdNum : undefined,
+        exit_threshold: exitItems.length ? exitThresholdNum : undefined,
         topk_list: detailKs.length ? detailKs : undefined,
       })
       const task_id = resp?.task_id
@@ -1119,11 +1128,11 @@ export default function SingleFactorTestPanel({
             <button
               type="button"
               onClick={run}
-              // ★ v2.4.3：离场因子与某个进场因子同公式 ⇒ **直接拦**（用户定的"直接拦"✓；
-              //   后端也会 400 兜底 ✓ —— 这里只是别让你白等 ✓）
-              disabled={!!exitKey && selected.has(exitKey)}
-              title={!!exitKey && selected.has(exitKey)
-                ? '离场因子与已勾选的进场因子是同一个公式 ✗ ⇒ 请换一个公式（同日进+出会永远开不了仓）'
+              // ★ v2.4.3 / v2.5.0：**任一**离场因子与某个进场因子同公式 ⇒ **直接拦**
+              //   （用户定的"直接拦"✓；后端也会 400 兜底 ✓ —— 这里只是别让你白等 ✓）
+              disabled={[...exitKeys].some((k) => selected.has(k))}
+              title={[...exitKeys].some((k) => selected.has(k))
+                ? '有离场因子与已勾选的进场因子是同一个公式 ✗ ⇒ 请换一个公式（同日进+出会永远开不了仓）'
                 : ''}
               className="w-full px-3 py-1.5 rounded bg-blue-600 text-white text-xs disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -1419,61 +1428,93 @@ export default function SingleFactorTestPanel({
         ))}
       </div>
 
-      {/* ★★ v2.4.3（用户 2026-10-15 拍板 ✓）：**离场因子**（卖出侧第一步 · 单选）
-          口径：因子值 > 阈值（默认 0）⇒ T+1 按「成交时点」卖出 ✓；结果永远含「对照（不离场）」
-          与「含离场」两条 ✓；同公式 ⇒ 拦 ✓；触发率 > 50% ⇒ 黄字预警 ✓。 */}
+      {/* ★★ v2.4.3 / v2.5.0（用户 2026-10-15 拍板 ✓）：**离场因子**（卖出侧 · **多选** ✓）
+          口径：因子值 > 阈值（默认 0）⇒ T+1 按「成交时点」卖出 ✓；
+          结果 = 矩阵：`进场 × (1 + 离场数)` 条同源同口径回测 ✓（"不离场"对照必算 ✓）；
+          同公式 ⇒ 拦 ✓；触发率 > 50% ⇒ 黄字；另给**离场事件研究**（触发后 h 日 vs 未触发 ✓）。 */}
       {(() => {
         const items = (groups.find((g) => g.source === 'custom')?.items ?? [])
-        const cur = exitKey ? items.find((it) => it.key === exitKey) : undefined
-        const dup = !!cur && selected.has(cur.key)
-        const rate = exitPrecheck?.rate ?? 0
+        const picked = items.filter((it) => exitKeys.has(it.key))
+        const dupItem = picked.find((it) => selected.has(it.key))
+        // 事件研究只展示**首个预测周期**那一行（表里看趋势足够 ✓；要多周期可看结果表 ✓）
+        const effOf = (name: string) => {
+          const hit = exitsInfo.find((e) => (e.name || '') === name)
+          const eff = hit?.effect
+          if (!eff) return null
+          const ks = Object.keys(eff)
+          return ks.length ? eff[ks[0]] : null
+        }
         return (
           <div className="mb-3 border rounded p-2 bg-white dark:bg-slate-800">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-semibold text-slate-600 dark:text-slate-300">离场因子（卖出侧）</span>
-              <select
-                className="border rounded px-2 py-1 text-[11px] max-w-[260px]"
-                value={exitKey}
-                onChange={(e) => setExitKey(e.target.value)}
-                title="选中一个自定义公式当『离场信号』：该因子在 T 日的值 > 阈值（默认 0）⇒ T+1 按「成交时点」卖出。留空 = 不测离场（只跑对照）。勾上后会自动打开『每期全仓滚动』（离场只作用在真金白银那条回测上）"
-              >
-                <option value="">（不启用：只跑对照）</option>
-                {items.map((it) => (
-                  <option key={it.key} value={it.key}>{it.name}</option>
-                ))}
-              </select>
+              <span className="font-semibold text-slate-600 dark:text-slate-300">
+                离场因子（卖出侧 · 可多选 ⇒ 出矩阵）
+              </span>
+              <span className="text-slate-400 text-[11px]">
+                已选 {picked.length} 个 ⇒ 每个进场因子会跑 {1 + picked.length} 条同口径回测
+                （1 条"不离场"对照 + {picked.length} 条含离场）
+              </span>
               <label className="flex items-center gap-1 text-[11px] text-slate-500">
                 阈值 &gt;
                 <input
                   className="w-16 border rounded px-1 py-0.5 text-[11px]"
                   value={exitThresholdText}
                   onChange={(e) => setExitThresholdText(e.target.value)}
-                  title="离场判据：因子值 > 该阈值 ⇒ 离场。默认 0 —— 二值信号（如 BS=2/-2 那类）与连续因子同一套口径"
+                  title="离场判据：因子值 > 该阈值 ⇒ 离场。默认 0 —— 二值信号（如 BS=2/-2 那类）与连续因子同一套口径；多个离场共用这一个阈值"
                 />
               </label>
-              {cur && !dup && (
-                <span className="text-slate-400 text-[11px]">
-                  （会同时给「对照（不离场）」与「含离场」两条同口径回测 ✓）
-                </span>
-              )}
             </div>
-            {dup && (
+            {items.length > 0 && (
+              <div className="mt-1 max-h-32 overflow-y-auto flex flex-wrap gap-1">
+                {items.map((it) => {
+                  const on = exitKeys.has(it.key)
+                  const isDup = on && selected.has(it.key)
+                  return (
+                    <button
+                      key={it.key}
+                      type="button"
+                      onClick={() => toggleExit(it.key)}
+                      title={isDup
+                        ? '这个公式已经勾在「进场」里了 ✗ ⇒ 同进同出会永远开不了仓（净值恒 1）'
+                        : '点一下加入/移出离场（因子值 > 阈值 ⇒ T+1 卖出）'}
+                      className={`px-1.5 py-0.5 rounded border text-[11px] ${
+                        isDup
+                          ? 'bg-red-600 text-white border-red-600'
+                          : on
+                            ? 'bg-amber-500 text-white border-amber-500'
+                            : 'border-slate-200 dark:border-slate-600 hover:border-amber-400'
+                      }`}
+                    >
+                      {it.name}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {items.length === 0 && (
+              <p className="mt-1 text-slate-400 text-[11px]">还没有自定义公式 ⇒ 先去「公式库」存一条 ✓</p>
+            )}
+            {dupItem && (
               <p className="mt-1 text-red-500 text-[11px]">
-                离场因子与已勾选的进场因子是同一个公式 ✗ ⇒ 同日进+出时按「不交易」规则会永远开不了仓
-                （净值恒 1 一条线）⇒ 请换一个公式 ✓
+                「{dupItem.name}」既是进场又是离场 ✗ ⇒ 同日进+出时按「不交易」规则会永远开不了仓
+                （净值恒 1 一条线）⇒ 请把它从一侧去掉 ✓
               </p>
             )}
-            {cur && !dup && exitPrecheck && (
-              <p className={'mt-1 text-[11px] ' + (rate > 0.5 ? 'text-amber-600' : 'text-slate-500')}>
-                触发率预检：{exitPrecheck.hit_cells ?? '-'} / {exitPrecheck.n_cells ?? '-'} 格触发
-                （{(rate * 100).toFixed(1)}%，日均 {exitPrecheck.avg_per_day ?? '-'} 只
-                {exitPrecheck.n_days ? `／共 ${exitPrecheck.n_days} 个交易日` : ''}）
-                {rate > 0.5 ? '　⚠ 触发过半 ⇒ 近似「只持有 1 天」，请先确认口径 ✓' : ''}
-              </p>
-            )}
-            {cur && !dup && !exitPrecheck && (
-              <p className="mt-1 text-slate-400 text-[11px]">触发率预检在跑完后显示（统计阶段顺手算 ✓）</p>
-            )}
+            {picked.filter((it) => it.key !== dupItem?.key).map((it) => {
+              const info = exitsInfo.find((e) => (e.name || '') === it.name)
+              const st = info?.stats
+              const rate = st?.rate ?? 0
+              const eff = effOf(it.name)
+              return (
+                <p key={it.key} className={'mt-1 text-[11px] ' + (rate > 0.5 ? 'text-amber-600' : 'text-slate-500')}>
+                  「{it.name}」触发率：{st ? `${((rate) * 100).toFixed(1)}%（${st.hit_cells ?? '-'}/${st.n_cells ?? '-'} 格，日均 ${st.avg_per_day ?? '-'} 只）` : '跑完后显示'}
+                  {rate > 0.5 ? '　⚠ 触发过半 ⇒ 近似「只持有 1 天」，请先确认口径 ✓' : ''}
+                  {eff
+                    ? `　｜ 离场事件研究（${eff.horizon ?? '-'} 日）：触发后 ${(((eff.mean_trig ?? 0) * 100)).toFixed(2)}% vs 未触发 ${(((eff.mean_ctrl ?? 0) * 100)).toFixed(2)}%（差 ${(((eff.diff_mean ?? 0) * 100)).toFixed(2)}pp，样本 ${eff.n_trig ?? '-'}）`
+                    : ''}
+                </p>
+              )
+            })}
           </div>
         )
       })()}

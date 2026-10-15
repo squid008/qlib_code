@@ -1704,11 +1704,18 @@ def run_single_factor_tests(
     # （持仓算完即丢 ✗ ⇒ 顺手存一份；见 `factors/holdings_index.py` 的取舍说明 ✓）
     holdings_out: Optional["HoldingsIndex"] = None,
     # ★★ v2.4.3（用户 2026-10-15 拍板 ✓）：**离场因子**（卖出侧第一步 ✓）
-    #   `exit_factor` = 单个因子条目（与进场因子同结构 ✓，只用它的 `expression` ✓）；
-    #   `exit_threshold` = 离场判据阈值（**因子值 > 阈值 ⇒ 该 (日期, 股票) 离场** ✓，默认 0 ✓）；
-    #   `exit_out` = 出参：`{"mask": 布尔 Series（索引同统计面板 ✓）, "stats": 触发率预检 ✓}`。
-    #   ⚠ 离场列作为**附加求值列 `EXIT`**（追加在最后 ✓）⇒ 不改任何既有列序/既有数字 ✓
-    #     （`F0…Fn` 的编号与面板缓存键都不受影响 ✓）。
+    #   `exit_factors` = 多个离场条目（与进场因子同结构 ✓，只用 `expression` ✓）—— v2.5.0 起
+    #     支持**多选**（用户 2026-10-15：\"能不能搞成多选啊，要矩阵化\" ✓ ⇒ 进 × (1 + 离) 个回测 ✓）；
+    #   `exit_factor`   = v2.4.3 的**单数形态**，保留兼容 ✓（传它等于传 [它] ✓）；
+    #   `exit_threshold` = 离场判据阈值（**因子值 > 阈值 ⇒ 该 (日期, 股票) 离场** ✓，默认 0 ✓，
+    #     **多个离场共用一个阈值** ✓ —— 界面上就一个输入框 ✓，要分开的话以后再加 ✓）；
+    #   `exit_out` = 出参：`{"items": [{"key","name","id","expression","threshold",
+    #     "mask"（布尔 Series，索引同统计面板 ✓）,"stats"（触发率预检 ✓）,
+    #     "effect"（★ v2.5.0：离场事件研究 —— 触发后 h 日收益 vs 未触发 ✓）}, …],
+    #     "mask"/"stats"（= items[0] 的，兼容 v2.4.3 ✓）}`。
+    #   ⚠ 离场列作为**附加求值列 `EXIT_0…EXIT_{n-1}`**（追加在最后 ✓）⇒ 不改任何既有列序/
+    #     既有数字 ✓（`F0…Fn` 的编号不受影响 ✓）。
+    exit_factors: Optional[List[dict]] = None,
     exit_factor: Optional[dict] = None,
     exit_threshold: float = 0.0,
     exit_out: Optional[Dict] = None,
@@ -1922,18 +1929,24 @@ def run_single_factor_tests(
         tag_fields += ["$is_st", "Ref($is_st, -1)"]
         tag_names += ["IS_ST", "T1_IS_ST"]
     label_cols = {h: f"LABEL_{h}" for h in horizons}
-    # ★ v2.4.3：离场因子 ⇒ 追加一个**附加求值列** `EXIT`（放在最末 ✓ 不动任何既有列 ✓）
-    _exit_expr = str((exit_factor or {}).get("expression") or "").strip()
-    if _exit_expr:
-        if suspend_remove:
-            exit_fields = (_sr_wrap_expr(adjust_expr(_exit_expr, pa, round_prices=price_round)),)
-        else:
-            exit_fields = (adjust_expr(_exit_expr, pa, round_prices=price_round),)
-        exit_cols = ["EXIT"]
-    else:
-        exit_fields, exit_cols = (), []
+    # ★ v2.4.3 / v2.5.0：离场因子（**多选** ✓）⇒ 每个追加一个**附加求值列** `EXIT_i`
+    #   （放在最末 ✓ 不动任何既有列 ✓）。规范化：丢掉空表达式、**按表达式去重** ✓
+    #   （同一个公式选两次没有意义 ✗ ⇒ 只算一遍 ✓）。
+    _exits: List[dict] = []
+    _seen_exit: set = set()
+    for _e in list((exit_factors or []) + ([exit_factor] if exit_factor else [])):
+        _ex = str((_e or {}).get("expression") or "").strip()
+        if not _ex or _ex in _seen_exit:
+            continue
+        _seen_exit.add(_ex)
+        _exits.append(dict(_e, expression=_ex))
+    exit_fields, exit_cols = [], []
+    for _i, _e in enumerate(_exits):
+        _adj = adjust_expr(_e["expression"], pa, round_prices=price_round)
+        exit_fields.append(_sr_wrap_expr(_adj) if suspend_remove else _adj)
+        exit_cols.append("EXIT_%d" % _i)
     fields = (tuple(adj_exprs) + tuple(label_exprs.values()) + tuple(base_fields) + (px_field,)
-              + tuple(tag_fields) + exit_fields)
+              + tuple(tag_fields) + tuple(exit_fields))
     all_cols = factor_cols + list(label_cols.values()) + base_names + ["PX"] + tag_names + exit_cols
 
     _ph_t0 = _tmod.perf_counter()
@@ -2098,41 +2111,85 @@ def run_single_factor_tests(
         df["CLOSE_FF"] = df["CLOSE"] if "CLOSE" in df.columns else np.nan
         df["OPEN_FF"] = df["OPEN"] if "OPEN" in df.columns else np.nan
 
-    # ★★ v2.4.3（用户 2026-10-15 ✓）：**离场因子"信号化" + 触发率预检**
-    #   离场信号 = `因子值 > 阈值`（默认 0 ✓）⇒ 二值公式与连续因子**同一套口径** ✓
-    #   （所以不需要"只能二值"的限制 ✗）。
-    #   ⚠ 触发率预检是**给用户看的预警**：连续因子直接拿来当离场，最常见的翻车就是
-    #     "几乎天天触发 ⇒ 变成只持有 1 天" ✗（用户定的口径：> 50% 前端黄字提示 ✓）。
-    if exit_out is not None and "EXIT" in df.columns:
-        try:
-            _exv = pd.to_numeric(df["EXIT"], errors="coerce")
-            _hit = (_exv > float(exit_threshold)).fillna(False)
-            _dt_lv = df.index.names.index("datetime")
-            _days = int(pd.Index(df.index.get_level_values(_dt_lv)).nunique())
-            _n_hit = int(_hit.sum())
-            _n_cell = int(len(df))
-            _rate = (round(_n_hit / float(_n_cell), 4) if _n_cell else None)
-            exit_out["mask"] = _hit
-            exit_out["stats"] = {
-                "threshold": float(exit_threshold),
-                "hit_cells": _n_hit,
-                "n_cells": _n_cell,
-                "rate": _rate,
-                "n_days": _days,
-                "avg_per_day": (round(_n_hit / float(_days), 1) if _days else None),
-                "first_day": str(pd.Timestamp(df.index.get_level_values(_dt_lv).min()).date())
-                             if _n_cell else "",
-                "last_day": str(pd.Timestamp(df.index.get_level_values(_dt_lv).max()).date())
-                            if _n_cell else "",
-            }
-            if progress_cb:
-                progress_cb(None, 30.0,
-                            "离场因子触发率：%d 格中 %d 格触发（%.1f%%%s）"
-                            % (_n_cell, _n_hit, 100.0 * (_rate or 0.0),
-                               "  ⚠ 触发过半 ⇒ 近似只持有 1 天" if (_rate or 0.0) > 0.5 else ""))
-        except Exception as e:                                        # noqa: BLE001
-            _dump_sft_error(e)
-            exit_out["error"] = "离场信号计算失败: %s: %s" % (type(e).__name__, e)
+    # ★★ v2.4.3 / v2.5.0（用户 2026-10-15 ✓）：**离场因子"信号化" + 触发率预检 + 离场事件研究**
+    #   ① 离场信号 = `因子值 > 阈值`（默认 0 ✓）⇒ 二值公式与连续因子**同一套口径** ✓
+    #      （所以不需要"只能二值"的限制 ✗）；
+    #   ② 触发率预检是**给用户看的预警**：连续因子直接拿来当离场，最常见的翻车就是
+    #      "几乎天天触发 ⇒ 变成只持有 1 天" ✗（用户定的口径：> 50% 前端黄字提示 ✓）；
+    #   ③ ★ v2.5.0 **离场事件研究**（第 2 步 ✓）：把"离场触发"当事件，看**触发之后** h 日收益
+    #      （`LABEL_h` ✓ 面板里本来就有 ⇒ **零额外取数** ✓）与同期**未触发**样本的差 ✓ ——
+    #      这才回答"离场是躲开了下跌，还是砍掉了上涨" ✓（比两条净值相减可靠得多 ✓，
+    #      也是我们自己的老规矩：不许用净值比值下结论 ✓）。
+    if exit_out is not None and exit_cols:
+        _items: List[dict] = []
+        _dt_lv = df.index.names.index("datetime")
+        _days = int(pd.Index(df.index.get_level_values(_dt_lv)).nunique())
+        _n_cell = int(len(df))
+        _first_day = (str(pd.Timestamp(df.index.get_level_values(_dt_lv).min()).date())
+                      if _n_cell else "")
+        _last_day = (str(pd.Timestamp(df.index.get_level_values(_dt_lv).max()).date())
+                     if _n_cell else "")
+        for _i, _e in enumerate(_exits):
+            _it: dict = {"index": _i,
+                         "id": str(_e.get("id") or ""), "name": str(_e.get("name") or ""),
+                         "source": str(_e.get("source") or "custom"),
+                         "expression": _e["expression"],
+                         "threshold": float(exit_threshold)}
+            try:
+                _exv = pd.to_numeric(df[exit_cols[_i]], errors="coerce")
+                _hit = (_exv > float(exit_threshold)).fillna(False)
+                _n_hit = int(_hit.sum())
+                _rate = (round(_n_hit / float(_n_cell), 4) if _n_cell else None)
+                _it["mask"] = _hit
+                _it["stats"] = {
+                    "threshold": float(exit_threshold),
+                    "hit_cells": _n_hit,
+                    "n_cells": _n_cell,
+                    "rate": _rate,
+                    "n_days": _days,
+                    "avg_per_day": (round(_n_hit / float(_days), 1) if _days else None),
+                    "first_day": _first_day,
+                    "last_day": _last_day,
+                }
+                # ③ 离场事件研究：每个预测周期各一份（`LABEL_h` 已在面板里 ⇒ 只做 groupby ✓）
+                _eff: dict = {}
+                for h in horizons:
+                    lc = label_cols[h]
+                    if lc not in df.columns:
+                        continue
+                    lab = pd.to_numeric(df[lc], errors="coerce")
+                    ok = lab.notna()
+                    tg, ct = lab[_hit & ok], lab[(~_hit) & ok]
+                    if len(tg) < 2 or len(ct) < 2:
+                        continue
+                    _eff[str(int(h))] = {
+                        "horizon": int(h), "n_trig": int(len(tg)), "n_ctrl": int(len(ct)),
+                        "mean_trig": round(float(tg.mean()), 6),
+                        "mean_ctrl": round(float(ct.mean()), 6),
+                        "median_trig": round(float(tg.median()), 6),
+                        "median_ctrl": round(float(ct.median()), 6),
+                        "diff_mean": round(float(tg.mean() - ct.mean()), 6),
+                        "diff_median": round(float(tg.median() - ct.median()), 6),
+                    }
+                _it["effect"] = _eff
+                if progress_cb:
+                    progress_cb(None, 30.0,
+                                "离场「%s」触发率 %.1f%%（%d/%d 格）%s"
+                                % (_it["name"] or _it["id"] or "?", 100.0 * (_rate or 0.0),
+                                   _n_hit, _n_cell,
+                                   "  ⚠ 触发过半 ⇒ 近似只持有 1 天" if (_rate or 0.0) > 0.5 else ""))
+            except Exception as e:                                    # noqa: BLE001
+                _dump_sft_error(e)
+                _it["error"] = "离场信号计算失败: %s: %s" % (type(e).__name__, e)
+            _items.append(_it)
+        exit_out["items"] = _items
+        if _items:                                  # ★ 兼容 v2.4.3 的**单数**取法（= 第一个离场 ✓）
+            exit_out["mask"] = _items[0].get("mask")
+            exit_out["stats"] = (_items[0].get("stats")
+                                 or ({"error": _items[0]["error"]}
+                                     if _items[0].get("error") else None))
+        if not _items:
+            exit_out["error"] = "没有可用的离场因子（表达式为空或重复）"
 
     out: Dict[int, list] = {}
     es_inst = df_full.index.names.index("instrument")

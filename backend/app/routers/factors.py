@@ -321,7 +321,8 @@ def _period_roll_pick(hk_state: dict, row: dict, item: dict) -> tuple:
 
 
 def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None,
-                        exit_mask=None, exit_cache: Optional[dict] = None) -> dict:
+                        exit_cache: Optional[dict] = None,
+                        exit_masks: Optional[list] = None) -> dict:
     """给**本行的每个档位**各算一条实盘口径净值（v2.1.38 ✓）。
 
     ★ 为什么改（用户 2026-10-12："应该是我测试的时候选了哪些档位就算哪些档位" ✓）：
@@ -393,81 +394,120 @@ def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None,
     #   —— 上面那份就是**必算的对照列**（"不离场"✓，口径与数字**逐位不变** ✓）。
     #   两条同源（同一份名单、同一份价格面板、同一个引擎 ✓）⇒ 差值才解释得清 ✓
     #   （这也是我们自己的老教训：**没有可比参照 ⇒ 结论会看反** ✗）。
-    if getattr(req, "exit_factor", None) is not None:
-        out_exit: list = []
-        for _k, (_it, _p) in enumerate(picks, start=1):
-            if _p[0] or not panel:
-                out_exit.append({"error": _p[0] or perr or "行情面板为空（取价失败）"})
-                continue
-            _np(0.55 + 0.43 * (_k - 1) / n_it,
-                "每期全仓滚动（含离场）：第 %d/%d 档回测中…" % (_k, n_it))
-            out_exit.append(_panel_period_roll_nav(req, hk_state, row, item=_it, panel=panel,
-                                                   with_exit=True, exit_mask=exit_mask,
-                                                   exit_cache=exit_cache))
-        row["exit_roll_items"] = out_exit
-        row["exit_roll"] = out_exit[0] if out_exit else {}
+    # ★★ v2.5.0（用户 2026-10-15：\"能不能搞成多选啊，要矩阵化\" ✓）：**逐个离场各跑一遍**
+    #   ⇒ 一行结果里就有 `1 + N离` 条同源同口径曲线 ✓（第 0 条永远是"不离场"对照 ✓）。
+    #   ⚠ 离场列表来自 `req.exit_factors`（路由已规范化 ✓：丢空、去重、同公式拦截 ✓）。
+    _exits = list(getattr(req, "exit_factors", None) or [])
+    if _exits:
+        # 进度：对照那一轮占 0.10→0.55，各离场一起分 0.55→0.98 ✓（总回测数 = (1+N)×档数 ✓）
+        _n_pass = 1 + len(_exits)
+        _rows_exit: list = []
+        for _ei, _ex in enumerate(_exits):
+            _ename = str(getattr(_ex, "name", "") or getattr(_ex, "id", "") or "")
+            _mask = (exit_masks or [])[_ei] if (exit_masks and _ei < len(exit_masks)) else None
+            out_exit: list = []
+            for _k, (_it, _p) in enumerate(picks, start=1):
+                if _p[0] or not panel:
+                    out_exit.append({"error": _p[0] or perr or "行情面板为空（取价失败）"})
+                    continue
+                _np(0.55 + 0.43 * ((_ei * n_it + (_k - 1)) / max(1, _n_pass * n_it)),
+                    "含离场「%s」：第 %d/%d 档回测中…" % (_ename or "?", _k, n_it))
+                out_exit.append(_panel_period_roll_nav(
+                    req, hk_state, row, item=_it, panel=panel, with_exit=True,
+                    exit_mask=_mask, exit_cache=exit_cache,
+                    exit_index=_ei, exit_name=_ename))
+            _rows_exit.append({
+                "exit": {"index": _ei, "name": _ename,
+                         "id": str(getattr(_ex, "id", "") or ""),
+                         "expression": str(getattr(_ex, "expression", "") or "")},
+                "items": out_exit,
+                "first": (out_exit[0] if out_exit else {}),
+            })
+        row["exit_rolls"] = _rows_exit
+        # 兼容 v2.4.3 的**单数**取法 ✓（= 第一个离场 ✓）
+        row["exit_roll_items"] = _rows_exit[0]["items"]
+        row["exit_roll"] = _rows_exit[0]["first"]
     _np(1.0, "每期全仓滚动完成")
     return row["period_roll"]
 
 
-def _apply_exit_validation(req) -> None:
-    """离场因子的**前置校验**（v2.4.3，用户 2026-10-15 拍板 ✓）—— 纯函数、**在入队前**跑 ✓。
+def _exit_list(req) -> list:
+    """规范化后的**离场列表**（v2.5.0 多选 ✓）：丢空表达式、**按表达式去重** ✓、保序 ✓。"""
+    out, seen = [], set()
+    for e in list(getattr(req, "exit_factors", None) or []) + \
+            ([req.exit_factor] if getattr(req, "exit_factor", None) is not None else []):
+        expr = ((e.expression or "").strip() if e is not None else "")
+        if not expr or expr in seen:
+            continue
+        seen.add(expr)
+        out.append(e)
+    return out
 
-    ① 空表达式 ⇒ 视为"没勾" ✓（前端清理选择时常见 ✓）；
+
+def _apply_exit_validation(req) -> None:
+    """离场因子的**前置校验**（v2.4.3 / v2.5.0 多选 ✓）—— 纯函数、**在入队前**跑 ✓。
+
+    ① 空表达式 ⇒ 丢掉 ✓（前端清理选择时常见 ✓）；同一公式选两次 ⇒ **只算一遍** ✓；
     ② **同公式既进又出 ⇒ 直接拦** ✗（用户选的"直接拦"✓）：同日进+出时，按"同日不交易"规则
        会**永远开不了仓**（净值恒 1 ✓）；若照做 ⇒ 买完就卖、被手续费一层层磨 ✗ —— 两种都没意义 ✓；
-    ③ 勾了离场 ⇒ **自动打开 `period_roll`** ✓（离场只能作用在"真金白银"那条回测上 ✓）。
+       ⚠ 多选下要**逐个**查 ✓（v2.4.3 只查了一个 ✗）；
+    ③ 勾了离场 ⇒ **自动打开 `period_roll`** ✓（离场只能作用在"真金白银"那条回测上 ✓）；
+    ④ 规范化结果**写回 `req.exit_factors`** ✓（下游只看这一个字段 ✓；单数形态归一后置 None ✓）。
     """
-    ex = getattr(req, "exit_factor", None)
-    expr = ((ex.expression or "").strip() if ex is not None else "")
-    if ex is not None and not expr:
-        req.exit_factor = None
+    items = _exit_list(req)
+    req.exit_factors = items
+    req.exit_factor = None
+    if not items:
         return
-    if ex is None:
-        return
-    dup = next((f for f in (req.factors or []) if (f.expression or "").strip() == expr), None)
-    if dup is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="「离场因子」与某个「进场因子」是**同一个公式**（%s）✗ ⇒ 会在进场当天就离场："
-                   "按『同日进出不交易』规则 ⇒ 永远开不了仓（净值恒 1）；照做 ⇒ 买完就卖、"
-                   "被手续费一层层磨掉 ⇒ 两种都没有意义 ✓ 请换一个公式 ✓"
-                   % (ex.name or ex.id or expr[:40]))
+    entries = {(f.expression or "").strip(): f for f in (req.factors or [])}
+    for e in items:
+        expr = (e.expression or "").strip()
+        if expr in entries:
+            raise HTTPException(
+                status_code=400,
+                detail="「离场因子」与某个「进场因子」是**同一个公式**（%s）✗ ⇒ 会在进场当天就离场："
+                       "按『同日进出不交易』规则 ⇒ 永远开不了仓（净值恒 1）；照做 ⇒ 买完就卖、"
+                       "被手续费一层层磨掉 ⇒ 两种都没有意义 ✓ 请换一个公式 ✓"
+                       % (e.name or e.id or expr[:40]))
     req.period_roll = True
 
 
-def _exit_matrix(mask, panel: dict, cache: Optional[dict] = None):
-    """把单因子侧算好的 `EXIT` 布尔 Series 对齐成 **(T×C) 布尔矩阵** ✓（v2.4.3 ✓）。
+def _exit_matrix(mask, panel: dict, cache: Optional[dict] = None, ei: int = 0):
+    """把单因子侧算好的离场布尔 Series 对齐成 **(T×C) 布尔矩阵** ✓（v2.4.3 / v2.5.0 ✓）。
 
-    · 输入 = `run_single_factor_tests(exit_out=…)` 的 `mask`（索引 = (instrument, datetime) ✓）；
+    · 输入 = `run_single_factor_tests(exit_out=…)` 的 `items[ei]["mask"]`（索引 (instrument, datetime) ✓）；
     · 输出与 `panel["CLOSE"]` 的**日历/标的逐位对齐** ✓（`reindex` + `fillna(False)` ✓）——
       这是 `run_period_roll` 能吃的前提 ✓（形状不符它会自己**关掉离场**并记 diag ✓，绝不崩 ✗）；
-    · `cache` = 调用方持有的小字典 ✓（`_attach_period_roll` 是**逐行**调用的 ⇒ 不缓存会把
-      "unstack + reindex" 对每个因子行重复做一遍 ✗；只留最新一份 ✓ 内存安全 ✓）。
+    · `cache` = 调用方持有的小字典 ✓，键含 `(离场下标, 面板特征)` ✓（多选下每个离场各自一份 ✓；
+      `_attach_period_roll` 是**逐行**调用的 ⇒ 不缓存会把 "unstack + reindex" 重复做很多遍 ✗）；
+      面板换了（区间/标的变了）⇒ 旧键清掉 ✓（内存安全 ✓）。
     """
     if mask is None or not panel:
         return None
     cl = panel.get("CLOSE")
     if cl is None or not len(cl):
         return None
-    key = (str(cl.index[0])[:10], str(cl.index[-1])[:10], len(cl.columns))
+    pkey = (str(cl.index[0])[:10], str(cl.index[-1])[:10], len(cl.columns))
+    key = (int(ei), pkey)
     if cache is not None and key in cache:
         return cache[key]
     try:
         w = mask.unstack(level="instrument")
         w = w.reindex(index=cl.index, columns=list(cl.columns)).fillna(False)
         mat = w.to_numpy(dtype=bool)
-    except Exception as e:                                        # noqa: BLE001
+    except Exception:                                              # noqa: BLE001
         mat = None
     if cache is not None:
-        cache.clear()                                             # 只留最新一份 ✓
+        for k in [k for k in cache if k[1] != pkey]:                # 面板变了 ⇒ 旧的全丢 ✓
+            cache.pop(k, None)
         cache[key] = mat
     return mat
 
 
 def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] = None,
                            panel: Optional[dict] = None, with_exit: bool = False,
-                           exit_mask=None, exit_cache: Optional[dict] = None) -> dict:
+                           exit_mask=None, exit_cache: Optional[dict] = None,
+                           exit_index: int = 0, exit_name: str = "") -> dict:
     """面板侧「每期全仓滚动」净值（v2.1.27 ✓，v2.1.38 加 `item`/`panel` ✓）。
 
     ★ 为什么非要有它（用户 2026-10-11 追问"难道不该逐位一致" ✓）：
@@ -532,7 +572,8 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
                     panel["OPEN"] = _orr.ffill().round(2)
         # ★ v2.4.3：`with_exit=True` ⇒ 同一次回测**再带上离场通道** ✓（离场矩阵＝面板侧算好的
         #   布尔信号对齐到本面板 ✓；对不上 ⇒ 引擎自己关掉离场并记 diag ✓，绝不崩 ✗）
-        _ex = _exit_matrix(exit_mask, panel, exit_cache) if with_exit else None
+        _ex = (_exit_matrix(exit_mask, panel, exit_cache, ei=exit_index)
+               if with_exit else None)
         bt = run_period_roll(sig, panel, fill=str(req.fill), cost=float(req.cost),
                              capital=float(req.capital), strict_limit=bool(req.strict_limit),
                              exit_mat=_ex)
@@ -575,10 +616,13 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
                 # ⚠ 精度 9 位（不是 6 ✓）：对拍脚本要求"逐位一致"，取到 6 位会留下
                 #   ≤5e-6 的**纯取整**残差 ✗（实测 max|Δ| = 5e-6 ✓ 就是它）⇒ 提到 9 位 ✓。
                 "nav": [round(float(x), 9) for x in nav[col].to_numpy()],
-                # ★ v2.4.3：两条同口径曲线必须**一眼可分** ✓（"对照" vs "含离场"）
-                "label": ("每期全仓滚动（实盘口径 · 含离场）" if with_exit
-                          else "每期全仓滚动（实盘口径）"),
+                # ★ v2.4.3 / v2.5.0：同口径的多条曲线必须**一眼可分** ✓（对照 vs 各离场）
+                "label": ("每期全仓滚动（实盘口径 · 含离场%s）"
+                          % (("「%s」" % exit_name) if exit_name else "")
+                          if with_exit else "每期全仓滚动（实盘口径）"),
                 "with_exit": bool(with_exit),
+                "exit_index": (int(exit_index) if with_exit else None),
+                "exit_name": (str(exit_name) if with_exit else ""),
                 "stats": {k: v for k, v in stats.items() if k != "perf"},
                 "perf": stats.get("perf")}
     except Exception as e:                                   # noqa: BLE001
@@ -641,6 +685,13 @@ class SingleFactorTestRequest(BaseModel):
     #     ④ 与调仓日的关系：**调仓日以名单为准、离场只在期中生效** ✓（详见 `period_roll` 注释 ✓）；
     #        持币期间的离场信号 = **空转**（忽略但计数 ✓，否则用户会以为信号没生效 ✓）。
     #   ⚠ 勾了离场 ⇒ 路由里**自动打开 `period_roll`** ✓（离场只能作用在"真金白银"那条回测上 ✓）。
+    #
+    # ★★ v2.5.0（用户 2026-10-15：\"这个离场因子能不能搞成多选啊，要矩阵化\" ✓）：
+    #   `exit_factors` = **多选** ✓ ⇒ 结果变成矩阵：**进场 × (1 + 离场数)** 个同口径回测
+    #   （`1` = 必算的"不离场"对照列 ✓）⇒ 前端出对比表（含 Δ年化 / Δ回撤 ✓）。
+    #   `exit_factor`（单数）= v2.4.3 兼容形态 ✓（传它等于传 `[它]` ✓）。
+    #   ⚠ 多个离场**共用一个阈值** ✓（界面上就一个输入框 ✓；要各自阈值以后再加 ✓）。
+    exit_factors: List[SingleFactorTestFactor] = []
     exit_factor: Optional[SingleFactorTestFactor] = None
     exit_threshold: float = 0.0
     # 下面三个只在 `period_roll=True` 时被用到（与「交易信号测试」回灌侧同名同义 ✓，
@@ -965,7 +1016,10 @@ def single_factor_test(req: SingleFactorTestRequest):
         #   外层看不见 ✗）。⚠ 这里必须有：装配段（`t.join()` 之后）要用 mask/stats/cache ✓ ——
         #   第一版把它们定义在 `_run_shared` 里 ⇒ **CI 的 ruff F821 当场点名** ✗
         #   （若不修，运行时会 NameError ⇒ **每个**单因子测试的装配段都会炸 ✗）。
-        _exit_box: dict = {"mask": None, "stats": None, "cache": {}, "err": ""}
+        #   ★ v2.5.0：多选 ⇒ 箱里放 `items`（每个离场一份：name/stats/effect/mask ✓）与
+        #   `masks`（对齐用 ✓，**不进 HTTP 响应** ✗ —— pandas Series 不序列化 ✓）。
+        _exit_box: dict = {"mask": None, "stats": None, "cache": {}, "err": "",
+                           "items": [], "masks": []}
 
         def _run_shared() -> None:
             """多周期共享一次特征加载的单执行体（根治"并行多周期各自重复加载"）。
@@ -1043,14 +1097,17 @@ def single_factor_test(req: SingleFactorTestRequest):
                     topk_list=topk_list,
                     events_out=_evs,     # v1.19.60：0/1 因子的触发事件（键=表达式）⇒ 供净值曲线复用
                     holdings_out=_hks,   # v2.1.0：每期持仓索引 ⇒ 供 XLSX 导出复用
-                    # ★ v2.4.3：离场因子（用户 2026-10-15 ✓）—— 只多求值一个 `EXIT` 列 ✓
-                    #   （不动既有列序/数字 ✓），出参给布尔信号 + 触发率预检 ✓
-                    exit_factor=(req.exit_factor.model_dump() if req.exit_factor is not None else None),
+                    # ★ v2.4.3 / v2.5.0：离场因子（用户 2026-10-15 ✓，**多选** ✓）——
+                    #   每个只多求值一个 `EXIT_i` 列 ✓（不动既有列序/数字 ✓），
+                    #   出参给布尔信号 + 触发率预检 + **离场事件研究** ✓
+                    exit_factors=[e.model_dump() for e in (req.exit_factors or [])],
                     exit_threshold=float(req.exit_threshold),
                     exit_out=_exit_out,
                 )
-                # ★ v2.4.3：离场信号（布尔 Series ✓）与触发率预检（给前端显示 ✓）
-                #   ⚠ 写进外层 `_exit_box`（见它的注释 ✓）
+                # ★ v2.4.3 / v2.5.0：离场信号（布尔 Series ✓）+ 触发率预检 + 事件研究
+                #   ⚠ 写进外层 `_exit_box`（见它的注释 ✓ —— 内层函数的局部变量外层看不见 ✗）
+                _exit_box["items"] = list(_exit_out.get("items") or [])
+                _exit_box["masks"] = [it.get("mask") for it in _exit_box["items"]]
                 _exit_box["mask"] = _exit_out.get("mask")
                 _exit_box["stats"] = (_exit_out.get("stats")
                                       or ({"error": _exit_out["error"]}
@@ -1119,7 +1176,8 @@ def single_factor_test(req: SingleFactorTestRequest):
             state["extra_prog"] = 0.0
             state["extra_msg"] = (
                 "整理结果：正在计算「每期全仓滚动（实盘口径%s）」…"
-                % (" · 含离场 + 对照两条" if req.exit_factor is not None else "")
+                % (" · 对照 1 条 + 离场 %d 条" % len(req.exit_factors or [])
+                   if req.exit_factors else "")
                 if req.period_roll else "整理结果…")
             for fi in range(n_factor):
                 for h in horizons:
@@ -1144,7 +1202,7 @@ def single_factor_test(req: SingleFactorTestRequest):
 
                         row["period_roll"] = _attach_period_roll(
                             req, hk_state, row, progress_cb=_pc,
-                            exit_mask=_exit_box["mask"], exit_cache=_exit_box["cache"])
+                            exit_cache=_exit_box["cache"], exit_masks=_exit_box["masks"])
                     else:
                         state["extra_prog"] = 100.0 * _cell / max(1, _cells)
                     items.append(row)
@@ -1154,9 +1212,22 @@ def single_factor_test(req: SingleFactorTestRequest):
                 message=f"完成（{n_h} 个预测周期）" if n_h > 1 else "完成",
                 result={"items": items, "total": len(items),
                         # ★ v2.4.3：离场因子回显（含**触发率预检** ✓ —— 用户定的 >50% 前端黄字 ✓）
+                        # ★ v2.4.3 / v2.5.0：离场回显 —— `exit_factors` 是**列表**（多选 ✓），
+                        #   每项带触发率预检 `stats` 与**离场事件研究** `effect` ✓；
+                        #   `exit_stats`/`exit_factor` 保留为**第一项**（v2.4.3 前端兼容 ✓）。
+                        #   ⚠ `mask`（pandas Series）**绝不进响应** ✗（不序列化 ✓）。
                         "exit_stats": _exit_box["stats"],
-                        "exit_factor": ({"name": req.exit_factor.name, "id": req.exit_factor.id}
-                                        if req.exit_factor is not None else None),
+                        "exit_factor": ({"name": _exit_box["items"][0].get("name"),
+                                         "id": _exit_box["items"][0].get("id")}
+                                        if _exit_box["items"] else None),
+                        "exit_factors": [{"index": it.get("index"),
+                                          "id": it.get("id"), "name": it.get("name"),
+                                          "source": it.get("source"),
+                                          "expression": it.get("expression"),
+                                          "stats": it.get("stats"),
+                                          "effect": it.get("effect"),
+                                          "error": it.get("error")}
+                                         for it in _exit_box["items"]],
                         "exit_threshold": float(req.exit_threshold)},
                 ts=time.time(),
             )

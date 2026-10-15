@@ -374,13 +374,42 @@ export default function TopkCurveModal({ open, onClose, name, row, taskId }: Pro
    */
   const exObj = (row?.exit_roll_items ?? [])[idx] ?? row?.exit_roll ?? null
   const exPerf = exObj?.perf ?? null
-  const exStats = (exObj?.stats ?? {}) as Record<string, number | undefined>
-  const deltaAnn = (exPerf?.annual_return ?? 0) - (prPerf?.annual_return ?? 0)
-  const deltaDd = (exPerf?.max_drawdown ?? 0) - (prPerf?.max_drawdown ?? 0)
-  const exDdDeep =
-    typeof exPerf?.max_drawdown === 'number'
-    && Number.isFinite(exPerf.max_drawdown)
-    && Math.abs(exPerf.max_drawdown) >= 0.30
+  /**
+   * ★★ v2.5.0（用户 2026-10-15："这个离场因子能不能搞成多选啊，要矩阵化" ✓）：
+   * **逐离场各取"当前档位"那一条** ✓（`exit_rolls[i].items[idx]` ✓，与 `topk_curves` 同序 ✓）⇒
+   * 下面出对比表：第 1 行永远是「不离场 · 对照」✓（口径与数字逐位不变 ✓），其后每个离场一行 ✓，
+   * 并给 **Δ年化 / Δ回撤**（两条同源 ⇒ 差值才是该离场因子的净效果 ✓）。
+   * ⚠ 单数形态（v2.4.3 的 `exit_roll_items`）也兼容 ✓：没有 `exit_rolls` 就退回它 ✓。
+   */
+  const exitRows = ((): {
+    name: string
+    perf: typeof exPerf
+    stats: Record<string, number | undefined>
+    deltaAnn: number
+    deltaDd: number
+    err: string
+  }[] => {
+    const groups = row?.exit_rolls
+    const list = groups && groups.length
+      ? groups.map((g) => ({
+          name: g?.exit?.name || g?.exit?.id || `离场${(g?.exit?.index ?? 0) + 1}`,
+          pr: (g?.items ?? [])[idx] ?? g?.first ?? null,
+        }))
+      : [{ name: '含离场', pr: exObj }]
+    return list.map(({ name, pr }) => {
+      const perf = pr?.perf ?? null
+      return {
+        name,
+        perf,
+        stats: (pr?.stats ?? {}) as Record<string, number | undefined>,
+        deltaAnn: (perf?.annual_return ?? 0) - (prPerf?.annual_return ?? 0),
+        deltaDd: (perf?.max_drawdown ?? 0) - (prPerf?.max_drawdown ?? 0),
+        err: String(pr?.error ?? ''),
+      }
+    })
+  })()
+  const exDdDeep = (v: unknown) =>
+    typeof v === 'number' && Number.isFinite(v) && Math.abs(v) >= 0.30
 
   const prMap = useMemo(() => {
     const m = new Map<string, number>()
@@ -885,33 +914,76 @@ export default function TopkCurveModal({ open, onClose, name, row, taskId }: Pro
                 实盘口径指标不可用：{String(prObj.error)}
               </div>
             )}
-            {/* ★★ v2.4.3（用户 2026-10-15 ✓）：**含离场 vs 对照**（同源同口径 ⇒ 差值才解释得清 ✓） */}
-            {prPerf && exPerf && (
+            {/* ★★ v2.4.3 / v2.5.0（用户 2026-10-15 ✓）：**含离场矩阵**（对照 + 逐个离场，同源同口径 ✓）
+                第 1 行 = 「不离场 · 对照」✓（口径与数字逐位不变 ✓）；其后每个离场一行 ✓；
+                Δ年化 / Δ回撤 = 含离场 − 对照 ⇒ **这才是该离场因子的净效果** ✓。
+                ⚠ 别拿两条净值相除当结论 ✗（持仓结构不同 ⇒ 比值混了再平衡溢价 ✓）。 */}
+            {prPerf && exitRows.length > 0 && (
               <div
-                className="text-[11px] text-slate-500 mb-1 text-center"
-                title="含离场 = 在「每期全仓滚动」上再加一条离场通道：因子值 > 阈值 ⇒ T+1 卖出（停牌/一字跌停卖不掉 ⇒ 顺延逐日重试）；调仓日若它仍在名单 ⇒ 离场被覆盖（这就是「同日进+出 ⇒ 不交易」）。两条同源（同一份名单 / 同一份价格面板 / 同一个引擎）⇒ 差值才是离场因子的净效果。⚠ 别拿两条净值相除当结论（持仓结构不同）。"
+                className="text-[11px] mb-1 overflow-x-auto"
+                title="含离场 = 在「每期全仓滚动」上再加一条离场通道：因子值 > 阈值 ⇒ T+1 卖出（停牌/一字跌停卖不掉 ⇒ 顺延逐日重试）；调仓日若它仍在名单 ⇒ 离场被覆盖（这就是「同日进+出 ⇒ 不交易」）。第 1 行『不离场 · 对照』就是上面那组数字；其后每个离场一行，两条同源（同一份名单 / 同一份价格面板 / 同一个引擎）⇒ Δ 才是该离场因子的净效果。"
               >
-                <b className="text-amber-600">含离场</b>：
-                年化 <b>{signedPct(exPerf.annual_return, 1)}</b>
-                ｜ 最大回撤 <b className={exDdDeep ? 'text-red-500' : ''}>
-                  {signedPct(exPerf.max_drawdown, 1)}
-                </b>
-                ｜ Δ年化 <b className={deltaAnn >= 0 ? 'text-emerald-600' : 'text-red-500'}>
-                  {deltaAnn >= 0 ? '+' : ''}{(deltaAnn * 100).toFixed(1)}pp
-                </b>
-                ｜ Δ回撤 <b className={deltaDd >= 0 ? 'text-emerald-600' : 'text-red-500'}>
-                  {deltaDd >= 0 ? '+' : ''}{(deltaDd * 100).toFixed(1)}pp
-                </b>
-                {typeof exStats.exit_sells === 'number' ? ` ｜ 离场卖出 ${exStats.exit_sells} 笔` : ''}
-                {typeof exStats.exit_signals === 'number' ? `（持仓中触发 ${exStats.exit_signals} 次）` : ''}
-                {exStats.exit_deferrals ? ` ｜ 顺延 ${exStats.exit_deferrals} 天` : ''}
-                {exStats.exit_overridden ? ` ｜ 被名单覆盖 ${exStats.exit_overridden} 次` : ''}
-                {exStats.exit_ignored ? ` ｜ 持币期空转 ${exStats.exit_ignored} 次` : ''}
-              </div>
-            )}
-            {prPerf && !exPerf && exObj?.error && (
-              <div className="text-[11px] text-amber-600 mb-1 text-center">
-                含离场回测不可用：{String(exObj.error)}
+                <table className="w-full text-center border-collapse">
+                  <thead>
+                    <tr className="text-slate-400">
+                      <th className="font-normal text-left px-1">离场因子</th>
+                      <th className="font-normal">年化</th>
+                      <th className="font-normal">最大回撤</th>
+                      <th className="font-normal">Δ年化</th>
+                      <th className="font-normal">Δ回撤</th>
+                      <th className="font-normal">离场卖出</th>
+                      <th className="font-normal">顺延</th>
+                      <th className="font-normal">被名单覆盖</th>
+                      <th className="font-normal">持币空转</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="text-slate-500 border-t border-slate-200 dark:border-slate-700">
+                      <td className="text-left px-1">（不离场 · 对照）</td>
+                      <td><b>{signedPct(prPerf.annual_return, 1)}</b></td>
+                      <td>
+                        <b className={prDdDeep ? 'text-red-500' : ''}>
+                          {signedPct(prPerf.max_drawdown, 1)}
+                        </b>
+                      </td>
+                      <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+                    </tr>
+                    {exitRows.map((g) => (
+                      <tr key={g.name}
+                          className="text-slate-600 dark:text-slate-300 border-t border-slate-100 dark:border-slate-800">
+                        <td className="text-left px-1 text-amber-600">{g.name}</td>
+                        {g.err ? (
+                          <td colSpan={8} className="text-amber-600">
+                            {g.err}
+                          </td>
+                        ) : (
+                          <>
+                            <td><b>{g.perf ? signedPct(g.perf.annual_return, 1) : '-'}</b></td>
+                            <td>
+                              <b className={exDdDeep(g.perf?.max_drawdown) ? 'text-red-500' : ''}>
+                                {g.perf ? signedPct(g.perf.max_drawdown, 1) : '-'}
+                              </b>
+                            </td>
+                            <td>
+                              <b className={g.deltaAnn >= 0 ? 'text-emerald-600' : 'text-red-500'}>
+                                {g.deltaAnn >= 0 ? '+' : ''}{(g.deltaAnn * 100).toFixed(1)}pp
+                              </b>
+                            </td>
+                            <td>
+                              <b className={g.deltaDd >= 0 ? 'text-emerald-600' : 'text-red-500'}>
+                                {g.deltaDd >= 0 ? '+' : ''}{(g.deltaDd * 100).toFixed(1)}pp
+                              </b>
+                            </td>
+                            <td>{g.stats.exit_sells ?? '-'}</td>
+                            <td>{g.stats.exit_deferrals ?? '-'}</td>
+                            <td>{g.stats.exit_overridden ?? '-'}</td>
+                            <td>{g.stats.exit_ignored ?? '-'}</td>
+                          </>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
             <div className="relative">
