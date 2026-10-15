@@ -620,6 +620,12 @@ export interface ExitFactorPayload {
   stats?: ExitPrecheckStats | null
   /** 键 = 预测周期（如 "60" ✓） */
   effect?: Record<string, ExitEffect> | null
+  /**
+   * ★ v2.6.0：该公式含**入场价**（ENTRY_PRICE / ENTRY_FIRST ✓）⇒ 它是**回测状态量**，
+   * 面板算不出触发率/事件研究（那两项基于面板矩阵 ✗）⇒ 引擎逐日算，看对比表的
+   * 「离场卖出 / 顺延 / 被名单覆盖 / 持币空转」✓。
+   */
+  entry_dependent?: boolean
   error?: string
 }
 /** ★ v2.5.0：矩阵的一列 —— 一个离场在**当前档位**下的实盘口径结果（含它自己的近次回测 ✓） */

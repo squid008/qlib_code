@@ -44,7 +44,7 @@ _LABEL = "每期全仓滚动（调仓日按当期名单等权重建）"
 def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     fill: str = "t1_open", cost: float = 0.004, capital: float = 1e9,
                     strict_limit: bool = True, lot: int = LOT_DEFAULT,
-                    cancel_cb=None, exit_mat=None) -> BtResult:
+                    cancel_cb=None, exit_mat=None, exit_rule=None) -> BtResult:
     """跑「每期全仓滚动」，返回 `BtResult`（`nav` / `trades` / `rejects` / `stats` ✓）。
 
     `signals` 需含 `date` / `code` 列（买入信号 ✓）；`bucket` 列可选（= 批次/调仓日 ✓）。
@@ -52,6 +52,14 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     ★ v2.4.3（用户 2026-10-15 拍板 ✓）：`exit_mat` = **离场信号矩阵**
       （(T × C) 布尔 numpy 数组，行=日历、列=标的，与 `panel["CALENDAR"]`/本轮 `codes` **对齐** ✓；
        `None` = 不启用离场 ✓）。语义见下方"期中离场通道"注释 ✓。
+
+    ★★ v2.6.0（用户 2026-10-15 拍板 ✓）：`exit_rule` = **含入场价的离场规则**
+      （`factors/exit_rules.py::EntryRule` ✓）—— 它依赖**回测状态**（你要在哪根买、加没加仓，
+      事先算不出来 ✗）⇒ 只能**逐日**用"当日 C/O 行 + 当前入场价向量"求值 ✓：
+        · 每天收盘后算**今天**的信号行 ✓，`lag` 天后执行 ✓（与进场同一套滞后 ⇒ 不前视 ✓）；
+        · **只有传了 `exit_rule` 才维护入场价向量** ✓ ⇒ 不用它的回测**零额外成本** ✓
+          （用户 2026-10-15："不勾就不记录这样是不是可以加快回测性能" ✓ —— 对 ✓）。
+      ⚠ `exit_mat` 与 `exit_rule` 二选一 ✓（同时传时 `exit_mat` 优先，规则被忽略 ✓）。
     """
     half = float(cost) / 2.0
     if not len(signals) or "CALENDAR" not in panel or "CLOSE" not in panel:
@@ -142,6 +150,15 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     hold_n = 0
     wins = 0
     losses = 0
+    # ★★ v2.6.0：**入场价向量**（用户 2026-10-15 要的 `ENTRY_PRICE` / `ENTRY_FIRST` ✓）——
+    #   只在传了 `exit_rule` 时才维护 ✓（不勾离场 ⇒ 连数组都不动 ⇒ 零成本 ✓）。
+    #     · `avg_px[c]`   = 移动平均成本（含买入费 ✓ = 券商"成本价"；**卖出不改变** ✓）；
+    #     · `first_px[c]` = **首次建仓那一笔**的每股成本（含费 ✓；清仓后再买重新起算 ✓）；
+    #     · 未持有 ⇒ `NaN` ⇒ 规则里与它比较恒为假 ✓（不会凭空触发 ✓）。
+    _track_entry = exit_rule is not None
+    _rule_provided = exit_rule is not None          # 供 diag/stats 回显 ✓（中途关掉也如实报 ✓）
+    avg_px = np.full(len(codes), np.nan, dtype=np.float64)
+    first_px = np.full(len(codes), np.nan, dtype=np.float64)
 
     def _acc(c: int, dq: int, gross: float, fee: float, i: int) -> None:
         """★ v2.1.50：平仓台账（移动平均成本法 ✓）。`dq > 0` = 买入、`dq < 0` = 卖出 ✓。
@@ -151,12 +168,18 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         """
         nonlocal hold_sum, hold_n, wins, losses
         if dq > 0:
-            if _qty.get(c, 0.0) <= 0:
+            _fresh = _qty.get(c, 0.0) <= 0
+            if _fresh:
                 _entry_i[c] = i
                 _pnl[c] = 0.0
                 _basis[c] = 0.0
             _qty[c] = _qty.get(c, 0.0) + float(dq)
             _basis[c] = _basis.get(c, 0.0) + float(gross) + float(fee)
+            if _track_entry:
+                # 平均成本（含买入费 ✓）；首次入场价只在"从无到有"那一笔记 ✓（加仓不刷新 ✓）
+                avg_px[c] = (_basis[c] / _qty[c]) if _qty[c] > 0 else np.nan
+                if _fresh:
+                    first_px[c] = (float(gross) + float(fee)) / float(dq)
             return
         part = min(float(-dq), _qty.get(c, 0.0))
         if part <= 0:
@@ -166,6 +189,10 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         _pnl[c] = _pnl.get(c, 0.0) + (float(gross) - float(fee)) - cost
         _basis[c] = _basis.get(c, 0.0) - cost
         _qty[c] = cur - part
+        if _track_entry and _qty[c] > 1e-9:
+            # ⚠ **卖出不改变"每股成本"** ✓ —— 按比例结转 ⇒ `(B−B·p/Q)/(Q−p) ≡ B/Q` ✓
+            #   （券商口径也是这个 ✓；用户 2026-10-15 讨论确认 ✓）
+            avg_px[c] = _basis[c] / _qty[c]
         if _qty[c] <= 1e-9:                      # 清仓 ⇒ 结算一笔 ✓
             hold_sum += float(i - int(_entry_i.get(c, i)))
             hold_n += 1
@@ -176,6 +203,9 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             _qty[c] = 0.0
             _basis[c] = 0.0
             _pnl[c] = 0.0
+            if _track_entry:                     # 清仓 ⇒ 入场价失效 ✓（下次买回重新起算 ✓）
+                avg_px[c] = np.nan
+                first_px[c] = np.nan
 
     def _sell(i: int, c: int, reason: str) -> bool:
         """卖出（含费用 ✓）；不可成交 ⇒ 记拒绝 + 返回 False ✓。"""
@@ -224,6 +254,11 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         trades.append((i, c, 1, q, px, reason, MODE))
         return True
 
+    # ★ v2.6.0：含入场价规则的**逐日信号行**（每天收盘后算一行 ✓、`lag` 天后执行 ✓）；
+    #   `_C`/`_O` = 当日行向量（规则里只允许这两个行情字段 ⇒ 不引入历史窗口依赖 ✓）。
+    _rule_rows: List[Optional[np.ndarray]] = []
+    _C = prep["C"]
+    _O = prep["O"]
     for i in range(n_row):
         tgt = targets.get(i)
         tgt_set = set(tgt) if tgt is not None else None
@@ -241,13 +276,21 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         #     矩阵第 t 行 = "用 t 日（含）数据算出的离场信号" ✓ ⇒ **执行日 = t + lag** ✓。
         #     （第一版忘了这一步，直接在信号当天卖 ⇒ **前视** ✗，被单测当场抓住 ✓。）
         _er = i - lag                                  # 今天要执行的"信号行" ✓
-        if exit_mat is not None and _er >= 0:
+        # ★ v2.6.0：信号行有两个来源 —— ① 预先算好的矩阵（普通离场因子 ✓）；
+        #   ② **含入场价的规则**（逐日现算 ✓，见文件末尾"给规则算今天的信号行" ✓）。
+        _sig = None
+        if _er >= 0:
+            if exit_mat is not None:
+                _sig = exit_mat[_er]
+            elif exit_rule is not None and _er < len(_rule_rows):
+                _sig = _rule_rows[_er]
+        if _sig is not None:
             # ⚠ "空转计数"必须按**今天开盘时的持仓**判断 ✓ —— 按卖出**之后**算会把"今天刚被
             #   离场卖掉的那只"也算成空转 ✗（2026-10-15 单测抓到：4 天卖出、6 天再来信号，
             #   结果 ignored 记成 2 ✗ 应为 1 ✓）。
             _held_before = set(sh)
             for c in list(sh):
-                if not exit_mat[_er, c]:
+                if not _sig[c]:
                     continue
                 exit_signals += 1
                 if tgt_set is not None and c in tgt_set:
@@ -275,7 +318,7 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 _hm = np.zeros(len(codes), dtype=bool)
                 for _c in _held_before:
                     _hm[_c] = True
-                exit_ignored += int(np.count_nonzero(exit_mat[_er] & ~_hm))
+                exit_ignored += int(np.count_nonzero(_sig & ~_hm))
         # ====================================================================================
         # ★★ v2.1.14（用户 2026-10-11 指出，方向我改过一次才对 ✓）：
         #   **`period_roll` 只在调仓日交易** ✓ —— 期中**完全不交易**（含不顺延卖出 ✗）。
@@ -345,6 +388,15 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         equity = cash + mv
         min_cash = min(min_cash, cash)
         nav_vals.append(equity / float(capital))
+        # ★★ v2.6.0：**给"含入场价"的离场规则算今天的信号行** ✓（在当天所有成交**之后**算 ✓
+        #   ⇒ 用的是"今天收盘时的持仓 + 入场价" ✓，`lag` 天后执行 ⇒ 与进场同一套滞后、不前视 ✓）。
+        if exit_rule is not None:
+            try:
+                _rule_rows.append(exit_rule.eval_row({"C": _C[i], "O": _O[i]}, avg_px, first_px))
+            except Exception as _e:                              # noqa: BLE001
+                _exit_off = _exit_off or "入场价离场规则求值失败：%r" % (_e,)
+                exit_rule = None                                 # 关掉离场，绝不拖垮回测 ✓
+                _rule_rows.append(None)
         if cancel_cb is not None and (i % 20 == 0):
             cancel_cb()
 
@@ -356,8 +408,10 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
               "strict_limit": bool(strict_limit), "lot": lot, "n_codes": len(codes),
               "missing_codes": prep["missing"][:20], "limits_from": "period_roll",
               "rolls": int(len(targets)),
-              # ★ v2.4.3：离场通道是否生效 / 未生效的原因 ✓（形态不符时**关掉离场**而不崩 ✓）
-              "exit_enabled": bool(exit_mat is not None), "exit_note": _exit_off},
+              # ★ v2.4.3 / v2.6.0：离场通道是否生效 / 未生效的原因 ✓
+              #   （形态不符或规则求值失败 ⇒ **关掉离场**而不崩 ✓）
+              "exit_enabled": bool(exit_mat is not None or _rule_provided),
+              "exit_rule": bool(_rule_provided), "exit_note": _exit_off},
     )
     out.trades = _trades_frame(trades[:20000], _date_arr, codes, half)
     out.rejects = pd.DataFrame(
@@ -390,7 +444,9 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         #   `exit_signals` 持仓中触发次数 ｜ `exit_sells` 实际卖出笔数 ｜
         #   `exit_deferrals` 卖不掉被顺延的**天数** ｜ `exit_ignored` 持币期间空转次数 ｜
         #   `exit_overridden` 调仓日被名单覆盖（"同日进出不交易"✓）的次数
-        "exit_enabled": bool(exit_mat is not None),
+        "exit_enabled": bool(exit_mat is not None or _rule_provided),
+        # ★ v2.6.0：本条回测用的是"含入场价的规则"（逐日求值 ✓）还是"预计算矩阵" ✓
+        "exit_rule": bool(_rule_provided),
         "exit_signals": int(exit_signals),
         "exit_sells": int(exit_sells),
         "exit_deferrals": int(exit_deferrals),

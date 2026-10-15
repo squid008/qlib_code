@@ -1595,7 +1595,9 @@ export default function SingleFactorTestPanel({
                        className={'mt-1 text-[11px] ' + (rate > 0.5 ? 'text-amber-600' : 'text-slate-500')}>
                       「{it.name}」触发率：{st
                         ? `${(rate * 100).toFixed(1)}%（${st.hit_cells ?? '-'}/${st.n_cells ?? '-'} 格，日均 ${st.avg_per_day ?? '-'} 只）`
-                        : '跑完后显示'}
+                        : info?.entry_dependent
+                          ? '不适用（含入场价 ⇒ 回测里逐日算 ✓，看对比表的离场卖出/顺延）'
+                          : '跑完后显示'}
                       {rate > 0.5 ? '　⚠ 触发过半 ⇒ 近似「只持有 1 天」，请先确认口径 ✓' : ''}
                       {eff
                         ? `　｜ 离场事件研究（${eff.horizon ?? '-'} 日）：触发后 ${((eff.mean_trig ?? 0) * 100).toFixed(2)}% vs 未触发 ${((eff.mean_ctrl ?? 0) * 100).toFixed(2)}%（差 ${((eff.diff_mean ?? 0) * 100).toFixed(2)}pp，样本 ${eff.n_trig ?? '-'}）`

@@ -17,6 +17,11 @@ const RAW_HANDBOOK: HandbookEntry[] = [
   { name: 'OPEN', abbr: '开盘价', kind: 'field', desc: '当日开盘价。\n用法:\n OPEN 或 O' },
   { name: 'VOL', abbr: '成交量', kind: 'field', desc: '成交量（手）。\n用法:\n VOL 或 V\n注:数据里停牌日无成交为 NaN。' },
   { name: 'AMOUNT', abbr: '成交额', kind: 'field', desc: '成交金额（元）。\n用法:\n AMOUNT' },
+  // ★★ v2.6.0（用户 2026-10-15 拍板 ✓）：**入场价**两个字段 —— 卖出侧"固定止损/止盈"用 ✓
+  //   ⚠ 只在**离场因子测试**（那回测里）有值 ✓；写进"进场因子"会被直接拦下来 ✓。
+  //   ⚠ desc 是纯文本渲染 ⇒ 不写 Markdown 星号 ✓
+  { name: 'ENTRY_PRICE', abbr: '入场价', kind: 'field', desc: '持仓的入场价（移动平均成本，含买入费）。\n用法:\n ENTRY_PRICE\n说明:\n · 只在「离场因子测试」里可用 —— 它是回测状态量（取决于你实际在哪根买入）\n · 买入会改变它（摊平/加仓），卖出不改变每股成本（与券商成本价一致）\n · 清仓后再买回 ⇒ 重新起算\n · 未持仓的股票没有入场价（条件恒不成立）\n例:\n 止损: CLOSE < ENTRY_PRICE*0.95;\n 止盈: CLOSE >= ENTRY_PRICE*1.10;' },
+  { name: 'ENTRY_FIRST', abbr: '首次入场价', kind: 'field', desc: '首次建仓那一笔的入场成本（含买入费）。\n用法:\n ENTRY_FIRST\n说明:\n · 与 ENTRY_PRICE 同一套口径，但只在"从无到有"那一笔记；期间加减仓都不刷新它\n · 拿它做止损 ⇒ 止损线不因调仓而移动（纪律型）\n · 清仓后再买回 ⇒ 重新起算\n例:\n 止损: CLOSE < ENTRY_FIRST*0.95;' },
   // ★ DATE（2026-10-15 加，用户点名要的 ✓）—— 既是**字段**（`DATE<=20070901`）也是**函数**
   //   （`DATE(20070901)`）。内部值其实是"日序号"（qlib 的字段 bin 是 float32，装不下 8 位日期：
   //   实测 20260305 会变成 20260304 ✗）⇒ 与 8 位日期比较/相减时由**编译器自动折算** ✓，

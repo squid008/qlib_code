@@ -200,6 +200,11 @@ FIELD_MAP = {
     # ★ 2026-10-15：DATE（当前 K 线日期）—— 值 = 日序号（见 factors/calc_date.py ✓）；
     #   `DATE(20070901)` 是**函数**形态（折成同一尺度 ⇒ 减法=真实天数 ✓）。
     "DATE": "$date", "日期": "$date",
+    # ★★ v2.6.0：**入场价**两个字段（只在"离场因子测试"的回测里有值 ✓，见 parser.py 与
+    #   `factors/exit_rules.py` ✓）——`$entry_price` = 移动平均成本（含买入费 ✓）；
+    #   `$entry_first` = 首次建仓那一笔的每股成本 ✓。**卖出不改变**每股成本 ✓。
+    "ENTRY_PRICE": "$entry_price", "入场价": "$entry_price",
+    "ENTRY_FIRST": "$entry_first", "首次入场价": "$entry_first",
     # ★ 市场派生字段（2026-10-10 补：流通市值 / 总股本 / 流通股本 ✓；单位 元、股 ✓）
     #   ⚠ 只是**新增可用字段名** ⇒ 既有公式的生成结果**不変** ⇒ **不要**动
     #     `CODEGEN_SEMANTICS` ✗（那会让 60+ 条存量公式白重编一遍 ✓）

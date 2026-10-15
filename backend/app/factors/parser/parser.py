@@ -37,6 +37,14 @@ FIELD_MAP = {
     #   既可当**字段**写（`DATE <= 20070901` ✓ 编译器自动折右侧字面量 ✓），
     #   也可当**函数**写（`DATE(20071008)-DATE(20070901)` = 37 天 ✓）。
     "DATE": "$date", "日期": "$date",
+    # ★★ v2.6.0（用户 2026-10-15 拍板 ✓）：**入场价**（"卖出侧固定止损/止盈"用的两个字段 ✓）——
+    #   它们是**回测状态量**（取决于你实际在哪根买入 ✗），不是行情派生 ⇒ 只在**离场因子测试**
+    #   （`period_roll` 那条真金白银回测 ✓）里才有值 ✓；进场因子/统计路径用到 ⇒ 明确报错 ✓。
+    #     · `ENTRY_PRICE`（入场价）= **移动平均成本**（含买入费 ✓，= 券商"成本价"；**卖出不改变**
+    #       每股成本 ✓，只有买入会变 ✓）；
+    #     · `ENTRY_FIRST`（首次入场价）= **首次建仓那一笔**的每股成本（清仓后再买重新起算 ✓）。
+    "ENTRY_PRICE": "$entry_price", "入场价": "$entry_price",
+    "ENTRY_FIRST": "$entry_first", "首次入场价": "$entry_first",
     # ★ 市场派生字段（用户 2026-10-10 要求：公式原先只有总市值 ✓，补齐另 3 个 ✓）
     #   数据来源见 tools/dump_ricequant_market_fields.py（米筐 ✓ 用 market_cap.h5 / market_cap_2.h5
     #   + 市值÷未复权收盘反推股本 ✓）与 tools/dump_tushare_market_fields.py（tushare `daily_basic` ✓）。

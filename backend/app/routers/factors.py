@@ -34,6 +34,8 @@ from ..engine.task_manager import get_task_manager
 from ..factors.single_test import FactorTestCancelled, _bad_date_arg, run_single_factor_tests
 from ..factors.event_study import run_event_study
 from ..factors.holdings_index import HoldingsIndex      # v2.1.0：每期持仓索引（XLSX 导出用 ✓）
+# ★ v2.6.0：含入场价（ENTRY_PRICE / ENTRY_FIRST）的离场公式 ⇒ 编译成"逐日求值"的规则 ✓
+from ..factors.exit_rules import compile_entry_rule, uses_entry
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
 
@@ -401,10 +403,21 @@ def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None,
     if _exits:
         # 进度：对照那一轮占 0.10→0.55，各离场一起分 0.55→0.98 ✓（总回测数 = (1+N)×档数 ✓）
         _n_pass = 1 + len(_exits)
+        _exits_err: dict = {}                     # 离场下标 → 编译/求值失败原因 ✓（落各自档位 ✓）
         _rows_exit: list = []
         for _ei, _ex in enumerate(_exits):
             _ename = str(getattr(_ex, "name", "") or getattr(_ex, "id", "") or "")
             _mask = (exit_masks or [])[_ei] if (exit_masks and _ei < len(exit_masks)) else None
+            # ★ v2.6.0：**含入场价**的离场公式 ⇒ 编译成"逐日求值"的规则 ✓（引擎用它 ✓）；
+            #   编译失败 ⇒ 落到档位 error 字段 ✓（附加信息，绝不拖垮统计 ✓）
+            _rule = None
+            if uses_entry(str(getattr(_ex, "expression", "") or "")):
+                try:
+                    _rule = compile_entry_rule(str(getattr(_ex, "expression", "") or ""),
+                                               float(req.exit_threshold))
+                except Exception as _e:                          # noqa: BLE001
+                    _rule = None
+                    _exits_err[_ei] = str(_e)
             out_exit: list = []
             for _k, (_it, _p) in enumerate(picks, start=1):
                 if _p[0] or not panel:
@@ -412,10 +425,13 @@ def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None,
                     continue
                 _np(0.55 + 0.43 * ((_ei * n_it + (_k - 1)) / max(1, _n_pass * n_it)),
                     "含离场「%s」：第 %d/%d 档回测中…" % (_ename or "?", _k, n_it))
+                if _exits_err.get(_ei):
+                    out_exit.append({"error": _exits_err[_ei]})
+                    continue
                 out_exit.append(_panel_period_roll_nav(
                     req, hk_state, row, item=_it, panel=panel, with_exit=True,
                     exit_mask=_mask, exit_cache=exit_cache,
-                    exit_index=_ei, exit_name=_ename))
+                    exit_index=_ei, exit_name=_ename, exit_rule=_rule))
             _rows_exit.append({
                 "exit": {"index": _ei, "name": _ename,
                          "id": str(getattr(_ex, "id", "") or ""),
@@ -460,8 +476,26 @@ def _apply_exit_validation(req) -> None:
     if not items:
         return
     entries = {(f.expression or "").strip(): f for f in (req.factors or [])}
+    # ★ v2.6.0：**入场价字段只能在离场公式里用** ✓ —— 进场因子用到 ⇒ 直接拒（清楚 ✓）：
+    #   它是回测状态量（取决于你实际在哪根成交 ✗），当因子算不出任何意义的值 ✗。
+    for f in (req.factors or []):
+        if uses_entry(str(f.expression or "")):
+            raise HTTPException(
+                status_code=400,
+                detail="「进场因子」里不能使用 ENTRY_PRICE / ENTRY_FIRST（入场价）✗ —— "
+                       "它们是**回测状态量**（取决于你实际在哪一根买入 ✓），只有当**离场条件**才有意义 ✓；"
+                       "请把它们写在离场公式里（例：`止损: CLOSE < ENTRY_PRICE*0.95;`）✓")
     for e in items:
         expr = (e.expression or "").strip()
+        # ★ v2.6.0：含入场价的离场公式 ⇒ **入队前就编译校验** ✓（不支持的写法立刻 400 ✓，
+        #   别等回测跑一半才炸 ✗）
+        if uses_entry(expr):
+            try:
+                compile_entry_rule(expr, float(getattr(req, "exit_threshold", 0.0) or 0.0))
+            except Exception as _e:                               # noqa: BLE001
+                raise HTTPException(
+                    status_code=400,
+                    detail="离场公式「%s」不支持 ✗：%s" % (e.name or e.id or expr[:30], _e))
         if expr in entries:
             raise HTTPException(
                 status_code=400,
@@ -507,7 +541,8 @@ def _exit_matrix(mask, panel: dict, cache: Optional[dict] = None, ei: int = 0):
 def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] = None,
                            panel: Optional[dict] = None, with_exit: bool = False,
                            exit_mask=None, exit_cache: Optional[dict] = None,
-                           exit_index: int = 0, exit_name: str = "") -> dict:
+                           exit_index: int = 0, exit_name: str = "",
+                           exit_rule=None) -> dict:
     """面板侧「每期全仓滚动」净值（v2.1.27 ✓，v2.1.38 加 `item`/`panel` ✓）。
 
     ★ 为什么非要有它（用户 2026-10-11 追问"难道不该逐位一致" ✓）：
@@ -576,7 +611,7 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
                if with_exit else None)
         bt = run_period_roll(sig, panel, fill=str(req.fill), cost=float(req.cost),
                              capital=float(req.capital), strict_limit=bool(req.strict_limit),
-                             exit_mat=_ex)
+                             exit_mat=_ex, exit_rule=(exit_rule if with_exit else None))
         nav = getattr(bt, "nav", None)
         if nav is None or not len(nav):
             return {"error": "每期全仓滚动回测无净值"}

@@ -35,6 +35,9 @@ from ..engine.inst_mask import _daily_member_mask, _inst_spans_path  # noqa: F40
 # 这里保留原名（`_acf` / `_hac_t`）直接转发 ⇒ 行为与调用点逐位不变。
 from ..engine.stats import acf as _acf, hac_t as _hac_t  # noqa: F401
 from .event_study import build_event_stats, compute_baseline_curves
+# ★ v2.6.0：判断离场公式是否含"入场价"（ENTRY_PRICE / ENTRY_FIRST ⇒ 回测状态量 ✓，
+#   不进面板统计、由回测引擎逐日算 ✓；见 factors/exit_rules.py ✓）
+from .exit_rules import uses_entry
 
 
 def _inst_codes(s: pd.DataFrame) -> pd.Series:
@@ -1942,12 +1945,21 @@ def run_single_factor_tests(
         _exits.append(dict(_e, expression=_ex))
     exit_fields, exit_cols = [], []
     for _i, _e in enumerate(_exits):
+        # ★ v2.6.0（用户 2026-10-15 ✓）：**含入场价**（ENTRY_PRICE / ENTRY_FIRST）的离场公式
+        #   **不能**当面板字段求值 ✗ —— 它是**回测状态量**（取决于你实际在哪根成交 ✓），
+        #   事先算不出来 ⇒ 这里只留占位（`None` ✓），真正的求值交给回测引擎逐日做 ✓
+        #   （`factors/exit_rules.py` ✓）。⇒ 它也就**不进**触发率预检/事件研究（那两项基于面板 ✓，
+        #   对"回测状态量"没有意义 ✗）；代价与收益会由回测侧的 `exit_signals`/`exit_sells` 给出 ✓。
+        if uses_entry(_e["expression"]):
+            exit_cols.append(None)
+            continue
         _adj = adjust_expr(_e["expression"], pa, round_prices=price_round)
         exit_fields.append(_sr_wrap_expr(_adj) if suspend_remove else _adj)
         exit_cols.append("EXIT_%d" % _i)
     fields = (tuple(adj_exprs) + tuple(label_exprs.values()) + tuple(base_fields) + (px_field,)
               + tuple(tag_fields) + tuple(exit_fields))
-    all_cols = factor_cols + list(label_cols.values()) + base_names + ["PX"] + tag_names + exit_cols
+    all_cols = (factor_cols + list(label_cols.values()) + base_names + ["PX"] + tag_names
+                + [c for c in exit_cols if c])
 
     _ph_t0 = _tmod.perf_counter()
     # v1.18.69：单因子面板**接入磁盘缓存**。此前 `feature_cache` 只在回测路径生效，
@@ -2135,6 +2147,10 @@ def run_single_factor_tests(
                          "source": str(_e.get("source") or "custom"),
                          "expression": _e["expression"],
                          "threshold": float(exit_threshold)}
+            if exit_cols[_i] is None:                # ★ v2.6.0：含入场价 ⇒ 回测里逐日算 ✓
+                _it["entry_dependent"] = True
+                _items.append(_it)
+                continue
             try:
                 _exv = pd.to_numeric(df[exit_cols[_i]], errors="coerce")
                 _hit = (_exv > float(exit_threshold)).fillna(False)
