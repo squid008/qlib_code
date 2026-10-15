@@ -1703,6 +1703,15 @@ def run_single_factor_tests(
     # 出参：**每期持仓索引**（`HoldingsIndex`）⇒ 供 XLSX 导出「每期持仓」页 ✓
     # （持仓算完即丢 ✗ ⇒ 顺手存一份；见 `factors/holdings_index.py` 的取舍说明 ✓）
     holdings_out: Optional["HoldingsIndex"] = None,
+    # ★★ v2.4.3（用户 2026-10-15 拍板 ✓）：**离场因子**（卖出侧第一步 ✓）
+    #   `exit_factor` = 单个因子条目（与进场因子同结构 ✓，只用它的 `expression` ✓）；
+    #   `exit_threshold` = 离场判据阈值（**因子值 > 阈值 ⇒ 该 (日期, 股票) 离场** ✓，默认 0 ✓）；
+    #   `exit_out` = 出参：`{"mask": 布尔 Series（索引同统计面板 ✓）, "stats": 触发率预检 ✓}`。
+    #   ⚠ 离场列作为**附加求值列 `EXIT`**（追加在最后 ✓）⇒ 不改任何既有列序/既有数字 ✓
+    #     （`F0…Fn` 的编号与面板缓存键都不受影响 ✓）。
+    exit_factor: Optional[dict] = None,
+    exit_threshold: float = 0.0,
+    exit_out: Optional[Dict] = None,
     # ★ v2.1.22（B 主体）：**成交时点**透传给 `_test_one` ✓（决定"每期买入价 + 期内逐日盯市价" ✓）
     #   默认 `t1_close` = 老口径 ✓ ⇒ 不传时行为逐位不变 ✓（老调用方零影响 ✓）。
     fill: str = "t1_close",
@@ -1913,8 +1922,19 @@ def run_single_factor_tests(
         tag_fields += ["$is_st", "Ref($is_st, -1)"]
         tag_names += ["IS_ST", "T1_IS_ST"]
     label_cols = {h: f"LABEL_{h}" for h in horizons}
-    fields = tuple(adj_exprs) + tuple(label_exprs.values()) + tuple(base_fields) + (px_field,) + tuple(tag_fields)
-    all_cols = factor_cols + list(label_cols.values()) + base_names + ["PX"] + tag_names
+    # ★ v2.4.3：离场因子 ⇒ 追加一个**附加求值列** `EXIT`（放在最末 ✓ 不动任何既有列 ✓）
+    _exit_expr = str((exit_factor or {}).get("expression") or "").strip()
+    if _exit_expr:
+        if suspend_remove:
+            exit_fields = (_sr_wrap_expr(adjust_expr(_exit_expr, pa, round_prices=price_round)),)
+        else:
+            exit_fields = (adjust_expr(_exit_expr, pa, round_prices=price_round),)
+        exit_cols = ["EXIT"]
+    else:
+        exit_fields, exit_cols = (), []
+    fields = (tuple(adj_exprs) + tuple(label_exprs.values()) + tuple(base_fields) + (px_field,)
+              + tuple(tag_fields) + exit_fields)
+    all_cols = factor_cols + list(label_cols.values()) + base_names + ["PX"] + tag_names + exit_cols
 
     _ph_t0 = _tmod.perf_counter()
     # v1.18.69：单因子面板**接入磁盘缓存**。此前 `feature_cache` 只在回测路径生效，
@@ -2077,6 +2097,42 @@ def run_single_factor_tests(
     except Exception:
         df["CLOSE_FF"] = df["CLOSE"] if "CLOSE" in df.columns else np.nan
         df["OPEN_FF"] = df["OPEN"] if "OPEN" in df.columns else np.nan
+
+    # ★★ v2.4.3（用户 2026-10-15 ✓）：**离场因子"信号化" + 触发率预检**
+    #   离场信号 = `因子值 > 阈值`（默认 0 ✓）⇒ 二值公式与连续因子**同一套口径** ✓
+    #   （所以不需要"只能二值"的限制 ✗）。
+    #   ⚠ 触发率预检是**给用户看的预警**：连续因子直接拿来当离场，最常见的翻车就是
+    #     "几乎天天触发 ⇒ 变成只持有 1 天" ✗（用户定的口径：> 50% 前端黄字提示 ✓）。
+    if exit_out is not None and "EXIT" in df.columns:
+        try:
+            _exv = pd.to_numeric(df["EXIT"], errors="coerce")
+            _hit = (_exv > float(exit_threshold)).fillna(False)
+            _dt_lv = df.index.names.index("datetime")
+            _days = int(pd.Index(df.index.get_level_values(_dt_lv)).nunique())
+            _n_hit = int(_hit.sum())
+            _n_cell = int(len(df))
+            _rate = (round(_n_hit / float(_n_cell), 4) if _n_cell else None)
+            exit_out["mask"] = _hit
+            exit_out["stats"] = {
+                "threshold": float(exit_threshold),
+                "hit_cells": _n_hit,
+                "n_cells": _n_cell,
+                "rate": _rate,
+                "n_days": _days,
+                "avg_per_day": (round(_n_hit / float(_days), 1) if _days else None),
+                "first_day": str(pd.Timestamp(df.index.get_level_values(_dt_lv).min()).date())
+                             if _n_cell else "",
+                "last_day": str(pd.Timestamp(df.index.get_level_values(_dt_lv).max()).date())
+                            if _n_cell else "",
+            }
+            if progress_cb:
+                progress_cb(None, 30.0,
+                            "离场因子触发率：%d 格中 %d 格触发（%.1f%%%s）"
+                            % (_n_cell, _n_hit, 100.0 * (_rate or 0.0),
+                               "  ⚠ 触发过半 ⇒ 近似只持有 1 天" if (_rate or 0.0) > 0.5 else ""))
+        except Exception as e:                                        # noqa: BLE001
+            _dump_sft_error(e)
+            exit_out["error"] = "离场信号计算失败: %s: %s" % (type(e).__name__, e)
 
     out: Dict[int, list] = {}
     es_inst = df_full.index.names.index("instrument")

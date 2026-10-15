@@ -316,6 +316,20 @@ export interface SingleFactorTestRequest {
    * ⚠ 很慢：每档多取一次全池行情面板 + 逐日回测（全 A 10~20s 量级）。
    */
   period_roll?: boolean
+  /**
+   * ★★ v2.4.3（用户 2026-10-15 拍板 ✓）：**离场因子**（单因子测试的"卖出侧"第一步 ✓）。
+   *
+   * 口径（4 条都是用户定的 ✓）：
+   *  ① 离场信号 = `该因子值 > exit_threshold（默认 0）` —— 二值公式与连续因子**通用** ✓；
+   *  ② **对照列必算** ⇒ 结果里永远同时有「不离场」（`period_roll_items` ✓）与「含离场」
+   *     （`exit_roll_items` ✓）两条 ✓；
+   *  ③ 同一公式既进又出 ⇒ 后端 **400 直接拦** ✓（同日进+出 ⇒ 要么恒不交易（净值恒 1）、
+   *     要么买完就卖被手续费磨掉 ✗，两种都没意义 ✓）；
+   *  ④ 勾了离场 ⇒ 后端**自动打开 `period_roll`** ✓（离场只作用在真金白银那条回测上 ✓）。
+   */
+  exit_factor?: SingleFactorTestItem
+  /** 离场判据阈值（因子值 > 它 ⇒ 离场 ✓，默认 0 ✓） */
+  exit_threshold?: number
   /** 仅 `period_roll` 时用到（与回灌侧同名同义；缺省即回灌默认 ⇒ 不传也能对齐 ✓） */
   cost?: number
   capital?: number
@@ -497,6 +511,13 @@ export interface SingleFactorTestResult {
    *   —— 前端一律优先用 `period_roll_items[idx]` ✓，别直接用这个 ✗。
    */
   period_roll?: PeriodRollNav
+  /**
+   * ★ v2.4.3（用户 2026-10-15 拍板 ✓）：**含离场**的实盘口径净值（与 `period_roll_items` 同序 ✓）。
+   * 只在请求里带了 `exit_factor` 时才有 ✓ —— 上面那份 `period_roll_items` 就是**必算的对照列**
+   *（"不离场"✓，口径与数字逐位不变 ✓）⇒ 两条同源，差值才解释得清 ✓。
+   */
+  exit_roll_items?: PeriodRollNav[]
+  exit_roll?: PeriodRollNav
   horizon?: number // 该行对应的预测周期（批量测试时每 因子×周期 一行）
   source_formula?: string // 用户原文公式（custom=保存原文；目录因子=表达式本身）
   coverage: number | null // 覆盖率：因子非空行 ÷ CLOSE 有效行（v1.21.6 起；分母不再是"面板并集行数"）
@@ -560,12 +581,33 @@ export interface FactorTiming {
   item_s: number
   total_s: number
 }
+/** ★ v2.4.3：离场因子的**触发率预检**（用户定的 > 50% 前端黄字提示 ✓）。 */
+export interface ExitPrecheckStats {
+  threshold?: number
+  /** 触发格数（因子值 > 阈值 的 (日期, 股票) 数） */
+  hit_cells?: number
+  n_cells?: number
+  /** 触发占比（0~1）—— > 0.5 ⇒ 近似"只持有 1 天"，界面给黄字 ✓ */
+  rate?: number | null
+  n_days?: number
+  avg_per_day?: number | null
+  first_day?: string
+  last_day?: string
+  error?: string
+}
 export interface SingleFactorTestProgress {
   task_id: string
   status: 'running' | 'success' | 'failed' | 'cancelled'
   progress: number // 0-100
   message: string
-  result?: { items: SingleFactorTestResult[]; total: number } | null
+  result?: {
+    items: SingleFactorTestResult[]
+    total: number
+    /** ★ v2.4.3：离场触发率预检（没勾离场 ⇒ 无此字段 ✓） */
+    exit_stats?: ExitPrecheckStats | null
+    exit_factor?: { name?: string; id?: string } | null
+    exit_threshold?: number
+  } | null
   error?: string | null
 }
 export async function createSingleFactorTest(

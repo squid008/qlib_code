@@ -320,7 +320,8 @@ def _period_roll_pick(hk_state: dict, row: dict, item: dict) -> tuple:
     return (None, dates, lists)
 
 
-def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None) -> dict:
+def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None,
+                        exit_mask=None, exit_cache: Optional[dict] = None) -> dict:
     """给**本行的每个档位**各算一条实盘口径净值（v2.1.38 ✓）。
 
     ★ 为什么改（用户 2026-10-12："应该是我测试的时候选了哪些档位就算哪些档位" ✓）：
@@ -386,14 +387,87 @@ def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None) -> dic
         _np(0.10 + 0.88 * (_k - 1) / n_it,
             "每期全仓滚动（实盘口径）：第 %d/%d 档回测中…" % (_k, n_it))
         out.append(_panel_period_roll_nav(req, hk_state, row, item=_it, panel=panel))
-    _np(1.0, "每期全仓滚动完成")
     row["period_roll_items"] = out
     row["period_roll"] = out[0] if out else {}
+    # ★★ v2.4.3（用户 2026-10-15 拍板 ✓）：勾了离场因子 ⇒ **同口径再跑一遍"含离场"**
+    #   —— 上面那份就是**必算的对照列**（"不离场"✓，口径与数字**逐位不变** ✓）。
+    #   两条同源（同一份名单、同一份价格面板、同一个引擎 ✓）⇒ 差值才解释得清 ✓
+    #   （这也是我们自己的老教训：**没有可比参照 ⇒ 结论会看反** ✗）。
+    if getattr(req, "exit_factor", None) is not None:
+        out_exit: list = []
+        for _k, (_it, _p) in enumerate(picks, start=1):
+            if _p[0] or not panel:
+                out_exit.append({"error": _p[0] or perr or "行情面板为空（取价失败）"})
+                continue
+            _np(0.55 + 0.43 * (_k - 1) / n_it,
+                "每期全仓滚动（含离场）：第 %d/%d 档回测中…" % (_k, n_it))
+            out_exit.append(_panel_period_roll_nav(req, hk_state, row, item=_it, panel=panel,
+                                                   with_exit=True, exit_mask=exit_mask,
+                                                   exit_cache=exit_cache))
+        row["exit_roll_items"] = out_exit
+        row["exit_roll"] = out_exit[0] if out_exit else {}
+    _np(1.0, "每期全仓滚动完成")
     return row["period_roll"]
 
 
+def _apply_exit_validation(req) -> None:
+    """离场因子的**前置校验**（v2.4.3，用户 2026-10-15 拍板 ✓）—— 纯函数、**在入队前**跑 ✓。
+
+    ① 空表达式 ⇒ 视为"没勾" ✓（前端清理选择时常见 ✓）；
+    ② **同公式既进又出 ⇒ 直接拦** ✗（用户选的"直接拦"✓）：同日进+出时，按"同日不交易"规则
+       会**永远开不了仓**（净值恒 1 ✓）；若照做 ⇒ 买完就卖、被手续费一层层磨 ✗ —— 两种都没意义 ✓；
+    ③ 勾了离场 ⇒ **自动打开 `period_roll`** ✓（离场只能作用在"真金白银"那条回测上 ✓）。
+    """
+    ex = getattr(req, "exit_factor", None)
+    expr = ((ex.expression or "").strip() if ex is not None else "")
+    if ex is not None and not expr:
+        req.exit_factor = None
+        return
+    if ex is None:
+        return
+    dup = next((f for f in (req.factors or []) if (f.expression or "").strip() == expr), None)
+    if dup is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="「离场因子」与某个「进场因子」是**同一个公式**（%s）✗ ⇒ 会在进场当天就离场："
+                   "按『同日进出不交易』规则 ⇒ 永远开不了仓（净值恒 1）；照做 ⇒ 买完就卖、"
+                   "被手续费一层层磨掉 ⇒ 两种都没有意义 ✓ 请换一个公式 ✓"
+                   % (ex.name or ex.id or expr[:40]))
+    req.period_roll = True
+
+
+def _exit_matrix(mask, panel: dict, cache: Optional[dict] = None):
+    """把单因子侧算好的 `EXIT` 布尔 Series 对齐成 **(T×C) 布尔矩阵** ✓（v2.4.3 ✓）。
+
+    · 输入 = `run_single_factor_tests(exit_out=…)` 的 `mask`（索引 = (instrument, datetime) ✓）；
+    · 输出与 `panel["CLOSE"]` 的**日历/标的逐位对齐** ✓（`reindex` + `fillna(False)` ✓）——
+      这是 `run_period_roll` 能吃的前提 ✓（形状不符它会自己**关掉离场**并记 diag ✓，绝不崩 ✗）；
+    · `cache` = 调用方持有的小字典 ✓（`_attach_period_roll` 是**逐行**调用的 ⇒ 不缓存会把
+      "unstack + reindex" 对每个因子行重复做一遍 ✗；只留最新一份 ✓ 内存安全 ✓）。
+    """
+    if mask is None or not panel:
+        return None
+    cl = panel.get("CLOSE")
+    if cl is None or not len(cl):
+        return None
+    key = (str(cl.index[0])[:10], str(cl.index[-1])[:10], len(cl.columns))
+    if cache is not None and key in cache:
+        return cache[key]
+    try:
+        w = mask.unstack(level="instrument")
+        w = w.reindex(index=cl.index, columns=list(cl.columns)).fillna(False)
+        mat = w.to_numpy(dtype=bool)
+    except Exception as e:                                        # noqa: BLE001
+        mat = None
+    if cache is not None:
+        cache.clear()                                             # 只留最新一份 ✓
+        cache[key] = mat
+    return mat
+
+
 def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] = None,
-                           panel: Optional[dict] = None) -> dict:
+                           panel: Optional[dict] = None, with_exit: bool = False,
+                           exit_mask=None, exit_cache: Optional[dict] = None) -> dict:
     """面板侧「每期全仓滚动」净值（v2.1.27 ✓，v2.1.38 加 `item`/`panel` ✓）。
 
     ★ 为什么非要有它（用户 2026-10-11 追问"难道不该逐位一致" ✓）：
@@ -456,8 +530,12 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
                 _orr = panel.get("OPEN_RAW")
                 if _orr is not None and len(_orr):
                     panel["OPEN"] = _orr.ffill().round(2)
+        # ★ v2.4.3：`with_exit=True` ⇒ 同一次回测**再带上离场通道** ✓（离场矩阵＝面板侧算好的
+        #   布尔信号对齐到本面板 ✓；对不上 ⇒ 引擎自己关掉离场并记 diag ✓，绝不崩 ✗）
+        _ex = _exit_matrix(exit_mask, panel, exit_cache) if with_exit else None
         bt = run_period_roll(sig, panel, fill=str(req.fill), cost=float(req.cost),
-                             capital=float(req.capital), strict_limit=bool(req.strict_limit))
+                             capital=float(req.capital), strict_limit=bool(req.strict_limit),
+                             exit_mat=_ex)
         nav = getattr(bt, "nav", None)
         if nav is None or not len(nav):
             return {"error": "每期全仓滚动回测无净值"}
@@ -497,7 +575,10 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
                 # ⚠ 精度 9 位（不是 6 ✓）：对拍脚本要求"逐位一致"，取到 6 位会留下
                 #   ≤5e-6 的**纯取整**残差 ✗（实测 max|Δ| = 5e-6 ✓ 就是它）⇒ 提到 9 位 ✓。
                 "nav": [round(float(x), 9) for x in nav[col].to_numpy()],
-                "label": "每期全仓滚动（实盘口径）",
+                # ★ v2.4.3：两条同口径曲线必须**一眼可分** ✓（"对照" vs "含离场"）
+                "label": ("每期全仓滚动（实盘口径 · 含离场）" if with_exit
+                          else "每期全仓滚动（实盘口径）"),
+                "with_exit": bool(with_exit),
                 "stats": {k: v for k, v in stats.items() if k != "perf"},
                 "perf": stats.get("perf")}
     except Exception as e:                                   # noqa: BLE001
@@ -550,6 +631,18 @@ class SingleFactorTestRequest(BaseModel):
     #   ⚠ 代价：每种档位要多取一次全池行情面板 + 逐日回测（全 A 实测 10~20s 量级 ✗）
     #     ⇒ 故默认关、且不在任何统计口径里（纯附加 ✓，失败只落到 `error` 字段 ✓）。
     period_roll: bool = False
+    # ★★ v2.4.3（用户 2026-10-15 拍板 ✓）：**离场因子**（单因子测试的"卖出侧"第一步 ✓）
+    #   口径 4 条都是用户定的 ✓：
+    #     ① 离场信号 = 该因子值 **> exit_threshold（默认 0）** ✓ —— 二值公式与连续因子**通用** ✓
+    #        （不写"只能二值"的限制 ✗），并给**触发率预检**（日均触发占比 > 50% ⇒ 前端黄字 ✓）；
+    #     ② **对照列必算** ✓ ⇒ 结果里永远同时有「不离场」（= 现有 `period_roll` ✓）与「含离场」两条 ✓；
+    #     ③ 同一公式既进又出 ⇒ **直接拦** ✗（同日进+出：要么恒不交易（净值恒 1）、要么买完就卖
+    #        （被手续费磨下去）——两种都没意义 ✓，前后端都拒 ✓）；
+    #     ④ 与调仓日的关系：**调仓日以名单为准、离场只在期中生效** ✓（详见 `period_roll` 注释 ✓）；
+    #        持币期间的离场信号 = **空转**（忽略但计数 ✓，否则用户会以为信号没生效 ✓）。
+    #   ⚠ 勾了离场 ⇒ 路由里**自动打开 `period_roll`** ✓（离场只能作用在"真金白银"那条回测上 ✓）。
+    exit_factor: Optional[SingleFactorTestFactor] = None
+    exit_threshold: float = 0.0
     # 下面三个只在 `period_roll=True` 时被用到（与「交易信号测试」回灌侧同名同义 ✓，
     # 默认值取回灌侧的默认 ⇒ 两边不显式指定时也对得齐 ✓）。
     cost: float = 0.004
@@ -736,6 +829,8 @@ def single_factor_test(req: SingleFactorTestRequest):
     """
     if not req.factors:
         raise HTTPException(status_code=400, detail="请至少勾选一个因子")
+    # ★ v2.4.3：离场因子的两条前置校验（用户 2026-10-15 拍板 ✓）—— 抽成纯函数便于单测 ✓
+    _apply_exit_validation(req)
     if not req.start_date or not req.end_date:
         raise HTTPException(status_code=400, detail="请填写测试区间")
     # 日期合法性兜底（前端已校验，此处防 API 直连）：如 2026-06-31 非法，
@@ -915,6 +1010,9 @@ def single_factor_test(req: SingleFactorTestRequest):
                 # v2.1.0：出参 —— **每期持仓索引**（导出 XLSX 的「持仓明细」页用 ✓）。
                 # 持仓在测试进程内算完即丢 ✗ ⇒ 顺手存一份（`has()` 为假时任务状态里不落键 ✓）
                 _hks = HoldingsIndex()
+                # ★ v2.4.3：离场因子的出参（布尔信号 + 触发率预检 ✓）与"信号→矩阵"缓存 ✓
+                _exit_out: dict = {}
+                _exit_cache: dict = {}
                 res = run_single_factor_tests(
                     label_horizons=horizons,
                     fill=req.fill,      # v2.1.23（B ①）：成交时点（t1_close 默认 / t1_open ✓）
@@ -940,7 +1038,18 @@ def single_factor_test(req: SingleFactorTestRequest):
                     topk_list=topk_list,
                     events_out=_evs,     # v1.19.60：0/1 因子的触发事件（键=表达式）⇒ 供净值曲线复用
                     holdings_out=_hks,   # v2.1.0：每期持仓索引 ⇒ 供 XLSX 导出复用
+                    # ★ v2.4.3：离场因子（用户 2026-10-15 ✓）—— 只多求值一个 `EXIT` 列 ✓
+                    #   （不动既有列序/数字 ✓），出参给布尔信号 + 触发率预检 ✓
+                    exit_factor=(req.exit_factor.model_dump() if req.exit_factor is not None else None),
+                    exit_threshold=float(req.exit_threshold),
+                    exit_out=_exit_out,
                 )
+                # ★ v2.4.3：离场信号（布尔 Series ✓）与触发率预检（给前端显示 ✓）
+                _exit_mask = _exit_out.get("mask")
+                _exit_stats = _exit_out.get("stats") or ({"error": _exit_out["error"]}
+                                                         if _exit_out.get("error") else None)
+                if _exit_out.get("error"):
+                    state["_exit_error"] = _exit_out["error"]
                 with lock:
                     if _evs:
                         # ⚠ 不进 HTTP 响应（几万行会撑大结果）：存任务状态，供 /factors/event-study/nav 复用
@@ -1001,8 +1110,10 @@ def single_factor_test(req: SingleFactorTestRequest):
                          if (per_h.get(_h) is not None and _fi < len(per_h[_h])))
             _cell = 0
             state["extra_prog"] = 0.0
-            state["extra_msg"] = ("整理结果：正在计算「每期全仓滚动（实盘口径）」…"
-                                  if req.period_roll else "整理结果…")
+            state["extra_msg"] = (
+                "整理结果：正在计算「每期全仓滚动（实盘口径%s）」…"
+                % (" · 含离场 + 对照两条" if req.exit_factor is not None else "")
+                if req.period_roll else "整理结果…")
             for fi in range(n_factor):
                 for h in horizons:
                     rows = per_h.get(h)
@@ -1024,8 +1135,9 @@ def single_factor_test(req: SingleFactorTestRequest):
                             state["extra_prog"] = _b + _s * max(0.0, min(1.0, float(frac)))
                             state["extra_msg"] = "整理结果（%d/%d）：%s" % (_c, _n, msg)
 
-                        row["period_roll"] = _attach_period_roll(req, hk_state, row,
-                                                                 progress_cb=_pc)
+                        row["period_roll"] = _attach_period_roll(
+                            req, hk_state, row, progress_cb=_pc,
+                            exit_mask=_exit_mask, exit_cache=_exit_cache)
                     else:
                         state["extra_prog"] = 100.0 * _cell / max(1, _cells)
                     items.append(row)
@@ -1033,7 +1145,12 @@ def single_factor_test(req: SingleFactorTestRequest):
                 status="success",
                 progress=100.0,
                 message=f"完成（{n_h} 个预测周期）" if n_h > 1 else "完成",
-                result={"items": items, "total": len(items)},
+                result={"items": items, "total": len(items),
+                        # ★ v2.4.3：离场因子回显（含**触发率预检** ✓ —— 用户定的 >50% 前端黄字 ✓）
+                        "exit_stats": _exit_stats,
+                        "exit_factor": ({"name": req.exit_factor.name, "id": req.exit_factor.id}
+                                        if req.exit_factor is not None else None),
+                        "exit_threshold": float(req.exit_threshold)},
                 ts=time.time(),
             )
         manager.unregister_external_queued(task_id)

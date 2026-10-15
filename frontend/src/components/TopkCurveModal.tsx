@@ -366,6 +366,22 @@ export default function TopkCurveModal({ open, onClose, name, row, taskId }: Pro
     && Number.isFinite(prPerf.max_drawdown)
     && Math.abs(prPerf.max_drawdown) >= 0.30
 
+  /**
+   * ★★ v2.4.3（用户 2026-10-15 拍板 ✓）：**含离场**那条（与 `period_roll_items` 同序 ✓）。
+   * 「对照列必算」的兑现 ✓：上面那份 `period_roll` 就是**不离场**的对照 ✓（口径与数字逐位不变 ✓），
+   * 这里再给"加了离场"那条 ⇒ **Δ才是离场因子的净效果** ✓。
+   * ⚠ 别用"含离场净值 ÷ 对照净值"当结论 ✗（两条线持仓结构不同 ⇒ 比值混了再平衡溢价 ✓）。
+   */
+  const exObj = (row?.exit_roll_items ?? [])[idx] ?? row?.exit_roll ?? null
+  const exPerf = exObj?.perf ?? null
+  const exStats = (exObj?.stats ?? {}) as Record<string, number | undefined>
+  const deltaAnn = (exPerf?.annual_return ?? 0) - (prPerf?.annual_return ?? 0)
+  const deltaDd = (exPerf?.max_drawdown ?? 0) - (prPerf?.max_drawdown ?? 0)
+  const exDdDeep =
+    typeof exPerf?.max_drawdown === 'number'
+    && Number.isFinite(exPerf.max_drawdown)
+    && Math.abs(exPerf.max_drawdown) >= 0.30
+
   const prMap = useMemo(() => {
     const m = new Map<string, number>()
     const ds = prObj?.dates ?? []
@@ -867,6 +883,35 @@ export default function TopkCurveModal({ open, onClose, name, row, taskId }: Pro
             {!prPerf && prObj?.error && (
               <div className="text-[11px] text-amber-600 mb-1 text-center">
                 实盘口径指标不可用：{String(prObj.error)}
+              </div>
+            )}
+            {/* ★★ v2.4.3（用户 2026-10-15 ✓）：**含离场 vs 对照**（同源同口径 ⇒ 差值才解释得清 ✓） */}
+            {prPerf && exPerf && (
+              <div
+                className="text-[11px] text-slate-500 mb-1 text-center"
+                title="含离场 = 在「每期全仓滚动」上再加一条离场通道：因子值 > 阈值 ⇒ T+1 卖出（停牌/一字跌停卖不掉 ⇒ 顺延逐日重试）；调仓日若它仍在名单 ⇒ 离场被覆盖（这就是「同日进+出 ⇒ 不交易」）。两条同源（同一份名单 / 同一份价格面板 / 同一个引擎）⇒ 差值才是离场因子的净效果。⚠ 别拿两条净值相除当结论（持仓结构不同）。"
+              >
+                <b className="text-amber-600">含离场</b>：
+                年化 <b>{signedPct(exPerf.annual_return, 1)}</b>
+                ｜ 最大回撤 <b className={exDdDeep ? 'text-red-500' : ''}>
+                  {signedPct(exPerf.max_drawdown, 1)}
+                </b>
+                ｜ Δ年化 <b className={deltaAnn >= 0 ? 'text-emerald-600' : 'text-red-500'}>
+                  {deltaAnn >= 0 ? '+' : ''}{(deltaAnn * 100).toFixed(1)}pp
+                </b>
+                ｜ Δ回撤 <b className={deltaDd >= 0 ? 'text-emerald-600' : 'text-red-500'}>
+                  {deltaDd >= 0 ? '+' : ''}{(deltaDd * 100).toFixed(1)}pp
+                </b>
+                {typeof exStats.exit_sells === 'number' ? ` ｜ 离场卖出 ${exStats.exit_sells} 笔` : ''}
+                {typeof exStats.exit_signals === 'number' ? `（持仓中触发 ${exStats.exit_signals} 次）` : ''}
+                {exStats.exit_deferrals ? ` ｜ 顺延 ${exStats.exit_deferrals} 天` : ''}
+                {exStats.exit_overridden ? ` ｜ 被名单覆盖 ${exStats.exit_overridden} 次` : ''}
+                {exStats.exit_ignored ? ` ｜ 持币期空转 ${exStats.exit_ignored} 次` : ''}
+              </div>
+            )}
+            {prPerf && !exPerf && exObj?.error && (
+              <div className="text-[11px] text-amber-600 mb-1 text-center">
+                含离场回测不可用：{String(exObj.error)}
               </div>
             )}
             <div className="relative">

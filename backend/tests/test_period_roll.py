@@ -70,3 +70,98 @@ def test_pure_rotation_sells_dropped_name_when_sellable():
     tr = out.trades
     sell_out_a = tr[(tr["code"] == "S00") & (tr["reason"] == "roll_out")]
     assert len(sell_out_a) == 1, "A 被剔除且能卖 ⇒ 应卖出 1 次 ✓\n%s" % tr
+
+
+# ===========================================================================
+# ★ v2.4.3：**期中离场通道**（用户 2026-10-15 拍板 ✓）—— 四条语义各一条测试 ✓
+#   ① 非调仓日触发离场 ⇒ 卖出（T+1 按 `fill` 执行 ✓）
+#   ② 卖不掉（跌停）⇒ **顺延逐日重试** ✓（与主引擎同规矩 ✓）
+#   ③ 调仓日若它**仍在名单** ⇒ 离场被**覆盖**（= 用户的"同日进+出 ⇒ 不交易"✓）
+#   ④ 持币期间触发 ⇒ **空转**（忽略但计数 ✓）
+# ===========================================================================
+CODES3 = ["S00", "S01", "S02"]
+
+
+def _exit_mat(pairs, codes=CODES) -> "np.ndarray":
+    """(T×C) 布尔离场矩阵 ✓。
+
+    ⚠ 列必须与 `run_period_roll` 内部认的 `codes` **完全一致** ✗ —— 它是
+      `sorted(set(信号里的 code) & set(面板列))` ✓（**只有信号里出现过的票** ✓，
+      面板里多出来的列不算 ✗）⇒ 矩阵造错会命中"形状不符 ⇒ 关掉离场"的兜底 ✓，
+      测试会变成"看起来没生效"✗（第一版就是这么踩的 ✓）。
+    """
+    m = np.zeros((len(CAL), len(codes)), dtype=bool)
+    for d, c in pairs:
+        m[d, list(codes).index(c)] = True
+    return m
+
+
+def test_exit_signal_sells_between_rebalances():
+    """★ 核心①：**非调仓日**触发离场 ⇒ 卖出，且 reason = `exit_signal` ✓（T 日信号 T+1 执行 ✓）。"""
+    sig = _signals([(0, "S00"), (0, "S01"), (8, "S00"), (8, "S01")])   # 只在期初/期末调仓 ✓
+    out = run_period_roll(sig, _panel({}), fill="t1_open", cost=0.0, capital=1e7,
+                          strict_limit=True, exit_mat=_exit_mat([(3, "S00")]))
+    hit = out.trades[(out.trades["code"] == "S00") & (out.trades["reason"] == "exit_signal")]
+    assert len(hit) == 1, out.trades
+    assert str(hit.iloc[0]["date"])[:10] == str(CAL[4].date()), "T 日信号 ⇒ T+1 成交 ✓\n%s" % hit
+    st = out.stats["period_roll"]
+    assert st["exit_enabled"] is True and st["exit_signals"] == 1 and st["exit_sells"] == 1, st
+    # 对照（不传矩阵）⇒ **不该**有离场卖单 ✓（两条曲线才有可比性 ✓）
+    base = run_period_roll(sig, _panel({}), fill="t1_open", cost=0.0, capital=1e7,
+                           strict_limit=True)
+    assert not (base.trades["reason"] == "exit_signal").any(), base.trades
+    assert base.stats["period_roll"]["exit_enabled"] is False
+
+
+def test_exit_signal_deferred_when_cannot_sell():
+    """★ ②：执行日跌停卖不掉 ⇒ **顺延逐日重试** ✓，并能统计顺延天数 ✓。"""
+    sig = _signals([(0, "S00"), (0, "S01"), (8, "S00"), (8, "S01")])
+    panel = _panel({})
+    for d in (3, 4):                                   # 执行日 3、4 跌停（收盘 = 跌停价 ⇒ 卖不出 ✓）
+        panel["LIMIT_DOWN"].loc[CAL[d], "S00"] = panel["CLOSE"].loc[CAL[d], "S00"]
+    out = run_period_roll(sig, panel, fill="t1_open", cost=0.0, capital=1e7,
+                          strict_limit=True, exit_mat=_exit_mat([(2, "S00")]))
+    hit = out.trades[(out.trades["code"] == "S00") & (out.trades["reason"] == "exit_signal")]
+    assert len(hit) == 1, out.trades
+    assert str(hit.iloc[0]["date"])[:10] == str(CAL[5].date()), "顺延到能卖的那天 ✓\n%s" % hit
+    assert out.stats["period_roll"]["exit_deferrals"] == 2, out.stats["period_roll"]
+
+
+def test_exit_on_rebalance_day_is_overridden_by_list():
+    """★ ③（用户那条"同日进+出 ⇒ 不交易"）：**调仓日**它仍在名单 ⇒ 不离场 ✓（计数 ✓）。
+
+    ⚠ 调仓日 = **执行日** = `信号日 + lag`（`fill='t1_open'` ⇒ lag=1 ✓）：信号日 CAL[4] 的
+      执行日是 CAL[5] ✓ ⇒ 离场矩阵要打在**信号日** CAL[4] 上（引擎内部再 `-lag` ✓）——
+      打在 CAL[5] 上会变成"执行日 CAL[6]"⇒ 测不到覆盖 ✗（两种错法我都踩过 ✓）。
+    """
+    sig = _signals([(0, "S00"), (0, "S01"), (4, "S00"), (4, "S01"), (8, "S00"), (8, "S01")])
+    out = run_period_roll(sig, _panel({}), fill="t1_open", cost=0.0, capital=1e7,
+                          strict_limit=True, exit_mat=_exit_mat([(4, "S00")]))
+    assert not (out.trades["reason"] == "exit_signal").any(), out.trades
+    st = out.stats["period_roll"]
+    assert st["exit_overridden"] >= 1, st
+
+
+def test_exit_signal_while_no_position_is_counted_but_ignored():
+    """★ ④：持币期间触发 ⇒ **空转**（忽略 ✓ 但计数 ✓，绝不凭空开仓/报错 ✓）。
+
+    构造：S00 在自己的离场信号下于 CAL[4] 被卖掉 ✓ ⇒ 后来的离场信号是"持币期间"⇒ 空转 ✓。
+    """
+    sig = _signals([(0, "S00"), (0, "S01"), (8, "S00"), (8, "S01")])
+    out = run_period_roll(sig, _panel({}), fill="t1_open", cost=0.0, capital=1e7,
+                          strict_limit=True, exit_mat=_exit_mat([(3, "S00"), (5, "S00")]))
+    st = out.stats["period_roll"]
+    assert st["exit_signals"] == 1, "只有持仓中那次算 exit_signals ✓：%s" % st
+    assert st["exit_ignored"] == 1, "CAL[5] 那次是持币期间 ⇒ 空转 ✓：%s" % st
+    assert st["exit_sells"] == 1, st
+
+
+def test_exit_matrix_shape_mismatch_disables_exit_without_crashing():
+    """★ 兜底：离场矩阵形状不符 ⇒ **关掉离场**并记 diag ✓（附加信息绝不拖垮回测 ✗）。"""
+    sig = _signals([(0, "S00"), (0, "S01"), (8, "S00"), (8, "S01")])
+    out = run_period_roll(sig, _panel({}), fill="t1_open", cost=0.0, capital=1e7,
+                          strict_limit=True, exit_mat=np.zeros((3, 3), dtype=bool))
+    st = out.stats["period_roll"]
+    assert st["exit_enabled"] is False and st["exit_signals"] == 0, st
+    assert out.diag.get("exit_note"), out.diag
+    assert st["final_nav"] is not None, "回测本身必须照常跑完 ✓"

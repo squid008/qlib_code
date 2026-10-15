@@ -44,10 +44,14 @@ _LABEL = "每期全仓滚动（调仓日按当期名单等权重建）"
 def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     fill: str = "t1_open", cost: float = 0.004, capital: float = 1e9,
                     strict_limit: bool = True, lot: int = LOT_DEFAULT,
-                    cancel_cb=None) -> BtResult:
+                    cancel_cb=None, exit_mat=None) -> BtResult:
     """跑「每期全仓滚动」，返回 `BtResult`（`nav` / `trades` / `rejects` / `stats` ✓）。
 
     `signals` 需含 `date` / `code` 列（买入信号 ✓）；`bucket` 列可选（= 批次/调仓日 ✓）。
+
+    ★ v2.4.3（用户 2026-10-15 拍板 ✓）：`exit_mat` = **离场信号矩阵**
+      （(T × C) 布尔 numpy 数组，行=日历、列=标的，与 `panel["CALENDAR"]`/本轮 `codes` **对齐** ✓；
+       `None` = 不启用离场 ✓）。语义见下方"期中离场通道"注释 ✓。
     """
     half = float(cost) / 2.0
     if not len(signals) or "CALENDAR" not in panel or "CLOSE" not in panel:
@@ -66,6 +70,21 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     _date_arr = np.asarray(cal.strftime("%Y-%m-%d"))
     pos = {d: i for i, d in enumerate(cal)}
     n_row = len(cal)
+    # ★ v2.4.3：离场矩阵的**形状自检** —— 对不上就**关掉离场**并记一条 diag ✓
+    #   （对拍/回测绝不能因为"附加信息"崩 ✗：与 `perf`/`period_roll` 同规矩 ✓）。
+    _exit_off = ""
+    if exit_mat is not None:
+        try:
+            _em = np.asarray(exit_mat)
+            if _em.shape != (n_row, len(codes)):
+                _exit_off = "离场信号矩阵形状不符（%s vs (%d,%d)）⇒ 本次不启用离场" % (
+                    tuple(_em.shape), n_row, len(codes))
+                exit_mat = None
+            else:
+                exit_mat = _em.astype(bool, copy=False)
+        except Exception as e:                                     # noqa: BLE001
+            _exit_off = "离场信号矩阵不可用（%r）⇒ 本次不启用离场" % (e,)
+            exit_mat = None
 
     # ---------- ① 批次 → 调仓日 → 目标名单（列号，保序去重 ✓）----------
     sig = signals
@@ -99,6 +118,9 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     sh: Dict[int, int] = {}                     # 列号 → 股数
     drop: set = set()                           # 该卖出但（跌停/停牌）没卖成的
     tgt_now: List[int] = []                      # 当前批次的目标（顺延卖出时要继续用 ✓）
+    # ★ v2.4.3：离场通道 —— "卖不掉 ⇒ 顺延"队列 + 五类计数 ✓（统计走 stats ✓）
+    pending_exit: set = set()
+    exit_signals = exit_sells = exit_deferrals = exit_ignored = exit_overridden = 0
     nav_vals: List[float] = []
     trades: List[tuple] = []
     rejects: List[tuple] = []
@@ -204,6 +226,57 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
 
     for i in range(n_row):
         tgt = targets.get(i)
+        tgt_set = set(tgt) if tgt is not None else None
+        # ================= ★ v2.4.3：**期中离场通道**（用户 2026-10-15 拍板 ✓）=================
+        # 语义（四条都是明确拍过板的 ✓）：
+        #   · 离场信号 = `离场因子值 > 阈值`（面板侧已算成 (T×C) 布尔矩阵 ✓，这里只吃矩阵 ✓）；
+        #   · **调仓日以名单为准、离场只在期中生效** ✓ —— 调仓日若该股仍在名单里 ⇒ 离场被**覆盖**
+        #     （计数 `exit_overridden` ✓）。这正是用户那条"同日进+出 ⇒ 不交易（保持原状）"在
+        #     连续信号引擎里的落地 ✓（名单 = 进场意愿 ⇒ "保持原状"就是继续持有 ✓；名单外照卖 ✓）；
+        #   · **卖不掉（停牌/一字跌停）⇒ 顺延逐日重试** ✓（与主引擎 `engine.py` 同规矩 ✓）。
+        #     ⚠ 这与 v2.1.14 特意删掉的"期中重试"**不是一回事** ✗ —— 那版是拿**过期名单**做决策 ✓
+        #     （用户当时抓到"day6 卖了 A"✗）；这里按**离场信号**重试 ✓；
+        #   · **持币期间的离场信号 = 空转**（忽略但计数 `exit_ignored` ✓，否则用户会以为信号没生效 ✓）。
+        #   ⚠⚠ **成交滞后 **必须** 与进场同口径**（`lag` ✓，`fill='t1_open'` ⇒ lag=1）——
+        #     矩阵第 t 行 = "用 t 日（含）数据算出的离场信号" ✓ ⇒ **执行日 = t + lag** ✓。
+        #     （第一版忘了这一步，直接在信号当天卖 ⇒ **前视** ✗，被单测当场抓住 ✓。）
+        _er = i - lag                                  # 今天要执行的"信号行" ✓
+        if exit_mat is not None and _er >= 0:
+            # ⚠ "空转计数"必须按**今天开盘时的持仓**判断 ✓ —— 按卖出**之后**算会把"今天刚被
+            #   离场卖掉的那只"也算成空转 ✗（2026-10-15 单测抓到：4 天卖出、6 天再来信号，
+            #   结果 ignored 记成 2 ✗ 应为 1 ✓）。
+            _held_before = set(sh)
+            for c in list(sh):
+                if not exit_mat[_er, c]:
+                    continue
+                exit_signals += 1
+                if tgt_set is not None and c in tgt_set:
+                    exit_overridden += 1
+                    pending_exit.discard(c)
+                    continue
+                if _sell(i, c, "exit_signal"):
+                    exit_sells += 1
+                else:
+                    pending_exit.add(c)              # 卖不掉 ⇒ 顺延 ✓
+            for c in list(pending_exit):
+                if c not in sh:
+                    pending_exit.discard(c)
+                    continue
+                if tgt_set is not None and c in tgt_set:
+                    pending_exit.discard(c)          # 名单又把它收回去 ⇒ 不再卖 ✓
+                    exit_overridden += 1
+                    continue
+                if _sell(i, c, "exit_signal"):
+                    pending_exit.discard(c)
+                    exit_sells += 1
+                else:
+                    exit_deferrals += 1
+            if len(_held_before) < len(codes):       # 持币期间触发 ⇒ 空转（计数 ✓）
+                _hm = np.zeros(len(codes), dtype=bool)
+                for _c in _held_before:
+                    _hm[_c] = True
+                exit_ignored += int(np.count_nonzero(exit_mat[_er] & ~_hm))
+        # ====================================================================================
         # ★★ v2.1.14（用户 2026-10-11 指出，方向我改过一次才对 ✓）：
         #   **`period_roll` 只在调仓日交易** ✓ —— 期中**完全不交易**（含不顺延卖出 ✗）。
         #   卖单只在调仓日产生；当时卖不掉（跌停/停牌）就**留到下一个调仓日**，
@@ -282,7 +355,9 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         diag={"fill": fill, "cost": cost, "capital": capital, "hold_days": None,
               "strict_limit": bool(strict_limit), "lot": lot, "n_codes": len(codes),
               "missing_codes": prep["missing"][:20], "limits_from": "period_roll",
-              "rolls": int(len(targets))},
+              "rolls": int(len(targets)),
+              # ★ v2.4.3：离场通道是否生效 / 未生效的原因 ✓（形态不符时**关掉离场**而不崩 ✓）
+              "exit_enabled": bool(exit_mat is not None), "exit_note": _exit_off},
     )
     out.trades = _trades_frame(trades[:20000], _date_arr, codes, half)
     out.rejects = pd.DataFrame(
@@ -311,6 +386,16 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         "rejects_suspended": sum(1 for r in rejects if r[2] == "suspended"),
         "rejects_no_cash": sum(1 for r in rejects if r[2] == "no_cash"),
         "rejects_total": len(rejects),
+        # ★ v2.4.3：离场通道五个计数（口径见函数开头"期中离场通道"注释 ✓）——
+        #   `exit_signals` 持仓中触发次数 ｜ `exit_sells` 实际卖出笔数 ｜
+        #   `exit_deferrals` 卖不掉被顺延的**天数** ｜ `exit_ignored` 持币期间空转次数 ｜
+        #   `exit_overridden` 调仓日被名单覆盖（"同日进出不交易"✓）的次数
+        "exit_enabled": bool(exit_mat is not None),
+        "exit_signals": int(exit_signals),
+        "exit_sells": int(exit_sells),
+        "exit_deferrals": int(exit_deferrals),
+        "exit_ignored": int(exit_ignored),
+        "exit_overridden": int(exit_overridden),
         "perf": _perf(net),
         "rolls": int(len(targets)),
     }
