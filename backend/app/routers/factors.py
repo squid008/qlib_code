@@ -961,6 +961,11 @@ def single_factor_test(req: SingleFactorTestRequest):
         per_h: dict[int, list] = {}       # 周期 -> 该周期全部因子的结果
         fatal_all: str = ""               # 致命错误（共享执行体整体异常）
         done_set: set = set()             # 已完成的预测周期
+        # ★ v2.4.3：离场因子的**跨作用域箱**（`_run_shared` 是内层函数 ⇒ 它里头的局部变量
+        #   外层看不见 ✗）。⚠ 这里必须有：装配段（`t.join()` 之后）要用 mask/stats/cache ✓ ——
+        #   第一版把它们定义在 `_run_shared` 里 ⇒ **CI 的 ruff F821 当场点名** ✗
+        #   （若不修，运行时会 NameError ⇒ **每个**单因子测试的装配段都会炸 ✗）。
+        _exit_box: dict = {"mask": None, "stats": None, "cache": {}, "err": ""}
 
         def _run_shared() -> None:
             """多周期共享一次特征加载的单执行体（根治"并行多周期各自重复加载"）。
@@ -1010,9 +1015,9 @@ def single_factor_test(req: SingleFactorTestRequest):
                 # v2.1.0：出参 —— **每期持仓索引**（导出 XLSX 的「持仓明细」页用 ✓）。
                 # 持仓在测试进程内算完即丢 ✗ ⇒ 顺手存一份（`has()` 为假时任务状态里不落键 ✓）
                 _hks = HoldingsIndex()
-                # ★ v2.4.3：离场因子的出参（布尔信号 + 触发率预检 ✓）与"信号→矩阵"缓存 ✓
+                # ★ v2.4.3：离场因子的出参（布尔信号 + 触发率预检 ✓）—— 结果写进**外层**的
+                #   `_exit_box` ✓（本函数是嵌套函数，写自己局部变量外层看不见 ✗）
                 _exit_out: dict = {}
-                _exit_cache: dict = {}
                 res = run_single_factor_tests(
                     label_horizons=horizons,
                     fill=req.fill,      # v2.1.23（B ①）：成交时点（t1_close 默认 / t1_open ✓）
@@ -1045,9 +1050,11 @@ def single_factor_test(req: SingleFactorTestRequest):
                     exit_out=_exit_out,
                 )
                 # ★ v2.4.3：离场信号（布尔 Series ✓）与触发率预检（给前端显示 ✓）
-                _exit_mask = _exit_out.get("mask")
-                _exit_stats = _exit_out.get("stats") or ({"error": _exit_out["error"]}
-                                                         if _exit_out.get("error") else None)
+                #   ⚠ 写进外层 `_exit_box`（见它的注释 ✓）
+                _exit_box["mask"] = _exit_out.get("mask")
+                _exit_box["stats"] = (_exit_out.get("stats")
+                                      or ({"error": _exit_out["error"]}
+                                          if _exit_out.get("error") else None))
                 if _exit_out.get("error"):
                     state["_exit_error"] = _exit_out["error"]
                 with lock:
@@ -1137,7 +1144,7 @@ def single_factor_test(req: SingleFactorTestRequest):
 
                         row["period_roll"] = _attach_period_roll(
                             req, hk_state, row, progress_cb=_pc,
-                            exit_mask=_exit_mask, exit_cache=_exit_cache)
+                            exit_mask=_exit_box["mask"], exit_cache=_exit_box["cache"])
                     else:
                         state["extra_prog"] = 100.0 * _cell / max(1, _cells)
                     items.append(row)
@@ -1147,7 +1154,7 @@ def single_factor_test(req: SingleFactorTestRequest):
                 message=f"完成（{n_h} 个预测周期）" if n_h > 1 else "完成",
                 result={"items": items, "total": len(items),
                         # ★ v2.4.3：离场因子回显（含**触发率预检** ✓ —— 用户定的 >50% 前端黄字 ✓）
-                        "exit_stats": _exit_stats,
+                        "exit_stats": _exit_box["stats"],
                         "exit_factor": ({"name": req.exit_factor.name, "id": req.exit_factor.id}
                                         if req.exit_factor is not None else None),
                         "exit_threshold": float(req.exit_threshold)},
