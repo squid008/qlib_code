@@ -745,12 +745,12 @@
     "expression": "Mul(-1,Log($market_cap))",
     "codegen": "1.21.4",
     "created_at": "2026-10-11 21:10:48",
-    "updated_at": "2026-10-16 06:59:36",
+    "updated_at": "2026-10-16 07:00:23",
     "author": "u-8bcb1f27",
     "author_user": "Administrator",
-    "pinned": true,
+    "pinned": false,
     "author_modified_by": "u-8bcb1f27",
-    "sort_key": -19.0
+    "sort_key": -12.0
   },
   {
     "id": "93ba51835c61",
@@ -801,11 +801,11 @@
     "expression": "Lt($close,Mul($entry_price,0.88))",
     "codegen": "1.21.4",
     "created_at": "2026-10-16 06:58:30",
-    "updated_at": "2026-10-16 06:59:36",
+    "updated_at": "2026-10-16 07:00:24",
     "author": "u-8bcb1f27",
     "author_user": "Administrator",
-    "sort_key": -18.0,
-    "pinned": true,
+    "sort_key": -13.0,
+    "pinned": false,
     "author_modified_by": "u-8bcb1f27"
   },
   {
