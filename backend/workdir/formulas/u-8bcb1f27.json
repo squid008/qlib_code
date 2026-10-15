@@ -792,5 +792,16 @@
     "updated_at": "2026-10-15 14:13:03",
     "author": "u-8bcb1f27",
     "author_user": "Administrator"
+  },
+  {
+    "id": "3a124aedeb04",
+    "name": "入场价止损",
+    "text": "入场价止损:c<entry_price*0.88;",
+    "expression": "Lt($close,Mul($entry_price,0.88))",
+    "codegen": "1.21.4",
+    "created_at": "2026-10-16 06:58:30",
+    "updated_at": "2026-10-16 06:58:30",
+    "author": "u-8bcb1f27",
+    "author_user": "Administrator"
   }
 ]
