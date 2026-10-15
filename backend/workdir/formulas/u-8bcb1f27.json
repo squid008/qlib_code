@@ -803,5 +803,16 @@
     "updated_at": "2026-10-16 06:58:30",
     "author": "u-8bcb1f27",
     "author_user": "Administrator"
+  },
+  {
+    "id": "449fce2a305e",
+    "name": "首次入场价止损",
+    "text": "首次入场价止损:c<entry_first*0.95;",
+    "expression": "Lt($close,Mul($entry_first,0.95))",
+    "codegen": "1.21.4",
+    "created_at": "2026-10-16 06:59:20",
+    "updated_at": "2026-10-16 06:59:20",
+    "author": "u-8bcb1f27",
+    "author_user": "Administrator"
   }
 ]
