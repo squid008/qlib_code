@@ -388,6 +388,8 @@ export default function TopkCurveModal({ open, onClose, name, row, taskId }: Pro
     deltaAnn: number
     deltaDd: number
     err: string
+    /** ★ v2.5.1：这条离场的净值（日期 → 净值 ✓）⇒ 用来**画曲线** ✓ */
+    m: Map<string, number>
   }[] => {
     const groups = row?.exit_rolls
     const list = groups && groups.length
@@ -398,6 +400,13 @@ export default function TopkCurveModal({ open, onClose, name, row, taskId }: Pro
       : [{ name: '含离场', pr: exObj }]
     return list.map(({ name, pr }) => {
       const perf = pr?.perf ?? null
+      const m = new Map<string, number>()
+      const ds = pr?.dates ?? []
+      const vs = pr?.nav ?? []
+      for (let i = 0; i < ds.length; i++) {
+        const v = vs[i]
+        if (typeof v === 'number' && Number.isFinite(v)) m.set(ds[i], v)
+      }
       return {
         name,
         perf,
@@ -405,9 +414,17 @@ export default function TopkCurveModal({ open, onClose, name, row, taskId }: Pro
         deltaAnn: (perf?.annual_return ?? 0) - (prPerf?.annual_return ?? 0),
         deltaDd: (perf?.max_drawdown ?? 0) - (prPerf?.max_drawdown ?? 0),
         err: String(pr?.error ?? ''),
+        m,
       }
     })
   })()
+  /**
+   * ★★ v2.5.1（用户 2026-10-15："我负市值对数跟离场因子的 S 点一起测，怎么没有回测曲线结果"
+   * ✓）：**把每个离场那条同口径净值也画到图上** ✗→✓ ——
+   * 此前只画了「对照」（`pr` ✓），离场的结果只进了指标表 ⇒ 界面上"看不到回测曲线" ✗
+   * （数据一直都在 ✓ —— 现场取证：任务的 `exit_rolls` 里净值/指标齐全 ✓）。
+   */
+  const EXIT_COLORS = ['#7c3aed', '#059669', '#d97706', '#2563eb', '#db2777', '#0891b2']
   const exDdDeep = (v: unknown) =>
     typeof v === 'number' && Number.isFinite(v) && Math.abs(v) >= 0.30
 
@@ -430,6 +447,11 @@ export default function TopkCurveModal({ open, onClose, name, row, taskId }: Pro
       basis === 'compound' ? (benchItem?.cum_compound ?? benchItem?.cum) : benchItem?.cum
     const st = stride(tc.dates.length)
     const pr = (d: string): number | null => (prMap.size ? (prMap.get(d) ?? null) : null)
+    // ★ v2.5.1：每个离场各一条序列（`ex0…` ✓ —— 与 `exitRows` 同序 ✓）
+    const exOf = (d: string): Record<string, number | null> =>
+      Object.fromEntries(
+        exitRows.map((g, k) => [`ex${k}`, g.m.size ? (g.m.get(d) ?? null) : null]),
+      ) as Record<string, number | null>
     const pick = (i: number) => ({
       d: tc.dates[i],
       c0: nav(cv['0.0000']?.[i]),
@@ -437,13 +459,17 @@ export default function TopkCurveModal({ open, onClose, name, row, taskId }: Pro
       c8: nav(cv['0.0080']?.[i]),
       b: nav(bv?.[i]),
       pr: pr(tc.dates[i]),
+      ...exOf(tc.dates[i]),
     })
     // v1.18.56 起点对齐：后端 `curves` / 基准 `cum` 的**首值都是「第一期结束时」**
     // （实测 csi300：组合 −5.49%、沪深300 +2.47% 都在第 0 位）⇒ 直接画会让两条线起点
     // 各偏一边（0.945 / 1.025）。这里在序列**最前面补一个「起点」点（值 = 1）**，
     // 使组合 / 三档成本 / 基准的起点统一为 1。
     const out: Record<string, number | string | null>[] = [
-      { d: '起点', c0: 1, c4: 1, c8: 1, b: 1, pr: prMap.size ? 1 : null },
+      { d: '起点', c0: 1, c4: 1, c8: 1, b: 1, pr: prMap.size ? 1 : null,
+        ...(exitRows.length
+          ? Object.fromEntries(exitRows.map((g, k) => [`ex${k}`, g.m.size ? 1 : null]))
+          : {}) },
     ]
     for (let i = 0; i < tc.dates.length; i += st) out.push(pick(i))
     const last = tc.dates.length - 1
@@ -451,7 +477,9 @@ export default function TopkCurveModal({ open, onClose, name, row, taskId }: Pro
       out.push(pick(last))
     }
     return out
-  }, [tc, item, benchItem, basis, prMap])
+    // ★ v2.5.1：依赖用**稳定的 props**（`row.exit_rolls` / `idx` ✓）而不是每轮新建的 `exitRows` ✗
+    //   —— 序列值由 `exitRows` 现读 ✓（它随 `exit_rolls`/`idx` 变 ✓，口径与上面一致 ✓）。
+  }, [tc, item, benchItem, basis, prMap, row?.exit_rolls, idx, row])
 
   /** 取序列末尾的有效值（跳过尾部的 null/缺失）。 */
   const lastOf = (arr: (number | null)[] | undefined) => {
@@ -1052,6 +1080,22 @@ export default function TopkCurveModal({ open, onClose, name, row, taskId }: Pro
                     strokeWidth={1.8}
                     hide={!!hidden.pr}
                   />
+                )}
+                {/* ★★ v2.5.1（用户 2026-10-15 ✓）：**每个离场各画一条**（与上面那行指标/对比表同源 ✓）
+                    —— 此前只有对照（`pr`）画出来了，离场只进指标表 ⇒ 用户以为"没有回测曲线" ✗ */}
+                {exitRows.map((g, k) =>
+                  g.m.size > 0 ? (
+                    <Line
+                      key={`ex${k}`}
+                      type="monotone"
+                      dataKey={`ex${k}`}
+                      name={`含离场「${g.name}」`}
+                      stroke={EXIT_COLORS[k % EXIT_COLORS.length]}
+                      dot={false}
+                      strokeWidth={1.8}
+                      hide={!!hidden[`ex${k}`]}
+                    />
+                  ) : null,
                 )}
                 {benchItem && (
                   <Line

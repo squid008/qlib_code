@@ -490,6 +490,9 @@ export default function SingleFactorTestPanel({
   //   · 勾了离场 ⇒ 后端自动开 `period_roll` ✓（这里也把那个勾打上，免得用户困惑 ✓）；
   //   · 结果 = **矩阵**：`进场 × (1 + 离场数)` 条同源同口径回测 ✓（"不离场"对照必算 ✓），
   //     并给**逐个离场**的触发率预检（> 50% 黄字 ✓）与**离场事件研究**（触发后 h 日 vs 未触发 ✓）。
+  //   ★ v2.5.1（用户："改成勾选再显示面板吧，不然一大堆总是显示看着碍眼" ✓）：`exitOn` 默认关 ✓
+  //     —— 标签面板只在勾上后展开 ✓（几百条时列表内可滚动 ✓）。
+  const [exitOn, setExitOn] = useState(false)
   const [exitKeys, setExitKeys] = useState<Set<string>>(new Set())
   const [exitThresholdText, setExitThresholdText] = useState('0')
   const [exitsInfo, setExitsInfo] = useState<ExitFactorPayload[]>([])
@@ -800,8 +803,9 @@ export default function SingleFactorTestPanel({
       return
     }
     // ★ v2.4.3 / v2.5.0：离场因子（**多选** ✓；用户定的"同公式⇒直接拦"✓ —— 前端先拦，后端再 400 ✓）
-    const exitItems = (groups.find((g) => g.source === 'custom')?.items ?? [])
-      .filter((it) => exitKeys.has(it.key))
+    const exitItems = exitOn
+      ? (groups.find((g) => g.source === 'custom')?.items ?? []).filter((it) => exitKeys.has(it.key))
+      : []
     const exitDup = exitItems.find((it) => selected.has(it.key))
     if (exitDup) {
       setError(
@@ -973,10 +977,12 @@ export default function SingleFactorTestPanel({
       const qCols = Math.max(5, ...results.map((r) => r.quintile_ret?.length ?? 0))
       const headers = exportHeaders(qCols)
       const aoa: (string | number)[][] = [headers]
+      // ⚠ `dash` 原先声明在下面的 for 里 ✗ ⇒ 下面的「离场矩阵」块用不到（TS2304 ✓）
+      //   ⇒ 提到函数作用域 ✓（2026-10-15 v2.5.1 加离场矩阵那页时踩到的 ✓）。
+      const dash = '-'
       for (const r of results) {
         const formula = r.source_formula || srcByKey.get(`${r.source}:${r.id}`) || r.expression || ''
         const horizon = r.horizon != null ? String(r.horizon) : '-'
-        const dash = '-'
         if (r.error) {
           aoa.push([
             r.name, r.source, horizon, formula,
@@ -1035,9 +1041,68 @@ export default function SingleFactorTestPanel({
         seen.add(key)
         fAoa.push([r.name, r.source, r.source_formula || srcByKey.get(key) || r.expression || ''])
       }
+      /* ★★ v2.5.1（用户 2026-10-15："待办的导出加上" ✓）：**离场矩阵**单独一页 ——
+          行 = （进场因子 × 周期）×（对照 + 每个离场）✓，列 = 年化 / 最大回撤 / Δ年化 / Δ回撤 /
+          离场卖出 / 顺延 / 被名单覆盖 / 持币空转 / 触发率 / 离场事件研究（触发后 − 未触发 pp）✓。
+          ⚠ 触发率与事件研究来自任务级回显（`exitsInfo` ✓，按名字匹配 ✓）—— 不在结果行里 ✗。 */
+      const exAoa: (string | number)[][] = [[
+        '进场因子', '进场来源', '周期(天)', '离场因子', '年化', '最大回撤', 'Δ年化(pp)', 'Δ回撤(pp)',
+        '离场卖出(笔)', '顺延(天)', '被名单覆盖(次)', '持币空转(次)', '触发率(%)',
+        '离场事件研究(触发后−未触发, pp)', '备注',
+      ]]
+      let exRows = 0
+      const pct1 = (v: unknown) =>
+        typeof v === 'number' && Number.isFinite(v) ? (v * 100).toFixed(1) : dash
+      for (const r of results) {
+        const groups = r.exit_rolls ?? []
+        if (!groups.length) continue
+        const base = r.period_roll?.perf ?? r.period_roll_items?.[0]?.perf ?? null
+        exAoa.push([
+          r.name, r.source, r.horizon != null ? String(r.horizon) : dash,
+          '（不离场 · 对照）',
+          base ? pct1(base.annual_return) : dash,
+          base ? pct1(base.max_drawdown) : dash,
+          '—', '—', '—', '—', '—', '—', '—', '—', '必算的对照列',
+        ])
+        exRows++
+        for (const g of groups) {
+          const nm = g?.exit?.name || g?.exit?.id || '?'
+          const first = g?.first ?? {}
+          const perf = first.perf ?? null
+          const st = (first.stats ?? {}) as Record<string, number | undefined>
+          const info = exitsInfo.find((e) => (e.name || '') === nm)
+          const pre = info?.stats
+          const effKey = info?.effect ? Object.keys(info.effect)[0] : ''
+          const eff = effKey && info?.effect ? info.effect[effKey] : null
+          exAoa.push([
+            r.name, r.source, r.horizon != null ? String(r.horizon) : dash, nm,
+            perf ? pct1(perf.annual_return) : dash,
+            perf ? pct1(perf.max_drawdown) : dash,
+            perf && base
+              ? ((perf.annual_return ?? 0) - (base.annual_return ?? 0) >= 0 ? '+' : '') +
+                (((perf.annual_return ?? 0) - (base.annual_return ?? 0)) * 100).toFixed(1)
+              : dash,
+            perf && base
+              ? ((perf.max_drawdown ?? 0) - (base.max_drawdown ?? 0) >= 0 ? '+' : '') +
+                (((perf.max_drawdown ?? 0) - (base.max_drawdown ?? 0)) * 100).toFixed(1)
+              : dash,
+            st.exit_sells ?? dash,
+            st.exit_deferrals ?? dash,
+            st.exit_overridden ?? dash,
+            st.exit_ignored ?? dash,
+            pre?.rate != null ? (pre.rate * 100).toFixed(1) : dash,
+            eff && eff.diff_mean != null ? (eff.diff_mean * 100).toFixed(2) : dash,
+            String(first.error ?? ''),
+          ])
+          exRows++
+        }
+      }
       const wb = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '因子指标')
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(fAoa), '因子与公式')
+      if (exRows > 0) {
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(exAoa), '离场矩阵')
+      }
       const now = new Date()
       const pad = (n: number) => String(n).padStart(2, '0')
       XLSX.writeFile(
@@ -1446,75 +1511,100 @@ export default function SingleFactorTestPanel({
         }
         return (
           <div className="mb-3 border rounded p-2 bg-white dark:bg-slate-800">
-            <div className="flex items-center gap-2 flex-wrap">
+            {/* ★ v2.5.1（用户 2026-10-15："改成勾选再显示面板吧，不然一大堆总是显示看着碍眼" ✓）：
+                **默认收起**，勾上才展开标签面板 ✓（不勾 = 完全不碰离场 ⇒ 只跑现在的对照 ✓）。 */}
+            <label className="flex items-center gap-2 cursor-pointer flex-wrap">
+              <input
+                type="checkbox"
+                checked={exitOn}
+                onChange={(e) => {
+                  const on = e.target.checked
+                  setExitOn(on)
+                  if (!on) setExitKeys(new Set())     // 关掉 ⇒ 清空（免得"看不见却在生效" ✗）
+                }}
+              />
               <span className="font-semibold text-slate-600 dark:text-slate-300">
-                离场因子（卖出侧 · 可多选 ⇒ 出矩阵）
+                启用离场因子测试（卖出侧 · 可多选 ⇒ 出矩阵）
               </span>
-              <span className="text-slate-400 text-[11px]">
-                已选 {picked.length} 个 ⇒ 每个进场因子会跑 {1 + picked.length} 条同口径回测
-                （1 条"不离场"对照 + {picked.length} 条含离场）
+              <span className={exitOn ? 'text-slate-500 text-[11px]' : 'text-slate-400 text-[11px]'}>
+                {exitOn
+                  ? `已选 ${picked.length} 个 ⇒ 每个进场因子会跑 ${1 + picked.length} 条同口径回测（1 条"不离场"对照 + ${picked.length} 条含离场）`
+                  : '不勾 = 只跑现有回测（不含离场）；勾上后每个进场因子会多跑"对照 + 每个离场"各一条（⚠ 慢：离场只作用在真金白银那条回测上）'}
               </span>
-              <label className="flex items-center gap-1 text-[11px] text-slate-500">
-                阈值 &gt;
-                <input
-                  className="w-16 border rounded px-1 py-0.5 text-[11px]"
-                  value={exitThresholdText}
-                  onChange={(e) => setExitThresholdText(e.target.value)}
-                  title="离场判据：因子值 > 该阈值 ⇒ 离场。默认 0 —— 二值信号（如 BS=2/-2 那类）与连续因子同一套口径；多个离场共用这一个阈值"
-                />
-              </label>
-            </div>
-            {items.length > 0 && (
-              <div className="mt-1 max-h-32 overflow-y-auto flex flex-wrap gap-1">
-                {items.map((it) => {
-                  const on = exitKeys.has(it.key)
-                  const isDup = on && selected.has(it.key)
+            </label>
+            {exitOn && (
+              <>
+                <div className="flex items-center gap-2 flex-wrap mt-1">
+                  <label className="flex items-center gap-1 text-[11px] text-slate-500">
+                    阈值 &gt;
+                    <input
+                      className="w-16 border rounded px-1 py-0.5 text-[11px]"
+                      value={exitThresholdText}
+                      onChange={(e) => setExitThresholdText(e.target.value)}
+                      title="离场判据：因子值 > 该阈值 ⇒ 离场。默认 0 —— 二值信号（如 BS=2/-2 那类）与连续因子同一套口径；多个离场共用这一个阈值"
+                    />
+                  </label>
+                  <span className="text-slate-400 text-[11px]">
+                    共 {items.length} 条公式（列表内可滚动 ✓）；点标签加入 / 移出
+                  </span>
+                </div>
+                {items.length > 0 && (
+                  // ⚠ 几百条时必须有滚动条（用户 2026-10-15："几百个就要加滚动条" ✓）
+                  <div className="mt-1 max-h-40 overflow-y-auto flex flex-wrap gap-1 pr-1 border border-slate-100 dark:border-slate-700 rounded p-1">
+                    {items.map((it) => {
+                      const on = exitKeys.has(it.key)
+                      const isDup = on && selected.has(it.key)
+                      return (
+                        <button
+                          key={it.key}
+                          type="button"
+                          onClick={() => toggleExit(it.key)}
+                          title={isDup
+                            ? '这个公式已经勾在「进场」里了 ✗ ⇒ 同进同出会永远开不了仓（净值恒 1）'
+                            : '点一下加入/移出离场（因子值 > 阈值 ⇒ T+1 卖出）'}
+                          className={`px-1.5 py-0.5 rounded border text-[11px] ${
+                            isDup
+                              ? 'bg-red-600 text-white border-red-600'
+                              : on
+                                ? 'bg-amber-500 text-white border-amber-500'
+                                : 'border-slate-200 dark:border-slate-600 hover:border-amber-400'
+                          }`}
+                        >
+                          {it.name}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+                {items.length === 0 && (
+                  <p className="mt-1 text-slate-400 text-[11px]">还没有自定义公式 ⇒ 先去「公式库」存一条 ✓</p>
+                )}
+                {dupItem && (
+                  <p className="mt-1 text-red-500 text-[11px]">
+                    「{dupItem.name}」既是进场又是离场 ✗ ⇒ 同日进+出时按「不交易」规则会永远开不了仓
+                    （净值恒 1 一条线）⇒ 请把它从一侧去掉 ✓
+                  </p>
+                )}
+                {picked.filter((it) => it.key !== dupItem?.key).map((it) => {
+                  const info = exitsInfo.find((e) => (e.name || '') === it.name)
+                  const st = info?.stats
+                  const rate = st?.rate ?? 0
+                  const eff = effOf(it.name)
                   return (
-                    <button
-                      key={it.key}
-                      type="button"
-                      onClick={() => toggleExit(it.key)}
-                      title={isDup
-                        ? '这个公式已经勾在「进场」里了 ✗ ⇒ 同进同出会永远开不了仓（净值恒 1）'
-                        : '点一下加入/移出离场（因子值 > 阈值 ⇒ T+1 卖出）'}
-                      className={`px-1.5 py-0.5 rounded border text-[11px] ${
-                        isDup
-                          ? 'bg-red-600 text-white border-red-600'
-                          : on
-                            ? 'bg-amber-500 text-white border-amber-500'
-                            : 'border-slate-200 dark:border-slate-600 hover:border-amber-400'
-                      }`}
-                    >
-                      {it.name}
-                    </button>
+                    <p key={it.key}
+                       className={'mt-1 text-[11px] ' + (rate > 0.5 ? 'text-amber-600' : 'text-slate-500')}>
+                      「{it.name}」触发率：{st
+                        ? `${(rate * 100).toFixed(1)}%（${st.hit_cells ?? '-'}/${st.n_cells ?? '-'} 格，日均 ${st.avg_per_day ?? '-'} 只）`
+                        : '跑完后显示'}
+                      {rate > 0.5 ? '　⚠ 触发过半 ⇒ 近似「只持有 1 天」，请先确认口径 ✓' : ''}
+                      {eff
+                        ? `　｜ 离场事件研究（${eff.horizon ?? '-'} 日）：触发后 ${((eff.mean_trig ?? 0) * 100).toFixed(2)}% vs 未触发 ${((eff.mean_ctrl ?? 0) * 100).toFixed(2)}%（差 ${((eff.diff_mean ?? 0) * 100).toFixed(2)}pp，样本 ${eff.n_trig ?? '-'}）`
+                        : ''}
+                    </p>
                   )
                 })}
-              </div>
+              </>
             )}
-            {items.length === 0 && (
-              <p className="mt-1 text-slate-400 text-[11px]">还没有自定义公式 ⇒ 先去「公式库」存一条 ✓</p>
-            )}
-            {dupItem && (
-              <p className="mt-1 text-red-500 text-[11px]">
-                「{dupItem.name}」既是进场又是离场 ✗ ⇒ 同日进+出时按「不交易」规则会永远开不了仓
-                （净值恒 1 一条线）⇒ 请把它从一侧去掉 ✓
-              </p>
-            )}
-            {picked.filter((it) => it.key !== dupItem?.key).map((it) => {
-              const info = exitsInfo.find((e) => (e.name || '') === it.name)
-              const st = info?.stats
-              const rate = st?.rate ?? 0
-              const eff = effOf(it.name)
-              return (
-                <p key={it.key} className={'mt-1 text-[11px] ' + (rate > 0.5 ? 'text-amber-600' : 'text-slate-500')}>
-                  「{it.name}」触发率：{st ? `${((rate) * 100).toFixed(1)}%（${st.hit_cells ?? '-'}/${st.n_cells ?? '-'} 格，日均 ${st.avg_per_day ?? '-'} 只）` : '跑完后显示'}
-                  {rate > 0.5 ? '　⚠ 触发过半 ⇒ 近似「只持有 1 天」，请先确认口径 ✓' : ''}
-                  {eff
-                    ? `　｜ 离场事件研究（${eff.horizon ?? '-'} 日）：触发后 ${(((eff.mean_trig ?? 0) * 100)).toFixed(2)}% vs 未触发 ${(((eff.mean_ctrl ?? 0) * 100)).toFixed(2)}%（差 ${(((eff.diff_mean ?? 0) * 100)).toFixed(2)}pp，样本 ${eff.n_trig ?? '-'}）`
-                    : ''}
-                </p>
-              )
-            })}
           </div>
         )
       })()}
