@@ -49,24 +49,46 @@ import numpy as np
 
 Skel = tuple
 
+
+def _cmp(ufunc):
+    """比较算子：**必须 `np.asarray` 兜一层** ✗。
+
+    ⚠ 2026-10-15 对拍抓到的真 bug ✓：首根 `("p", j, k)` 越界返回的是**标量 0**（不是数组 ✓），
+    于是 `Lt(REF(STEP,1), 0.2)` 在首根就变成"两个标量比大小" ⇒ 结果是 **Python `bool`** ✗ ⇒
+    `.astype(np.float64)` 报 `'bool' object has no attribute 'astype'` ✗（用户公式一跑就炸 ✗）。
+    `np.asarray(..., dtype=float64)` 同时覆盖"标量 ⇒ 0 维数组"与"数组 ⇒ 数组"两种情况 ✓，
+    且对 NaN 的语义与面板一致（`NaN > x` ⇒ False ⇒ 0 ✓）。
+    """
+    def _f(a, b):
+        with np.errstate(all="ignore"):
+            return np.asarray(ufunc(a, b), dtype=np.float64)
+    return _f
+
+
+def _logic(kind: str):
+    """And/Or：与面板一致 —— **先 fillna(0) 再 !=0** ✓（NaN 记 0 ⇒ 假 ✓）。"""
+    def _f(a, b):
+        with np.errstate(all="ignore"):
+            ma, mb = (_nan0(a) != 0), (_nan0(b) != 0)
+            m = (ma & mb) if kind == "And" else (ma | mb)
+            return np.asarray(m, dtype=np.float64)
+    return _f
+
 #: 组内允许的算子（逐元素；语义必须与 `panel_expr._apply` **逐位一致** ✓）
 _OPS: Dict[str, object] = {
-    "Add": lambda a, b: a + b,
-    "Sub": lambda a, b: a - b,
-    "Mul": lambda a, b: a * b,
-    "Div": lambda a, b: a / b,
+    # 算术：用 numpy ufunc（不是 Python 运算符 ✗）—— 两个标量时 Python 的 `0/0` 会抛
+    # ZeroDivisionError ✗，而面板口径是"出 inf/nan、由后续清洗处理"✓（与 `_NUM_UFUNC` 一致 ✓）。
+    "Add": np.add, "Sub": np.subtract, "Mul": np.multiply, "Div": np.divide,
     # 比较：qlib/面板口径 = ufunc 结果再 astype(float64) ✓（NaN 比较恒 False ⇒ 0 ✓）
-    "Gt": lambda a, b: (a > b).astype(np.float64),
-    "Ge": lambda a, b: (a >= b).astype(np.float64),
-    "Lt": lambda a, b: (a < b).astype(np.float64),
-    "Le": lambda a, b: (a <= b).astype(np.float64),
-    "Eq": lambda a, b: (a == b).astype(np.float64),
-    "Ne": lambda a, b: (a != b).astype(np.float64),
+    # ⚠ 一律走 `_cmp`（内部 asarray）⇒ 标量 vs 标量也不会炸 ✗（首根越界那条 ✓）
+    "Gt": _cmp(np.greater), "Ge": _cmp(np.greater_equal),
+    "Lt": _cmp(np.less), "Le": _cmp(np.less_equal),
+    "Eq": _cmp(np.equal), "Ne": _cmp(np.not_equal),
     # 逻辑：面板口径 = **先 fillna(0) 再 !=0** ✓（NaN 记 0 ⇒ 假 ✓，与 numpy 的 NaN!=0 为真不同 ✗）
-    "And": lambda a, b: ((_nan0(a) != 0) & (_nan0(b) != 0)).astype(np.float64),
-    "Or": lambda a, b: ((_nan0(a) != 0) | (_nan0(b) != 0)).astype(np.float64),
+    "And": _logic("And"),
+    "Or": _logic("Or"),
     # IF：面板口径 = `a.where(cond.astype(bool), b)` ✓ ⇒ cond 为 NaN 时取 **a** ✓
-    "If": lambda c, a, b: np.where(_truthy(c), a, b),
+    "If": lambda c, a, b: np.asarray(np.where(_truthy(c), a, b), dtype=np.float64),
     "Abs": np.abs, "Sqrt": np.sqrt, "Log": np.log, "Exp": np.exp, "Sgn": np.sign,
     # MAX/MIN（通达信 = 两值取大/小 ⇒ codegen 出 Greater/Less）：
     # ⚠ 必须与面板一致：**NaN 时取另一个** ✓（`np.where(a>=b,a,b)`，不是 np.fmax ✗）

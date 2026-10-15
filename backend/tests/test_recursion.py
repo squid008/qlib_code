@@ -126,6 +126,25 @@ def test_kernel_pre_arrays():
     assert a[:, 0].tolist() == [10.0, 30.0, 60.0]         # 10+0, 20+10, 30+30 ✓（累加 ✓）
 
 
+def test_kernel_scalar_comparison_on_first_bar():
+    """★ 回归（2026-10-15 对拍抓到的**真 bug** ✓）：首根 `("p",j,k)` 越界返回的是**标量 0** ✗
+    （不是数组 ✓）⇒ "两个标量比大小"在 Python 里返回 **bool** ✗ ⇒ 原来会直接炸
+    `'bool' object has no attribute 'astype'` ✗（用户公式一跑就报这个 ✗）。
+    现在比较/算术/逻辑一律走 numpy ⇒ 标量与数组一视同仁 ✓。
+    """
+    skels = [("If", [("Lt", [("p", 0, 1), ("c", 0.2)]), ("c", 1.0), ("c", 0.0)])]
+    a, = run_group(skels, 1, [], np.ones((3, 1), dtype=bool))
+    assert a[:, 0].tolist() == [1.0, 0.0, 1.0]
+
+
+def test_kernel_scalar_arithmetic_does_not_raise():
+    """两个标量相除（`Div(0,0)`）在 Python 里会抛 ZeroDivisionError ✗ ⇒ 必须走 numpy ✓。"""
+    skels = [("Div", [("c", 0.0), ("c", 0.0)]), ("Mul", [("c", 2.0), ("c", 3.0)])]
+    a, b = run_group(skels, 2, [], np.ones((2, 1), dtype=bool))
+    assert np.isnan(a[:, 0]).all(), "0/0 应为 NaN（而不是抛异常 ✓）"
+    assert b[:, 0].tolist() == [6.0, 6.0]
+
+
 def test_kernel_rejects_sequence_ops():
     """组内用窗口/序列算子（如 MA）⇒ **能自助的错** ✓（不是莫名 KeyError ✗）。"""
     from app.factors.recursion import RecursionError_

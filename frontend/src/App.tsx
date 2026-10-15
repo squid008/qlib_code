@@ -23,6 +23,8 @@ import {
   switchDataset,
   setFormulaPinned,          // ★ v2.1.45：置顶 / 取消置顶 ✓
 } from './api'
+// ★ 2026-10-15：前端自己的版本号（与后端 /api/version 比对，不一致 ⇒ 顶栏标黄 ✓）
+import { FE_VERSION } from './version'
 import type { BacktestCapacity, CustomFormula, CustomFormulaConflict } from './api'
 import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog, DatasetsStatus } from './types'
 import DatasetPicker from './components/DatasetPicker'
@@ -100,7 +102,8 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [capacity, setCapacity] = useState<BacktestCapacity | null>(null)
-  const [version, setVersion] = useState('')
+  // ★ 2026-10-15：**后端**返回的版本号（与**前端自己的** FE_VERSION 一起显示，不一致就标黄 ✓）
+  const [backendVersion, setBackendVersion] = useState('')
   // 数据集（口径）切换：cn_data=米筐/qlib、cn_data2=tushare（主）、cn_data3=qlib 官方原始（仅行情 ✓）
   const [datasets, setDatasets] = useState<DatasetsStatus | null>(null)
   // 触发历史回测面板刷新：递增该 key 即可让 HistoryPanel 自动 load（用于"任务取消/完成后自动更新"）
@@ -203,9 +206,9 @@ export default function App() {
     }
   }, [showSingleTestPanel])
 
-  // 加载版本号
+  // 加载**后端**版本号（前端自己的版本是编译期的 FE_VERSION 常量 ✓）
   useEffect(() => {
-    getAppVersion().then((v) => setVersion(v.version)).catch(() => {})
+    getAppVersion().then((v) => setBackendVersion(v.version)).catch(() => {})
   }, [])
 
   // 数据集（口径）列表 + 当前生效项（切换是**后端全局状态** ✓，前端只是触发器 ✓）
@@ -1115,9 +1118,29 @@ export default function App() {
         <div className="flex items-center justify-between gap-4">
           <h1 className="text-xl font-bold">Qlib 量化回测平台</h1>
           <div className="flex items-center gap-3">
-            {version && (
-              <span className="text-sm text-slate-400 font-mono">v{version}</span>
-            )}
+            {/* ★ 2026-10-15（用户要求 ✓）：顶栏同时体现**前端自己的版本**（FE_VERSION ✓）
+                与**后端返回的版本**（/api/version ✓）——
+                两边不一致 ⇒ **标黄**，一眼看出"是不是后端没重启 / 前端是旧静态资源" ✓
+                （只显示后端版本的话，那三种情况在界面上长得一模一样 ✗）。 */}
+            <span
+              className={
+                backendVersion && backendVersion !== FE_VERSION
+                  ? 'text-sm font-mono font-semibold text-amber-300'
+                  : 'text-sm text-slate-400 font-mono'
+              }
+              title={
+                backendVersion && backendVersion !== FE_VERSION
+                  ? `前后端版本不一致 ⚠\n前端（页面资源）：v${FE_VERSION}\n后端（正在跑的服务）：v${backendVersion}\n\n` +
+                    '常见原因：① 后端没重启（改了后端代码/版本号但服务还是旧的）—— 重启后端即可；' +
+                    '② 浏览器/页面还是旧静态资源 —— 强制刷新（Ctrl+F5）即可；' +
+                    '③ 版本号改了但某处忘同步 —— CI 的 test_version_sync 会直接红。'
+                  : `前端 v${FE_VERSION}` +
+                    (backendVersion ? ` ｜ 后端 v${backendVersion}（一致 ✓）` : ' ｜ 后端版本未取到')
+              }
+            >
+              v{FE_VERSION}
+              {backendVersion && backendVersion !== FE_VERSION && ` ⚠ 后端 v${backendVersion}`}
+            </span>
           </div>
         </div>
         <p className="text-sm text-slate-400">
