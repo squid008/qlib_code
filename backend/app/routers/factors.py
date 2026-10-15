@@ -320,7 +320,7 @@ def _period_roll_pick(hk_state: dict, row: dict, item: dict) -> tuple:
     return (None, dates, lists)
 
 
-def _attach_period_roll(req, hk_state: dict, row: dict) -> dict:
+def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None) -> dict:
     """给**本行的每个档位**各算一条实盘口径净值（v2.1.38 ✓）。
 
     ★ 为什么改（用户 2026-10-12："应该是我测试的时候选了哪些档位就算哪些档位" ✓）：
@@ -335,8 +335,19 @@ def _attach_period_roll(req, hk_state: dict, row: dict) -> dict:
       而 `run_period_roll` 只按**信号里出现的**标的建矩阵（`period_roll.py::_prepare` ✓
       ⇒ `prep["codes"]` 来自 signals ✓）⇒ 面板里多出来的代码**不增加回测开销** ✓。
     ⚠ 任何失败一律落**各自档位**的 `error` 字段 ✓ —— 它是附加信息，绝不拖垮统计（与 `perf` 同规矩 ✓）。
+
+    ★ v2.4.2（用户 2026-10-15 反馈 ✓）：加 `progress_cb(frac 0~1, msg)` —— 本函数是"统计完成之后
+      还要跑十几秒~几分钟"的那一段（先取全池行情面板、再逐档逐日回测 ✗），必须能报进度，
+      否则进度条会顶在 100% 干等 ✗（详见 `_sft_render_view` 的 95% 封顶 ✓）。
     """
     from ..signals.pricing import load_price_panel
+
+    def _np(frac: float, msg: str) -> None:
+        if progress_cb:
+            try:
+                progress_cb(frac, msg)
+            except Exception:                     # noqa: BLE001
+                pass                              # 报进度失败绝不影响回测 ✓
 
     tc = row.get("topk_curves") or {}
     its = tc.get("items") or []
@@ -344,6 +355,7 @@ def _attach_period_roll(req, hk_state: dict, row: dict) -> dict:
         row["period_roll"] = {"error": "该行没有持仓曲线档位（topk_curves.items 为空）"}
         row["period_roll_items"] = []
         return row["period_roll"]
+    _np(0.02, "每期全仓滚动（实盘口径）：解析各档名单…")
     picks: list = []                              # [(item, (err, dates, lists)), ...]
     codes: set = set()
     for _it in its:
@@ -358,16 +370,23 @@ def _attach_period_roll(req, hk_state: dict, row: dict) -> dict:
     panel, perr = None, None
     if codes:
         try:
+            # ⚠ 这一步是全池取价（全 A 十几秒 ✗）⇒ 文案里点明"较慢"以免被当卡死 ✓
+            _np(0.10, "每期全仓滚动（实盘口径）：取全池行情面板（%d 只，约十几秒，请勿刷新）…"
+                % len(codes))
             panel = load_price_panel(sorted(codes), str(req.start_date), str(req.end_date),
                                      need_open=True)
         except Exception as e:                    # noqa: BLE001
             perr = repr(e)
     out: list = []
-    for _it, _p in picks:
+    n_it = max(1, len(picks))
+    for _k, (_it, _p) in enumerate(picks, start=1):
         if _p[0] or not panel:
             out.append({"error": _p[0] or perr or "行情面板为空（取价失败）"})
             continue
+        _np(0.10 + 0.88 * (_k - 1) / n_it,
+            "每期全仓滚动（实盘口径）：第 %d/%d 档回测中…" % (_k, n_it))
         out.append(_panel_period_roll_nav(req, hk_state, row, item=_it, panel=panel))
+    _np(1.0, "每期全仓滚动完成")
     row["period_roll_items"] = out
     row["period_roll"] = out[0] if out else {}
     return row["period_roll"]
@@ -672,6 +691,17 @@ def _sft_render_view(state: dict) -> tuple:
     done_frac = (done_n + running_prog) / n_h
     overall = round(30 + 70 * done_frac, 1)
 
+    # ★ v2.4.2（用户 2026-10-15 反馈 ✓）：**统计全部完成后**仍有附加阶段
+    #   （「每期全仓滚动」取全池行情 + 逐档逐日回测，全 A 十秒~分钟级 ✗）——
+    #   原来这里直接给 100% ✗ ⇒ 进度条顶在 100% 干等；
+    #   单周期时 `parts` 为空 ⇒ `msg` 也是空串 ✗ ⇒ 界面只剩"进度 100%"✗。
+    #   现在：统计封顶 95 ✓、尾巴 95→99.5 交给 `extra_prog` ✓、文案用 `extra_msg` ✓。
+    if done_n >= n_h and not running:
+        _ep = float(state.get("extra_prog") or 0.0)
+        _overall = min(99.5, 95.0 + 4.5 * max(0.0, min(100.0, _ep)) / 100.0)
+        _msg = str(state.get("extra_msg") or "").strip() or "正在整理结果..."
+        return round(_overall, 1), _msg
+
     parts = []
     for h in running:
         inner = per_msg.get(h, "")
@@ -803,6 +833,13 @@ def single_factor_test(req: SingleFactorTestRequest):
         "per_h_msg": {},
         "load_prog": 0.0,
         "load_msg": "",
+        # ★ v2.4.2（用户 2026-10-15 截图反馈 ✓）：统计**之后**还有一段附加阶段 ——
+        #   「每期全仓滚动（实盘口径，逐点对拍）」要**先取全池行情面板**再逐档逐日回测
+        #   （全 A 约 10~20 秒/档 ✗），而统计一完成进度就已经是 100% ✗ ⇒ 进度条顶在 100%
+        #   干等（单周期时 `message` 还是空串 ✗ ⇒ 界面只剩"进度 100%"✗）。
+        #   ⇒ 统计阶段封顶 **95%**、尾巴 95→99.5 留给这一阶段，并把文案实时报出来 ✓。
+        "extra_prog": 0.0,
+        "extra_msg": "",
     }
     _sft_store(task_id, state)
 
@@ -957,6 +994,15 @@ def single_factor_test(req: SingleFactorTestRequest):
             # ★ v2.1.27：每期持仓索引（导出/逐点对拍复用 ✓；没落键 ⇒ 空 dict ✓）
             hk_state = state.get("_hk") or {}
             n_factor = len(req.factors)
+            # ★★ v2.4.2（用户 2026-10-15 截图反馈 ✓）：**统计之后**这一整段（整理结果 +
+            #   「每期全仓滚动」取全池行情 + 逐档逐日回测）原来完全不报进度 ✗ ⇒ 进度条顶在
+            #   100% 干等、单周期时连文案都是空的 ✗。现在按"组合格"计数上报 ✓（统计封顶 95% ✓）。
+            _cells = sum(1 for _fi in range(n_factor) for _h in horizons
+                         if (per_h.get(_h) is not None and _fi < len(per_h[_h])))
+            _cell = 0
+            state["extra_prog"] = 0.0
+            state["extra_msg"] = ("整理结果：正在计算「每期全仓滚动（实盘口径）」…"
+                                  if req.period_roll else "整理结果…")
             for fi in range(n_factor):
                 for h in horizons:
                     rows = per_h.get(h)
@@ -964,12 +1010,24 @@ def single_factor_test(req: SingleFactorTestRequest):
                         continue
                     row = dict(rows[fi])
                     row["horizon"] = h
+                    _cell += 1
                     # ★ v2.1.27：**每期全仓滚动**（默认关 ✓，慢 ✓）—— 逐点对拍专用 ✓
                     # ★ v2.1.38：**用户选了哪些档就都算哪些** ✓ —— 结果落
                     #   `row["period_roll_items"]`（与 `topk_curves.items` **同序** ✓），
                     #   前端按当前选中档的下标取 ✓（面板取一次价喂所有档 ✓）。
                     if req.period_roll:
-                        row["period_roll"] = _attach_period_roll(req, hk_state, row)
+                        _base = 100.0 * (_cell - 1) / max(1, _cells)
+                        _span = 100.0 / max(1, _cells)
+
+                        def _pc(frac, msg, _b=_base, _s=_span, _c=_cell, _n=_cells):
+                            # ⚠ 默认参数绑定当轮的值 ✓（闭包晚绑定会把所有轮次指向最后一轮 ✗）
+                            state["extra_prog"] = _b + _s * max(0.0, min(1.0, float(frac)))
+                            state["extra_msg"] = "整理结果（%d/%d）：%s" % (_c, _n, msg)
+
+                        row["period_roll"] = _attach_period_roll(req, hk_state, row,
+                                                                 progress_cb=_pc)
+                    else:
+                        state["extra_prog"] = 100.0 * _cell / max(1, _cells)
                     items.append(row)
             state.update(
                 status="success",

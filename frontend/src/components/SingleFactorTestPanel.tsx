@@ -575,6 +575,9 @@ export default function SingleFactorTestPanel({
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState(0)
   const [progressMsg, setProgressMsg] = useState('')
+  // ★ v2.4.2（用户 2026-10-15 反馈 ✓）：记录本次任务开始时刻 ⇒ 进度区显示"已用 N 秒" ——
+  //   像「每期全仓滚动」那种"统计完成后还要跑十几秒~几分钟"的阶段，光看百分比分不清"在算"还是"卡死" ✗。
+  const startedAtRef = useRef(0)
   const [results, setResults] = useState<TestResult[]>([])
   const [error, setError] = useState('')
   const [cancelling, setCancelling] = useState(false)
@@ -703,6 +706,7 @@ export default function SingleFactorTestPanel({
   // 开始轮询任务进度：每 700ms 刷新一次，直到成功/失败/取消
   const startPolling = (taskId: string) => {
     stopPolling()
+    if (!startedAtRef.current) startedAtRef.current = Date.now()   // ★ v2.4.2：计时起点（已用 N 秒 ✓）
     taskIdRef.current = taskId
     pollTimerRef.current = window.setInterval(async () => {
       try {
@@ -795,6 +799,7 @@ export default function SingleFactorTestPanel({
     setDoneTaskId(null)
     setProgress(1)
     setProgressMsg('提交任务...')
+    startedAtRef.current = Date.now()               // ★ v2.4.2：新任务重新计时 ✓
     try {
       const resp = await createSingleFactorTest({
         universe,
@@ -1286,7 +1291,19 @@ export default function SingleFactorTestPanel({
               style={{ width: `${Math.max(1, Math.min(100, progress))}%` }}
             />
           </div>
-          <p className="mt-1 text-slate-500 text-[11px]">{progressMsg || `进度 ${Math.round(progress)}%`}</p>
+          {/* ★ v2.4.2：百分比**与文案一起显示**（以前只在没有文案时才显示百分比 ✗）+
+              已用时间 —— 「每期全仓滚动（实盘口径）」这种"统计完成后还要跑十几秒~分钟"的阶段
+              能一眼看出在推进而不是卡死 ✓（后端把该阶段报成 95→99.5% ✓）。 */}
+          <p className="mt-1 text-slate-500 text-[11px]">
+            <span className="font-mono">{Math.round(progress)}%</span>
+            {' ｜ '}
+            {progressMsg || '进行中…'}
+            {startedAtRef.current > 0 && (
+              <span className="ml-1 text-slate-400">
+                （已用 {Math.max(0, Math.round((Date.now() - startedAtRef.current) / 1000))} 秒）
+              </span>
+            )}
+          </p>
         </div>
       )}
 
