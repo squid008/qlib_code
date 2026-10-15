@@ -34,8 +34,9 @@ from ..engine.task_manager import get_task_manager
 from ..factors.single_test import FactorTestCancelled, _bad_date_arg, run_single_factor_tests
 from ..factors.event_study import run_event_study
 from ..factors.holdings_index import HoldingsIndex      # v2.1.0：每期持仓索引（XLSX 导出用 ✓）
-# ★ v2.6.0：含入场价（ENTRY_PRICE / ENTRY_FIRST）的离场公式 ⇒ 编译成"逐日求值"的规则 ✓
-from ..factors.exit_rules import compile_entry_rule, uses_entry
+# ★ v2.7.0：含入场价（ENTRY_PRICE / ENTRY_FIRST）的离场公式 ⇒ 拆成「预计算列 + 骨架」✓
+#   （与入场价无关的部分当普通字段列由面板算 ⇒ 任意字段/算子都能用 ✓，骨架回测逐日代入 ✓）
+from ..factors.exit_rules import EntryRule, split_entry_rule, uses_entry
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
 
@@ -324,7 +325,7 @@ def _period_roll_pick(hk_state: dict, row: dict, item: dict) -> tuple:
 
 def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None,
                         exit_cache: Optional[dict] = None,
-                        exit_masks: Optional[list] = None) -> dict:
+                        exit_items: Optional[list] = None) -> dict:
     """给**本行的每个档位**各算一条实盘口径净值（v2.1.38 ✓）。
 
     ★ 为什么改（用户 2026-10-12："应该是我测试的时候选了哪些档位就算哪些档位" ✓）：
@@ -407,17 +408,24 @@ def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None,
         _rows_exit: list = []
         for _ei, _ex in enumerate(_exits):
             _ename = str(getattr(_ex, "name", "") or getattr(_ex, "id", "") or "")
-            _mask = (exit_masks or [])[_ei] if (exit_masks and _ei < len(exit_masks)) else None
-            # ★ v2.6.0：**含入场价**的离场公式 ⇒ 编译成"逐日求值"的规则 ✓（引擎用它 ✓）；
-            #   编译失败 ⇒ 落到档位 error 字段 ✓（附加信息，绝不拖垮统计 ✓）
+            _it0 = ((exit_items or [])[_ei]
+                    if (exit_items and _ei < len(exit_items)) else {}) or {}
+            _mask = _it0.get("mask")
+            # ★ v2.7.0：**含入场价**的离场公式 ⇒ 用单因子侧拆好的「骨架 + 预计算列」✓
+            #   （与入场价无关的部分由面板算 ✓ ⇒ 任意字段/算子都能用 ✓；这里只把列对齐到
+            #    本轮回测面板 ✓ + 绑定入场价 ✓）。失败 ⇒ 落到档位 error ✓（绝不拖垮统计 ✓）
             _rule = None
-            if uses_entry(str(getattr(_ex, "expression", "") or "")):
+            if _it0.get("skel") is not None:
                 try:
-                    _rule = compile_entry_rule(str(getattr(_ex, "expression", "") or ""),
-                                               float(req.exit_threshold))
+                    _rule = EntryRule(_it0["skel"], _it0.get("pre_exprs") or [],
+                                      float(req.exit_threshold),
+                                      _exit_pre_mats(_it0.get("pre_series") or [], panel,
+                                                     exit_cache, ei=_ei))
                 except Exception as _e:                          # noqa: BLE001
                     _rule = None
                     _exits_err[_ei] = str(_e)
+            elif _it0.get("entry_dependent") and _it0.get("error"):
+                _exits_err[_ei] = str(_it0["error"])
             out_exit: list = []
             for _k, (_it, _p) in enumerate(picks, start=1):
                 if _p[0] or not panel:
@@ -487,11 +495,11 @@ def _apply_exit_validation(req) -> None:
                        "请把它们写在离场公式里（例：`止损: CLOSE < ENTRY_PRICE*0.95;`）✓")
     for e in items:
         expr = (e.expression or "").strip()
-        # ★ v2.6.0：含入场价的离场公式 ⇒ **入队前就编译校验** ✓（不支持的写法立刻 400 ✓，
-        #   别等回测跑一半才炸 ✗）
+        # ★ v2.6.0 / v2.7.0：含入场价的离场公式 ⇒ **入队前就拆一遍做校验** ✓
+        #   （不支持的写法立刻 400 ✓，别等回测跑一半才炸 ✗）
         if uses_entry(expr):
             try:
-                compile_entry_rule(expr, float(getattr(req, "exit_threshold", 0.0) or 0.0))
+                split_entry_rule(expr, float(getattr(req, "exit_threshold", 0.0) or 0.0))
             except Exception as _e:                               # noqa: BLE001
                 raise HTTPException(
                     status_code=400,
@@ -536,6 +544,38 @@ def _exit_matrix(mask, panel: dict, cache: Optional[dict] = None, ei: int = 0):
             cache.pop(k, None)
         cache[key] = mat
     return mat
+
+
+def _exit_pre_mats(pre_series, panel: dict, cache: Optional[dict] = None, ei: int = 0):
+    """把"入场价离场规则"的**预计算列**（面板侧算好的 Series ✓）对齐成 **(T×C) 矩阵** ✓。
+
+    ★ v2.7.0（用户 2026-10-15 指出"不能只支持 C/O"✓）：含入场价的离场公式里，**与入场价无关的
+      子树**（`MA(C,5)` / `TURNOVERRATE` / `MARKET_CAP` / H/L/V…）由**面板**当普通字段列算出来 ✓
+      ⇒ 这里只需按回测面板的日历/标的 **reindex** ✓（`fillna(NaN)` ⇒ 与它比较恒为假 ✓，
+      不会凭空触发 ✓）。**没取到 ⇒ 明确报错**，绝不静默算错 ✗（差值会骗人 ✓）。
+    """
+    if not pre_series or not panel:
+        return []
+    cl = panel.get("CLOSE")
+    if cl is None or not len(cl):
+        raise ValueError("行情面板为空（取价失败）")
+    pkey = (str(cl.index[0])[:10], str(cl.index[-1])[:10], len(cl.columns))
+    key = (int(ei), pkey)
+    if cache is not None and key in cache:
+        return cache[key]
+    out = []
+    for s in pre_series:
+        try:
+            w = s.unstack(level="instrument")
+            w = w.reindex(index=cl.index, columns=list(cl.columns))
+            out.append(w.to_numpy(dtype=np.float64))
+        except Exception as e:                                    # noqa: BLE001
+            raise ValueError("离场预计算列对齐失败：%s: %s" % (type(e).__name__, e)) from e
+    if cache is not None:
+        for k in [k for k in cache if k[1] != pkey]:              # 面板变了 ⇒ 旧的全丢 ✓
+            cache.pop(k, None)
+        cache[key] = out
+    return out
 
 
 def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] = None,
@@ -1237,7 +1277,7 @@ def single_factor_test(req: SingleFactorTestRequest):
 
                         row["period_roll"] = _attach_period_roll(
                             req, hk_state, row, progress_cb=_pc,
-                            exit_cache=_exit_box["cache"], exit_masks=_exit_box["masks"])
+                            exit_cache=_exit_box["cache"], exit_items=_exit_box["items"])
                     else:
                         state["extra_prog"] = 100.0 * _cell / max(1, _cells)
                     items.append(row)

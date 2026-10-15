@@ -254,11 +254,10 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         trades.append((i, c, 1, q, px, reason, MODE))
         return True
 
-    # ★ v2.6.0：含入场价规则的**逐日信号行**（每天收盘后算一行 ✓、`lag` 天后执行 ✓）；
-    #   `_C`/`_O` = 当日行向量（规则里只允许这两个行情字段 ⇒ 不引入历史窗口依赖 ✓）。
+    # ★ v2.6.0 / v2.7.0：含入场价规则的**逐日信号行**（每天收盘后算一行 ✓、`lag` 天后执行 ✓）——
+    #   ★ v2.7.0 起规则自带**预计算列**（`MA(C,5)` / 换手率 / 市值 / H/L/V… 都由面板算好 ✓，
+    #   见 `factors/exit_rules.py` ⇒ 引擎这边只需喂**入场价向量** ✓，不再限制字段 ✓）。
     _rule_rows: List[Optional[np.ndarray]] = []
-    _C = prep["C"]
-    _O = prep["O"]
     for i in range(n_row):
         tgt = targets.get(i)
         tgt_set = set(tgt) if tgt is not None else None
@@ -392,7 +391,7 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         #   ⇒ 用的是"今天收盘时的持仓 + 入场价" ✓，`lag` 天后执行 ⇒ 与进场同一套滞后、不前视 ✓）。
         if exit_rule is not None:
             try:
-                _rule_rows.append(exit_rule.eval_row({"C": _C[i], "O": _O[i]}, avg_px, first_px))
+                _rule_rows.append(exit_rule.eval_row(i, avg_px, first_px))
             except Exception as _e:                              # noqa: BLE001
                 _exit_off = _exit_off or "入场价离场规则求值失败：%r" % (_e,)
                 exit_rule = None                                 # 关掉离场，绝不拖垮回测 ✓

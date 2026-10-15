@@ -35,9 +35,9 @@ from ..engine.inst_mask import _daily_member_mask, _inst_spans_path  # noqa: F40
 # 这里保留原名（`_acf` / `_hac_t`）直接转发 ⇒ 行为与调用点逐位不变。
 from ..engine.stats import acf as _acf, hac_t as _hac_t  # noqa: F401
 from .event_study import build_event_stats, compute_baseline_curves
-# ★ v2.6.0：判断离场公式是否含"入场价"（ENTRY_PRICE / ENTRY_FIRST ⇒ 回测状态量 ✓，
-#   不进面板统计、由回测引擎逐日算 ✓；见 factors/exit_rules.py ✓）
-from .exit_rules import uses_entry
+# ★ v2.7.0：离场公式若含"入场价"（ENTRY_PRICE / ENTRY_FIRST ⇒ 回测状态量 ✓）⇒ 拆成
+#   「预计算列（交给面板、任意字段/算子都能用 ✓）+ 骨架（回测逐日代入 ✓）」，见 factors/exit_rules.py ✓
+from .exit_rules import split_entry_rule, uses_entry
 
 
 def _inst_codes(s: pd.DataFrame) -> pd.Series:
@@ -1943,23 +1943,38 @@ def run_single_factor_tests(
             continue
         _seen_exit.add(_ex)
         _exits.append(dict(_e, expression=_ex))
-    exit_fields, exit_cols = [], []
+    exit_fields, exit_cols, exit_specs = [], [], []
     for _i, _e in enumerate(_exits):
-        # ★ v2.6.0（用户 2026-10-15 ✓）：**含入场价**（ENTRY_PRICE / ENTRY_FIRST）的离场公式
-        #   **不能**当面板字段求值 ✗ —— 它是**回测状态量**（取决于你实际在哪根成交 ✓），
-        #   事先算不出来 ⇒ 这里只留占位（`None` ✓），真正的求值交给回测引擎逐日做 ✓
-        #   （`factors/exit_rules.py` ✓）。⇒ 它也就**不进**触发率预检/事件研究（那两项基于面板 ✓，
-        #   对"回测状态量"没有意义 ✗）；代价与收益会由回测侧的 `exit_signals`/`exit_sells` 给出 ✓。
-        if uses_entry(_e["expression"]):
+        _adj = adjust_expr(_e["expression"], pa, round_prices=price_round)
+        if uses_entry(_adj):
+            # ★★ v2.7.0（用户 2026-10-15 指出 ✓）：**含入场价**的离场公式**也要能用任意字段**
+            #   —— 入场价是回测状态量、事先算不出来 ✗，但**只有它**算不出来 ✓：
+            #   ⇒ 把公式拆成「与入场价无关的子树（**当普通字段列交给面板算** ✓ —— 于是
+            #     H/L/V、换手率、市值、MA/EMA/递推组… 全都能用 ✓）+ 剩下的骨架（回测逐日代入
+            #     入场价求值 ✓，见 factors/exit_rules.py ✓）」。
+            #   ⚠ 这类公式仍**不进**触发率预检/离场事件研究（那两项要有整列信号 ✗，而入场价
+            #     依赖回测 ✓）；它的效果从对比表的 离场卖出/顺延/被覆盖/空转 + 曲线看 ✓。
+            try:
+                _rule = split_entry_rule(_adj, float(exit_threshold))
+                _cols = []
+                for _j, _pe in enumerate(_rule.pre_exprs):
+                    _cn = "EXITP_%d_%d" % (_i, _j)
+                    exit_fields.append(_sr_wrap_expr(_pe) if suspend_remove else _pe)
+                    _cols.append(_cn)
+                exit_specs.append({"skel": _rule.skel, "pre_cols": _cols,
+                                   "pre_exprs": list(_rule.pre_exprs)})
+            except Exception as _err:                 # noqa: BLE001
+                exit_specs.append({"error": "%s" % _err})
             exit_cols.append(None)
             continue
-        _adj = adjust_expr(_e["expression"], pa, round_prices=price_round)
+        exit_specs.append(None)
         exit_fields.append(_sr_wrap_expr(_adj) if suspend_remove else _adj)
         exit_cols.append("EXIT_%d" % _i)
+    _exit_pre_cols = [c for _s in exit_specs if _s for c in (_s.get("pre_cols") or [])]
     fields = (tuple(adj_exprs) + tuple(label_exprs.values()) + tuple(base_fields) + (px_field,)
               + tuple(tag_fields) + tuple(exit_fields))
     all_cols = (factor_cols + list(label_cols.values()) + base_names + ["PX"] + tag_names
-                + [c for c in exit_cols if c])
+                + [c for c in exit_cols if c] + _exit_pre_cols)
 
     _ph_t0 = _tmod.perf_counter()
     # v1.18.69：单因子面板**接入磁盘缓存**。此前 `feature_cache` 只在回测路径生效，
@@ -2147,8 +2162,19 @@ def run_single_factor_tests(
                          "source": str(_e.get("source") or "custom"),
                          "expression": _e["expression"],
                          "threshold": float(exit_threshold)}
-            if exit_cols[_i] is None:                # ★ v2.6.0：含入场价 ⇒ 回测里逐日算 ✓
+            if exit_cols[_i] is None:                # ★ v2.7.0：含入场价 ⇒ 回测里逐日算 ✓
                 _it["entry_dependent"] = True
+                _sp = exit_specs[_i] or {}
+                if _sp.get("error"):
+                    _it["error"] = _sp["error"]
+                elif _sp.get("skel") is not None:
+                    # 交给路由：骨架 + **预计算列的现成 Series**（面板刚算好 ✓，内存直传不序列化 ✓）
+                    _it["skel"] = _sp["skel"]
+                    _it["pre_exprs"] = _sp.get("pre_exprs") or []
+                    try:
+                        _it["pre_series"] = [df[c] for c in _sp.get("pre_cols") or []]
+                    except Exception as _e2:         # noqa: BLE001
+                        _it["error"] = "离场预计算列取数失败：%s: %s" % (type(_e2).__name__, _e2)
                 _items.append(_it)
                 continue
             try:
