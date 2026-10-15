@@ -13,6 +13,7 @@ from typing import List
 
 from .ast import Expr, Num, Str, Field, Var, BinOp, UnaryOp, FuncCall
 from .lexer import LexerError
+from ..calc_date import is_date_literal, is_date_name, to_serial
 
 
 # ---- ★ v1.20.55：可**常量折叠**的纯数学函数表 ----
@@ -32,7 +33,113 @@ _CONST_FOLD_FUNCS = {
     "INT": math.trunc,
     "SGN": lambda v: (v > 0) - (v < 0), "SIGN": lambda v: (v > 0) - (v < 0),
     "ROUND": round,
+    # ★ 2026-10-15：`DATE(20070901)` ⇒ **日序号**（口径见 `factors/calc_date.py` ✓）。
+    #   ⚠ 只认 8 位 YYYYMMDD 形态（`is_date_literal` ✓）⇒ `DATE(2007-09-01)`（语法上是 1997 ✗）
+    #     这里**折不动**（抛异常 ⇒ `_const_fold` 返回 None ✓），留给 `_gen_func` 报**友好错** ✓。
+    "DATE": lambda v: float(to_serial(_require_date_literal(v))),
+    "日期": lambda v: float(to_serial(_require_date_literal(v))),
 }
+
+
+def _date_call_value(e: FuncCall) -> float:
+    """`DATE(x)` → 日序号（**校验与报错只写这一处** ✓，`fold_date_literals` 与 `_gen_func` 共用）。
+
+    ⚠ 为什么必须集中在"折字面量之前"校验 ✗→✓：否则 `DATE(1997)>0` 会先被"与 DATE 比较的那一侧
+      不是日期"抢先报错 ⇒ **指错地方** ✗（2026-10-15 自检抓到 ✓，用户还得回头看两遍）。
+    """
+    if len(e.args) != 1:
+        raise CodeGenError(
+            "DATE 有两种写法：\n"
+            "  · 不带括号 = 行情字段（当前交易日）：`DATE <= 20070901` ✓\n"
+            "  · 带括号 = 把日期字面量折成日序号：`DATE(20070901)` ✓（减法得真实天数）\n"
+            "  当前带了 %d 个参数 ⇒ 请二者取一 ✓" % len(e.args))
+    v = _const_fold(e.args[0], allow_div=True)
+    if v is None or not float(v).is_integer():
+        raise CodeGenError(
+            "DATE(x) 的 x 必须是**常量日期字面量**（8 位 YYYYMMDD，如 DATE(20070901)）\n"
+            "  · 想比较当天与某个日期 ⇒ 直接写 `DATE <= 20070901` 更直观 ✓\n"
+            "  · 动态日期（如 DATE(REF(DATE,1))）目前不支持 ✗")
+    if not is_date_literal(v):
+        raise CodeGenError("DATE(x) 的 x = %s 不是合法日期\n%s" % (_fmt_num(v), _DATE_LITERAL_HELP))
+    return float(to_serial(int(v)))
+
+
+def _require_date_literal(v):
+    """`DATE(x)` / 与 DATE 比较的字面量必须是 8 位 YYYYMMDD（否则抛错 ⇒ 由调用方报友好错 ✓）。"""
+    if not is_date_literal(v):
+        raise ValueError("不是 8 位 YYYYMMDD 日期")
+    return int(v)
+
+
+_DATE_LITERAL_HELP = (
+    "日期要写成 8 位 YYYYMMDD（如 20070901）✗ 不支持 2007-09-01 这种带横杠的写法\n"
+    "  · 带横杠会被当成减法算式：`2007-09-01` = 1997 ✗（静默比错，所以这里直接报错 ✓）\n"
+    "  · 合法范围：19000101 ~ 21001231 ✓\n"
+    "  · 日期减法：DATE(20071008)-DATE(20070901) = 37（真实天数 ✓）")
+
+# 需要"另一侧是日期值"才折的**比较**算子（算术不折也不报错 ✓）
+_CMP_OPS = ("GT", "GE", "LT", "LE", "EQ", "NE")
+
+
+def fold_date_literals(expr: Expr) -> Expr:
+    """把"与 DATE 同处一个二元运算里的 8 位日期字面量"折成**日序号** ✓（2026-10-15）。
+
+    为什么必须由编译器折（用户 2026-10-15 定稿 ✓）：`DATE` 的值是**日序号**（float32 bin 存不下
+    YYYYMMDD，见 `calc_date` ✓），而用户习惯写 `DATE<=20070901` ✓ ⇒ 这里的差由编译器补上 ✓：
+
+      · `DATE <= 20070901`  ⇒ `Le($date, 13757)` ✓
+      · `DATE - 20070901`   ⇒ 折（算术；不折也只是量纲不对，故**不报错**✓）
+      · `DATE <= 2007-09-01`（= 1997 ✗）⇒ **报错**（比较语境必须给日期；静默按 1997 比会误导 ✓）
+
+    ⚠ 只折**常量字面量**那一侧 ✓（`DATE<=REF(DATE,1)` 这类两边都是日期值 ⇒ 原样交给运行期 ✓）。
+    """
+    def walk(e: Expr):
+        """返回 `(新表达式, 该子树里是否含日期值)` ✓。"""
+        if isinstance(e, Field):
+            return e, is_date_name(e.name)
+        if isinstance(e, FuncCall):
+            if is_date_name(e.name):
+                # `DATE(x)` **先在这里校验并折成字面量** ✓（报错只有一处 ⇒ 不会指错地方 ✓）
+                return Num(_date_call_value(e)), True
+            args = []
+            has = False
+            for a in e.args:
+                na, ha = walk(a)
+                args.append(na)
+                has = has or ha
+            return FuncCall(e.name, args), has
+        if isinstance(e, UnaryOp):
+            inner, has = walk(e.operand)
+            return UnaryOp(e.op, inner), has
+        if isinstance(e, BinOp):
+            left, hl = walk(e.left)
+            right, hr = walk(e.right)
+            if hl and not hr:
+                right = _fold_one_side(right, e.op)
+            elif hr and not hl:
+                left = _fold_one_side(left, e.op)
+            return BinOp(e.op, left, right), (hl or hr)
+        return e, False
+
+    return walk(expr)[0]
+
+
+def _fold_one_side(side: Expr, op: str) -> Expr:
+    """把另一侧的**常量**折成日序号；比较语境下折不动就报友好错 ✓。"""
+    v = _const_fold(side, allow_div=True)
+    if v is None:
+        return side                      # 不是常量（如 CLOSE / REF(DATE,1)）⇒ 原样 ✓
+    if is_date_literal(v):
+        return Num(float(to_serial(int(v))))
+    if op in _CMP_OPS:
+        raise CodeGenError(
+            "与 DATE 比较的这一侧算出来是 %s，不是日期 ⇒ 不能这么写\n%s"
+            % (_fmt_num(v), _DATE_LITERAL_HELP))
+    return side
+
+
+def _fmt_num(v: float) -> str:
+    return str(int(v)) if float(v).is_integer() else repr(v)
 
 # ---- ★ v1.20.58：**比较 / 逻辑**（`GT/GE/LT/LE/EQ/NE/AND/OR`）也必须参与常量折叠 ----
 # ⚠ 它们**不是 `FuncCall`** ✗ —— 源码里的 `<` `>=` `AND` 经词法/语法后是 **`BinOp`** ✓
@@ -90,6 +197,9 @@ FIELD_MAP = {
     "TURNOVERRATE": "$turn",
     "VWAP": "$vwap",
     "MARKET_CAP": "$market_cap",
+    # ★ 2026-10-15：DATE（当前 K 线日期）—— 值 = 日序号（见 factors/calc_date.py ✓）；
+    #   `DATE(20070901)` 是**函数**形态（折成同一尺度 ⇒ 减法=真实天数 ✓）。
+    "DATE": "$date", "日期": "$date",
     # ★ 市场派生字段（2026-10-10 补：流通市值 / 总股本 / 流通股本 ✓；单位 元、股 ✓）
     #   ⚠ 只是**新增可用字段名** ⇒ 既有公式的生成结果**不変** ⇒ **不要**动
     #     `CODEGEN_SEMANTICS` ✗（那会让 60+ 条存量公式白重编一遍 ✓）
@@ -703,6 +813,13 @@ class CodeGen:
         # 忽略绘图/颜色
         if name in IGNORED_OPS:
             raise CodeGenError(f"函数 {name} 是绘图/颜色指令，不生成因子（已忽略）")
+        # ★ 2026-10-15：`DATE(20070901)` ⇒ **日序号字面量** ✓（口径见 factors/calc_date.py）
+        #   为什么要函数形态：`DATE(20071008)-DATE(20070901)` 要等于 **37**（真实天数 ✓），
+        #   而两个 8 位整数直接相减是 107 ✗ ⇒ 必须先折成同一尺度的日序号 ✓。
+        #   ⚠ 裸字段形态 `DATE<=20070901` 由 `fold_date_literals` 自动折右侧 ✓，用户不必写函数 ✓。
+        if is_date_name(name):
+            # 正常路径下 `fold_date_literals` 已把它折成 `Num` ✓；这里只兜"直接调 CodeGen"的调用方 ✓
+            return _fmt_num(_date_call_value(e))
         # 资金流向档位选择：L2_PCT(n[,b|s])/L2_AMO(n[,b|s])/L2_VOL(n[,b|s])
         # → 无第二参：净占比/净额/净量字段（向后兼容）；有 b/s：买入/卖出方向字段
         if name in ("L2_PCT", "L2_AMO", "L2_VOL"):
@@ -951,6 +1068,9 @@ class CodeGen:
 
 def generate(expr: Expr, patchable: bool = False) -> str:
     """把内联后的表达式树生成 qlib 表达式字符串。"""
+    # ★ 2026-10-15：先把"与 DATE 同处一个运算里的 8 位日期字面量"折成日序号 ✓
+    #   （`DATE<=20070901` ⇒ `Le($date,13757)` ✓；非日期形态在比较语境下报友好错 ✓）。
+    expr = fold_date_literals(expr)
     # 整条公式**不含任何行情字段**（纯常量）⇒ 明确报错：qlib 加载这种列会崩，
     # 而且它作为因子毫无意义（v1.19.90，避免用户看到 `'numpy.int64' … 'name'` 那种天书 ✗）。
     if _const_fold(expr, allow_div=True) is not None:

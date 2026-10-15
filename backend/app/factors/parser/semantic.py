@@ -36,6 +36,9 @@ BUILTIN_FUNCS = {
     #   INSUM('全部A股','IS_GOLD_PIT',1,0) → 板内各股该公式第 1 个输出按计算类型聚合
     # 二者都**物化成市场级字段**（同日所有股票同值），见 app/factors/market_stat.py
     "BLOCKSETNUM", "INSUM",
+    # ★ 2026-10-15：DATE 既是字段（`DATE<=20070901`）也是函数（`DATE(20070901)`，
+    #   把字面量折成日序号 ⇒ 减法=真实天数 ✓），故函数白名单里也要有它 ✓。
+    "DATE", "日期",
     "DELTA", "MEAN", "MED",
     "ABS", "SQRT", "LOG", "LN", "EXP", "POW", "POWER", "MAX", "MIN", "MOD",
     "CEILING", "FLOOR",

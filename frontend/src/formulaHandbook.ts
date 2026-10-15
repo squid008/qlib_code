@@ -17,6 +17,12 @@ const RAW_HANDBOOK: HandbookEntry[] = [
   { name: 'OPEN', abbr: '开盘价', kind: 'field', desc: '当日开盘价。\n用法:\n OPEN 或 O' },
   { name: 'VOL', abbr: '成交量', kind: 'field', desc: '成交量（手）。\n用法:\n VOL 或 V\n注:数据里停牌日无成交为 NaN。' },
   { name: 'AMOUNT', abbr: '成交额', kind: 'field', desc: '成交金额（元）。\n用法:\n AMOUNT' },
+  // ★ DATE（2026-10-15 加，用户点名要的 ✓）—— 既是**字段**（`DATE<=20070901`）也是**函数**
+  //   （`DATE(20070901)`）。内部值其实是"日序号"（qlib 的字段 bin 是 float32，装不下 8 位日期：
+  //   实测 20260305 会变成 20260304 ✗）⇒ 与 8 位日期比较/相减时由**编译器自动折算** ✓，
+  //   用户写法完全不变 ✓。
+  // ⚠ 本文件 desc 是**纯文本渲染** ⇒ 不写 Markdown 星号（会原样显示 ✗）
+  { name: 'DATE', abbr: '日期', kind: 'field', desc: '当前 K 线日期（交易日）。\n用法:\n DATE\n DATE(20070901)\n说明:\n · DATE 不带括号 = 字段，可当数字直接比：\n   DATE <= 20070901        该日在 2007-09-01（含）之前\n · DATE(x) 带括号 = 把 8 位日期转成可相减的形式：\n   DATE(20071008)-DATE(20070901) = 37   两个日期相差 37 天\n · 日期一律写 8 位 YYYYMMDD（如 20070901）；写成 2007-09-01 会被当成减法算式（=1997）\n   所以编译器会直接报错，不会静默比错\n · 停牌日与 CLOSE 一样被剔除（益盟"无停牌行"口径）\n例:\n 老规则:DATE<=20070901 AND CLOSE>0;' },
   // 以下按字母升序：CAPITALIZATION < CIRCULATING_CAP < CIRCULATING_MARKET_CAP < MARKET_CAP < TURNOVERRATE < VWAP
   { name: 'CAPITALIZATION', abbr: '总股本', kind: 'field', desc: '总股本（股）。\n用法:\n CAPITALIZATION\n注:含停牌日亦有值，需注意停牌对齐。' },
   { name: 'CIRCULATING_CAP', abbr: '流通股本', kind: 'field', desc: '流通股本（股）。\n用法:\n CIRCULATING_CAP\n注:含停牌日亦有值，需注意停牌对齐。' },

@@ -133,6 +133,10 @@ _SR_FIELDS_BY_CLOSE_MASK = {
     #   它们在停牌日照样有值（市值/股本按天数连续 ✓，不像价格那样缺行 ✗）⇒
     #   必须一起按 `$close` 掩码删行 ✓，否则与已删行的价格字段组合时会把停牌行"外对齐"回来 ✗✗。
     "$circulating_market_cap", "$capitalization", "$circulating_cap",
+    # ★ 2026-10-15：`$date`（公式字段 DATE）—— 它**每根 K 线都有值** ✗（不像价格那样缺行 ✗）
+    #   ⇒ 必须同样按 `$close` 掩码删行 ✓，否则与价格字段组合时会把停牌行"外对齐"回来 ✗✗
+    #   （用户 2026-10-15 定稿："DATE 跟那个一起删行" ✓；守卫见 tests/test_date_field.py ✓）。
+    "$date",
 }
 _SR_FIELD_RE = re.compile(r"\$([a-z][a-z0-9_]*)")
 

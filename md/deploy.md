@@ -156,6 +156,23 @@ python backend/tools/verify_materialized.py             # 核对覆盖率/同轴
 - 口径：`pre* = 源字段 / factor_last`（逐位；`factor_last` = `factor.day.bin` 末值，五字段共用 ⇒ 不会 `prehigh < prelow`）；
   `chip_*` 必须与 `$close` **同轴**（首值+长度一致，否则多股票一起加载会报 `identically-labeled`，见 change_log `[1.19.91]/[1.19.92]`）。
 
+### 物化字段：`DATE`（公式字段"当前 K 线日期"，v2.3.0）—— **每台机器 / 每个数据集各做一次**
+
+`DATE` 在**面板路径**（单因子测试 / 事件研究）里由 index 现合成、零 IO ✓；但 **qlib 路径**
+（回测 / 训练 / `D.features`）只能读 bin ⇒ 不物化就报"特征不存在" ✗：
+
+```bash
+python backend/tools/dump_date.py --all-datasets     # 写 cn_data + cn_data2 两份（各 ~8 秒 ✓）
+python backend/tools/dump_date.py --dry-run          # 只统计
+python backend/tools/dump_date.py --dataset-dir data/cn_data3   # 单独指定某个数据集
+```
+
+- ⚠ **换数据集（或新机器）都要重跑** ✗：bin 的 header 是"**该数据集日历里的下标**" ✓
+  （`--all-datasets` 会写平台在用的 `cn_data` / `cn_data2` 两份 ✓；`cn_data3` 是原始 qlib 数据，按口径不写 ✓）；
+- ⚠ 值 = **日序号**（距 1970-01-01 的天数），**不要**当 YYYYMMDD 看/改 ✗ ——
+  qlib bin 是 float32，装不下 8 位日期（实测 `f4(20260305)=20260304`、`f4(20070901)=20070900` ✗）；
+- 日期轴与同目录的 `close.day.bin` 逐位一致 ✓（首值+长度），口径见 `md/自定义因子与因子库架构.md` §3.5.1 ✓。
+
 ### 物化字段：基本面（`fin_*` 米筐源 / `ftdx_*` 通达信源）—— **每台机器必须各做一次**
 
 `FINANCE(q[,口径])` 用的是**物化出来的字段**（不在数据包里、也不在 git 里）：

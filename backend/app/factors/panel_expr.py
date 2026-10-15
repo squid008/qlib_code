@@ -34,6 +34,8 @@ from typing import Dict, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from .calc_date import DATE_FIELD, serial_array
+
 # CWH 这类巨型公式嵌套可达数百~上千层，提高递归上限（模块级，全局一次）
 if sys.getrecursionlimit() < 20000:
     sys.setrecursionlimit(20000)
@@ -1185,6 +1187,22 @@ class PanelEvaluator:
     def field(self, name: str) -> pd.Series:
         # 表达式里叶子是 $close 形态，bin 文件名是 close（去 $ 前缀）
         key = name.lstrip("$")
+        if key == DATE_FIELD:
+            # ★ 2026-10-15：`DATE`（公式字段）由面板 index **直接合成** ✓（零 IO ✓）。
+            #   口径/换算与物化 bin（`tools/dump_date.py`）**同源**（`factors/calc_date.py` ✓）
+            #   ⇒ 面板路径与 qlib 路径逐位一致 ✓（tests/test_date_field.py 守着 ✓）。
+            s = self._field_cache.get(key)
+            if s is None:
+                _full = getattr(self, "_full", None)
+                if _full is None:
+                    raise ValueError("DATE 字段需要面板已就绪（缺少 _full）")
+                try:
+                    dt = _full.get_level_values("datetime")
+                except (KeyError, AttributeError) as e:
+                    raise ValueError("DATE 字段要求面板 index 含 datetime 层级：%r" % (e,))
+                s = pd.Series(serial_array(dt), index=_full)
+                self._field_cache[key] = s
+            return s
         s = self._field_cache.get(key)
         if s is None and key.startswith("chip_"):
             # ★ v1.20.17：**物化 bin 优先**（用户要求「COST(36) 这种没物化的就走计算」✓）

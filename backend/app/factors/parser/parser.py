@@ -18,6 +18,7 @@ from .lexer import (
     Lexer, Token, TT_NUM, TT_IDENT, TT_OP, TT_LPAREN, TT_RPAREN,
     TT_SEMI, TT_COMMA, TT_COLON, TT_ASSIGN, TT_STR, TT_EOF, LexerError,
 )
+from ..calc_date import is_date_name
 
 # 行情字段（大写）→ qlib $field
 FIELD_MAP = {
@@ -31,6 +32,11 @@ FIELD_MAP = {
     "TURNOVERRATE": "$turn",
     "VWAP": "$vwap",
     "MARKET_CAP": "$market_cap",
+    # ★ 2026-10-15：DATE（当前 K 线日期，用户点名要的 ✓）——
+    #   值 = **日序号**（不是 YYYYMMDD ⇒ float32 bin 存不下 8 位日期，见 factors/calc_date.py ✓）；
+    #   既可当**字段**写（`DATE <= 20070901` ✓ 编译器自动折右侧字面量 ✓），
+    #   也可当**函数**写（`DATE(20071008)-DATE(20070901)` = 37 天 ✓）。
+    "DATE": "$date", "日期": "$date",
     # ★ 市场派生字段（用户 2026-10-10 要求：公式原先只有总市值 ✓，补齐另 3 个 ✓）
     #   数据来源见 tools/dump_ricequant_market_fields.py（米筐 ✓ 用 market_cap.h5 / market_cap_2.h5
     #   + 市值÷未复权收盘反推股本 ✓）与 tools/dump_tushare_market_fields.py（tushare `daily_basic` ✓）。
@@ -156,6 +162,7 @@ class Parser:
         "$close": "收盘价", "$high": "最高价", "$low": "最低价",
         "$open": "开盘价", "$volume": "成交量", "$amount": "成交额",
         "$turn": "换手率", "$vwap": "均价",
+        "$date": "日期",
         # 2026-10-10 补：市场派生字段的中文名（错误提示用 ✓）
         "$market_cap": "总市值", "$circulating_market_cap": "流通市值",
         "$capitalization": "总股本", "$circulating_cap": "流通股本",
@@ -263,6 +270,13 @@ class Parser:
             self.advance()
             upper = t.value
             if upper in FIELD_MAP:
+                # ★ 2026-10-15：**既是字段又是函数**的名字（目前只有 DATE/日期 ✓）——
+                #   后面紧跟 `(` 时按**函数**解析 ✓。否则 `DATE(20070901)` 会被当成
+                #   `Field(DATE)` 再撞上孤零零的 `(` ⇒ 报"期望分号"这种莫名错误 ✗
+                #   （`DATE(20071008)-DATE(20070901)` 是用户 2026-10-15 点名要支持的写法 ✓）。
+                if is_date_name(upper) and self.peek().type == TT_LPAREN:
+                    args = self._parse_args()
+                    return FuncCall(upper, args)
                 return Field(upper)
             # 可能是函数调用
             if self.peek().type == TT_LPAREN:
