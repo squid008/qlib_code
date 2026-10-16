@@ -362,6 +362,13 @@ const kLabel = (k: number) => (k < 1 ? `${Math.round(k * 100)}%` : `${k}`)
  *  ⚠ 表格列数：显示耗时 = 18 列，隐藏 = 17 列（错误行的 colSpan 必须同步，否则整行错位）。 */
 const SHOW_TIMING_COL = false
 
+/** 进度条那行要不要显示「（已用 N 秒）」✓（★ 2026-10-16 用户："把这个计时暂时隐藏" ✓）。
+ *  `false` = 隐藏（默认 ✓）；想恢复把这里改回 `true` 即可 ✓ —— **只改这一行** ✓
+ *  （计时逻辑 `startedAtRef` 照旧在跑 ✓，只是不显示 ✓，恢复后数字仍是真实的 ✓）。
+ *  ⚠ 为什么保留计时逻辑而不是删掉：它是"卡死 vs 在算"的唯一线索（v2.4.2 加的 ✓），
+ *    隐藏只是嫌它盯着看晃眼 ✓，将来排查慢任务还要用 ✓。 */
+const SHOW_ELAPSED = false
+
 // 解析批量预测周期输入：单值 / 逗号枚举(1,2,3,5) / range 区间。
 // ⚠ 区间有**两种写法，中间那个数的含义不同**（易踩，故提示里也写明）：
 //   · 三段 `a:b:c` = **起点:步长:终点**（含终点）⇒ `1:5:20` → 1,6,11,16、`1:2:7` → 1,3,5,7；
@@ -1460,7 +1467,7 @@ export default function SingleFactorTestPanel({
             <span className="font-mono">{Math.round(progress)}%</span>
             {' ｜ '}
             {progressMsg || '进行中…'}
-            {startedAtRef.current > 0 && (
+            {SHOW_ELAPSED && startedAtRef.current > 0 && (
               <span className="ml-1 text-slate-400">
                 （已用 {Math.max(0, Math.round((Date.now() - startedAtRef.current) / 1000))} 秒）
               </span>
@@ -1752,7 +1759,7 @@ export default function SingleFactorTestPanel({
                      再配合 `align-top` + 变体行的**等高占位**（见下 ✓）⇒ 所有「离场曲线」按钮
                      左边缘和中线都落在同一竖线上 ✓。
                      ⚠ 改宽度要**表头 + 两个 td 一起改** ✗（只改一处会被自动布局再分配掉 ✓）。 */
-                  className="text-center px-1 w-[7.5rem] min-w-[7.5rem]"
+                  className="text-left px-1 w-[7.5rem] min-w-[7.5rem]"
                   title="因子研究（两块，按因子类型自动出现一个）：0/1 二值信号 → 事件研究（触发对齐 T=0 的收益分布）；连续因子 → 持仓期曲线（净值曲线 + 十分位曲线 + 成本敏感度表 + 可切换基准）"
                 >
                   因子研究
@@ -2062,7 +2069,7 @@ export default function SingleFactorTestPanel({
                         {/* 因子研究：事件研究（0/1）与持仓曲线（连续）合成一列 —— 两者互斥，
                             按因子类型各出现一个；两个都没有时给一个说明性的短横
                             ★ v2.8.8b：同列 td 写死宽度（与表头一致 ✓）+ `align-top`（与变体行同一基准 ✓） */}
-                        <td className="text-center px-1 w-[7.5rem] min-w-[7.5rem] align-top">
+                        <td className="text-left px-1 w-[7.5rem] min-w-[7.5rem] align-top">
                           {/* ★★ v2.8.8b（用户 2026-10-16 看图第四轮 ✓）：**固定两行网格** ✗→✓ ——
                               用户原话：「旁边的按钮没勾离场因子的时候那个持仓曲线、事件研究的位置要跟前面
                               水平对齐」✓。
@@ -2073,7 +2080,7 @@ export default function SingleFactorTestPanel({
                               ⇒ 全表所有行的这两行纵坐标**完全一致** ✓；与下面变体行的
                               「`h-[26px]` 占位 + 按钮」也同一套网格（22 + 4 = 26 ✓）。
                               ⚠ 改按钮内边距/字号时要同步改这几个高度 ✗（否则又错开 ✓）。 */}
-                          <div className="h-[22px] flex items-center justify-center gap-1">
+                          <div className="h-[22px] flex items-center justify-start gap-1">
                             {r.is_binary && (
                               <button
                                 onClick={() => openEventStudy(r)}
@@ -2103,7 +2110,7 @@ export default function SingleFactorTestPanel({
                           </div>
                           {/* ★ v2.8.0：勾了离场 ⇒ 这一行也给它一个「离场曲线」入口 ✓
                               （= 对照 + 全部离场画在一起；与下面那些变体行同源 ✓） */}
-                          <div className="h-[22px] mt-1 flex items-center justify-center">
+                          <div className="h-[22px] mt-1 flex items-center justify-start">
                             {vRows.length > 0 ? (
                               <button
                                 onClick={() => setExitModal({ row: r, ei: null, name: '' })}
@@ -2184,16 +2191,26 @@ export default function SingleFactorTestPanel({
                              变体行只有这一个按钮 ⇒ 不占位的话它会飘到**第一行** ✗（就是用户截图里
                              那堆"没对齐"的按钮 ✓）。占位高度 = 22 + 4 = **26px** ✓
                              ⚠ 改上面的按钮内边距/字号时要**一起改这个数** ✗（否则又错开 ✓）。 */}
-                      <td className="text-center px-1 w-[7.5rem] min-w-[7.5rem] align-top">
-                        <div className="h-[26px]" aria-hidden="true" />
-                        <button
-                          type="button"
-                          onClick={() => setExitModal({ row: r, ei: v.gi, name: v.name })}
-                          className="px-1.5 py-0.5 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30 text-[11px] whitespace-nowrap"
-                          title="含离场这条变体自己的净值曲线（对照 + 它）—— 连续因子走「每期全仓滚动」、0/1 信号走「信号驱动（事件）」，与「交易信号测试」同源"
-                        >
-                          离场曲线
-                        </button>
+                      {/* ★★ v2.8.8b（用户 2026-10-16 第四轮 ✓）：**整列左对齐 + 与基础行同一套两行网格** ✗→✓ ——
+                          用户原话：「为啥离场曲线按钮还是会有错位的情况？不能都跟**因子研究**那列对齐吗？」
+                          ⇒ ① 本列（表头 + 基础行 + 变体行）**统一 `text-left` + `justify-start`** ✓：
+                             居中方案要靠"每格内容宽度一致"才不歪 ✗，左对齐则**任何内容都从同一条竖线起** ✓；
+                          ② 两行结构与基础行**逐字一致**（第一行 `h-[22px]` 空占位 ✓、第二行
+                             `h-[22px] mt-1` + `justify-start` ✓）⇒ 左边缘与纵向位置都对齐 ✓；
+                          ③ 占位 = 22 + 4 = **26px**（= 基础行第一行按钮高 + `gap-1` ✓）。
+                          ⚠ 改按钮内边距/字号时要**一起改这几个高度** ✗，否则又错开 ✓。 */}
+                      <td className="text-left px-1 w-[7.5rem] min-w-[7.5rem] align-top">
+                        <div className="h-[22px]" aria-hidden="true" />
+                        <div className="h-[22px] mt-1 flex items-center justify-start">
+                          <button
+                            type="button"
+                            onClick={() => setExitModal({ row: r, ei: v.gi, name: v.name })}
+                            className="px-1.5 py-0.5 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30 text-[11px] whitespace-nowrap"
+                            title="含离场这条变体自己的净值曲线（对照 + 它）—— 连续因子走「每期全仓滚动」、0/1 信号走「信号驱动（事件）」，与「交易信号测试」同源"
+                          >
+                            离场曲线
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
