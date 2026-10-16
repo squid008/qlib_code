@@ -1893,10 +1893,35 @@ class _NavCancelled(Exception):
     """同事件指纹下已有更新的请求 ⇒ 本次在途回测立即中止（由 `cancel_cb` 抛出）✓。"""
 
 
+def _ev_fingerprint(ev) -> int:
+    """**事件集合的内容指纹** ✓（v2.8.2 按审计 #3 修 ✓）。
+
+    ⚠ 原来两处缓存键都只用「条数 + 首末触发日」代表一组事件 ✗ ——
+      股票池相同、触发数相同、首末触发日相同的**两组不同信号**会算出同一个键 ⇒
+      回测结果被**错误复用**（净值直接搬错的那份 ✓）。这里按 (code, dt) 逐行哈希 ✓，
+      向量化（pandas hash ✓）⇒ 十万级事件也在毫秒量级 ✓。
+    同时保留条数/首末日（便于人眼核对 ✓），内容指纹负责"**不同信号必然不同键**" ✓。
+    """
+    try:
+        cols = [c for c in ("code", "dt") if c in getattr(ev, "columns", [])]
+        if not cols:
+            return 0
+        h = pd.util.hash_pandas_object(ev[cols], index=False).to_numpy(dtype=np.uint64)
+        return int(h.sum()) if h.size else 0
+    except Exception:                                             # noqa: BLE001
+        # 指纹算不出来 ⇒ 退回 0（等于旧行为 ✓）—— 宁可少命中缓存（重算一次 ✗ 慢一点 ✓），
+        # 也**绝不能**因为指纹异常就误命中别人的结果 ✓。
+        return 0
+
+
 def _nav_req_key(codes, ev, start, end):
-    """取消分组键：**只含事件与区间**（不含 k/cost ✓ ⇒ 同批事件下"最新的 k 才算数" ✓）。"""
+    """取消分组键：**只含事件与区间**（不含 k/cost ✓ ⇒ 同批事件下"最新的 k 才算数" ✓）。
+
+    ⚠ v2.8.2：这里也要**事件内容指纹** ✗→✓ —— 否则两组不同信号会被当成"同一批"，互相取消 ✗
+      （表现为点开曲线偶尔莫名 409/重算 ✓）。
+    """
     return (len(codes), hash(tuple(codes)), str(start), str(end),
-            len(ev), str(ev["dt"].iloc[0]), str(ev["dt"].iloc[-1]))
+            len(ev), str(ev["dt"].iloc[0]), str(ev["dt"].iloc[-1]), _ev_fingerprint(ev))
 
 
 def _nav_req_begin(key) -> int:
@@ -1923,8 +1948,11 @@ _NAV_CANCEL_MAX = 64
 def _nav_bt_key(codes, ev, start, end, k, cost, capital, modes, fill: str = "t1_open"):
     # ★ v2.1.65：**`fill` 必须进回测缓存键** ✗→✓ —— 否则面板从"次日开盘"切到"次日收盘"时
     #   会**命中同一份缓存** ✗ ⇒ 净值不动 ⇒ 用户看到"两个数一模一样" ✗✓（就是这个现象 ✓）。
+    # ★★ v2.8.2（**审计 #3** ✓）：**事件内容指纹**也必须进键 ✗→✓ —— 原来只用
+    #   「条数 + 首末触发日」代表一组事件 ✗（连 `hash(ev.code)` 都没有 ✓）⇒ 同股票池 +
+    #   同触发数 + 同首末触发日的两组不同信号会命中同一份 `BtResult` ✗（净值直接搬错 ✓）。
     return (len(codes), hash(tuple(codes)), str(start), str(end),
-            len(ev), str(ev["dt"].iloc[0]), str(ev["dt"].iloc[-1]),
+            len(ev), str(ev["dt"].iloc[0]), str(ev["dt"].iloc[-1]), _ev_fingerprint(ev),
             int(k), float(cost), float(capital), tuple(modes), str(fill))
 
 

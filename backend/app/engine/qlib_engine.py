@@ -343,7 +343,11 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
 #           整条曲线被抬高 ✗ —— 所以**只比对特征顺序是不够的** ✗✓。
 #   ⚠ 本常量跟的是**口径**而不是发版号 ✓（同 `chip_store.CHIP_SEMANTICS` ✓）⇒ 单纯加日志/UI
 #     之类改动**不要**动它 ✓，否则每个已有产物都会白作废一次 ✗。
-TRAIN_SEMANTICS = "1.20.46"
+TRAIN_SEMANTICS = "2.8.2"
+# ★★ v2.8.2（**审计 #1** ✓）：训练口径**再变一次** —— 训练/验证段末从"测试起点前一天"
+#   退到"测试起点前 `h+1` 个**交易日**"（purge ✓，见 `_purged_train_end`）。为什么必须升这个戳：
+#   模型结果因此会变 ✓ ⇒ 旧 `model_artifacts.json` **绝不能**被复用（`_verify_reuse_train_semantics`
+#   会拦住 ✓，让用户重训 ✓），断点续跑的旧段结果也一并作废 ✓。
 
 
 def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg,
@@ -461,11 +465,12 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg,
                 "train": [train_start, train_fit_end],
                 "valid": [valid_start, train_end],
                 # 预测窗口：预热时从 predict_start（更早）起，回测窗口仍以 test_start 为准
-                # ⚠ v1.20.46 已知残留（用户审计 #3 ✓）：`predict_start < test_start` 时，
-                #   首段的 test 段会**伸进训练窗口** ⇒ 回测**首日调仓**用的是模型在
-                #   **训练样本行**上的预测（轻度泄露 ✓）。IC/分层已被 `clip_start` 裁掉 ✓，
-                #   但回测首日没有裁 ✓。⇒ 保留现状并在此**显式标注** ✓（改它要动调仓网格，
-                #   风险大于收益 ✓）；若要彻底消除，应让首日"无 T-1 信号时空仓" ✓。
+                # ★★ v2.8.2（**审计 #1 已修** ✓）：原来这里标注的残留 —— "`predict_start < test_start`
+                #   时首段 test 段会伸进训练窗口 ⇒ 首日调仓用**训练样本行**上的预测（轻度泄露 ✓）"
+                #   —— 用 **purge** 解决了 ✓（`_purged_train_end`：训练/验证段末退到测试起点前
+                #   h+1 个交易日 ✓）⇒ 预热期的那些行**不再属于**训练/验证段 ✓ ⇒ 它们的预测是
+                #   **样本外**的 ✓（预热本身仍有价值：首日调仓的 T-1 信号 ✓ 不产生整段空仓 ✓，
+                #   且用户拍板的口径是"**首日调仓不得使用训练期预测**" ✓ —— 现在满足 ✓）。
                 "test": [predict_start or test_start, test_end],
             },
         },
@@ -699,7 +704,9 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
             "month": req.train_win * 30,
         }.get((req.train_unit or "month").lower(), 380)
     data_start = _offset_date(req.start_date, -train_window_days)
-    train_end = _offset_date(req.start_date, -1)
+    # ★★ v2.8.2（**审计 #1** ✓）：训练/验证段末**退到测试起点前 h+1 个交易日**（purge ✓）
+    #   —— 原来写死"前一天"✗ ⇒ 批标签读到测试期价 ✓，而 valid 是 early_stopping 的打分集 ✓。
+    train_end = _purged_train_end(req.start_date, int(getattr(req, "label_horizon", 1) or 1))
 
     dataset_config = _build_dataset(req, instruments, (data_start, train_end), (req.start_date, req.end_date))
     dataset = init_instance_by_config(dataset_config)
@@ -988,6 +995,41 @@ def _build_merged_analysis(all_test_pred_label, all_train_pred_label, layer_segm
         except Exception:
             merged_train = None
     return merged_layers, merged_test, merged_train
+
+
+def _purged_train_end(test_start: str, label_horizon: int) -> str:
+    """训练/验证段末 = **测试起点前 `h+1` 个交易日** ✓（v2.8.2 按**审计 #1** 修 ✓）。
+
+    **为什么必须 purge**：训练标签是"未来 h 个交易日收益" ✓ ⇒ 若训练/验证段末紧贴测试起点
+      （原来 = 测试起点**前一天** ✗），那批样本的标签会**读到测试期价格** ✓；而 valid 正是
+      LightGBM `early_stopping` 的打分集 ⇒ **模型选择**因此吃到测试期信息 ✗（审计 #1 ✓）。
+      留 `h` 天是为了让"最后一条可用样本的标签"整体落在测试起点之前 ✓，`+1` 是原来那个"前一天" ✓。
+
+    ⚠ 必须按**交易日**退 ✗ —— `_offset_date` 是**自然日**（`utils.py:74` ✓）⇒ 退 `h+1` 个自然日
+      遇到周末只等于 `h-1` 个交易日 ⇒ purge 不够 ✗（这类"差一两天"的泄露最难发现 ✓）。
+      日历取不到时退回自然日 `(h+1)*2`（≥ 周末两天的量 ✓），并在 `_once_log` 里说明 ✓。
+
+    **副作用（有意 ✓）**：训练窗右端少 `h+1` 个交易日 ⇒ 模型结果会变 ✓ —— 已升
+      `TRAIN_SEMANTICS` ⇒ 旧模型产物与断点续跑结果自动作废 ✓（不会静默混用 ✓）。
+    """
+    need = max(1, int(label_horizon)) + 1
+    try:
+        from qlib.data import D
+
+        cals = [str(d)[:10] for d in D.calendar(end_time=test_start)]
+        pre = [d for d in cals if d < str(test_start)[:10]]
+        if len(pre) >= need:
+            out = pre[-need]
+            _once_log("train-purge", "[dataset] 训练/验证段末按 **purge** 退到 %s（测试起点 %s 前 "
+                                    "%d 个交易日 ✓ 审计 #1）" % (out, str(test_start)[:10], need))
+            return out
+    except Exception:                                                     # noqa: BLE001
+        pass
+    out = _offset_date(test_start, -(need * 2))
+    _once_log("train-purge-fallback",
+              "[dataset] ⚠ 日历不可用 ⇒ 训练/验证段末按**自然日**退到 %s（测试起点前 %d 个自然日 ✓）"
+              % (out, need * 2))
+    return out
 
 
 def _first_segment_warm_start(train_start: str, test_start: str, n_days_hold: int) -> Optional[str]:
@@ -1371,8 +1413,10 @@ def _gen_rolling_segments(req: BacktestRequest, calendar) -> list:
             else:
                 cursor = next_cursor
             continue
-        # 训练段 = [cursor - train_win, cursor - 1天]
-        train_end = _offset_date(cursor, -1)
+        # 训练段 = [cursor - train_win, cursor - 1 个交易日]
+        # ★ v2.8.2（审计 #1 ✓）：这里同样要 purge（每段各自退 h+1 个交易日 ✓ —— 滚动回测里
+        #   "每段末那批样本的标签伸进本段测试期"是同一个泄露 ✓，一并修 ✓）
+        train_end = _purged_train_end(cursor, int(getattr(req, "label_horizon", 1) or 1))
         train_start = _add_period(cursor, -req.train_win, req.train_unit)
         segments.append({
             "seq": seq,

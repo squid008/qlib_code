@@ -1680,6 +1680,47 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
         return None
 
 
+def _ff_label_px_col(df, lab_px: str) -> str:
+    """标签兜底该用**哪一列价** ✓（v2.8.2，审计 #7 ✓）：优先**复权列** ✓（与主标签同源 ✓）。
+
+    ⚠ 退回顺序是"复权 → 原始"✗→✓：老面板/字段缺失时退回 `CLOSE`/`OPEN`（真实价）会把
+      口径混用的老毛病带回来 ✓ ⇒ 返回值要能看出退回了哪一列（调用方日志/测试用 ✓）。
+    """
+    want = "OPEN_ADJ" if str(lab_px) == "$open" else "CLOSE_ADJ"
+    if want in getattr(df, "columns", []):
+        return want
+    fallback = "OPEN" if str(lab_px) == "$open" else "CLOSE"
+    return fallback if fallback in df.columns else want
+
+
+def _apply_ff_labels(df, label_cols, horizons, inst_lv: int, lab_px: str) -> None:
+    """缺价/停牌行的**标签兜底**（v2.8.2 按**审计 ⑥⑦** 修 ✓）。
+
+    只动两处语义，其余一律保持原样 ✓（就地改 `df` 的 `label_cols[h]` 列 ✓）：
+
+    ⑥ **只填"未来价确实存在"的行** ✓ —— 原实现对**未成熟尾部行**也填：`exit_px` 缺失时用
+       "最后一天的价"当卖出价 ✗（`exit_px.where(notna, last_c)`）⇒ 尾部造出**假标签**
+       （倒数第 2 行一个小收益、倒数第 1 行 0% ✗ —— 与审计复现一致 ✓）。
+       现在那些行**保持 NaN** ✓（qlib 本来就把它们算作"无标签"✓ ⇒ 统计口径自动把它们排除 ✓）。
+
+    ⑦ **价格链走复权价** ✓（`CLOSE_ADJ`/`OPEN_ADJ` ✓ = 与主标签 `adjust_expr(..., price_adjust)`
+       同源 ✓）：原来兜底用**不复权**的 `CLOSE`/`OPEN` ✗ ⇒ 除权日"复权价 vs 真实价"跨口径相减
+       ⇒ 兜底算出假的 −50%（正确应 0%）✓（默认 `price_adjust="backward"` 时就中 ✓）。
+    """
+    col = _ff_label_px_col(df, lab_px)
+    cf = df.groupby(level=inst_lv)[col].ffill()
+    g = cf.groupby(level=inst_lv)
+    entry_px = g.shift(-1)
+    for h in horizons:
+        exit_px = g.shift(-(h + 1))
+        ok = exit_px.notna() & entry_px.notna()          # ★⑥ 未来价必须真实存在 ✓
+        if not bool(ok.any()):
+            continue
+        ff = (exit_px / entry_px - 1.0).where(ok)
+        cur = df[label_cols[h]]
+        df[label_cols[h]] = cur.where(cur.notna(), ff)   # 只补主标签为 NaN 的那些行 ✓（原语义 ✓）
+
+
 def run_single_factor_tests(
     label_horizons,
     universe: str,
@@ -1910,6 +1951,13 @@ def run_single_factor_tests(
     base_fields = ["$close/$factor", "$open/$factor", "$change",
                    "Ref($close/$factor, -1)", "Ref($open/$factor, -1)", "Ref($change, -1)"]
     base_names = ["CLOSE", "OPEN", "CHANGE", "T1_CLOSE", "T1_OPEN", "T1_CHANGE"]
+    # ★★ v2.8.2（**审计 #7** ✓）：再挂两列**复权价** ✓ —— 给"停牌/缺价行的标签兜底"用 ✓。
+    #   为什么必须与 `CLOSE`（`$close/$factor` = **真实价**）分开：真实价只用于**涨跌停/停牌判定** ✓
+    #   （那些判据本来就是真实价口径 ✓），而**收益率/标签**必须复权 ✓；原来兜底直接拿 `CLOSE`
+    #   （真实价）跟复权主标签混算 ✗ ⇒ 除权日跨口径相减 ⇒ 假的 −50% ✓（默认 backward 就中 ✓）。
+    base_fields += [adjust_expr("$close", _lab_mode, round_prices=price_round),
+                    adjust_expr("$open", _lab_mode, round_prices=price_round)]
+    base_names += ["CLOSE_ADJ", "OPEN_ADJ"]
     # 事件研究取价用（⚠ v1.19.96：与 label 同口径 —— 事件研究算的是**价格比/收益**，属比率类
     #   ⇒ 必须后复权 ✓；原先跟 `pa` 走，`forward` 改成真实价后会引入除权跳空 ✗）
     # ★★ v2.1.56：**「秒开」这条链的取价字段也要跟随「成交时点」** ✗→✓
@@ -2098,22 +2146,13 @@ def run_single_factor_tests(
     # 默认口径下 df 会在下方裁回 [.., end_date] 用于统计；df_full 仅供事件研究取价。
     df_full = df
 
-    # 冻结价 label 兜底：CLOSE ffill 一次，各周期按各自 h 做 shift 修正 label 列
+    # 冻结价 label 兜底（v2.8.2 按**审计 ⑥⑦** 修 ✓；实现抽成 `_apply_ff_labels` ⇒ 可单测 ✓）
     if freeze_suspended_price:
         try:
             inst_lv = df.index.names.index("instrument")
             dt_lv = df.index.names.index("datetime")
-            # ★ v2.1.67：**兜底 label 的取价列也要跟随成交时点** ✗→✓ —— 否则停牌行会退回
-            #   收盘口径 ⇒ 与上面 `label_exprs` 不一致 ✗（同一列两种基准 ⇒ 悄悄错 ✓）。
-            _ff_px = "OPEN" if (_lab_px == "$open" and "OPEN" in df.columns) else "CLOSE"
-            cf = df.groupby(level=inst_lv)[_ff_px].ffill()
-            last_c = cf.groupby(level=inst_lv).transform("last")
-            for h in horizons:
-                exit_px = cf.groupby(level=inst_lv).shift(-(h + 1))
-                exit_px = exit_px.where(exit_px.notna(), last_c)
-                entry_px = cf.groupby(level=inst_lv).shift(-1)
-                label_ff = exit_px / entry_px - 1
-                df[label_cols[h]] = df[label_cols[h]].where(df[label_cols[h]].notna(), label_ff)
+            # ★ v2.1.67：**兜底 label 的取价列也要跟随成交时点** ✓（`t1_open` ⇒ 开盘 ✓）
+            _apply_ff_labels(df, label_cols, horizons, inst_lv, _lab_px)
             sig_end = pd.Timestamp(end_date)
             df = df[df.index.get_level_values(dt_lv) <= sig_end]
         except Exception as e:
