@@ -54,6 +54,12 @@
 - ⚠ **`TRAIN_SEMANTICS` 已升到 `2.8.2`** ✓：模型结果因此改变 ⇒ 旧 `model_artifacts.json` 会被
   `_verify_reuse_train_semantics` **拦住**（要求重训 ✓），滚动断点续跑的旧段结果也一并作废 ✓。
 
+**CI 红过一次（已修 ✓，教训留在记录里）**：新测试里那条"按交易日 purge"的用例**要日历** ⇒ 必须打
+`@pytest.mark.datareq`（CI 的约定是"datareq 无数据自动跳过"✓）—— 漏了这一步 ⇒ CI 直接红 ✗
+（`ValueError: can't find a freq from [] that can resample to day!` = 空日历 ✓），已补标记 + 空日历
+守卫（`pytest.skip` ✓）。★ 教训：**本机有数据 ⇒ 本地全绿也可能 CI 红** ✗ ⇒ 新测试先问一句
+"它要不要数据？要 ⇒ 打 datareq" ✓。
+
 **测试** ✓：新增 `backend/tests/test_audit_p0_fixes.py` **11 passed** ——
 ③（不同信号必须不同键 ✓ / 同组乱序仍同键 ✓ / 完全相同时仍命中缓存 ✓ / 异常输入退回 0 ✓）、
 ⑥⑦（尾部保持 NaN ✓ / 除权日按复权算 0% 而不是真实价 −50% ✓ / 主标签不被覆盖 ✓ / 取价列优先复权 ✓）、

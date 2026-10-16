@@ -122,20 +122,32 @@ def test_px_col_prefers_adjusted_then_falls_back():
 # 审计 #1：purge（训练/验证段末退到测试起点前 h+1 个**交易日**）
 # ---------------------------------------------------------------------------
 
+@pytest.mark.datareq
 def test_purged_train_end_leaves_exactly_h_trading_days_gap():
     """★ 核心口径：段末退到 `pre[-(h+1)]` ⇒ **最后一条可用样本的标签止于测试起点前一个交易日** ✓
-    （即：训练/验证样本**一个价格点都不碰测试期** ✓）。"""
-    from app.engine.qlib_engine import _purged_train_end
-    from app.services.qlib_runtime import ensure_qlib_init
+    （即：训练/验证样本**一个价格点都不碰测试期** ✓）。
 
-    ensure_qlib_init()                    # ⚠ 必须先 init，否则 `D.calendar` 直接抛 ✗（测试里踩过 ✓）
-    from qlib.data import D
+    ⚠ 这条**要日历** ⇒ 必须打 `datareq`（CI 里"无数据自动跳过" ✓）—— 2026-10-16 就是漏了这一步，
+      CI 直接红 ✗（`ValueError: can't find a freq from [] ...` 空日历 ✓）；本地有数据 ⇒ 照常跑 ✓。
+    """
+    from app.engine.qlib_engine import _purged_train_end
 
     test_start = "2024-03-01"
     h = 5
+    try:
+        from app.services.qlib_runtime import ensure_qlib_init
+
+        ensure_qlib_init()          # ⚠ 必须先 init，否则 `D.calendar` 直接抛 ✗（测试里踩过 ✓）
+        from qlib.data import D
+
+        cals = [str(d)[:10] for d in D.calendar(end_time=test_start)]
+    except Exception as e:                                                # noqa: BLE001
+        pytest.skip("无日历/未接数据（datareq 环境才跑 ✓）：%r" % (e,))
+    if len(cals) < 30:
+        pytest.skip("日历为空（本机/CI 无数据集）⇒ 由 datareq 环境跑 ✓")
+
     out = _purged_train_end(test_start, h)
     assert out < test_start
-    cals = [str(d)[:10] for d in D.calendar(end_time=test_start)]
     pre = [d for d in cals if d < test_start]
     gap = len([d for d in cals if out < d < test_start])
     assert gap == h, "交易日间隔应为 h=%d（含 out 共 h+1 个位置）✓ 实际 %d" % (h, gap)
