@@ -1765,7 +1765,12 @@ export default function SingleFactorTestPanel({
                 <th className="text-center px-1 whitespace-nowrap">IC</th>
                 <th className="text-center px-1 whitespace-nowrap">RankIC</th>
                 <th className="text-center px-1 whitespace-nowrap">ICIR</th>
-                <th className="text-center pl-2 whitespace-nowrap">结论</th>
+                {/* ★ v2.8.8c（用户 2026-10-16 ✓）：结论列**定个最小宽度** ✗→✓ ——
+                    用户原话：「结论这列**稍微宽点**，让**彩票型**可以在一行放下。**有效后面的 √**
+                    也可以一行写下」✓ ⇒ 旧版列太窄 ⇒ 「彩票型」被折成"彩票/型"、"有效✓"也被折 ✗。
+                    `min-w-[5rem]`（80px ✓）按最长的那枚徽章「**有效(反向)✓**」留够 ✓，
+                    单元格再加 `whitespace-nowrap` ✓ ⇒ 徽章永不折行 ✓。 */}
+                <th className="text-center pl-2 whitespace-nowrap min-w-[5rem]">结论</th>
                 <th
                   className="text-center px-1 whitespace-nowrap"
                   title="事件研究：持有 = 该行「周期」时的收益中位数（仅 0/1 信号有值；悬停可看均值/绝对收益胜率/样本数）"
@@ -2047,7 +2052,9 @@ export default function SingleFactorTestPanel({
                         <td className="text-right px-1">{fmtRaw(r.ic, 4)}</td>
                         <td className="text-right px-1">{fmtRaw(r.rank_ic, 4)}</td>
                         <td className="text-right px-1">{fmtRaw(r.icir, 3)}</td>
-                        <td className="text-right pl-2">
+                        <td className="text-center pl-2 whitespace-nowrap">
+                          {/* ★ v2.8.8c：`whitespace-nowrap` ⇒ 「彩票型」「有效✓」「待观察」都**一行放下** ✓
+                              （宽度由表头的 `min-w-[5rem]` 撑着 ✓；居中与表头对齐 ✓） */}
                           {verdictKind === 'conflicting' ? (
                             <span className="text-red-600 font-semibold" title="IC/ICIR 与触发收益差方向相反，信号可能由少数触发日主导，横截面方向相反">
                               方向矛盾
