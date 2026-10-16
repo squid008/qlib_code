@@ -86,9 +86,17 @@ def test_running_tasks_unknown_is_not_silent(monkeypatch):
     assert out and "未知" in out, "探不到却返回空 ⇒ 守卫又变哑了 ✗"
 
 
-def test_activate_refuses_while_running(monkeypatch):
-    """★ 有任务在跑 ⇒ 默认**拒切** ✓（用户口径："先停任务再切" ✓）。"""
+def test_activate_refuses_while_running(monkeypatch, tmp_path):
+    """★ 有任务在跑 ⇒ 默认**拒切** ✓（用户口径："先停任务再切" ✓）。
+
+    ⚠ **CI 没有数据目录** ⇒ 必须把"数据集可用性"打桩 ✗ —— 否则会先撞
+      `FileNotFoundError("数据集目录不存在或缺日历")` ✗（与守卫无关 ✓）。
+      ⚠ 我第一版没打桩，**正是这样在 CI 红的** ✓（本机有数据 ⇒ 本地全绿 ✗）⇒ 教训：
+      凡"要真实目录"的用例，要么打桩、要么打 `datareq` ✓。
+    """
+    monkeypatch.setattr(ds, "available", lambda: ["cn_data"])
+    monkeypatch.setattr(ds, "dataset_dir", lambda name: tmp_path)
     monkeypatch.setattr(ds, "_running_tasks", lambda: "运行中 1 个")
     with pytest.raises(RuntimeError) as ei:
-        ds.activate("cn_data")
+        ds.activate("cn_data")               # ★ 守卫在**落盘/改全局状态之前**就该拦下 ✓
     assert "正在运行的任务" in str(ei.value)
