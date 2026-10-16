@@ -842,6 +842,12 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
                              # ★ T1（v2.8.6）：涨停判定口径透传 ✓（与净值曲线同口径 ✓ 不分叉 ✗）
                              limit_judge=(req.limit_judge or "legacy"),
                              exit_mat=_ex, exit_rule=(exit_rule if with_exit else None))
+        # ★★ v2.8.8b（用户 2026-10-16 ✓）：**登记这次回测的成交明细** ✗→✓
+        #   —— 导出「离场曲线」那一页的**调仓记录**靠它 ✓（用户要用它检查离场逻辑 ✓：
+        #     `reason` 会明写 `exit_signal`（离场卖出 ✓）/ `sell_expiry`（到期 ✓）/ `sell_trim_units`（减仓 ✓））。
+        #   ⚠ 只登记精简版、且**失败不影响回测** ✓（见 `pr_bt_stash_put` ✓）。
+        pr_bt_stash_put((hk_state or {}).get("_task_id") or getattr(req, "task_id", "") or "",
+                        row, item, with_exit, exit_index, bt)
         nav = getattr(bt, "nav", None)
         if nav is None or not len(nav):
             return {"error": "每期全仓滚动回测无净值"}
@@ -1442,6 +1448,14 @@ def single_factor_test(req: SingleFactorTestRequest):
             items: list[dict] = []
             # ★ v2.1.27：每期持仓索引（导出/逐点对拍复用 ✓；没落键 ⇒ 空 dict ✓）
             hk_state = state.get("_hk") or {}
+            # ★★ v2.8.8b（用户 2026-10-16 ✓）：**把真实任务 id 顺路带进 `hk_state`** ✗→✓ ——
+            #   为什么不能直接用 `req.task_id` ✗：**单因子测试的 task_id 是路由生成**的 ✓，
+            #   请求体里根本没有它 ✗ ⇒ 登记成交明细时键里是**空串** ✗ ⇒ 导出按真 tid 去取
+            #   ⇒ **取不到 ⇒ 调仓记录页整页空白** ✓✓（冒烟第一次就抓到这个 ✓）。
+            #   `hk_state` 是**每个任务自己的**dict ✓、且一路传到 `_panel_period_roll_nav` ✓
+            #   ⇒ 借它带一趟最省事 ✓（⚠ 加的是 `_` 前缀的私有键，`HoldingsIndex.from_state`
+            #     只读它认得的键 ✓ 不受影响 ✓）。
+            hk_state["_task_id"] = task_id
             n_factor = len(req.factors)
             # ★★ v2.4.2（用户 2026-10-15 截图反馈 ✓）：**统计之后**这一整段（整理结果 +
             #   「每期全仓滚动」取全池行情 + 逐档逐日回测）原来完全不报进度 ✗ ⇒ 进度条顶在
@@ -1934,6 +1948,54 @@ _NAV_BT_CAP = 4
 _NAV_BT_STASH: dict = {}
 _NAV_BT_STASH_CAP = 4
 
+# ---------------------------------------------------------------------------
+# ★★ v2.8.8b（用户 2026-10-16 ✓）：**「每期全仓滚动」成交明细**的登记（导出「调仓记录」用 ✓）
+#
+# 为什么要它：用户要用「调仓记录」**检查离场逻辑**（哪天、因为什么原因卖出 ✓ ——
+#   成交里的 `reason` 正是 `exit_signal` / `sell_expiry` / `sell_trim_units` ✓）。
+#   而成交明细只在 `BtResult` 里 ✗、**不进 HTTP 响应**（几万笔会撑爆 JSON ✓）。
+# ⇒ 跑完顺手登记一份**精简版**（只留 trades + diag + period_roll stats ✓；不留 nav/rejects ✓ 省内存）；
+#   键 = (任务, 因子表达式, 周期, 离场下标 ✓ —— `-1` = "对照（不离场）"那一条 ✓)；
+#   ⚠ 键里**必须含离场下标**（每条离场卖的东西不一样 ✗）；容量 8、FIFO ✓；
+#   ⚠ 切数据集要清（T3 纪律 ✓，见 `clear_nav_caches` ✓）。
+_PR_BT_STASH: dict = {}
+_PR_BT_CAP = 8
+
+
+def _pr_key(task_id, factor_key, horizon, ei) -> tuple:
+    return (str(task_id or ""), str(factor_key or ""), int(horizon or 0),
+            -1 if ei is None else int(ei))
+
+
+def pr_bt_stash_put(task_id, row: dict, item: Optional[dict], with_exit: bool,
+                    ei: int, bt) -> None:
+    """登记"这次每期全仓滚动回测"的成交明细（**导出专用** ✓，绝不进响应 ✗）。
+
+    ⚠ **周期必须取 `row["horizon"]`** ✓（不是 `item["horizon"]` ✗）—— 2026-10-16 第一版写成
+      `item` 的 ⇒ 存进去是 `0`、导出侧按 `row` 的 `60` 去取 ⇒ **键对不上、调仓记录整页空白** ✗✓
+      （冒烟当场抓到 ✓）。**存取两侧必须用同一个来源** ✓，本函数与 `export_xlsx` 那边都是 `row` ✓。
+    """
+    try:
+        key = _pr_key(task_id, (row or {}).get("expression"), (row or {}).get("horizon"),
+                      (int(ei) if with_exit else None))
+        with _NAV_BT_LOCK:
+            _PR_BT_STASH.pop(key, None)
+            _PR_BT_STASH[key] = {
+                "trades": getattr(bt, "trades", None),
+                "diag": dict(getattr(bt, "diag", None) or {}),
+                "stats": ((getattr(bt, "stats", None) or {}).get("period_roll") or {}),
+            }
+            while len(_PR_BT_STASH) > _PR_BT_CAP:
+                _PR_BT_STASH.pop(next(iter(_PR_BT_STASH)))
+    except Exception:                                  # noqa: BLE001 —— 登记失败**绝不能影响回测** ✓
+        pass
+
+
+def pr_bt_stash_get(task_id, factor_key, horizon, ei):
+    """导出侧按**同一键**取回（取不到 ⇒ None ⇒ 导出如实写"没有这一页" ✓，不假装 ✓）。"""
+    with _NAV_BT_LOCK:
+        return _PR_BT_STASH.get(_pr_key(task_id, factor_key, horizon, ei))
+
 
 def clear_nav_caches() -> None:
     """★ T3（审计 ④ / v2.8.7，用户 2026-10-16 已拍 ✓）：切数据集时清本模块的**进程级缓存** ✓。
@@ -1948,6 +2010,7 @@ def clear_nav_caches() -> None:
     with _NAV_BT_LOCK:
         _NAV_BT_CACHE.clear()
         _NAV_BT_STASH.clear()
+        _PR_BT_STASH.clear()          # ★ v2.8.8b：离场/对照的成交明细（键里也没有数据集 ✗）
 
 
 def _nav_stash_key(task_id: str, factor_id: Optional[str], hold_days: int,

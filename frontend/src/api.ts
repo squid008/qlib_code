@@ -816,6 +816,30 @@ export async function exportEventStudyXlsx(
   return postXlsx('/factors/export/event-study-xlsx', req)
 }
 
+/**
+ * ★★ v2.8.8b（用户 2026-10-16 ✓）：**离场曲线导出** ——
+ * 「第一页是截图，后面有几个离场因子，就加几个页面导出」✓（用户要「方便我检查离场逻辑」✓）。
+ * · 第 1 页 = **曲线截图**（前端按当前显隐抓的 PNG ✓）+ 参数/口径；
+ * · 其后每个离场一页（含「对照（不离场）」✓）= 该次「每期全仓滚动」的**调仓记录** ✓
+ *   （`原因` 列会明写「★离场卖出（离场信号触发）」⇒ 一眼看出离场何时生效 ✓）。
+ */
+export interface ExitCurveExportRequest {
+  task_id: string
+  /** 因子 id / 名称 / 表达式（三者任一，后端按它定位那一行 ✓） */
+  factor_id: string
+  horizon?: number | null
+  /** `null`/不传 = 全部离场 + 对照（从基础行点进来 ✓）；数字 = 只导该条离场 ✓ */
+  ei?: number | null
+  /** 前端按**当前显隐**抓的曲线 PNG（base64 ✓，键 `curve` ✓） */
+  shots?: Record<string, string>
+}
+
+export async function exportExitCurveXlsx(
+  req: ExitCurveExportRequest,
+): Promise<{ blob: Blob; filename: string | null }> {
+  return postXlsx('/factors/export/exit-curve-xlsx', req)
+}
+
 /** 后端出错时**响应体是 JSON**（blob 请求下要手动解一下）⇒ 取出可读 detail ✓。 */
 export async function blobErrorDetail(err: unknown): Promise<string> {
   const anyErr = err as { response?: { data?: unknown; status?: number } }

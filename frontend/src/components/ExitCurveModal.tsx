@@ -1,6 +1,11 @@
-import { useMemo, useState } from 'react'   // ★ v2.8.8：图例显隐要用 useState ✓
+import { useMemo, useRef, useState } from 'react'
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import type { PeriodRollNav, SingleFactorTestResult } from '../api'
+// ★ v2.8.8b（用户 2026-10-16 ✓）：**导出**（第 1 页截图 + 各离场一页调仓记录 ✓）
+//   与 `TopkCurveModal` 同一套：`captureSection` 抓当前渲染的图 ✓ → 后端贴进 XLSX ✓。
+import { blobErrorDetail, exportExitCurveXlsx } from '../api'
+import { captureSection } from '../captureChart'
+import { saveBlob, stamp } from '../downloadFile'
 
 /**
  * **离场曲线**弹窗（v2.8.0，用户 2026-10-15 ✓）。
@@ -23,6 +28,9 @@ export interface ExitCurveModalProps {
   /** 强调第几条离场（`null` = 对照 + 全部 ✓） */
   ei: number | null
   name: string
+  /** ★ v2.8.8b：单因子测试任务 id —— 导出「调仓记录」要靠它取后端登记的成交明细 ✓
+   *  （空 ⇒ 导出按钮禁用并说明原因 ✓，不出半份文件 ✗）。 */
+  taskId?: string
   onClose: () => void
 }
 
@@ -31,7 +39,7 @@ const EXIT_COLORS = ['#7c3aed', '#059669', '#d97706', '#2563eb', '#db2777', '#08
 const pct1 = (v: unknown) =>
   typeof v === 'number' && Number.isFinite(v) ? `${(v * 100).toFixed(1)}%` : '-'
 
-export default function ExitCurveModal({ row, ei, name, onClose }: ExitCurveModalProps) {
+export default function ExitCurveModal({ row, ei, name, taskId, onClose }: ExitCurveModalProps) {
   const series = useMemo(() => {
     const cmp = row.period_roll_items?.[0] ?? row.period_roll ?? null
     const out: {
@@ -91,6 +99,41 @@ export default function ExitCurveModal({ row, ei, name, onClose }: ExitCurveModa
     return out
   }, [row, ei])
 
+  // ★★ v2.8.8b（用户 2026-10-16 ✓）：**导出**（第 1 页截图 + 每个离场一页调仓记录 ✓）
+  //   抓图容器 = 曲线图那层（抓的是你**眼前这张图**：显隐/缩放后的样子 ✓）；
+  //   调仓记录由**后端**从"同一次回测"的成交明细里取 ✓（不重跑 ⇒ 与曲线逐笔同源 ✓）。
+  const shotRef = useRef<HTMLDivElement | null>(null)
+  const [expBusy, setExpBusy] = useState(false)
+  const [expMsg, setExpMsg] = useState<{ text: string; ok: boolean } | null>(null)
+  const doExport = async () => {
+    if (!taskId || expBusy) return
+    setExpBusy(true)
+    setExpMsg(null)
+    try {
+      let shots: Record<string, string> = {}
+      try {
+        const png = await captureSection(shotRef.current)
+        if (png) shots = { curve: png }
+      } catch (shotErr) {
+        // 抓图是"锦上添花"⇒ 绝不因为它把整个导出搞失败 ✗（后端会写明"未附图" ✓）
+        console.warn('曲线截图失败，改为导出不含图的文件：', shotErr)
+      }
+      const { blob, filename } = await exportExitCurveXlsx({
+        task_id: taskId,
+        factor_id: row.id || row.name || '',
+        horizon: row.horizon ?? null,
+        ei,
+        shots,
+      })
+      saveBlob(blob, filename || `离场曲线_${row.name}_${stamp()}.xlsx`)
+      setExpMsg({ ok: true, text: '已导出 ✓' })
+    } catch (e) {
+      setExpMsg({ ok: false, text: await blobErrorDetail(e) })
+    } finally {
+      setExpBusy(false)
+    }
+  }
+
   // 各条曲线的日期轴可能不同（调仓日采样 vs 逐日 ✓）⇒ 取**并集**再逐条填值 ✓
   const data = useMemo(() => {
     const all = Array.from(new Set(series.flatMap((s) => s.dates))).sort()
@@ -122,11 +165,35 @@ export default function ExitCurveModal({ row, ei, name, onClose }: ExitCurveModa
               {series[1] ? `　｜　口径：${modeOf(series[1])}` : ''}
             </span>
           </div>
-          <button type="button" onClick={onClose}
-                  className="px-2 py-0.5 rounded border text-[11px] text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">
-            关闭
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {/* ★★ v2.8.8b（用户 2026-10-16 ✓）：**导出**（导当前弹窗看到的这些曲线 ✓）——
+                第 1 页 = 曲线截图 ✓；其后每个离场一页 = 调仓记录 ✓（含「对照（不离场）」✓）。
+                `disabled`：任务 id 缺失（历史结果/刷新后打开）⇒ 宁可点不动，也不出半份文件 ✗。 */}
+            <button
+              type="button"
+              onClick={doExport}
+              disabled={expBusy || !taskId}
+              title={
+                !taskId
+                  ? '这次结果没有任务上下文（如刷新后从历史记录打开）⇒ 无法导出（调仓记录在后端任务状态里）'
+                  : '导出 XLSX：第 1 页 = **曲线截图**（当前显隐/缩放的样子 ✓）+ 参数；' +
+                    '其后**每个离场一页**（含「对照（不离场）」✓）= 该次回测的**调仓记录**'
+              }
+              className="px-2 py-0.5 rounded border text-[11px] whitespace-nowrap disabled:opacity-50 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+            >
+              {expBusy ? '导出中…' : '导出'}
+            </button>
+            <button type="button" onClick={onClose}
+                    className="px-2 py-0.5 rounded border text-[11px] text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap">
+              关闭
+            </button>
+          </div>
         </div>
+
+        {/* ★ v2.8.8b：导出**失败**才显示（成功不打扰 ✓ —— 与持仓曲线弹窗同一习惯 ✓） */}
+        {expMsg && !expMsg.ok && (
+          <div className="mx-3 mt-2 text-[11px] text-red-600 dark:text-red-400">{expMsg.text}</div>
+        )}
 
         <div className="p-3">
           {/* 指标对比（对照 + 每条离场 ✓）：Δ 才是这条离场的净效果 ✓ */}
@@ -198,7 +265,8 @@ export default function ExitCurveModal({ row, ei, name, onClose }: ExitCurveModa
           )}
 
           {data.length > 1 ? (
-            <div className="bg-white">
+            /* ★ v2.8.8b：`shotRef` = 抓图容器（导出时把**这张图当前的样子**抓成 PNG ✓） */
+            <div className="bg-white" ref={shotRef}>
               <ResponsiveContainer width="100%" height={300}>
                 <LineChart data={data} margin={{ top: 5, right: 12, left: 0, bottom: 4 }}>
                   <CartesianGrid strokeDasharray="3 3" opacity={0.3} />

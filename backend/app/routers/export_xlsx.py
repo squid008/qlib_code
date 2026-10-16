@@ -26,12 +26,14 @@ from .. import __version__
 from ..exports import spec, xl
 from ..exports.event_study import EventStudyExportDoc, build_event_study_workbook, contract_params
 from ..exports.event_study import param_pairs_from as es_param_pairs
+# ★ v2.8.8b（用户 2026-10-16 ✓）：「离场曲线」导出（**第 1 页截图 + 每个离场一页调仓记录** ✓）
+from ..exports.exit_curve import ExitCurveDoc, ExitRunDoc, build_exit_curve_workbook, trade_rows
 from ..exports.topk import build_topk_workbook
 from ..exports.topk_doc import PanelSource, TIER_KEYS, build_doc
 from ..factors.holdings_index import HoldingsIndex
 from ..signals.positions import buy_signals_from_trades, positions_from_trades
 from .factors import (EventNavRequest, est_export_state, event_study_nav, nav_bt_stash_get,
-                      sft_export_state)
+                      pr_bt_stash_get, sft_export_state)
 
 router = APIRouter(prefix="/api/factors", tags=["exports"])
 
@@ -330,6 +332,142 @@ def export_topk_xlsx(req: TopkExportRequest) -> Response:
         data = build_topk_workbook(doc)
     except Exception as e:                                            # noqa: BLE001
         raise HTTPException(status_code=500, detail="生成 XLSX 失败：%s: %s" % (type(e).__name__, e))
+    return _xlsx_response(data, filename)
+
+
+class ExitCurveExportRequest(BaseModel):
+    """「导出离场曲线」请求（本体全在后端任务状态里 ✓，前端只带"当前界面选择" + 截图 ✓）。"""
+
+    task_id: str = ""
+    factor_id: str = ""
+    horizon: Optional[int] = None
+    ei: Optional[int] = None            # None = 全部离场 + 对照（从基础行点进来 ✓）；k = 只导第 k 条 ✓
+    shots: Optional[Dict[str, str]] = None   # 键 `curve` = 前端按当前显隐抓的曲线 PNG ✓
+
+
+def _exit_run_headline(st: Dict[str, Any], prefix: str) -> List[str]:
+    """一页顶上的摘要行（与弹窗那张对比表同口径 ✓）：绩效 + 五个离场计数 ✓。"""
+    st = st or {}
+    perf = st.get("perf") or {}
+
+    def _pct(v: Any) -> str:
+        return ("%s %.1f%%" % (prefix, float(v) * 100.0)) if isinstance(v, (int, float)) else ""
+
+    l1 = "　｜　".join(x for x in (
+        _pct(perf.get("annual_return")),
+        ("最大回撤 %.1f%%" % (float(perf["max_drawdown"]) * 100.0))
+        if isinstance(perf.get("max_drawdown"), (int, float)) else "",
+        ("期末净值 %.4f" % float(st["final_nav"])) if isinstance(st.get("final_nav"), (int, float)) else "",
+    ) if x)
+    l2 = "　｜　".join(x for x in (
+        ("离场卖出 %s" % st.get("exit_sells")) if st.get("exit_sells") is not None else "",
+        ("顺延 %s" % st.get("exit_deferrals")) if st.get("exit_deferrals") is not None else "",
+        ("被名单覆盖 %s" % st.get("exit_overridden")) if st.get("exit_overridden") is not None else "",
+        ("持币空转 %s" % st.get("exit_ignored")) if st.get("exit_ignored") is not None else "",
+    ) if x)
+    return [x for x in (l1, l2) if x]
+
+
+@router.post("/export/exit-curve-xlsx", summary="导出「离场曲线」（XLSX：截图 + 每个离场一页调仓记录）")
+def export_exit_curve_xlsx(req: ExitCurveExportRequest) -> Response:
+    """**第 1 页 = 曲线截图** ✓；其后**每个离场一页**（含「对照（不离场）」✓）＝**调仓记录** ✓。
+
+    用户原话：「离场曲线也要能导出**调仓记录**和**曲线截图**……第一页是截图，第二页是调仓记录。
+    **方便我检查离场逻辑**」＋「有几个离场因子，就加几个页面导出」✓。
+
+    ⚠ 为什么**不重跑**回测：调仓记录取自 `pr_bt_stash_get`（跑单因子测试时**顺手登记**的同一份
+      成交明细 ✓）⇒ 文件里的记录与页面那条曲线**逐笔同源** ✓；重跑很可能跑出另一批数字 ✗（最坏的一种 ✓）。
+    """
+    tid = str(req.task_id or "")
+    state = sft_export_state(tid) if tid else None
+    if state is None:
+        raise HTTPException(status_code=404,
+                            detail="任务不存在或已过期（结果只保留最近几次）—— 请重跑一次单因子测试再导出")
+    items = ((state.get("result") or {}).get("items")) or []
+    row = _find_row(items, req) if items else None
+    if row is None:
+        raise HTTPException(status_code=404,
+                            detail="在任务结果里找不到该因子（%s）—— 请重跑该因子再导出"
+                                   % (req.factor_id or "-"))
+    horizon = row.get("horizon")
+    all_exits = row.get("exit_rolls") or []
+    if req.ei is not None:
+        hit = [g for g in all_exits
+               if int(((g or {}).get("exit") or {}).get("index", -1)) == int(req.ei)]
+        if not hit:
+            raise HTTPException(status_code=404, detail="该离场序号不在任务结果里（任务可能已过期）")
+        all_exits = hit
+    # 页清单：对照一页 + 每个离场一页 ✓（用户："有几个离场因子，就加几个页面" ✓）
+    picks: List[Tuple[Optional[int], str, str]] = [(None, "对照-不离场", "对照（不离场）")]
+    for g in all_exits:
+        gi = int(((g or {}).get("exit") or {}).get("index", 0))
+        nm = str(((g or {}).get("exit") or {}).get("name")
+                 or ((g or {}).get("exit") or {}).get("id") or ("离场%d" % (gi + 1)))
+        picks.append((gi, "离场-%s" % nm, "含离场「%s」" % nm))
+
+    def _src_of(ei: Optional[int]) -> dict:
+        """该页对应的**结果条目**（拿 headline 的统计用 ✓；成交另从 stash 取 ✓）。"""
+        if ei is None:
+            return ((row.get("period_roll_items") or [{}])[0]) or {}
+        for g in all_exits:
+            if int(((g or {}).get("exit") or {}).get("index", -1)) == ei:
+                return ((g.get("items") or [{}])[0]) or {}
+        return {}
+
+    runs: List[ExitRunDoc] = []
+    missing: List[str] = []
+    for ei, sheet, title in picks:
+        st = pr_bt_stash_get(tid, row.get("expression"), horizon, ei) or {}
+        rows_tr = trade_rows(st)
+        stats = dict((_src_of(ei) or {}).get("stats") or {})
+        if not rows_tr:
+            missing.append(title)
+        runs.append(ExitRunDoc(sheet=sheet, title=title,
+                               headline=_exit_run_headline(stats, "对照" if ei is None else "含离场"),
+                               trades=rows_tr, stats=stats))
+
+    shots = req.shots or {}
+    curve_png, err = _decode_shot(shots.get("curve"))
+    notes = [
+        "· 第 1 页是**曲线截图**（前端按当前显隐抓的图 ⇒ 与页面像素一致 ✓）；"
+        "其后**每个离场一页**，正文是该次「每期全仓滚动」的**调仓记录** ✓。",
+        "· 调仓记录里 `原因` = `★离场卖出（离场信号触发）` 的行，就是**离场真正生效的时刻** ✓"
+        "（配合「顺延」看跌停/停牌卖不掉的顺延 ✓；对照页同理，可对比『离场到底改了什么』✓）。",
+    ]
+    if err:
+        notes.append("· ⚠ %s" % err)
+    if missing:
+        notes.append("· ⚠ 这些页**没有调仓记录**：%s（该档未回测或超出后端保留上限 ⇒ 重跑一次再导出 ✓）"
+                     % "、".join(missing))
+    _rq = state.get("_req")
+    lj = (_rq.get("limit_judge") if isinstance(_rq, dict)
+          else getattr(_rq, "limit_judge", None))
+    doc = ExitCurveDoc(
+        title="离场曲线：%s" % (row.get("name") or "-"),
+        headline=["因子公式：%s" % (row.get("expression") or "-"),
+                  "周期：%s 天　｜　页数：%d（对照 1 + 离场 %d）"
+                  % (horizon if horizon is not None else "-", len(picks), len(picks) - 1)],
+        subtitle="导出时间 %s ｜ 工具版本 v%s ｜ 格式 %s v%s ｜ %s"
+                 % (time.strftime("%Y-%m-%d %H:%M"), __version__,
+                    spec.FORMAT_ID, spec.FORMAT_VERSION, spec.dataset_line()),
+        param_pairs=[
+            ("因子", str(row.get("name") or "-"), None),
+            ("来源", str(row.get("source") or "-"), None),
+            ("因子公式", str(row.get("expression") or "-"), None),
+            ("周期（天）", horizon, None),
+            ("涨停判定口径", str(lj or "legacy"), None),
+            ("本文件包含", "、".join(t for _, _, t in picks), None),
+        ],
+        shot_png=curve_png,
+        shot_title="（对照 + %d 条离场）" % (len(picks) - 1) if len(picks) > 1 else "（仅对照）",
+        runs=runs, notes=notes)
+    filename = "单因子测试_离场曲线_%s_%s.xlsx" % (_safe_name(row.get("name") or "因子", "factor"),
+                                              time.strftime("%Y%m%d_%H%M"))
+    try:
+        data = build_exit_curve_workbook(doc)
+    except Exception as e:                                            # noqa: BLE001
+        raise HTTPException(status_code=500,
+                            detail="生成 XLSX 失败：%s: %s" % (type(e).__name__, e))
     return _xlsx_response(data, filename)
 
 

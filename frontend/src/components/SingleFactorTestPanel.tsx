@@ -2301,6 +2301,10 @@ export default function SingleFactorTestPanel({
             row={exitModal.row}
             ei={exitModal.ei}
             name={exitModal.name}
+            /* ★ v2.8.8b：导出（截图 + 各离场一页调仓记录）要用任务 id 取成交明细 ✓
+               ⚠ 与持仓曲线同一教训：用 `doneTaskId`（任务成功后保留 ✓），
+                 `taskIdRef` 会在 `stopPolling()` 时被清空 ✗。 */
+            taskId={doneTaskId ?? taskIdRef.current ?? ''}
             onClose={() => setExitModal(null)}
           />
         </EsErrorBoundary>
