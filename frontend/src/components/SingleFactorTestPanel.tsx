@@ -2133,9 +2133,16 @@ export default function SingleFactorTestPanel({
                             )}
                           </div>
                           {/* ★ v2.8.0：勾了离场 ⇒ 这一行也给它一个「离场曲线」入口 ✓
-                              （= 对照 + 全部离场画在一起；与下面那些变体行同源 ✓） */}
-                          <div className="h-[22px] mt-1 flex items-center justify-start">
-                            {vRows.length > 0 ? (
+                              （= 对照 + 全部离场画在一起；与下面那些变体行同源 ✓）
+                              ★★ v2.8.8c（用户 2026-10-16 第三次看 ✓）：**没有离场时这一行整行都不要** ✗→✓ ——
+                              用户原话：「没有变化啊，**事件研究按钮还是顶格**啊」✓。
+                              根因**不是刷新** ✗：旧写法在这里**无条件**留了一个 `h-[22px]` 的空占位 ✗
+                              ⇒ 本格内容 = 22 + 4 + 22 = **48px 撑满整格** ⇒ `align-middle`（见上面的 td ✓）
+                              **根本没有可居中的余量** ✗ ⇒ 单按钮的行看着还是顶格 ✓✓（实测推断 ✓）。
+                              ⇒ 只有真有「离场曲线」按钮时才渲染这一行 ✓ ⇒ 单按钮行内容 22px ✓
+                              ⇒ td 的 `align-middle` 才真正把它**竖直居中** ✓。 */}
+                          {vRows.length > 0 ? (
+                            <div className="h-[22px] mt-1 flex items-center justify-start">
                               <button
                                 onClick={() => setExitModal({ row: r, ei: null, name: '' })}
                                 className="px-1.5 py-0.5 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30 text-[11px] whitespace-nowrap"
@@ -2143,8 +2150,8 @@ export default function SingleFactorTestPanel({
                               >
                                 离场曲线
                               </button>
-                            ) : null}
-                          </div>
+                            </div>
+                          ) : null}
                         </td>
                       </>
                     )}
