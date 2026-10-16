@@ -1762,17 +1762,29 @@ export default function SingleFactorTestPanel({
                 <th className="text-center px-1 whitespace-nowrap">
                   分位<br />收益
                 </th>
-                <th className="text-center px-1 whitespace-nowrap">IC</th>
-                <th className="text-center px-1 whitespace-nowrap">RankIC</th>
-                <th className="text-center px-1 whitespace-nowrap">ICIR</th>
+                {/* ★ v2.8.8c（用户 2026-10-16 ✓）：IC/RankIC/ICIR 也**定宽** ✗→✓ ——
+                    用户原话：「**结论列离 ICIR 再近点**，中位数列离结论列也近点」✓。
+                    为什么之前"靠不近"✗：表格是 `w-full` ✓ ⇒ 余量被浏览器摊给**没定宽的列** ✗
+                    ⇒ ICIR 这类列被撑宽 ⇒ 它右侧就空出一段 ✓（看着像"结论离得远"✗ —— 其实空格在 ICIR 里 ✓）。
+                    定宽取值按内容（数据是 4 位小数的原始数 ✓ 例 `0.355`/`0.0572` ✓）留够即可 ✓。 */}
+                <th className="text-center px-1 whitespace-nowrap w-[3.25rem] min-w-[3.25rem]">IC</th>
+                <th className="text-center px-1 whitespace-nowrap w-[3.5rem] min-w-[3.5rem]">RankIC</th>
+                <th className="text-center px-1 whitespace-nowrap w-[3.25rem] min-w-[3.25rem]">ICIR</th>
                 {/* ★ v2.8.8c（用户 2026-10-16 ✓）：结论列**定个最小宽度** ✗→✓ ——
                     用户原话：「结论这列**稍微宽点**，让**彩票型**可以在一行放下。**有效后面的 √**
                     也可以一行写下」✓ ⇒ 旧版列太窄 ⇒ 「彩票型」被折成"彩票/型"、"有效✓"也被折 ✗。
                     `min-w-[5rem]`（80px ✓）按最长的那枚徽章「**有效(反向)✓**」留够 ✓，
                     单元格再加 `whitespace-nowrap` ✓ ⇒ 徽章永不折行 ✓。 */}
-                <th className="text-center pl-2 whitespace-nowrap min-w-[5rem]">结论</th>
+                {/* ★ v2.8.8c（用户 2026-10-16 ✓）：「**中位数列靠近结论一点**、**因子研究也往左一点**，
+                    这样整体就能都显示下了」✓ ⇒ 把最后三列**宽度钉死** ✗→✓ ——
+                    表格是 `w-full` ✓ ⇒ 多余宽度会被浏览器**摊给没有定宽的列** ✗ ⇒ 结论/中位数/因子研究
+                    各自被撑开 ⇒ 看着"空得远" ✗。定宽之后 ✓：余量留给前面的数据列 ✓，
+                    这三列**贴在一起** ✓、整表也更容易一屏放下 ✓。 */}
+                <th className="text-center px-0 whitespace-nowrap w-[4.75rem] min-w-[4.75rem]">结论</th>
                 <th
-                  className="text-center px-1 whitespace-nowrap"
+                  /* ★ v2.8.8c：「中位数」也**定宽**（3.5rem = 56px，刚够三个字 + 内边距 ✓）⇒ 它不会被
+                     余量撑开 ✓ ⇒ 自然**贴紧左边的「结论」** ✓（用户：中位数列靠近结论一点 ✓）。 */
+                  className="text-center px-0 whitespace-nowrap w-[3.25rem] min-w-[3.25rem]"
                   title="事件研究：持有 = 该行「周期」时的收益中位数（仅 0/1 信号有值；悬停可看均值/绝对收益胜率/样本数）"
                 >
                   中位数
@@ -1788,7 +1800,7 @@ export default function SingleFactorTestPanel({
                     ⚠ 改宽度要**表头 + 两个 td 一起改** ✗（只改一处会被自动布局再分配掉 ✓）。
                     ★ v2.8.8c（用户 2026-10-16 ✓）：再加 `pl-3` ⇒ 与「中位数」那列**稍微空开点** ✓
                     （同列的 td 也一起加 ✓，否则表头与单元格左边缘不一致 ✗）。 */
-                  className="text-center pl-3 pr-1 w-[7.5rem] min-w-[7.5rem] whitespace-nowrap"
+                  className="text-center pl-2 pr-1 w-[6.5rem] min-w-[6.5rem] whitespace-nowrap"
                   title="因子研究（两块，按因子类型自动出现一个）：0/1 二值信号 → 事件研究（触发对齐 T=0 的收益分布）；连续因子 → 持仓期曲线（净值曲线 + 十分位曲线 + 成本敏感度表 + 可切换基准）"
                 >
                   因子研究
@@ -2052,7 +2064,7 @@ export default function SingleFactorTestPanel({
                         <td className="text-right px-1">{fmtRaw(r.ic, 4)}</td>
                         <td className="text-right px-1">{fmtRaw(r.rank_ic, 4)}</td>
                         <td className="text-right px-1">{fmtRaw(r.icir, 3)}</td>
-                        <td className="text-center pl-2 whitespace-nowrap">
+                        <td className="text-center px-0 whitespace-nowrap">
                           {/* ★ v2.8.8c：`whitespace-nowrap` ⇒ 「彩票型」「有效✓」「待观察」都**一行放下** ✓
                               （宽度由表头的 `min-w-[5rem]` 撑着 ✓；居中与表头对齐 ✓） */}
                           {verdictKind === 'conflicting' ? (
@@ -2125,7 +2137,7 @@ export default function SingleFactorTestPanel({
                               （后者是用户前面明确要的 ✓："上头有按钮就贴在下边线" ✓）。
                             ⚠ 判据用 `vRows.length`（本行有没有含离场变体 ✓）——
                               它同时也是「离场曲线」按钮出不出现的条件 ✓ 两处一致 ✓。 */}
-                        <td className={`text-center pl-3 pr-1 w-[7.5rem] min-w-[7.5rem] ${
+                        <td className={`text-center pl-2 pr-1 w-[6.5rem] min-w-[6.5rem] ${
                           vRows.length > 0 ? 'align-top' : 'align-middle'
                         }`}>
                           {/* ★★ v2.8.8b（用户 2026-10-16 看图第四轮 ✓）：**固定两行网格** ✗→✓ ——
@@ -2271,7 +2283,7 @@ export default function SingleFactorTestPanel({
                           而是**整格垂直居中** ✓（`align-middle` ✓）⇒ 上下各留一点空 ✓
                           ⇒ 与隔壁基础行那两行按钮的**视觉中线**对齐 ✓（那就是用户说的"水平对齐" ✓）。
                           ⚠ 基础行保持 `align-top` 的两行栈不变 ✓（它的离场曲线确实"贴在下边线" ✓）。 */}
-                      <td className="text-center pl-3 pr-1 w-[7.5rem] min-w-[7.5rem] align-middle">
+                      <td className="text-center pl-2 pr-1 w-[6.5rem] min-w-[6.5rem] align-middle">
                         <div className="h-[22px] flex items-center justify-center">
                           <button
                             type="button"
