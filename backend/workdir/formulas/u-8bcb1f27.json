@@ -50,11 +50,11 @@
     "text": "负市值对数:-log(market_cap);",
     "expression": "Mul(-1,Log($market_cap))",
     "created_at": "2026-08-31 18:41:39",
-    "updated_at": "2026-10-16 13:54:46",
+    "updated_at": "2026-10-16 13:54:52",
     "codegen": "1.21.4",
-    "pinned": false,
+    "pinned": true,
     "author_modified_by": "u-8bcb1f27",
-    "sort_key": -13.0
+    "sort_key": -23.0
   },
   {
     "id": "97c3c31b8be1",
