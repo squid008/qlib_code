@@ -141,8 +141,10 @@ export default function ExitCurveModal({ row, ei, name, onClose }: ExitCurveModa
                           </b>
                         )}
                       </td>
-                      <td>{st.exit_sells ?? (i === 0 ? '—' : '-')}</td>
-                      <td>{st.exit_deferrals ?? (i === 0 ? '—' : '-')}</td>
+                      {/* ⚠ 计数名按口径取 ✓（period_roll：离场专用计数器 ✓；
+                          signal：引擎的卖出/顺延 —— 那是**含到期**的总数 ✓ v2.8.1） */}
+                      <td>{st.exit_sells ?? st.sells ?? (i === 0 ? '—' : '-')}</td>
+                      <td>{st.exit_deferrals ?? st.sell_deferrals ?? (i === 0 ? '—' : '-')}</td>
                       <td>{st.exit_overridden ?? (i === 0 ? '—' : '-')}</td>
                       <td>{st.exit_ignored ?? (i === 0 ? '—' : '-')}</td>
                     </tr>

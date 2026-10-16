@@ -1732,6 +1732,14 @@ export default function SingleFactorTestPanel({
                     dAnn: (perf?.annual_return ?? 0) - (basePerfEl?.annual_return ?? 0),
                     dDd: (perf?.max_drawdown ?? 0) - (basePerfEl?.max_drawdown ?? 0),
                     mode: String(one?.mode || 'period_roll'),
+                    // ⚠ 两种口径的**计数名不同** ✗（v2.8.1 修：实测信号驱动那条 `exit_sells` 是空 ✗）：
+                    //   · period_roll ⇒ `exit_sells` / `exit_deferrals`（离场专用计数器 ✓）；
+                    //   · signal（事件驱动）⇒ 引擎给的是 `sells` / `sell_deferrals`
+                    //     ⚠ 那是**含到期卖出**的总数 ✓ ⇒ 标签要写清"（含到期）"，不能冒充"离场卖出" ✗。
+                    sells: Number(one?.mode === 'signal'
+                      ? (st.sells ?? 0) : (st.exit_sells ?? 0)),
+                    defers: Number(one?.mode === 'signal'
+                      ? (st.sell_deferrals ?? 0) : (st.exit_deferrals ?? 0)),
                   }
                 })
                 // 变体行要用的列数（表头共 20 列 + 可选「耗时」列 ✓）——
@@ -2060,7 +2068,7 @@ export default function SingleFactorTestPanel({
                           <b className={v.dDd >= 0 ? 'text-emerald-600' : 'text-red-500'}>
                             {v.dDd >= 0 ? '+' : ''}{(v.dDd * 100).toFixed(1)}pp
                           </b>
-                          {v.st.exit_sells != null ? ` ｜ 离场卖出 ${v.st.exit_sells}` : ''}
+                          {v.sells ? ` ｜ ${v.mode === 'signal' ? '卖出（含到期）' : '离场卖出'} ${v.sells}` : ''}
                         </div>
                       </td>
                       <td className="text-right px-1">{r.horizon != null ? r.horizon : '-'}</td>
