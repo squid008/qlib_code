@@ -1744,7 +1744,15 @@ export default function SingleFactorTestPanel({
                   中位数
                 </th>
                 <th
-                  className="text-center px-1"
+                  /* ★★ v2.8.8b（用户 2026-10-16 看图第二轮 ✓）：**给这一列定死宽度** ✗→✓ ——
+                     用户原话：「然后这一堆按钮都没对齐啊」✓。
+                     原因：本表是**自动布局**✗ ⇒ 变体行用了 `colSpan`（整行打通 ✓）之后，浏览器会把
+                     各列宽度重新分配 ✗ ⇒ 基础行的按钮与变体行的按钮**横坐标漂移** ✓。
+                     ⇒ 在表头把这一列钉成 `7.5rem`（并给同列的 td 也写同样的宽度 ✓，双保险 ✓），
+                     再配合 `align-top` + 变体行的**等高占位**（见下 ✓）⇒ 所有「离场曲线」按钮
+                     左边缘和中线都落在同一竖线上 ✓。
+                     ⚠ 改宽度要**表头 + 两个 td 一起改** ✗（只改一处会被自动布局再分配掉 ✓）。 */
+                  className="text-center px-1 w-[7.5rem] min-w-[7.5rem]"
                   title="因子研究（两块，按因子类型自动出现一个）：0/1 二值信号 → 事件研究（触发对齐 T=0 的收益分布）；连续因子 → 持仓期曲线（净值曲线 + 十分位曲线 + 成本敏感度表 + 可切换基准）"
                 >
                   因子研究
@@ -1772,6 +1780,11 @@ export default function SingleFactorTestPanel({
                     gi,
                     name: g?.exit?.name || g?.exit?.id || `离场${gi + 1}`,
                     one, perf, st,
+                    // ★★ v2.8.8b（用户 2026-10-16 ✓）：这一档**没算出来**时的原因 ✗→✓ ——
+                    //   典型就是"0/1 信号 + 含入场价的离场"（事件驱动引擎没有入场价通道 ✓，
+                    //   后端现在会明确回一条 error ✓）。没有它的话，下面按 `perf ?? 0` 算出来的
+                    //   `Δ年化 +0.0pp` 会被误读成"离场没用"✗（用户原话："肯定也没算对" ✓）⇒ 必须显式标"未计算" ✓。
+                    err: String(one?.error || ''),
                     dAnn: (perf?.annual_return ?? 0) - (basePerfEl?.annual_return ?? 0),
                     dDd: (perf?.max_drawdown ?? 0) - (basePerfEl?.max_drawdown ?? 0),
                     mode: String(one?.mode || 'period_roll'),
@@ -2040,8 +2053,9 @@ export default function SingleFactorTestPanel({
                           })()}
                         </td>
                         {/* 因子研究：事件研究（0/1）与持仓曲线（连续）合成一列 —— 两者互斥，
-                            按因子类型各出现一个；两个都没有时给一个说明性的短横 */}
-                        <td className="text-center px-1">
+                            按因子类型各出现一个；两个都没有时给一个说明性的短横
+                            ★ v2.8.8b：同列 td 也写死宽度（与表头一致 ✓）+ `align-top`（与变体行同一基准 ✓） */}
+                        <td className="text-center px-1 w-[7.5rem] min-w-[7.5rem] align-top">
                           {/* ★★ v2.8.8（用户 2026-10-16 ✓）：`flex-wrap` + 离场曲线**独占第二行** ✗→✓ ——
                               原因（用户原话）："排版有点丑，按钮都没有对齐，把第一个对照的离场曲线放第二行，
                               然后后面俩的离场曲线就能跟上面的按钮对齐了" ✓。
@@ -2125,6 +2139,15 @@ export default function SingleFactorTestPanel({
                             这个跑到下一行去了，跟年化12.9%那段**放在一行**」✓
                             ⇒ 整行打通后格子够宽 ✓ ⇒ 两段合成一行 ✓（中间用**全角空格**留白 ✓ ——
                             用户要求"中间要有空格"✓；注记用更浅的灰 ✓ 以便与主指标区分 ✓）。 */}
+                        {/* ★★ v2.8.8b（用户 2026-10-16 ✓）：**没算出来就说"未计算"** ✗→✓ ——
+                            以前这一档失败时（`perf` 为 null ✓）会按 `?? 0` 显示 `Δ年化 +0.0pp` ✗
+                            ⇒ 看起来像"离场没用"✓，实际是**根本没算** ✗（用户："肯定也没算对" ✓）。
+                            现在直接把后端给的 `error`（含替代写法 ✓）显示出来 ✓，数字位不再误导 ✓。 */}
+                        {v.err ? (
+                          <div className="text-[10px] text-red-500 dark:text-red-400 mt-0.5 break-all">
+                            ⚠ 本档未计算：{v.err}
+                          </div>
+                        ) : (
                         <div className="text-[10px] text-slate-500 mt-0.5">
                           年化 {typeof v.perf?.annual_return === 'number'
                             ? `${(v.perf.annual_return * 100).toFixed(1)}%` : '-'}
@@ -2143,8 +2166,17 @@ export default function SingleFactorTestPanel({
                             {'　｜　'}统计列与「{r.name}」相同（离场只作用于实盘口径那条回测 ✓）
                           </span>
                         </div>
+                        )}
                       </td>
-                      <td className="text-center px-1">
+                      {/* ★★ v2.8.8b（用户 2026-10-16 看图第二轮 ✓）：与基础行的按钮**对齐** ✗→✓ ——
+                          ① 同列 td 写死同宽 ✓（与表头一致 ✓，否则自动布局会把按钮推歪 ✗）；
+                          ② `align-top` ✓ + **等高空占位** ✗→✓：基础行那里第一行是「持仓曲线 / 事件研究」
+                             按钮（≈22px）+ `gap-1`（4px）⇒ 它的「离场曲线」落在**第二行** ✓；
+                             变体行只有这一个按钮 ⇒ 不占位的话它会飘到**第一行** ✗（就是用户截图里
+                             那堆"没对齐"的按钮 ✓）。占位高度 = 22 + 4 = **26px** ✓
+                             ⚠ 改上面的按钮内边距/字号时要**一起改这个数** ✗（否则又错开 ✓）。 */}
+                      <td className="text-center px-1 w-[7.5rem] min-w-[7.5rem] align-top">
+                        <div className="h-[26px]" aria-hidden="true" />
                         <button
                           type="button"
                           onClick={() => setExitModal({ row: r, ei: v.gi, name: v.name })}

@@ -429,6 +429,26 @@ def _attach_signal_roll(req, row: dict, evs: dict, progress_cb=None,
             _ename = str(getattr(_ex, "name", "") or getattr(_ex, "id", "") or "")
             _it0 = ((exit_items or [])[_ei]
                     if (exit_items and _ei < len(exit_items)) else {}) or {}
+            # ★★ v2.8.8b（用户 2026-10-16 报障 ✓）：**0/1 信号 + "含入场价"离场 ⇒ 明确报"本档未计算"** ✗→✓
+            #   为什么必须拦：含入场价的离场是**回测状态量**（`ENTRY_PRICE`/`ENTRY_FIRST` ✓），
+            #   上面这条事件驱动路径**没有**逐日入场价通道 ✗ ⇒ `_mask` 为 `None` ⇒ 离场那一支
+            #   **被静默跳过** ✗ ⇒ 含离场曲线与对照**逐位相同**、Δ 全 0 ✗，而 `error=None` ✓
+            #   —— 用户原话：「**事件研究的离场曲线肯定也没算对**」✓，实测（`AR13_ID60`，
+            #   `is_binary=True` ✓）三个统计键全是 `None` ✓ ⇒ **判断完全正确** ✓。
+            #   ⇒ 这里**大声说**：这一档**未计算** ✓（不是"算了但没差异" ✗ —— 那会让人白读一条 Δ0 的表 ✓）。
+            if _it0.get("entry_dependent") and _it0.get("mask") is None:
+                _one = {"mode": "signal",
+                        "label": "信号驱动（含离场「%s」· 未计算）" % (_ename or "?"),
+                        "with_exit": True, "exit_index": _ei, "exit_name": _ename,
+                        "error": ("0/1 信号**暂不支持含入场价的离场公式**（入场价是回测状态量，"
+                                  "事件驱动引擎没有这条通道）⇒ 本档**未计算** ✗。"
+                                  "可改用不含入场价的离场公式（例如「收盘价 < MA(收盘价,20)」这类 ✓），"
+                                  "或把该因子按连续因子跑「每期全仓滚动」那条口径 ✓。")}
+                rows_exit.append({"exit": {"index": _ei, "name": _ename,
+                                           "id": str(getattr(_ex, "id", "") or ""),
+                                           "expression": str(getattr(_ex, "expression", "") or "")},
+                                  "items": [_one], "first": _one})
+                continue
             _np(0.45 + 0.5 * _ei / max(1, n),
                 "信号驱动（事件口径 · 含离场「%s」）：回测中…" % (_ename or "?"))
             _one = _signal_exit_nav(req, row, evs, _it0, panel, with_exit=True,
