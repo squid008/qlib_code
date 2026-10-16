@@ -479,6 +479,14 @@ export default function SingleFactorTestPanel({
   //   ⇒ 默认与净值引擎一致，用户不用再手动对齐（也少一处"口径分叉"的坑 ✓）。
   //   ⚠ 老口径 `t1_close` 仍可选 ✓（选它会**改变**持仓期曲线的年化/回撤/夏普 ✓，属有意行为 ✓）。
   const [fill, setFill] = useState('t1_open')
+  // ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径**（审计 ② ✓）——
+  //   `legacy`（默认 ✓）= 老口径：成交日**收盘**涨停也拒 ⇒ 保守 ✓（= 既有数字逐位不变 ✓）；
+  //   `open_only` = 新口径：**只拒「开盘一字涨停 / 停牌」** ✓（更贴实盘 ✓）。
+  //   ⚠ 老口径在"开盘成交"时用了**当日收盘**信息 = 未来信息 ✗（用户原话："可能开盘 1 秒拉涨停，
+  //     其实你吃不到" ⇒ 所以默认仍是保守口径 ✓）。
+  //   ⚠ **只在「成交时点 = 次日开盘价」时可用** ✓ —— 收盘成交没有"开盘一字板"概念 ⇒
+  //     控件置灰 ✗；后端也会自动退回老口径并把生效值写进 `bt.diag["limit_judge"]` ✓（不静默分叉 ✗）。
+  const [limitJudge, setLimitJudge] = useState('legacy')
   // ★ v2.1.27：**每期全仓滚动（实盘口径 · 逐点对拍专用）** —— 用户 2026-10-11 指定：
   //   默认 **不开** ✓（很慢 ✓）、悬停注明用途 ✓、放在「成交时点」右边「预热缓冲」左边 ✓。
   //   打开后后端会用与回灌侧同一个 `run_period_roll` 再算一条净值 ⇒ 可与回灌逐点对拍 ✓。
@@ -576,6 +584,8 @@ export default function SingleFactorTestPanel({
       //   但**前端一直没发** ✗（类型里也没声明 ✗）⇒ 弹窗"重算"与净值曲线都只能吃到后端默认值
       //   ⇒ 面板把「成交时点」从"次日开盘"改成"次日收盘"**没有任何效果** ✗✗。
       fill,
+      // ★ T1（v2.8.6）：**判停口径**也要随弹窗走 ✓（弹窗里那条净值曲线用它 ✓）
+      limit_judge: limitJudge,
     })
     setEstOpen(true)
   }
@@ -867,6 +877,8 @@ export default function SingleFactorTestPanel({
         // v2.1.24（B ③）：**成交时点** —— 决定持仓期曲线的"每期买入价 + 期内逐日盯市价" ✓
         //   （t1_close 默认 = 老口径 ✓；t1_open = 次日开盘 ✓）
         fill,
+        // ★ T1（v2.8.6）：**涨停判定口径** 必须一起发 ✗→✓（否则控件"看着能选、实际没生效" ✗）
+        limit_judge: limitJudge,
         // v2.1.27：**每期全仓滚动（逐点对拍专用）** —— 默认关 ✓（慢 ✓）；打开则多算一条实盘口径净值
         // ★ v2.4.3：勾了离场因子 ⇒ **必须开** ✓（离场只作用在这条真金白银回测上 ✓；
         //   后端也会自动打开兜底 ✓ —— 这里显式传，免得"看起来没生效"✗）
@@ -1309,6 +1321,30 @@ export default function SingleFactorTestPanel({
           >
             <option value="t1_open">次日开盘价</option>
             <option value="t1_close">次日收盘价</option>
+          </select>
+        </label>
+        {/* ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径** ——
+            ① 位置：紧挨「成交时点」**右边** ✓（用户指定 ✓）；
+            ② 宽度：**只到"涨停判定口径"这几个字** ✓（`width: 7.5em` 一行可调 ✓）；
+            ③ **仅当成交时点＝次日开盘价时可用** ✓，否则置灰无效 ✗（收盘成交没有"开盘一字板"概念 ✓；
+               后端也会自动退回老口径并把生效值写进 `bt.diag["limit_judge"]` ✓ 不静默分叉 ✗）；
+            ④ 文案（用户指定 ✓）：`涨停判定口径：` + `保守口径` / `只拒一字板` ✓。 */}
+        <label
+          className="flex items-center gap-1"
+          title="涨停判定口径（仅当成交时点＝次日开盘价时可选）：保守口径 = 成交日『收盘涨停』也买不进（老口径、更保守；注意：开盘成交时它用了当日收盘信息，属未来信息）；只拒一字板 = 只拒『开盘一字涨停 / 停牌』，更贴实盘（通常收益更高）。⚠ 该口径会写进导出文件，回灌时自动对齐"
+        >
+          <span className={fill === 't1_open' ? 'text-slate-500' : 'text-slate-300'}>
+            涨停判定口径：
+          </span>
+          <select
+            className="border rounded px-2 py-0.5 text-xs disabled:bg-slate-100 disabled:text-slate-400 dark:disabled:bg-slate-800"
+            style={{ width: '10em' }}
+            value={limitJudge}
+            disabled={fill !== 't1_open'}
+            onChange={(e) => setLimitJudge(e.target.value)}
+          >
+            <option value="legacy">保守口径</option>
+            <option value="open_only">只拒一字板</option>
           </select>
         </label>
         {/* ★ v2.1.27：**每期全仓滚动（实盘口径 · 逐点对拍专用）** —— 用户 2026-10-11 指定：

@@ -39,6 +39,17 @@ class SignalTestRequest(BaseModel):
                           "None=跟随导出文件里记录的口径")
     capital: float = Field(1e9, description="初始资金（默认 10 亿：1000 只同时触发也能等权买）")
     strict_limit: bool = Field(True, description="严格涨跌停/停牌口径（买不进=放弃，卖不出=顺延）")
+    # ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径**（审计 ② ✓）——
+    #   `None` / `"legacy"`（**默认** ✓）= 老口径：成交日**收盘**涨停也拒 ⇒ 保守 ✓（= 历史逐位一致 ✓）；
+    #   `"open_only"` = 新口径：**只拒「开盘一字涨停 / 停牌」** ✓（更贴实盘，通常提高收益 ✓）。
+    #   ⚠ 老口径在"**开盘**成交"时用当日**收盘**信息 = 未来信息 ✗（用户原话："可能开盘 1 秒拉涨停，
+    #     其实你吃不到" ⇒ 所以默认仍留保守口径 ✓）。
+    #   ⚠ `open_only` **只在成交时点为开盘时生效** ✓（收盘成交没有"开盘一字板"概念 ⇒ 引擎
+    #     自动退回 `legacy` 并写进 `diag["limit_judge"]` ✓，绝不静默分叉 ✗）。
+    limit_judge: Optional[str] = Field(
+        None,
+        description="涨停判定口径：legacy(默认；收盘涨停也拒) / open_only(只拒开盘一字板)；"
+                    "None=legacy；⚠ 仅成交时点为开盘时生效")
     alloc_default: str = Field("event_even", description="默认展示的资金方案：event_even / cash_even")
     rebal_band: float = Field(0.0, ge=0.0, le=0.5,
                               description="事件再平衡死区（相对目标市值的比例）：0=每次事件完全调平（默认），"

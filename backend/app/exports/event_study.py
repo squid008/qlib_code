@@ -145,6 +145,7 @@ def contract_params(*, factor_name: str, factor_expression: str, universe: str, 
                     max_k: Any, hold_days: Any, cost: Any, capital: Any, benchmark: str,
                     app_version: str, generated_at: str,
                     fill: str = "t1_open", strict_limit: Any = True,
+                    limit_judge: str = "legacy",
                     rebal_band: Any = 0.0) -> Dict[str, Any]:
     """导出契约参数（写隐藏页 ⇒ 回灌侧据此**自动对齐设置** ✓）。
 
@@ -170,6 +171,8 @@ def contract_params(*, factor_name: str, factor_expression: str, universe: str, 
         spec.P_HOLD_DAYS: hold_days,
         spec.P_FILL: fill,                       # 面板净值引擎实际用的成交时点 ✓
         spec.P_STRICT_LIMIT: strict_limit,       # 涨跌停约束（严格 ⇒ 一字板买不到 ✓）
+        # ★ T1（v2.8.6）：**涨停判定口径** ✓ —— 老口径会因"当日收盘涨停"拒单 ⇒ 同一份信号两个数 ✓
+        spec.P_LIMIT_JUDGE: limit_judge,
         spec.P_REBAL_BAND: rebal_band,           # 再平衡死区（面板 event_even 用 0 ✓）
         spec.P_COST: cost,
         spec.P_CAPITAL: capital,

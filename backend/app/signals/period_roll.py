@@ -44,9 +44,14 @@ _LABEL = "每期全仓滚动（调仓日按当期名单等权重建）"
 
 def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     fill: str = "t1_open", cost: float = 0.004, capital: float = 1e9,
-                    strict_limit: bool = True, lot: int = LOT_DEFAULT,
+                    strict_limit: bool = True, limit_judge: str = "legacy",
+                    lot: int = LOT_DEFAULT,
                     cancel_cb=None, exit_mat=None, exit_rule=None) -> BtResult:
     """跑「每期全仓滚动」，返回 `BtResult`（`nav` / `trades` / `rejects` / `stats` ✓）。
+
+    ★ T1（v2.8.6）：`limit_judge` = **涨停判定口径** ✓（`legacy` 默认 / `open_only` ✓）——
+      语义见 `signals.engine._limit_ctx` ✓；⚠ `open_only` 只在 `fill` 为**开盘成交**时生效，
+      否则引擎自动退回 `legacy` 并写进 `diag["limit_judge"]` ✓（不静默分叉 ✓）。
 
     `signals` 需含 `date` / `code` 列（买入信号 ✓）；`bucket` 列可选（= 批次/调仓日 ✓）。
 
@@ -72,7 +77,7 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     cal, codes, col_of = prep["cal"], prep["codes"], prep["col_of"]
     if not codes:
         return BtResult(diag={"error": "信号标的不在行情数据里", "missing": prep["missing"][:20]})
-    _price, can_buy, can_sell, PX, RAW = _limit_ctx(prep, px_kind, strict_limit)
+    _price, can_buy, can_sell, PX, RAW, _judge = _limit_ctx(prep, px_kind, strict_limit, limit_judge)
     # ★ v2.1.17：**每个标的的整手股数**（科创板 688/689 ⇒ 200 股 ✓，其余 100 ✓）——
     #   按列号预算一次 ✓（`_lot_of` 是字符串判断，别放进逐票循环里 ✗）。
     lot_arr = np.fromiter((_lot_of(c, lot) for c in codes), dtype=np.int64, count=len(codes))
@@ -431,6 +436,8 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         nav=pd.DataFrame({MODE: nav}),
         diag={"fill": fill, "cost": cost, "capital": capital, "hold_days": None,
               "strict_limit": bool(strict_limit), "lot": lot, "n_codes": len(codes),
+              # ★ T1：**生效**口径 + 请求口径都落盘 ✓（`open_only` 被守卫退回时这里看得见 ✓）
+              "limit_judge": _judge, "limit_judge_requested": limit_judge,
               "missing_codes": prep["missing"][:20], "limits_from": "period_roll",
               "rolls": int(len(targets)),
               # ★ v2.4.3 / v2.6.0：离场通道是否生效 / 未生效的原因 ✓

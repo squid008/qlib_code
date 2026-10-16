@@ -242,10 +242,24 @@ def _interleave_rejects(by_mode: Dict[str, List[dict]], cap: int) -> List[dict]:
     return out
 
 
-def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
+def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool, limit_judge: str = "legacy"):
     """成交价与"能不能成交"的判定 —— **主引擎与 batch_even 共用同一套口径**（避免分叉）。
 
-    返回 (price, can_buy, can_sell, PX)：
+    ★★ T1（审计 ② / v2.8.6，用户 2026-10-16 拍板 ✓）：**`limit_judge` = 涨停判定口径** ✓
+      · `"legacy"`（**默认** ✓ 老口径）：成交日**收盘**涨停也买不进（`LIM_UP_C` ✓）——
+        理由（用户原话）：「**可能开盘 1 秒拉涨停，其实你吃不到**」⇒ 保守 ✓；
+      · `"open_only"`（新口径 ✓）：**只拒「开盘一字涨停 / 停牌」** ✓（不再看当日收盘 ✗）——
+        更贴实盘（开盘能买到的就买得到 ✓，通常**提高**收益 ✓）。
+      ⚠⚠ 老口径在 `t1_open`（**次日开盘**成交）下用的是**当日收盘**信息 = 未来信息 ✗
+        （审计原文：「开盘成交用当日收盘判涨跌停」✓）—— 留着是因为它**更保守**，属用户取舍 ✓。
+      ⚠ `open_only` **只在成交价为开盘时才有意义** ✗（收盘成交没有"开盘一字"这回事 ✓）——
+        非开盘成交时本函数**强制退回 legacy** ✓（并把**生效值**作为第 6 个返回值交给调用方落 diag ✓，
+        绝不让"选了新口径但没生效"变成静默分叉 ✗）。
+      ⚠ `strict_limit=False`（不启用严格涨跌停）时两种口径**都只按停牌判** ✓（老行为不变 ✓）。
+
+    返回 (price, can_buy, can_sell, PX, RAW, judge)：
+      · `judge`（T1 新增 ✓）：**实际生效**的涨停判定口径（`legacy` / `open_only`）⇒
+        调用方**必须**把它写进 `diag` ✓（否则"选了新口径但被守卫退回"会静默分叉 ✗）；
       · `PX`（v1.20.37 新增）：**规范化后的成交价矩阵**（= `where(isfinite & >0, arr, nan)` ✓）。
         ⚠ 为什么要把它暴露出来：主循环里"逐日盯市 + 三处再平衡求和"是**纯算术聚合** ✗，
         却走了 `price(...)` **闭包调用**（`price` 实测被调 588 万次/轮 ✓ 其中 86% 来自这四处 ✓）
@@ -305,17 +319,21 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
     LIM_DN_C = _LD_ok & np.isfinite(CR) & (CR <= LD + 1e-6)     # 收盘跌停 ⇒ 卖不出
     LIM_DN_O = _LD_ok & np.isfinite(OR) & (OR <= LD + 1e-6)
     _use_open = (px_kind == "open")
+    # ★ T1：口径归一 + **生效性守卫** ✓ —— 新口径只在"开盘成交"时才允许生效 ✗→✓
+    #   （非开盘成交没有"开盘一字板"概念 ⇒ 强行用新口径会变成"完全不判涨跌停" ✗ ⇒ 退回老口径 ✓）
+    judge_want = limit_judge if limit_judge in ("legacy", "open_only") else "legacy"
+    judge = judge_want if (_use_open and strict_limit) else "legacy"
 
     def can_buy(i: int, c: int) -> Optional[str]:
         if _SUSP[i, c]:
             return "suspended"
         if not strict_limit:
             return None
-        # 成交日**收盘涨停** ⇒ 买不进（用户口径：次日涨停时无论开盘/收盘都不买）
-        if LIM_UP_C[i, c]:
+        # 成交日**收盘涨停** ⇒ 买不进（**老口径**：次日涨停时无论开盘/收盘都不买 ✓）
+        if judge == "legacy" and LIM_UP_C[i, c]:
             return "limit_up"
         if _use_open and LIM_UP_O[i, c]:
-            return "limit_up_open"                     # 开盘一字涨停
+            return "limit_up_open"                     # 开盘一字涨停（两种口径都拒 ✓）
         return None
 
     def can_sell(i: int, c: int) -> Optional[str]:
@@ -323,13 +341,13 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
             return "suspended"
         if not strict_limit:
             return None
-        if LIM_DN_C[i, c]:
+        if judge == "legacy" and LIM_DN_C[i, c]:
             return "limit_down"
         if _use_open and LIM_DN_O[i, c]:
             return "limit_down_open"
         return None
 
-    return price, can_buy, can_sell, PX, RAW
+    return price, can_buy, can_sell, PX, RAW, judge
 
 
 # 成交明细的列名与**顺序**（= 旧 `_trade_row` 里 dict 的键序 ✓ 必须保持一致 ✗）
@@ -375,10 +393,14 @@ def _trades_frame(rows, date_arr, codes, half):
 def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                  hold_days: int = 20, fill: str = "t1_open", cost: float = 0.004,
                  capital: float = 1e9, strict_limit: bool = True,
+                 limit_judge: str = "legacy",
                  alloc_modes: Sequence[str] = ("event_even", "cash_even"),
                  lot: int = LOT_DEFAULT, rebal_band: float = 0.0,
                  cancel_cb=None) -> BtResult:
     """跑回测，返回**两种资金方案**的净值 + 成交/被拒明细 + 统计。
+
+    ★ T1（v2.8.6）：`limit_judge` = **涨停判定口径** ✓（`legacy` 默认 / `open_only` 新口径 ✓）——
+      详细语义见 `_limit_ctx` 的 docstring ✓；**默认值保证老路径逐位不变** ✓。
 
     `cancel_cb`（v1.20.4）：可选取消检查回调 —— 主循环里**每 20 个交易日**调一次 ✓，
     约定「应取消时直接抛异常」（与 `panel_features_parallel` 同一约定 ✓）。
@@ -406,7 +428,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     bk = _bucket_signals(signals, prep)
     n_row = len(cal)
     # ★ v1.20.37：`PX` = 规范化成交价矩阵（见 `_limit_ctx` 说明 ✓）—— 供逐日聚合走数组 ✓
-    _price, can_buy, can_sell, PX, RAW = _limit_ctx(prep, px_kind, strict_limit)
+    _price, can_buy, can_sell, PX, RAW, _judge = _limit_ctx(prep, px_kind, strict_limit, limit_judge)
     # ★ v2.1.18：**按列号预算"每个标的的整手股数"** ✓（科创板 688/689 ⇒ 200 股 ✓，其余 100 ✓）——
     #   与 `period_roll` 同一套 `_lot_of` ✓（一处定义 ✓）。⚠ 逐票循环里绝不能现算字符串判断 ✗。
     #   ⚠ 尚未切换的点：`event_even` 的"买新信号"取整、`rebalance_buy`、`run_batch_backtest`
@@ -420,6 +442,8 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     out = BtResult(
         diag={"fill": fill, "cost": cost, "capital": capital, "hold_days": hold_days,
               "strict_limit": bool(strict_limit), "lot": lot,
+              # ★ T1：**生效**口径 + 请求口径都落盘 ✓（排查"选了没生效"只需看这里 ✓）
+              "limit_judge": _judge, "limit_judge_requested": limit_judge,
               "n_codes": len(codes), "missing_codes": prep["missing"][:20],
               "signals_mapped": bk["n_mapped"], "signals_deferred": bk["deferred"],
               "signals_beyond_data": bk["beyond"],
@@ -843,7 +867,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             # ---- batch_even（按批次分片）---- 单独一套状态机，结果并入同一张净值表
     if any(_split_mode(s)[0] == "batch_even" for s in alloc_modes):
         bres = run_batch_backtest(signals, panel, fill=fill, cost=cost, capital=capital,
-                                  strict_limit=strict_limit, lot=lot)
+                                  strict_limit=strict_limit, limit_judge=limit_judge, lot=lot)
         if len(bres.nav.columns):
             navs["batch_even"] = bres.nav["batch_even"]
             # ⚠ `batch_even` 出来的**已经是格式化后的 dict** ✓ ⇒ 与其他方案的元组混排 ✗
@@ -876,7 +900,8 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
 
 def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                        fill: str = "t1_open", cost: float = 0.004, capital: float = 1e9,
-                       strict_limit: bool = True, lot: int = LOT_DEFAULT) -> BtResult:
+                       strict_limit: bool = True, limit_judge: str = "legacy",
+                       lot: int = LOT_DEFAULT) -> BtResult:
     """**`batch_even`：按批次分片**（同事 2026-09-16 的口径，用户确认"加这个方案"）。
 
     规则（与同事的选股文件一一对应）：
@@ -906,7 +931,7 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     cal, codes, col_of = prep["cal"], prep["codes"], prep["col_of"]
     if not codes:
         return BtResult(diag={"error": "信号标的不在行情数据里", "missing": prep["missing"][:20]})
-    _price, can_buy, can_sell, _PX, _RAW = _limit_ctx(prep, px_kind, strict_limit)
+    _price, can_buy, can_sell, _PX, _RAW, _judge = _limit_ctx(prep, px_kind, strict_limit, limit_judge)
     n_row = len(cal)
 
     bkt = (signals["bucket"].astype(str).fillna("") if "bucket" in signals.columns

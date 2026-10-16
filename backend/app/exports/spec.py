@@ -94,6 +94,12 @@ P_MAX_K = "max_k"                            # 事件研究：最长持有（交
 P_FILL = "fill"
 # ★ v2.1.4：净值引擎的另两个实参也必须在文件里（否则"同名方案"下仍是不同回测 ✗）
 P_STRICT_LIMIT = "strict_limit"               # 严格涨跌停（true ⇒ 一字板买不进 ✓）
+# ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径**也必须进文件 ✗→✓
+#   为什么：它直接决定"开盘成交时会不会被当日**收盘**涨停挡掉" ✓ ⇒ 同一份信号能跑出两个数 ✓
+#   （老口径更保守 ⇒ 买入更少 ⇒ 收益通常更低 ✓）。文件里不写 ⇒ 回灌只能按页面默认跑 ✗
+#   ⇒ "导出的 ≠ 复现的" ✗（与 v2.1.54 那次剔除开关同类问题 ✓）。
+#   取值：`legacy`（老口径 ✓）/ `open_only`（只拒开盘一字板 ✓）；执行侧见 `signals/engine._limit_ctx` ✓。
+P_LIMIT_JUDGE = "limit_judge"
 P_REBAL_BAND = "rebal_band"                   # 再平衡死区（面板 event_even 用 0 ✓）
 P_CURVE_COST_TIERS = "curve_cost_tiers"      # 曲线含哪几档成本
 
@@ -155,6 +161,8 @@ PARAM_LABELS: Dict[str, str] = {
     P_MAX_K: "最长持有(交易日)",
     P_FILL: "成交时点",
     P_STRICT_LIMIT: "严格涨跌停",
+    # ★ T1（v2.8.6）：判停口径也要在参数页写明 ✓（回灌才知按哪一口径复现 ✓）
+    P_LIMIT_JUDGE: "涨停判定口径",
     P_REBAL_BAND: "再平衡死区",
     P_CURVE_COST_TIERS: "曲线成本档",
 }

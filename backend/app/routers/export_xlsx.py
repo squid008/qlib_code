@@ -412,6 +412,8 @@ def export_event_study_xlsx(req: EventStudyExportRequest) -> Response:
         # ★ v2.1.4：把**面板这次回测真正用的输入**原样写进文件（回灌据此对齐 ⇒ 才有"逐位一致" ✓）
         fill=_fill_final,
         strict_limit=bool(stash.get("strict_limit", True)),
+        # ★ T1（v2.8.6）：判停口径也搬进文件 ✓（缺它 ⇒ 回灌只能按页面默认跑 ⇒ "导出的 ≠ 复现的" ✗）
+        limit_judge=str(stash.get("limit_judge") or "legacy"),
         rebal_band=float(stash.get("rebal_band", 0.0)),
         app_version=__version__, generated_at=time.strftime("%Y-%m-%d %H:%M:%S"),
     )

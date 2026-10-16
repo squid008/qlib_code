@@ -291,8 +291,10 @@ export default function EventStudyModal({
         if (cancelled) return
         // ★ v2.1.65：**把面板的成交时点一起发过去** ✗→✓ —— 否则净值曲线永远是 `t1_open`
         //   （后端写死 ✗）⇒ 面板切"次日收盘"也看不出任何变化 ✗（用户 2026-10-12 实测 ✓）。
+        // ★ T1（v2.8.6）：**涨停判定口径**也一起发 ✓（否则面板换了口径、这条净值纹丝不动 ✗）
         runEventNav({ task_id: tid ?? '', hold_days: navK, cost: navCost, factor_id: expr,
-                      fill: req?.fill ?? undefined })
+                      fill: req?.fill ?? undefined,
+                      limit_judge: req?.limit_judge ?? undefined })
           .then((r) => {
             if (cancelled) return
             navCacheRef.current.set(key, r)

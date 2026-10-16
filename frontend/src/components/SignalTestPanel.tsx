@@ -271,6 +271,13 @@ export default function SignalTestPanel() {
   const [pool, setPool] = useState('all')
   const [benchmark, setBenchmark] = useState('SH000300')
   const [strictLimit, setStrictLimit] = useState(true)
+  // ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径**（审计 ② ✓）——
+  //   `legacy`（默认 ✓）= 老口径（成交日**收盘**涨停也拒 ⇒ 保守 ✓，= 既有数字逐位不变 ✓）；
+  //   `open_only` = 新口径（**只拒「开盘一字涨停 / 停牌」** ✓，更贴实盘 ✓）。
+  //   ⚠ 仅当成交时点＝**次日开盘价**时可用 ✓（收盘成交没有"开盘一字板"概念 ⇒ 控件置灰 ✗，
+  //     后端也会自动退回老口径并把生效值写进 `diag["limit_judge"]` ✓ 不静默分叉 ✗）。
+  //   ⚠ 回灌自家导出文件时，这个口径也要**读回来对齐** ✓（见下方 `al.limit_judge` ✓）。
+  const [limitJudge, setLimitJudge] = useState('legacy')
   const [rebalBand, setRebalBand] = useState(0)
   const [jqCapital, setJqCapital] = useState<number | ''>('')
   const [navFocus, setNavFocus] = useState('')
@@ -350,6 +357,13 @@ export default function SignalTestPanel() {
           setStrictLimit(al.strict_limit)
           bits.push(`严格涨跌停 ${al.strict_limit ? '开' : '关'}`)
         }
+        // ★ T1（v2.8.6）：**判停口径**也要读回来对齐 ✗→✓ —— 导出文件里写了 `limit_judge` ✓，
+        //   这里不读 ⇒ 又变成"导出的 ≠ 复现的" ✗（与 v2.1.54 那次剔除开关同类 ✓）。
+        //   ⚠ 老文件没有这个键 ⇒ `al.limit_judge` 是 undefined ⇒ **不动当前设值** ✓（不凭空改老结果 ✓）。
+        if (typeof al.limit_judge === 'string') {
+          setLimitJudge(al.limit_judge)
+          bits.push(`涨停判定 ${al.limit_judge === 'open_only' ? '只拒一字板' : '保守口径'}`)
+        }
         if (typeof al.rebal_band === 'number') {
           setRebalBand(al.rebal_band)
           bits.push(`再平衡死区 ${(al.rebal_band * 100).toFixed(1)}%`)
@@ -419,13 +433,15 @@ export default function SignalTestPanel() {
       perf_b64: perfB64 || undefined,
       cost, benchmark, horizon, fill, capital,
       strict_limit: strictLimit,
+      // ★ T1（v2.8.6）：判停口径必须一起发 ✗→✓（否则控件"看着能选、实际没生效" ✗）
+      limit_judge: limitJudge,
       rebal_band: rebalBand,
       pool,
       jq_capital: typeof jqCapital === 'number' ? jqCapital : undefined,
       ...extra,
     }),
     [b64, fileName, perfB64, cost, benchmark, horizon, fill, capital, strictLimit,
-      rebalBand, pool, jqCapital],
+      limitJudge, rebalBand, pool, jqCapital],
   )
 
   const run = useCallback(async () => {
@@ -813,6 +829,25 @@ export default function SignalTestPanel() {
                     {f.name}
                   </option>
                 ))}
+              </select>
+            </label>
+            {/* ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径** ——
+                紧挨「成交时点」右边 ✓；**仅成交时点＝次日开盘价时可用** ✓，否则置灰 ✗；
+                文案（用户指定 ✓）：`涨停判定口径：` + `保守口径` / `只拒一字板` ✓（宽度容得下"只拒一字板" ✓）。 */}
+            <label className="flex items-center gap-1">
+              <span className={'text-xs ' + (fill === 't1_open' ? 'text-slate-500' : 'text-slate-300')}>
+                涨停判定口径：
+              </span>
+              <select
+                className="border rounded px-2 py-1 text-xs disabled:bg-slate-100 disabled:text-slate-400 dark:disabled:bg-slate-800"
+                style={{ width: '10em' }}
+                value={limitJudge}
+                disabled={fill !== 't1_open'}
+                onChange={(e) => setLimitJudge(e.target.value)}
+                title="涨停判定口径（仅当成交时点＝次日开盘价时可选）：保守口径 = 成交日『收盘涨停』也买不进（老口径、更保守；注意：开盘成交时它用了当日收盘信息，属未来信息）；只拒一字板 = 只拒『开盘一字涨停 / 停牌』，更贴实盘。⚠ 该口径会写进导出文件，回灌时自动对齐"
+              >
+                <option value="legacy">保守口径</option>
+                <option value="open_only">只拒一字板</option>
               </select>
             </label>
             <label className={field}>

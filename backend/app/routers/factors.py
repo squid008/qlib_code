@@ -369,6 +369,8 @@ def _signal_exit_nav(req, row: dict, evs: dict, item: dict, panel: dict, *,
         hold = max(1, int(row.get("horizon") or 20))
         bt = run_backtest(sig, panel, hold_days=hold, fill=str(req.fill), cost=float(req.cost),
                           capital=float(req.capital), strict_limit=bool(req.strict_limit),
+                          # ★ T1（v2.8.6）：涨停判定口径透传 ✓（`None` ⇒ 老口径 ✓ 逐位不变 ✓）
+                          limit_judge=(req.limit_judge or "legacy"),
                           alloc_modes=["event_even"])
         if bt.nav is None or "event_even" not in getattr(bt.nav, "columns", []):
             _d = bt.diag or {}
@@ -773,6 +775,8 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
                if with_exit else None)
         bt = run_period_roll(sig, panel, fill=str(req.fill), cost=float(req.cost),
                              capital=float(req.capital), strict_limit=bool(req.strict_limit),
+                             # ★ T1（v2.8.6）：涨停判定口径透传 ✓（与净值曲线同口径 ✓ 不分叉 ✗）
+                             limit_judge=(req.limit_judge or "legacy"),
                              exit_mat=_ex, exit_rule=(exit_rule if with_exit else None))
         nav = getattr(bt, "nav", None)
         if nav is None or not len(nav):
@@ -896,6 +900,12 @@ class SingleFactorTestRequest(BaseModel):
     cost: float = 0.004
     capital: float = 1e9
     strict_limit: bool = True
+    # ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径**（审计 ② ✓）
+    #   `None`/`"legacy"`（默认 ✓）= 老口径：成交日**收盘**涨停也拒 ✓（= 历史逐位一致 ✓）；
+    #   `"open_only"` = 新口径：**只拒「开盘一字涨停/停牌」** ✓（更贴实盘 ✓）。
+    #   ⚠ 仅在**成交时点为开盘**（`fill="t1_open"` ✓）时生效 ✓；否则引擎**自动退回 legacy**
+    #     并把**生效值**写进 `diag["limit_judge"]` ✓（不静默分叉 ✗）。
+    limit_judge: Optional[str] = None
     quantiles: int = 10                   # 分位组数（默认 10=十分位；5=旧五分位，保留兼容）
     rebalance_period: Optional[int] = None
     #   调仓期（交易日）；**None ⇒ 跟随预测周期 h**（= 「用预测周期调仓换股」，默认口径）；
@@ -1782,6 +1792,11 @@ def _untrig_nav_series(state: dict, ev, start: str, end: str) -> List[tuple]:
 class EventNavRequest(BaseModel):
     """「事件研究」面板里再画一条净值曲线（两种资金方案 + 基准 + 未触发组等权）。"""
     task_id: str
+    # ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径**（审计 ② ✓）——
+    #   `None`/`"legacy"`（默认 ✓）＝ 老口径（成交日**收盘**涨停也拒 ⇒ 保守 ✓，历史逐位一致 ✓）；
+    #   `"open_only"` ＝ 新口径（**只拒「开盘一字涨停/停牌」** ✓，更贴实盘 ✓）。
+    #   ⚠ 仅成交时点为**开盘**时生效 ✓（否则引擎自动退回 legacy 并把生效值写进 `bt.diag` ✓ 不静默分叉 ✗）。
+    limit_judge: Optional[str] = None
     hold_days: int = 20
     cost: float = 0.004
     capital: float = 1e9
@@ -2127,6 +2142,8 @@ def event_study_nav(req: EventNavRequest):
             #   ⚠ `_fill_nav` 由外层统一算好（v2.1.66 修：别在分支里定义 ✗，命中缓存时下面还要用 ✓）
             bt = run_backtest(events, panel, hold_days=k, fill=_fill_nav, cost=float(req.cost),
                               capital=float(req.capital), strict_limit=True,
+                              # ★ T1（v2.8.6）：判停口径跟随请求 ✓（`None` ⇒ 老口径 ✓ 数字不变 ✓）
+                              limit_judge=(getattr(req, "limit_judge", None) or "legacy"),
                               alloc_modes=_modes, cancel_cb=_cancel_cb)
             with _NAV_BT_LOCK:
                 while len(_NAV_BT_CACHE) >= _NAV_BT_CAP:
@@ -2145,6 +2162,8 @@ def event_study_nav(req: EventNavRequest):
                 "bt": bt, "signals": events,
                 # ★ v2.1.65：登记**本次真实用的**口径（原来写死 `"t1_open"` ✗ ⇒ 导出文件跟着写错 ✗）
                 "fill": _fill_nav, "strict_limit": True, "rebal_band": 0.0,
+                # ★ T1（v2.8.6）：判停口径也要登记 ✓（导出据此写进文件 ⇒ 回灌才能逐位复现 ✓）
+                "limit_judge": (getattr(req, "limit_judge", None) or "legacy"),
                 "hold_days": int(k), "cost": float(req.cost), "capital": float(req.capital),
             }
             while len(_NAV_BT_STASH) > _NAV_BT_STASH_CAP:

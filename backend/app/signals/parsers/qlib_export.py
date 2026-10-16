@@ -64,6 +64,9 @@ def _aligned_of(doc) -> Dict[str, Any]:
         "fill": doc.p(spec.P_FILL, "t1_close"),
         # ★ v2.1.4：净值引擎的另两个实参（缺了就是"同名不同回测" ✗）
         "strict_limit": doc.p(spec.P_STRICT_LIMIT),  # 严格涨跌停 ✓
+        # ★ T1（v2.8.6）：判停口径也要**读回来对齐** ✗→✓（老文件没有这个键 ⇒ 退回 `legacy` ✓，
+        #   与老文件当年的口径一致 ✓ 不凭空改变老结果 ✓）—— 否则"导出的 ≠ 复现的" ✗
+        "limit_judge": doc.p(spec.P_LIMIT_JUDGE, "legacy"),
         "rebal_band": doc.p(spec.P_REBAL_BAND),      # 再平衡死区 ✓
         # ★★ v2.1.54（用户 2026-10-12："要修。估计是这里有问题" ✓）：**剔除开关 + 复权口径**
         #   —— 它们决定**触发组样本**⇒ 直接决定事件研究的数字 ✓（实测同一份信号 4.84% vs 5.9% ✓）。

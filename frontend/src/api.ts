@@ -309,6 +309,14 @@ export interface SingleFactorTestRequest {
    */
   fill?: string
   /**
+   * ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径**（审计 ② ✓）
+   * · `legacy`（默认 ✓）= 老口径：成交日**收盘**涨停也拒（保守 ✓，= 历史逐位一致 ✓）；
+   * · `open_only` = 新口径：**只拒「开盘一字涨停 / 停牌」** ✓（更贴实盘 ✓）。
+   * ⚠ **仅在成交时点为开盘**（`fill="t1_open"` ✓）时生效 ✓；否则后端自动退回 `legacy`
+   *   并把**生效值**写进 `bt.diag["limit_judge"]` ✓（不静默分叉 ✗）。
+   */
+  limit_judge?: string
+  /**
    * ★ v2.1.27：**每期全仓滚动（实盘口径 · 逐点对拍专用）** —— **默认关** ✓。
    * 打开后用**与回灌侧同一个** `run_period_roll` 把"每期名单"按实盘口径再跑一遍
    * （含资金约束/整手/涨跌停 ✓），结果挂在每行的 `row.period_roll = {dates, nav, stats}` 上
@@ -987,6 +995,12 @@ export interface EventStudyRequest {
    * （用户 2026-10-12："我怎么测下来两个数一模一样" ✓ 的同一类问题 ✓）。
    */
   fill?: string
+  /**
+   * ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径**（`legacy` 默认 / `open_only` ✓）——
+   * 与 `fill` 同一套路：后端的事件研究本身不用它 ✗，但**弹窗里的净值曲线**（`/event-study/nav` ✓）
+   * 要用 ✓ ⇒ 必须由面板一起带过来 ✓（否则"面板换了口径、曲线纹丝不动" ✗）。
+   */
+  limit_judge?: string
 }
 export async function createEventStudy(req: EventStudyRequest): Promise<{ task_id: string }> {
   const { data } = await http.post<{ task_id: string }>('/factors/event-study', req)
@@ -1036,6 +1050,12 @@ export interface SignalTestRequest {
   fill?: string
   capital?: number
   strict_limit?: boolean
+  /**
+   * ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径**（审计 ② ✓）——
+   * `legacy`（默认 ✓）= 老口径：成交日**收盘**涨停也拒 ✓；`open_only` = 只拒「开盘一字涨停/停牌」✓。
+   * ⚠ 仅成交时点为**开盘**时生效 ✓（否则引擎退回 `legacy` 并写进 `diag["limit_judge"]` ✓）。
+   */
+  limit_judge?: string
   alloc_default?: string
   /** 事件再平衡死区（0=完全调平；调大 1%~10% 降费用） */
   rebal_band?: number
@@ -1085,6 +1105,8 @@ export interface SignalTestParseResult {
     fill?: string | null
     /** 严格涨跌停约束（v2.1.4：一字板买不进 ⇒ 影响净值 ✓） */
     strict_limit?: boolean | null
+    /** ★ T1（v2.8.6）：判停口径（`legacy` / `open_only` ✓）—— 回灌时必须**读回来对齐** ✓ */
+    limit_judge?: string | null
     /** 再平衡死区（v2.1.4：影响调平频率 ✓） */
     rebal_band?: number | null
     /** 初始资金（v2.1.4：影响取整/手数 ✓） */
@@ -1198,6 +1220,12 @@ export interface EventNavRequest {
    * ⇒ 面板切口径时净值**纹丝不动** ✗。现在跟随面板 ✓（不传 ⇒ 仍是 `t1_open`，数字不变 ✓）。
    */
   fill?: string
+  /**
+   * ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径**（审计 ② ✓）——
+   * `legacy`（默认 ✓）= 老口径：成交日**收盘**涨停也拒 ✓；`open_only` = 只拒「开盘一字涨停/停牌」✓。
+   * ⚠ 仅成交时点为**开盘**时生效 ✓（否则后端退回 `legacy` 并写进 `bt.diag["limit_judge"]` ✓）。
+   */
+  limit_judge?: string
 }
 
 export interface EventNavResult {

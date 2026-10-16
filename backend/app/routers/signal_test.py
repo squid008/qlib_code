@@ -765,6 +765,8 @@ def run(req: SignalTestRequest) -> Dict:
             pass
         bt = run_backtest(sig, panel, hold_days=horizon, fill=req.fill, cost=req.cost,
                           capital=req.capital, strict_limit=req.strict_limit,
+                          # ★ T1（v2.8.6）：涨停判定口径透传 ✓（`None` = 老口径 ✓ 逐位不变 ✓）
+                          limit_judge=(req.limit_judge or "legacy"),
                           rebal_band=req.rebal_band, alloc_modes=tuple(specs))
         # ★★ v2.1.8：自家导出文件（形状 = "**每期一批组合**"）⇒ 再补一档
         #   **`period_roll`（每期全仓滚动）** ✓ —— 那才是面板那条"每期等权换仓、
