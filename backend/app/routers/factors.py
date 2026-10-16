@@ -323,6 +323,128 @@ def _period_roll_pick(hk_state: dict, row: dict, item: dict) -> tuple:
     return (None, dates, lists)
 
 
+def _signal_exit_nav(req, row: dict, evs: dict, item: dict, panel: dict, *,
+                     with_exit: bool, exit_mask=None, exit_cache: Optional[dict] = None,
+                     exit_index: int = 0, exit_name: str = "") -> dict:
+    """**0/1 信号因子**的含离场回测（**事件驱动口径** ✓，v2.8.0）—— 返回与 `period_roll` 同构的 dict ✓。
+
+    **为什么单开这一条**（用户 2026-10-15 实测发现 ✓）：0/1 信号因子在单因子面板里**没有"每期名单"**
+    （`topk_curves` 为空 ✗，它走的是事件研究 ✓）⇒ `period_roll` 只会报"该行没有持仓曲线档位"✗
+    ⇒ **含离场回测根本跑不起来** ✗（界面看着像"勾了没生效" ✗）。
+    这里改用**平台本来处理 0/1 信号的那个引擎**（`signals/engine.py` ✓，与「交易信号测试」同源 ✓）：
+
+      · **进场** = 该因子的**触发事件**（T 日触发 ⇒ T+1 按面板「成交时点」买入 ✓，持有 `预测周期` 个交易日 ✓）；
+      · **离场** = 离场信号触发的 (日期, 股票) ⇒ 作为**卖出信号**喂进同一个引擎 ✓
+        （提前平仓 ✓；跌停/停牌卖不掉 ⇒ 逐日顺延 ✓ —— 引擎既有规则 ✓）；
+      · **对照** = **同一批进场信号、不带离场** ✓（两条同源 ⇒ Δ 才解释得清 ✓）。
+
+    ⚠ 它与"每期全仓滚动"**不是同一口径**（那条是连续因子的 ✓）：结果里带 `mode="signal"` 标注 ✓，
+      前端据此写明"信号驱动（事件）"✓（不混着叫"实盘口径"✗）。
+    """
+    from ..signals.engine import run_backtest
+
+    ev = evs.get(str(row.get("expression") or ""))
+    if ev is None or not len(ev):
+        return {"error": "该 0/1 因子的触发事件没找到 ⇒ 无法跑信号驱动回测（请重跑该因子）"}
+    try:
+        ent = pd.DataFrame({"date": pd.to_datetime(ev["dt"]),
+                            "code": ev["code"].astype(str)})
+        ent["side"] = 1
+        frames = [ent]
+        # ⚠ 两种取法都认（`exit_mask` 形参 或 `item["mask"]` ✓）—— 2026-10-16 我自己踩过：
+        #   调用方把 mask 放进 `item` 而没传形参 ⇒ 离场那一支**被静默跳过** ✗（两条曲线一模一样 ✗，
+        #   看起来像"离场没生效"✓）⇒ 这里统一兜住 ✓。
+        _mask = exit_mask if exit_mask is not None else (item or {}).get("mask")
+        if with_exit and _mask is not None:
+            mat = _exit_matrix(_mask, panel, exit_cache, ei=exit_index)
+            if mat is None:
+                return {"error": "离场信号矩阵不可用（形状与行情面板不一致）"}
+            cl = panel["CLOSE"]
+            _ii, _cc = np.nonzero(mat)
+            if len(_ii):
+                frames.append(pd.DataFrame({
+                    "date": pd.to_datetime(cl.index[_ii]),
+                    "code": [str(cl.columns[k]) for k in _cc], "side": -1}))
+        sig = pd.concat(frames, ignore_index=True)
+        hold = max(1, int(row.get("horizon") or 20))
+        bt = run_backtest(sig, panel, hold_days=hold, fill=str(req.fill), cost=float(req.cost),
+                          capital=float(req.capital), strict_limit=bool(req.strict_limit),
+                          alloc_modes=["event_even"])
+        if bt.nav is None or "event_even" not in getattr(bt.nav, "columns", []):
+            _d = bt.diag or {}
+            return {"error": "信号驱动回测无净值：%s"
+                             % ("; ".join(str(v) for v in _d.values())[:200] or "未知原因")}
+        nav = bt.nav["event_even"]
+        st = (bt.stats or {}).get("event_even") or {}
+        return {"dates": [str(d)[:10] for d in nav.index],
+                "nav": [round(float(x), 9) for x in nav.to_numpy()],
+                "label": ("信号驱动（含离场「%s」）" % exit_name if with_exit else "信号驱动（对照）"),
+                "mode": "signal", "hold_days": hold, "with_exit": bool(with_exit),
+                "exit_index": (int(exit_index) if with_exit else None),
+                "exit_name": (str(exit_name) if with_exit else ""),
+                "stats": {k: v for k, v in st.items() if k != "perf"},
+                "perf": st.get("perf")}
+    except Exception as e:                                            # noqa: BLE001
+        return {"error": "信号驱动回测失败：%s: %s" % (type(e).__name__, e)}
+
+
+def _attach_signal_roll(req, row: dict, evs: dict, progress_cb=None,
+                        exit_items: Optional[list] = None,
+                        exit_cache: Optional[dict] = None, hk_state: Optional[dict] = None) -> dict:
+    """0/1 信号因子的「信号驱动（对照 + 逐个离场）」整套回测 ✓（形状与 `period_roll` 一致 ✓）。"""
+    from ..signals.pricing import load_price_panel
+
+    def _np(frac: float, msg: str) -> None:
+        if progress_cb:
+            try:
+                progress_cb(frac, msg)
+            except Exception:                                         # noqa: BLE001
+                pass
+
+    _exits = list(getattr(req, "exit_factors", None) or [])
+    # 0/1 信号的触发事件只覆盖**有信号的股票** ⇒ 取价范围照它来（比全池小得多 ✓ 快 ✓）
+    ev = evs.get(str(row.get("expression") or ""))
+    codes = sorted({str(c) for c in (ev["code"].tolist() if ev is not None and len(ev) else [])})
+    if not codes:
+        row["period_roll"] = {"error": "该 0/1 因子的触发事件为空 ⇒ 无法回测"}
+        row["period_roll_items"] = []
+        return row["period_roll"]
+    _np(0.10, "信号驱动（事件口径）：取行情面板（%d 只，较慢请稍等）…" % len(codes))
+    try:
+        panel = load_price_panel(codes, str(req.start_date), str(req.end_date), need_open=True)
+    except Exception as e:                                            # noqa: BLE001
+        row["period_roll"] = {"error": "取价失败：%r" % (e,)}
+        row["period_roll_items"] = []
+        return row["period_roll"]
+    # 对照（不带离场 ✓ —— 用户定的"对照列必算" ✓）
+    _np(0.35, "信号驱动（事件口径）：对照回测…")
+    cmp_one = _signal_exit_nav(req, row, evs, {}, panel, with_exit=False)
+    out = [cmp_one]
+    if _exits:
+        rows_exit: list = []
+        n = len(_exits)
+        for _ei, _ex in enumerate(_exits):
+            _ename = str(getattr(_ex, "name", "") or getattr(_ex, "id", "") or "")
+            _it0 = ((exit_items or [])[_ei]
+                    if (exit_items and _ei < len(exit_items)) else {}) or {}
+            _np(0.45 + 0.5 * _ei / max(1, n),
+                "信号驱动（事件口径 · 含离场「%s」）：回测中…" % (_ename or "?"))
+            _one = _signal_exit_nav(req, row, evs, _it0, panel, with_exit=True,
+                                    exit_mask=_it0.get("mask"), exit_cache=exit_cache,
+                                    exit_index=_ei, exit_name=_ename)
+            rows_exit.append({"exit": {"index": _ei, "name": _ename,
+                                       "id": str(getattr(_ex, "id", "") or ""),
+                                       "expression": str(getattr(_ex, "expression", "") or "")},
+                              "items": [_one], "first": _one})
+        row["exit_rolls"] = rows_exit
+        row["exit_roll_items"] = rows_exit[0]["items"]     # 兼容 v2.4.3 的单数取法 ✓
+        row["exit_roll"] = rows_exit[0]["first"]
+    row["period_roll_items"] = out
+    row["period_roll"] = out[0]
+    _np(1.0, "信号驱动（事件口径）完成")
+    return row["period_roll"]
+
+
 def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None,
                         exit_cache: Optional[dict] = None,
                         exit_items: Optional[list] = None) -> dict:
@@ -1275,9 +1397,20 @@ def single_factor_test(req: SingleFactorTestRequest):
                             state["extra_prog"] = _b + _s * max(0.0, min(1.0, float(frac)))
                             state["extra_msg"] = "整理结果（%d/%d）：%s" % (_c, _n, msg)
 
-                        row["period_roll"] = _attach_period_roll(
-                            req, hk_state, row, progress_cb=_pc,
-                            exit_cache=_exit_box["cache"], exit_items=_exit_box["items"])
+                        if (row.get("topk_curves") or {}).get("items"):
+                            # 连续因子 ⇒ 「每期全仓滚动」（有每期名单 ✓）
+                            row["period_roll"] = _attach_period_roll(
+                                req, hk_state, row, progress_cb=_pc,
+                                exit_cache=_exit_box["cache"], exit_items=_exit_box["items"])
+                        else:
+                            # ★★ v2.8.0（用户 2026-10-15 实测发现 ✓）：**0/1 信号因子没有"每期名单"**
+                            #   ✗（它走事件研究 ✓）⇒ 原来这里只会得到"没有持仓曲线档位"✗、
+                            #   含离场回测**根本跑不起来** ✗（界面看着像"勾了没生效" ✗）
+                            #   ⇒ 改走**事件驱动引擎**（平台本来处理 0/1 信号那条 ✓）：
+                            #   出信号买入、持有预测周期、离场信号提前平仓 ✓（与「交易信号测试」同源 ✓）
+                            row["period_roll"] = _attach_signal_roll(
+                                req, row, state.get("_evs") or {}, progress_cb=_pc,
+                                exit_cache=_exit_box["cache"], exit_items=_exit_box["items"])
                     else:
                         state["extra_prog"] = 100.0 * _cell / max(1, _cells)
                     items.append(row)
@@ -1301,6 +1434,9 @@ def single_factor_test(req: SingleFactorTestRequest):
                                           "expression": it.get("expression"),
                                           "stats": it.get("stats"),
                                           "effect": it.get("effect"),
+                                          # ⚠ v2.8.0 修：上一版漏了这个字段 ✗ ⇒ 前端没法显示
+                                          #   "含入场价 ⇒ 触发率/事件研究不适用" 的提示 ✓
+                                          "entry_dependent": bool(it.get("entry_dependent")),
                                           "error": it.get("error")}
                                          for it in _exit_box["items"]],
                         "exit_threshold": float(req.exit_threshold)},

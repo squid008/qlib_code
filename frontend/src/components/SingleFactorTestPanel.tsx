@@ -18,6 +18,7 @@ import type {
 import type { FactorCatalog, FactorField } from '../types'
 import EventStudyModal from './EventStudyModal'
 import TopkCurveModal from './TopkCurveModal'
+import ExitCurveModal from './ExitCurveModal'   // ★ v2.8.0：离场曲线（对照 + 某条离场 ✓）
 import { excessThresholdOf, pairStabilityOf, type PairStability } from './verdictRules'
 
 interface SingleFactorTestPanelProps {
@@ -496,6 +497,8 @@ export default function SingleFactorTestPanel({
   const [exitKeys, setExitKeys] = useState<Set<string>>(new Set())
   const [exitThresholdText, setExitThresholdText] = useState('0')
   const [exitsInfo, setExitsInfo] = useState<ExitFactorPayload[]>([])
+  // ★ v2.8.0：离场曲线弹窗（`ei=null` ⇒ 对照 + 全部离场画一起 ✓；`ei=k` ⇒ 只强调第 k 条 ✓）
+  const [exitModal, setExitModal] = useState<{ row: SingleFactorTestResult; ei: number | null; name: string } | null>(null)
   const toggleExit = (k: string) =>
     setExitKeys((cur) => {
       const n = new Set(cur)
@@ -1712,6 +1715,28 @@ export default function SingleFactorTestPanel({
                 // 只在 hover 公式名时显示——因子列底下不再常驻公式行。
                 const hoverFormula =
                   r.source_formula || srcByKey.get(`${r.source}:${r.id}`) || r.expression
+                // ★★ v2.8.0（用户 2026-10-15："我期望的是把 3 组回测都在列表里呈现出来，
+                //   因子列显示：X、X+入场价止损、X+首次入场止损，然后三个按钮" ✓）：
+                //   把**含离场的那些变体**也展开成独立行 ✓（每行一个「离场曲线」按钮 ✓，
+                //   点进去只看这条变体自己的净值 ✓）。数字取**默认档**（items[0] ✓，与表格
+                //   其它列同档 ✓；要切换档位看曲线 ⇒ 进「持仓曲线」弹窗 ✓）。
+                const basePerfEl = r.period_roll_items?.[0]?.perf ?? r.period_roll?.perf ?? null
+                const vRows = (r.exit_rolls ?? []).map((g, gi) => {
+                  const one = ((g?.items ?? [])[0] ?? g?.first) || null
+                  const perf = one?.perf ?? null
+                  const st = (one?.stats ?? {}) as Record<string, number | undefined>
+                  return {
+                    gi,
+                    name: g?.exit?.name || g?.exit?.id || `离场${gi + 1}`,
+                    one, perf, st,
+                    dAnn: (perf?.annual_return ?? 0) - (basePerfEl?.annual_return ?? 0),
+                    dDd: (perf?.max_drawdown ?? 0) - (basePerfEl?.max_drawdown ?? 0),
+                    mode: String(one?.mode || 'period_roll'),
+                  }
+                })
+                // 变体行要用的列数（表头共 20 列 + 可选「耗时」列 ✓）——
+                // 变体行只占 3 个格子（因子 / 周期 / 因子研究 ✓），其余用 colSpan 占掉 ✓
+                const MIDCOLS = 20 + (SHOW_TIMING_COL ? 1 : 0) - 3
                 // 结论判定统一收敛到模块级 verdictOf（表格"结论"列与导出文件口径一致）
                 // 渲染只需 dT（悬停提示）与结论类型；其余判定明细已在 verdictOf 内部消化
                 const { dT, kind: verdictKind, watchReason } = verdictOf(r)
@@ -1760,6 +1785,7 @@ export default function SingleFactorTestPanel({
                       ? `按日配对检验：仅 ${r.daily_n} 个配对日，不足统计推断；日差 = 当日触发组−未触发组日截面均值差 ${fmt(r.daily_diff, 3)}%`
                       : '无配对日（触发组与非触发组无任何同日样本），不计算日配对差'
                 return (
+                  <>
                   <tr key={`${r.id}:${r.horizon ?? '-'}`} className="border-b border-slate-100 dark:border-slate-700">
                     {r.error ? (
                       <td className="py-1 pr-2 text-red-500" colSpan={SHOW_TIMING_COL ? 20 : 19}>
@@ -1984,6 +2010,17 @@ export default function SingleFactorTestPanel({
                                 持仓曲线
                               </button>
                             )}
+                            {/* ★ v2.8.0：勾了离场 ⇒ 这一行也给它一个「离场曲线」入口 ✓
+                                （= 对照 + 全部离场画在一起；与下面那些变体行同源 ✓） */}
+                            {vRows.length > 0 && (
+                              <button
+                                onClick={() => setExitModal({ row: r, ei: null, name: '' })}
+                                className="px-1.5 py-0.5 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30 text-[11px] whitespace-nowrap"
+                                title={`离场曲线（对照 + ${vRows.length} 条离场：${vRows.map((v) => v.name).join('、')}）`}
+                              >
+                                离场曲线
+                              </button>
+                            )}
                             {!r.is_binary && !(r.topk_curves || r.quantile_curves) && (
                               <span
                                 className="text-slate-300"
@@ -1997,6 +2034,52 @@ export default function SingleFactorTestPanel({
                       </>
                     )}
                   </tr>
+                  {/* ★★ v2.8.0：**含离场的变体行** ✓ —— 每行一个「离场曲线」按钮 ✓，
+                      点进去只看这一条变体自己的净值（对照 + 它 ✓）。 */}
+                  {vRows.map((v) => (
+                    <tr
+                      key={`${r.id}:${r.horizon ?? '-'}:exit${v.gi}`}
+                      className="border-b border-slate-100 dark:border-slate-700 bg-amber-50/60 dark:bg-amber-900/10"
+                    >
+                      <td className="text-left py-1 pr-2">
+                        <div className="truncate" title={`含离场变体：${r.name} + ${v.name}`}>
+                          <span className="text-amber-700 dark:text-amber-400">
+                            {r.name}+{v.name}
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-slate-500 whitespace-nowrap">
+                          年化 {typeof v.perf?.annual_return === 'number'
+                            ? `${(v.perf.annual_return * 100).toFixed(1)}%` : '-'}
+                          ｜ 回撤 {typeof v.perf?.max_drawdown === 'number'
+                            ? `${(v.perf.max_drawdown * 100).toFixed(1)}%` : '-'}
+                          ｜ Δ年化{' '}
+                          <b className={v.dAnn >= 0 ? 'text-emerald-600' : 'text-red-500'}>
+                            {v.dAnn >= 0 ? '+' : ''}{(v.dAnn * 100).toFixed(1)}pp
+                          </b>
+                          ｜ Δ回撤{' '}
+                          <b className={v.dDd >= 0 ? 'text-emerald-600' : 'text-red-500'}>
+                            {v.dDd >= 0 ? '+' : ''}{(v.dDd * 100).toFixed(1)}pp
+                          </b>
+                          {v.st.exit_sells != null ? ` ｜ 离场卖出 ${v.st.exit_sells}` : ''}
+                        </div>
+                      </td>
+                      <td className="text-right px-1">{r.horizon != null ? r.horizon : '-'}</td>
+                      <td colSpan={MIDCOLS} className="text-center text-[10px] text-slate-400">
+                        统计列与「{r.name}」相同（离场只作用于实盘口径那条回测 ✓）
+                      </td>
+                      <td className="text-center px-1">
+                        <button
+                          type="button"
+                          onClick={() => setExitModal({ row: r, ei: v.gi, name: v.name })}
+                          className="px-1.5 py-0.5 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30 text-[11px] whitespace-nowrap"
+                          title="含离场这条变体自己的净值曲线（对照 + 它）—— 连续因子走「每期全仓滚动」、0/1 信号走「信号驱动（事件）」，与「交易信号测试」同源"
+                        >
+                          离场曲线
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  </>
                 )
               })}
             </tbody>
@@ -2054,6 +2137,19 @@ export default function SingleFactorTestPanel({
           taskId={doneTaskId ?? taskIdRef.current ?? ''}
         />
       </EsErrorBoundary>
+
+      {/* ★ v2.8.0（用户 2026-10-15 ✓）：**离场曲线**弹窗 —— 点结果行里的「离场曲线」打开 ✓，
+          只画「对照 + 那一条离场」⇒ 一眼看出这条离场到底帮了还是害了 ✓（无重算、秒开 ✓）。 */}
+      {exitModal && (
+        <EsErrorBoundary label="离场曲线弹窗">
+          <ExitCurveModal
+            row={exitModal.row}
+            ei={exitModal.ei}
+            name={exitModal.name}
+            onClose={() => setExitModal(null)}
+          />
+        </EsErrorBoundary>
+      )}
     </div>
   )
 }

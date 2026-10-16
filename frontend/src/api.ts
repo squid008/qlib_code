@@ -494,6 +494,19 @@ export interface PeriodRollNav {
   label?: string
   stats?: Record<string, unknown>
   perf?: Record<string, number | null> | null
+  /**
+   * ★ v2.8.0：这条曲线来自哪个口径 ✓
+   *  · `period_roll` = 连续因子的「每期全仓滚动」（调仓日按当期名单等权重建 ✓）；
+   *  · `signal` = 0/1 信号的「信号驱动（事件）」（出信号买入 + 持有预测周期 + 离场提前平仓 ✓，
+   *    与「交易信号测试」同一个引擎 ✓）。
+   */
+  mode?: string
+  /** 仅 `signal` 口径：持有天数（= 该行的预测周期 ✓） */
+  hold_days?: number
+  /** 仅含离场那条：是第几个离场 / 它的名字 ✓ */
+  exit_index?: number | null
+  exit_name?: string
+  with_exit?: boolean
   error?: string // 计算失败时的可读原因（附加信息，不影响统计 ✓）
 }
 export interface SingleFactorTestResult {
