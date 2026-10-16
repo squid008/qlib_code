@@ -30,17 +30,34 @@ COL_SHOT = 10                            # 第 1 页用到的列数（分区标�
 TRADE_HEADERS = ["日期", "代码", "方向", "股数", "价格", "金额", "费用", "原因"]
 
 #: 成交原因 → 人话 ✓（**这张表就是"检查离场逻辑"的钥匙** ✗→✓）
+#: ⚠ 值里**带上原码**（`中文（原码）` ✓）—— 便于在文件里直接搜原因码、也便于与我对话时对齐 ✓。
+#: ⚠★ 用户 2026-10-16 追问「roll_trim 啥意思」✓ ⇒ 把**调仓日的那几个常规动作**也收进来 ✗→✓
+#:  （它们**不是离场** ✗，是"每期全仓滚动"在每个调仓日重建等权时必然产生的买卖 ✓）：
+#:   · `roll_out`  = 本期**不在名单**了 ⇒ **清仓卖出** ✓（`period_roll.py` ✓）
+#:   · `roll_trim` = 本期**仍在名单、但持有超配** ⇒ **减回等权** ✓（同一处 ✓）
+#:   · `roll_in`   = 本期**仍在名单、但持有低配** ⇒ **补到等权** ✓（同一处 ✓）
+#:   · `sell_signal` / `sell_expiry` / `exit_signal` = 引擎侧：卖出信号 / 持有到期 / **离场信号** ✓
+#:   · `sell_trim_units` / `rebalance_sell` / `rebalance_buy` = 其余资金方案（`batch_even` / 事件驱动）✓
 REASON_LABELS: Dict[str, str] = {
     "buy_signal": "买入（进场信号）",
     "buy_roll_in": "买入（加仓）",
     "buy_rebalance": "买入（补低配）",
-    "sell_signal": "卖出（卖出信号）",
+    "sell_signal": "卖出（卖出信号 / 离场矩阵）",
     "sell_expiry": "卖出（持有到期）",
+    # ⚠ 措辞要**通用** ✓：`exit_signal` 既用于"离场矩阵"（换手率/市值这类 ✓）也用于
+    #   "含入场价的规则"（止损/止盈 ✓）⇒ 别写死成"入场价" ✗（我第一版就这么写了，当场改掉 ✓）。
     "exit_signal": "★离场卖出（离场信号触发）",
     "sell_trim_units": "卖出（超配减仓）",
     "sell_trim": "卖出（减仓）",
     "sell_rebalance": "卖出（再平衡减仓）",
     "sell_roll_trim": "卖出（减仓）",
+    # ---- 「每期全仓滚动」调仓日的常规动作（**不是离场** ✗）----
+    "roll_out": "调仓卖出（本期不在名单 ⇒ 清仓）",
+    "roll_trim": "调仓减仓（仍在名单但超配 ⇒ 减回等权）",
+    "roll_in": "调仓买入（仍在名单但低配 ⇒ 补到等权）",
+    # ---- 事件驱动（0/1 信号）再平衡 ----
+    "rebalance_sell": "再平衡卖出（超配减仓）",
+    "rebalance_buy": "再平衡买入（补低配）",
 }
 
 
@@ -145,13 +162,15 @@ def trade_rows(st: Optional[dict]) -> List[List[Any]]:
     out: List[List[Any]] = []
     for _, r in tr.iterrows():
         reason = str(r.get("reason") or "")
+        label = REASON_LABELS.get(reason)
+        # ★ 有中文就写「中文（原码）」✓（可搜可对账 ✓）；没收录的**照原样暴露并打标** ✗（不假装认识 ✓）
+        shown = ("%s（%s）" % (label, reason)) if label else ((reason or "-") + "（未收录原因码）")
         try:
             out.append([str(r.get("date") or ""), str(r.get("code") or ""),
                         str(r.get("side") or ""), int(r.get("shares") or 0),
                         round(float(r.get("price") or 0.0), 4),
                         round(float(r.get("amount") or 0.0), 2),
-                        round(float(r.get("fee") or 0.0), 2),
-                        REASON_LABELS.get(reason, reason or "-")])
+                        round(float(r.get("fee") or 0.0), 2), shown])
         except Exception:                                        # noqa: BLE001 —— 单行坏不拖垮整页 ✓
             continue
     return out
