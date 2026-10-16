@@ -35,6 +35,9 @@ def daily_bars(
     instrument: str,
     start_date: str,
     end_date: str,
+    # ★ T4（审计 ⑩ / v2.8.7）：这个参数以前**被吃掉** ✗（`none`/`qfq`/`hfq` 返回同样的价 ✓）——
+    #   现在真的按它换算 ✓：`none` = 真实价（原生价 ÷ `$factor` ✓）/ `hfq` = 后复权（原生价 ✓）；
+    #   ⚠ `qfq`（前复权）**还没落地** ⇒ 明确 400（引擎侧同样是 TODO ✗ ⇒ 硬凑会与回测口径分叉 ✗）。
     adjust: str = "none",
     source: str = "qlib",
 ):

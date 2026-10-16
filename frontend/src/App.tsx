@@ -240,9 +240,24 @@ export default function App() {
       const err = e as { response?: { status?: number; data?: { detail?: string } }; message?: string }
       const msg = String(err?.response?.data?.detail || err?.message || e)
       if (err?.response?.status === 409 && !force) {
-        if (window.confirm(msg + '\n\n仍要强制切换？（正在跑的对照结果会失真）')) {
-          await handleDatasetChange(name, true)
+        // ★★ T3（审计 ⑤ / v2.8.7，用户 2026-10-16 拍板 ✓）：**先停任务再切** ✗→✓ ——
+        //   旧文案是"仍要强制切换？"✗（= 带着任务硬切 ✓）⇒ 用户明确要的是**先把任务停掉** ✓
+        //   （任务读到新数据会失真 ✗，而且事后无法复原 ✓）。
+        //   ⚠ 单因子测试任务不在 `tasks`（那是 `/api/backtests` ✓）⇒ 若停完回测仍被拒，
+        //     文案直接指路"去单因子面板停" ✓，不让用户猜 ✓。
+        const running = tasks.filter((t) => t.status === 'running' || t.status === 'pending')
+        const extra = running.length
+          ? `\n\n检测到 ${running.length} 个回测任务在跑：\n· 确定 ⇒ 先停止它们，再切换（推荐 ✓）\n· 取消 ⇒ 什么都不做`
+          : '\n\n（没有回测任务在跑 —— 多半是**单因子测试**任务 ✓，请先在它的面板里停掉再切）'
+        if (!window.confirm(msg + extra)) return
+        for (const t of running) {
+          try {
+            await cancelBacktest(t.task_id)
+          } catch {
+            /* 停不掉也继续尝试切换（失败会被下面的提示如实带出来 ✓） */
+          }
         }
+        await handleDatasetChange(name, true)
         return
       }
       window.alert('切换数据集失败：' + msg)

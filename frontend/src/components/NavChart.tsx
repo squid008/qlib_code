@@ -153,6 +153,24 @@ export default function NavChart({
     }
   })
 
+  // ★★ T2（审计 ⑫ / v2.8.7，用户 2026-10-16 已拍 ✓）：**按像素抽样绘制** ✗→✓ ——
+  //   后端已改为返回**全程**（10 年 ≈ 2500 个点 ✓，见 `engine/metrics.py` ✓），但 SVG 折线点太多
+  //   会拖慢渲染 ✗ ⇒ 这里**等距抽样到 ~1500 点** ✓（**首尾必留** ✓ ⇒ 曲线终值 = 最后一天真实净值 ✓）。
+  //   ⚠ 不插值、不聚合：抽到的点都是**当天的真实值** ✓ ⇒ tooltip 悬停给出的日期/净值仍是真的 ✓
+  //     （只是折线在像素上更稀 ✓ —— 用户要的正是"看得到全程、悬停仍是真数字" ✓）。
+  //   ⚠ 指标（年化/回撤/超额）用的是**后端完整序列**算的 ✓，与这里抽不抽样无关 ✓。
+  const MAX_DRAW_POINTS = 1500
+  const drawData =
+    data.length > MAX_DRAW_POINTS
+      ? (() => {
+          const step = Math.ceil(data.length / MAX_DRAW_POINTS)
+          const out = data.filter((_, i) => i % step === 0)
+          const last = data[data.length - 1]
+          if (out[out.length - 1] !== last) out.push(last)     // ★ 末点必留 ✓
+          return out
+        })()
+      : data
+
   // 未跑完（数据最后一天早于参数结束日）→ 切真实时间轴并延伸右界到 endDate
   const lastDate = data[data.length - 1]?.date
   const extendX = !!endDate && !!lastDate && endDate > lastDate && data.length > 1
@@ -191,7 +209,7 @@ export default function NavChart({
       <h2 className="text-lg font-semibold mb-4">收益曲线</h2>
       <div className="h-72">
         <ResponsiveContainer width="100%" height="100%" initialDimension={{ width: 600, height: 288 }}>
-          <LineChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+          <LineChart data={drawData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" />
             {extendX && endDate ? (
               // 未跑完：真实日历时间轴，右界延伸到参数结束日，右侧留白 = 剩余区间

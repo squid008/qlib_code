@@ -40,6 +40,12 @@ def switch_dataset(req: SwitchRequest):
         info = datasets.activate(req.name, allow_while_running=req.allow_while_running)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except datasets.CacheClearError as e:                                 # ★ T3：清缓存失败 ⇒ 500（别混成 409 ✗）
+        logger.exception("切换数据集时清缓存失败")
+        raise HTTPException(
+            status_code=500,
+            detail="切换失败：缓存没清干净（%s）—— 这是服务端问题，强制切换也没用 ✗，请先修缓存接口。" % e
+        ) from e
     except RuntimeError as e:                                             # 有任务在跑 ⇒ 让 UI 确认 ✓
         raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:

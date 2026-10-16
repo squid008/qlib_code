@@ -34,6 +34,15 @@ class _BenchCache:
             while len(self._data) > self._MAX_ENTRIES:
                 self._data.popitem(last=False)
 
+    def clear(self) -> None:
+        """★ T3（审计 ④ / v2.8.7）：清空基准缓存 ✓ —— 切数据集后必须调 ✗。
+
+        键是 `(code, start, end)` ✗ **不含数据集标识** ⇒ 不切清就会拿**旧数据集**的基准曲线
+        喂给新数据集的结果 ✗（"看着切了、其实没切" ✓，与 `panel_expr` 那处同类 ✓）。
+        """
+        with self._lock:
+            self._data.clear()
+
 
 _BENCH_CACHE = _BenchCache()
 

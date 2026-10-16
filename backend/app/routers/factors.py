@@ -1866,6 +1866,21 @@ _NAV_BT_STASH: dict = {}
 _NAV_BT_STASH_CAP = 4
 
 
+def clear_nav_caches() -> None:
+    """★ T3（审计 ④ / v2.8.7，用户 2026-10-16 已拍 ✓）：切数据集时清本模块的**进程级缓存** ✓。
+
+    为什么必须暴露出来 ✗：这三块缓存都按 **codes/区间(/k/cost)** 寻址 ✓，**不含数据集标识** ✗
+    ⇒ 切到另一套数据集后，同样的 codes/区间会**命中旧数据的面板/回测** ✗✓
+    （"看着切了、其实没切" —— 与 `panel_expr` / `feature_cache` 那几处同一类坑 ✓）。
+    由 `services/datasets.clear_caches()` 调用 ✓（那边**失败会抛错** ✗，不再假成功 ✓）。
+    """
+    with _NAV_PANEL_LOCK:
+        _NAV_PANEL_CACHE.clear()
+    with _NAV_BT_LOCK:
+        _NAV_BT_CACHE.clear()
+        _NAV_BT_STASH.clear()
+
+
 def _nav_stash_key(task_id: str, factor_id: Optional[str], hold_days: int,
                    cost: float, capital: float) -> tuple:
     return (str(task_id or ""), str(factor_id or ""), int(hold_days), float(cost), float(capital))

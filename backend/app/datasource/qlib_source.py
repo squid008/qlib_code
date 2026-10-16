@@ -72,11 +72,33 @@ class QlibDataSource(DataSource):
         end_date: str,
         adjust: str = "none",
     ) -> List[DailyBar]:
+        """日线（★ T4 / v2.8.7：`adjust` **真的生效** ✗→✓，口径与 `engine/adjust.py` 同一套 ✓）。
+
+        审计 ⑩ 原文：旧实现 `if adjust in ("qfq", "hfq"): fields.append("$factor")` ✗ ——
+        **只多取了个 `$factor` 字段**，价格原样返回 ✗ ⇒ `none`/`qfq`/`hfq` 三种取值
+        返回的价格**完全相同** ✗✓（而调用方 `routers/data.py` 照原样透传 ⇒ 误导 ✓）。
+
+        现在（数据事实见 `engine/adjust.py` 模块 docstring ✓）：
+          · `none`（真实价 / 东财"不复权"口径 ✓）：OHLC = 原生价 / `$factor` ✓；
+          · `hfq`（后复权 ✓）：OHLC = 原生价（qlib 原生即后复权 ✓，含分红送转 ✓）；
+          · `qfq`（前复权 ✗）：**本数据源还不支持** ⇒ 抛 `DataNotAvailableError`（HTTP 400 ✓）——
+            ⚠ 为什么不是"凑一个" ✗：真正的前复权要除以**每股最新因子**，而这一步在**引擎侧也还没落地**
+            （`adjust_expr` 里写着 TODO ✗）⇒ 硬凑会和回测口径分叉 ✗（比报错更糟 ✗）。
+        返回值里始终带 `factor`（= 当日因子 ✓），调用方想自己换算也有原料 ✓。
+        """
         self._lazy_init()
         D = self._D
-        fields = ["$open", "$high", "$low", "$close", "$volume", "$amount"]
-        if adjust in ("qfq", "hfq"):
-            fields.append("$factor")
+        mode = (adjust or "none").lower()
+        if mode in ("forward", "qfq"):
+            raise DataNotAvailableError(
+                "本数据源暂不支持前复权（qfq）：引擎侧的『除以每股最新因子』还没落地 ✗ ⇒ "
+                "请用 adjust=none（真实价 / 不复权口径 ✓）或 adjust=hfq（后复权 ✓），"
+                "并用返回的 factor 自行换算 ✓。")
+        if mode not in ("none", "hfq", "backward"):
+            raise DataNotAvailableError(
+                "未知的 adjust=%r：只支持 none（真实价 ✓）/ hfq（后复权 ✓）。" % adjust)
+        divide = mode == "none"                      # ★ none ⇒ 真实价 = 原生价 / factor ✓
+        fields = ["$open", "$high", "$low", "$close", "$volume", "$amount", "$factor"]
         df = D.features([instrument], fields, start_time=start_date, end_time=end_date)
         if df is None or df.empty:
             return []
@@ -84,16 +106,18 @@ class QlibDataSource(DataSource):
         for idx, row in df.iterrows():
             # idx 形如 (instrument, datetime)
             inst, ts = idx
-            factor = float(row.get("$factor", 1.0)) if "$factor" in df.columns else 1.0
+            raw_factor = row.get("$factor")
+            factor = float(raw_factor) if raw_factor == raw_factor else 1.0     # NaN ⇒ 1.0 ✓
+            k = factor if (divide and factor > 0) else 1.0
             bars.append(
                 DailyBar(
                     instrument=inst,
                     datetime=ts.to_pydatetime(),
-                    open=float(row["$open"]),
-                    high=float(row["$high"]),
-                    low=float(row["$low"]),
-                    close=float(row["$close"]),
-                    volume=float(row["$volume"]),
+                    open=float(row["$open"]) / k,
+                    high=float(row["$high"]) / k,
+                    low=float(row["$low"]) / k,
+                    close=float(row["$close"]) / k,
+                    volume=float(row["$volume"]),        # 量/额不随复权变化 ✓
                     amount=float(row["$amount"]),
                     factor=factor,
                 )

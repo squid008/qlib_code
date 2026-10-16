@@ -120,7 +120,12 @@ def _aggregate_from_nav(all_nav: list, seg_results: list) -> BacktestResult:
                 - (float((1 + result.benchmark_return) ** (1 / bench_years) - 1))
             )
 
-    result.nav = all_nav[:2000]
+    # ★★ T2（审计 ⑫ / v2.8.7，用户 2026-10-16 已拍 ✓）：**曲线保留全程** ✗→✓ ——
+    #   旧实现 `all_nav[:2000]` 把长区间（10 年 ≈ 2500 个交易日）**截尾** ✗ ⇒ 出现
+    #   「总收益 100% 但曲线终值只有 1.80、最后 500 天不见」✗（指标是用**完整序列**算的 ✓
+    #   ⇒ 指标与曲线自相矛盾 ✗）。逐日 10 年 ≈ 2500 点、百 KB 级 ✓ ⇒ 返回全程没有成本问题 ✓；
+    #   绘图性能交给**前端抽样**（`NavChart.tsx` 按像素抽 ~1200 点 ✓，悬停仍给真实日期/净值 ✓）。
+    result.nav = all_nav
     # 整条基准曲线归一首点（与策略净值同起点），并重算基准/超额指标
     normalize_benchmark_curve(result)
     # 备注滚动段数（用 report_df 附带，避免改动模型字段）
@@ -259,7 +264,10 @@ def _extract_result(par, recorder, initial_account: Optional[float] = None) -> B
                     if bench_nav is not None:
                         pt["benchmark"] = round(float(bench_nav.iloc[i]), 6)
                     nav.append(pt)
-                result.nav = nav[:800]
+                # ★★ T2（审计 ⑫ / v2.8.7，用户已拍 ✓）：**同样不许截尾** ✗→✓
+                #   旧实现 `nav[:800]` ⇒ 单次训练跑 10 年（≈2500 个交易日）时**后 1700 天全没了** ✗
+                #   （而指标是用完整 `ret` 算的 ✓ ⇒ 「总收益 100% 却只画到 1.8」✗）。
+                result.nav = nav
         except Exception as e:
             result.message = f"指标提取异常: {e}"
     else:

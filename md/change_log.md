@@ -3,6 +3,60 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.8.7] - 2026-10-16
+
+### Fixed（**T2 ⑫ / T3 ④⑤ / T4 ⑩ / T5 ⑪** —— 同一轮攒一版 ✓）
+
+- **T2 ⑫ 长期曲线被截断 ⇒ 保留全程 + 前端抽样** ✓（用户已拍 ✓）
+  · 两处硬截断（审计 ⑫）：`engine/metrics.py` 的 `result.nav = all_nav[:2000]`（滚动 ✓）与
+    `nav[:800]`（一次性训练 ✓）✗ ⇒ 10 年 ≈ 2500 个交易日时**丢尾** ✗ ⇒ 出现
+    「**总收益 100% 但曲线终值只有 1.80、最后 500 天不见**」✗（**指标本来就用完整序列算** ✓
+    ⇒ 指标与曲线自相矛盾 ✗）。
+  · 修：两处都返回**全程** ✓；前端 `NavChart.tsx` **按像素等距抽样到 ~1500 点** ✓
+    （**首尾必留** ✓、**不插值** ✗ ⇒ 悬停仍是**真实**日期/净值 ✓）。
+  · **实测（真数据 ✓）**：真实 recorder 产物 `report_normal_1day.pkl` **1026 天** ⇒ 提取曲线
+    **1026 点** ✓（旧实现会被砍到 800 ✗ 丢 226 天 ✓）；曲线末值 `1.049750` 与
+    `total_return 0.0497499` **同源** ✓（审计里"对不上"的那件事消除 ✓）。
+  · 新增 `tests/test_nav_no_truncate.py` **4 例** ✓（2500 点不截 ✓ / 1200 点不截 ✓ / 指标与曲线同源 ✓）。
+- **T3 ④⑤ 切数据集 ⇒ 真清缓存 + 真的会拦** ✓（用户已拍"**先停任务再切**" ✓）
+  · ④ `clear_caches()` **假成功** ✗：`hasattr(..., "invalidate_all")` 判的那个接口**根本不存在**
+    （全仓库 0 命中 ✓），却在 `if` 之后**无条件**写 `done[...] = True` ✗ ⇒ 报告"清干净了"、
+    实际旧数据仍挂在进程缓存里 ✓（与"切换静默失效"同一类坑 ✓）。
+    ⇒ 现在**每个清动作真的调到** ✓，清单：`panel_expr.reset_caches()` + `clear_bin_cache()` ✓、
+    `limits._tag_field_cache` ✓、`single_test.clear_full_wide_cache()` ✓、
+    `analysis._BENCH_CACHE.clear()`（**本版新增** ✓）、
+    `factors.clear_nav_caches()`（**本版新增** ✓：取价面板 + 回测结果 + 导出 stash ✓）、
+    `data_cache.SHARED_CACHE` ✓；**任何一项失败 ⇒ 抛 `CacheClearError`** ✗
+    （路由映射 **500** ✓，且**不再混进 409** ✗ —— 否则 UI 会弹"仍要强制切换？"这种答非所问的框 ✓）。
+    ⚠ `feature_cache` / `event_study_cache` 是**磁盘内容寻址**（key 里含**数据版本戳** ✓）
+      ⇒ **无需清** ✓ —— 旧实现装作清了它们 ✗ 才是真误导 ✓（前提写在注释里 ✓）。
+  · ⑤ `_running_tasks()` **恒空** ✗：import 的 `..engine.task_registry` **模块不存在** ✗ +
+    `single_test.running_count` 是 `TaskManager` 的**实例方法** ✗ ⇒ 两次都被 `except` 吞掉 ⇒
+    `activate()` 里"有任务在跑就拒切"的守卫**永不触发** ✗✓。
+    ⇒ 改为问权威来源 `TaskManager.concurrency_info()` ✓（其 `running/queued` **已包含**单因子等
+    外部任务 ✓）；⚠ 探不到**不再假装没有** ✗（返回"任务占用未知(…)" ⇒ 拦住并让用户确认 ✓）。
+  · 前端：409 的确认框从"仍要强制切换？"✗ 改成 **"先停止在跑的回测任务，再切换"** ✓
+    （并真的逐个调 `cancelBacktest` ✓；若停完仍被拒 ⇒ 文案直接指路"去单因子面板停" ✓ 不让用户猜 ✓）。
+  · 新增 `tests/test_dataset_switch_guards.py` **7 例** ✓（含"缺接口必须抛错"✓、"探不到不许静默"✓）。
+- **T4 ⑩ `/api/data/daily-bars` 的 `adjust` 被吃** ✓：旧实现只是 `if adjust in ("qfq","hfq")` 时
+  **多取一个 `$factor` 字段** ✗ ⇒ `none`/`qfq`/`hfq` 三条返回**完全相同**的价 ✗（调用方透传 ⇒ 误导 ✓）。
+  · 修（与 `engine/adjust.py` 同一套口径 ✓）：`none` ⇒ **真实价** = 原生价 ÷ `$factor` ✓；
+    `hfq` ⇒ **后复权** = 原生价 ✓；`qfq` ⇒ **明确 400** ✓（真正的前复权要"除以每股最新因子"，
+    **引擎侧也还没落地** ✗ ⇒ 硬凑会与回测口径分叉 ✗，比报错更糟 ✗）；量/额**不随复权** ✓。
+  · 真数据测试 `tests/test_daily_bars_adjust.py` **4 例** ✓（★ `none` 与 `hfq` **必须不同** ✓
+    = "参数不再被吃"的判据 ✓）。
+- **T5 ⑪ `perf_metrics` 的隐含契约显式化** ✓：`nav_from_rets` 不含起点 1 ✗、`annualized_return`
+  以 `a[0]` 为基且 `n = size - 1` ✗、`max_drawdown` 第 0 点恒 0 ✗ ⇒ 谁把**日收益数组**直接塞进来
+  就会**漏首日 / 天数差一天** ✗，而且**不报错** ✓（静默差一点，最坏的一种 ✓）。
+  · 修：契约写进模块 docstring ✓ + 入口 `_as_nav()` 断言 ✓（含负值 ⇒ `ValueError` ✓，
+    错误里直接告知该用 `nav_from_rets` / `nav_with_start` ✓）+ 新增 `nav_with_start()` ✓
+    （补首日 1.0 ✓、`len - 1` 恰好等于收益个数 ✓ ⇒ 年化不再差一天 ✓）。
+  · ⚠ 现网所有调用方本来就补过首日 ⇒ **数字不变** ✓。新增 `tests/test_perf_metrics_contract.py` **6 例** ✓。
+- **验证**：后端 **978 passed** ✓（**含 datareq**：T4/T5 的真数据用例本机跑通 ✓）；`ruff` ✓；
+  前端 `tsc -b` ✓ + `npm run build` ✓（`✓ built in 7.30s` ✓）。
+- **影响面**：T2 只影响**显示** ✓（指标不变 ⇒ 不用重跑 ✓）；T3 只影响**切换动作** ✓（数字不变 ✓）；
+  T4/T5 把"静默算错"改成"**明确报错**" ✗⇒ 若有脚本依赖旧行为会**当场报错** ✓（这正是要的效果 ✓）。
+
 ## [2.8.6] - 2026-10-16
 
 ### Added（**T1 / 审计 ②：涨停判定口径做成开关，默认"保守口径"**）

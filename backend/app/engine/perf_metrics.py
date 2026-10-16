@@ -21,6 +21,21 @@
 ⚠ **统计噪声**：调仓期数少时（例如 61 期 / 4.8 年，逐日虽 1211 点但**独立样本远少于 1211**），
   夏普/索提诺/卡玛的置信区间很宽（±0.5 很常见）⇒ 界面必须与样本数一起展示，别单看数字。
 ⚠ 所有指标**不含**涨跌停 / 停牌 / 流动性冲击（与曲线同一简化口径）。
+
+★★ T5（审计 ⑪ / v2.8.7，用户 2026-10-16 已拍 ✓）：**"数组里含不含起点 1"这个隐含契约显式化** ✗→✓
+------------------------------------------------------------------------------
+审计原文：`nav_from_rets`（cumprod **不含**起点 1 ✗）、`max_drawdown`（第 0 点恒 0 ✗）、
+`annualized_return`（以 `a[0]` 为基、`n = size - 1` ✗）⇒ 谁把**日收益数组**直接塞进来
+（没先转净值、也没补首日）就会**漏首日 / 天数差一天** ✗ —— 而它**不会报错** ✓（静默差一点 ✗）。
+
+⇒ 现在把契约写在明处 ✓：
+  · **本模块的 `max_drawdown` / `annualized_return` 只接受"净值序列"** ✓（值域必须 **> 0** ✓，
+    因为策略账户除以初始资金恒为正 ✓）——传入日收益数组时（含负值 ✓）**直接抛 `ValueError`** ✗✓，
+    错误里给出该用的函数名 ✓（不再静默算错 ✓）；
+  · **`annualized_return` 的天数约定**：`持有天数 = len(nav) - 1` ✓ ⇒ **nav 必须含起点** ✓；
+    拿"收益序列"进来的人请先 `nav_with_start(rets)` ✓（补上首日 1.0 ✓，最不易错 ✓）。
+⚠ 现网所有调用方（`signals/engine._perf` / `factors.py` / `replay.py` / `single_test.py` /
+  `benchmark_curves.py` ✓）本来就是补过首日 0 的 ✓ ⇒ **本改动不改变任何现有数字** ✓（只是把陷阱堵住 ✓）。
 """
 import numpy as np
 
@@ -28,7 +43,12 @@ TRADING_DAYS_PER_YEAR = 252.0
 
 
 def nav_from_rets(rets) -> np.ndarray:
-    """日收益（小数，NaN 视作 0）→ 净值数组（起点隐含 1，长度与输入相同）。"""
+    """日收益（小数，NaN 视作 0）→ 净值数组（**长度与输入相同** ✓、起点 1 **隐含** ✗）。
+
+    ⚠ 返回数组的第 i 个元素 = 第 i 天**收盘后**的净值 ⇒ `len == 天数` ✓ 而
+      `持有天数 = len - 1` ✗（首日在数组里**没有**对应的"1.0"元素 ✓）。
+      需要"含起点"的净值（做年化最不易错 ✓）请用 `nav_with_start` ✓。
+    """
     r = np.asarray(rets, dtype=np.float64)
     if r.size == 0:
         return np.empty(0, dtype=np.float64)
@@ -36,10 +56,33 @@ def nav_from_rets(rets) -> np.ndarray:
     return np.cumprod(1.0 + r)
 
 
+def nav_with_start(rets) -> np.ndarray:
+    """★ T5：日收益 → **含起点 1.0** 的净值序列（`len = 天数 + 1` ✓）。
+
+    为什么推荐它：`annualized_return` 的天数 = `len(nav) - 1` ✓ ⇒ 含起点时"天数"刚好等于
+    收益个数 ✓（差一天都会被年化放大成百分比级误差 ✗，尤其是短窗口 ✓）。
+    """
+    r = np.asarray(rets, dtype=np.float64)
+    if r.size == 0:
+        return np.array([1.0], dtype=np.float64)
+    r = np.where(np.isfinite(r), r, 0.0)
+    return np.concatenate(([1.0], np.cumprod(1.0 + r)))
+
+
+def _as_nav(a) -> np.ndarray:
+    """★ T5：把入参当**净值序列**校验（负值 ⇒ 明确报错，别静默算错 ✗）。"""
+    arr = np.asarray(a, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    if arr.size and float(np.min(arr)) < 0:
+        raise ValueError(
+            "这不是净值序列 ✗（含负值）—— 看起来你传的是**日收益数组** ✓。"
+            "请先用 `nav_from_rets(rets)`（长度不变 ✓）或 `nav_with_start(rets)`（补上首日 1.0 ✓）转换。")
+    return arr
+
+
 def max_drawdown(nav) -> float:
-    """最大回撤（负数；空/全 NaN/无回撤 → 0.0）。"""
-    a = np.asarray(nav, dtype=np.float64)
-    a = a[np.isfinite(a)]
+    """最大回撤（负数；空/全 NaN/无回撤 → 0.0）。⚠ 入参必须是**净值序列**（见 `_as_nav` ✓）。"""
+    a = _as_nav(nav)
     if a.size == 0:
         return 0.0
     peak = np.maximum.accumulate(a)
@@ -50,9 +93,12 @@ def max_drawdown(nav) -> float:
 
 
 def annualized_return(nav, trading_days: float = TRADING_DAYS_PER_YEAR):
-    """净值序列 → 年化收益（`n` = 净值点数；`n < 2` 或首值 ≤ 0 → None）。"""
-    a = np.asarray(nav, dtype=np.float64)
-    a = a[np.isfinite(a)]
+    """净值序列 → 年化收益（`n < 2` 或首值 ≤ 0 → None）。
+
+    ★ T5 契约：**持有天数 = `len(nav) - 1`** ⇒ 传进来的净值**必须含起点** ✓
+      （即"第 0 天 = 1.0" ✓）；用 `nav_with_start(rets)` 最稳 ✓。⚠ 入参必须是净值序列 ✓。
+    """
+    a = _as_nav(nav)
     if a.size < 2 or a[0] <= 0 or a[-1] <= 0:
         return None
     n = a.size - 1

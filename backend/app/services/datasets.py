@@ -268,35 +268,80 @@ def status(refresh: bool = False) -> dict:
             "switchable": len(av) > 1}
 
 
+class CacheClearError(RuntimeError):
+    """★ T3（v2.8.7）：**清缓存失败** ✗ —— 与"有任务在跑"（`RuntimeError` ⇒ HTTP 409 ✓）**分开** ✗。
+
+    ⚠ 为什么要单独一个类型：路由把 `RuntimeError` 统一映射成 **409**（"有任务，请确认" ✓）✗ ——
+      而"缓存没清干净"是**服务端故障** ✗ ⇒ 必须走 **500** ✓，否则 UI 会弹出"仍要强制切换？"
+      这种**答非所问**的确认框 ✓（用户点了"强制"也没用：缓存根本没清 ✓）。
+    """
+
+
 def clear_caches() -> Dict[str, bool]:
-    """清掉各模块的**进程级缓存**（它们会把 provider 目录/日历快照住 ✗ ⇒ 切换后必须清 ✓）。"""
+    """清掉各模块的**进程级缓存**（它们会把 provider 目录/日历快照住 ✗ ⇒ 切换后必须清 ✓）。
+
+    ★★ T3（审计 ④ / v2.8.7，用户 2026-10-16 已拍 ✓）：**假成功改真报错** ✗→✓
+      · 旧实现两处 `hasattr(..., "invalidate_all"/"clear")` 后**无条件** `done[...] = True` ✗
+        —— 而那两个接口**根本不存在** ✓（`feature_cache.invalidate_all` 全仓库 0 命中 ✓）
+        ⇒ "清缓存"返回 `feature_cache=True, event_study_cache=True` 是**纯假成功** ✗✓，
+        用户以为换干净了、其实旧数据还在 ✓（与"切换静默失效"是同一类坑 ✓）。
+      · 现在：**每个清动作都必须真的调到** ✓（拿不到接口/调用失败 ⇒ **抛可读异常** ✗），
+        并把清单写在下方注释里 ✓；
+      · ⚠ 两个**磁盘内容寻址**缓存（`feature_cache` / `event_study_cache`）**不在清单里** ✓ ——
+        它们的 key 里含**数据版本戳**（`feature_cache._data_version()` ✓ 读数据集目录的
+        `.data_version` / 根目录 mtime ✓）⇒ 换数据集后 key 自然不同 ✓ ⇒ **无需清** ✓
+        （旧实现装作清了它们 ✗，才是真正误导 ✓）。⚠ 前提：数据版本戳必须**真的区分**两套数据集 ✓
+        （踩过 "两数据集结果一样" 的坑 ✓，见 `tests` 与数据集探针 ✓）。
+
+    失败的清单 ⇒ `RuntimeError`（由 `activate` 抛给 UI ⇒ 用户看到"缓存没清干净，别切" ✗）。
+    """
     done: Dict[str, bool] = {}
-    try:
+    fails: list = []
+
+    def _do(name: str, fn) -> None:
+        try:
+            fn()
+            done[name] = True
+        except Exception as e:                                            # noqa: BLE001
+            done[name] = False
+            fails.append("%s(%s: %s)" % (name, type(e).__name__, e))
+
+    def _panel_expr():
         from ..factors import panel_expr
-        panel_expr.reset_caches()
-        done["panel_expr"] = True
-    except Exception:                                                     # noqa: BLE001
-        done["panel_expr"] = False
-    try:
-        from ..engine import limits as _limits
-        _limits._tag_field_cache.clear()
-        done["limits"] = True
-    except Exception:                                                     # noqa: BLE001
-        done["limits"] = False
-    try:                                                                  # 特征面板缓存按目录 mtime 失效 ✓
-        from ..engine import feature_cache
-        if hasattr(feature_cache, "invalidate_all"):
-            feature_cache.invalidate_all()
-        done["feature_cache"] = True
-    except Exception:                                                     # noqa: BLE001
-        done["feature_cache"] = False
-    try:                                                                  # 事件研究缓存按内容寻址 ✓
-        from ..factors import event_study_cache
-        if hasattr(event_study_cache, "clear"):
-            event_study_cache.clear()
-        done["event_study_cache"] = True
-    except Exception:                                                     # noqa: BLE001
-        done["event_study_cache"] = False
+        panel_expr.reset_caches()                # 日历 / 特征目录 / bin 读盘缓存 ✓
+        panel_expr.clear_bin_cache()             # ★ 真正存在的接口（旧实现从没调过 ✗）
+
+    def _limits():
+        from ..engine import limits
+        limits._tag_field_cache.clear()          # 涨跌停标签字段缓存 ✓
+
+    def _full_wide():
+        from ..factors.single_test import clear_full_wide_cache
+        clear_full_wide_cache()                  # 全样本 PX 宽表（单份 ~50MB ✓）
+
+    def _bench():
+        from ..engine import analysis
+        analysis._BENCH_CACHE.clear()            # 基准累计收益缓存 ✓（本版新增 clear ✓）
+
+    def _nav():
+        from ..routers import factors as _fac
+        _fac.clear_nav_caches()                  # 事件研究取价面板 + 回测结果缓存 ✓（本版新增 ✓）
+
+    def _shared():
+        from ..engine import data_cache
+        data_cache.SHARED_CACHE.clear()          # 共享特征缓存 ✓
+
+    _do("panel_expr", _panel_expr)
+    _do("limits", _limits)
+    _do("full_wide", _full_wide)
+    _do("bench", _bench)
+    _do("nav", _nav)
+    _do("shared", _shared)
+
+    if fails:
+        raise CacheClearError(
+            "切数据集时**缓存没清干净** ✗ ⇒ 现在切换会读到旧数据（比不切更糟 ✗）：%s。"
+            "请先修好这些缓存接口再切（别忽略这条 ✗）。" % ("; ".join(fails)))
     return done
 
 
@@ -334,20 +379,31 @@ def activate(name: str, allow_while_running: bool = False) -> dict:
 
 
 def _running_tasks() -> str:
-    """在跑的任务描述（"回测 3 个" / "" ✓）—— 探不到就当没有 ✓（不阻塞切换 ✓）。"""
-    parts = []
+    """在跑的任务描述（"运行中 1 个、排队 2 个" / "" ✓）。
+
+    ★★ T3（审计 ⑤ / v2.8.7，用户 2026-10-16 已拍 ✓）：旧实现**恒返回空** ✗ ——解析：
+      · `from ..engine import task_registry` ✗ —— **这个模块不存在** ✓ ⇒ ImportError 被吞 ✓；
+      · `single_test.running_count` ✗ —— 那是 `TaskManager` 的**实例方法** ✓（模块级没有 ✓）
+        ⇒ `getattr(..., lambda: 0)()` 恒 0 ✓。
+      ⇒ 两处都静默 ⇒ `activate()` 里"有任务在跑就拒切"的守卫**永不触发** ✗✓
+        （正是审计说的"保护失效" ✓：切换时任务照跑 ⇒ 读到新数据 ✗）。
+
+    现在直接问**权威来源** `TaskManager` ✓：`concurrency_info()` 的 `running/queued`
+    **已包含外部任务**（单因子测试走 `register_external_queued` / `try_acquire_slot` ✓）
+    ⇒ 一次调用同时覆盖"回测 + 单因子" ✓（见 `task_manager.concurrency_info` 的注释 ✓）。
+
+    ⚠ 探不到**不等于没有** ✗：返回带标记的文案 ⇒ `activate()` 会挡住并让用户确认 ✓
+      （旧实现"探不到就当没有"正是静默污染的来源 ✗）。
+    """
     try:
-        from ..engine import task_registry as _tr                     # type: ignore
-        n = int(getattr(_tr, "running_count", lambda: 0)() or 0)
-        if n:
-            parts.append("回测 %d 个" % n)
-    except Exception:                                                     # noqa: BLE001
-        pass
-    try:
-        from ..factors import single_test as _st                      # type: ignore
-        n = int(getattr(_st, "running_count", lambda: 0)() or 0)
-        if n:
-            parts.append("单因子 %d 个" % n)
-    except Exception:                                                     # noqa: BLE001
-        pass
-    return "、".join(parts)
+        from .. import config
+        from ..engine.task_manager import get_task_manager
+        info = get_task_manager(config.WORK_DIR).concurrency_info()
+        parts = []
+        if info.get("running"):
+            parts.append("运行中 %d 个" % int(info["running"]))
+        if info.get("queued"):
+            parts.append("排队 %d 个" % int(info["queued"]))
+        return "、".join(parts)
+    except Exception as e:                                                # noqa: BLE001
+        return "任务占用未知（%s: %s）" % (type(e).__name__, e)
