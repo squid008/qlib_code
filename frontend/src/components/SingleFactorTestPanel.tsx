@@ -1701,11 +1701,11 @@ export default function SingleFactorTestPanel({
           <table className="w-full text-[11px] border-collapse">
             <thead>
               <tr className="text-slate-500 border-b">
-                <th className="text-left py-1 pr-2">因子</th>
-                <th className="text-right px-1">周期</th>
+                <th className="text-center py-1 pr-2 whitespace-nowrap">因子</th>
+                <th className="text-center px-1 whitespace-nowrap">周期</th>
                 {SHOW_TIMING_COL && (
                   <th
-                    className="text-right px-1"
+                    className="text-center px-1 whitespace-nowrap"
                     title="阶段计时（秒）：显示「本因子统计+事件研究」耗时，悬停看三段明细。特征加载为全池共享（同一次测试各因子相同）；不含 HTTP 往返与任务排队"
                   >
                     耗时
@@ -1719,47 +1719,55 @@ export default function SingleFactorTestPanel({
                     ⇒ 做法：**单行的加 `whitespace-nowrap`**（旧版 `覆盖率` 会被折成"覆盖/率" ✗）；
                       **双行的用 `<br/>` 强制断**（`nowrap` 只禁自动折行、**不会**影响显式 `<br/>` ✓，
                       所以两种写法互不干扰 ✓）。 */}
+                {/* ★★ v2.8.8c（用户 2026-10-16 ✓）：**表头一律水平居中** ✗→✓ ——
+                    用户原话：「标题要在每列格子里**水平居中**，未触发收益的**收益**要在"未触发"三个字
+                    **居中**，不能跟"发"对齐」✓。
+                    ⇒ 旧版是 `text-right` ✗ ⇒ 两行都贴右 ⇒ "收益"的右边缘顶在"未触发"的**末字**下面 ✗✓
+                      （用户描述得完全准确 ✓）。改成 `text-center` 后 ✓：**每一行各自在本格里居中** ✓
+                      ⇒ 第二行"收益"自然落在第一行"未触发"的**正下方** ✓。
+                    ⚠ 只改**表头** ✓ —— 数据格保持各自的对齐（数字靠右 ✓、因子名/按钮靠左 ✓），
+                      否则数字列会变得难扫读 ✗。 */}
                 <th
-                  className="text-right px-1 whitespace-nowrap"
+                  className="text-center px-1 whitespace-nowrap"
                   title="覆盖率 = 因子非空行 ÷ CLOSE 有效行（v1.21.6 起）。即「在有行情的交易日里，该因子有多少比例有值」：分母与同桌测试的其它因子无关，可跨数据集直接对比（旧口径的分母是「面板字段并集行数」，会因同桌多测了带 fin_* 的因子而凭空变低）"
                 >
                   覆盖率
                 </th>
-                <th className="text-right px-1 whitespace-nowrap">信号</th>
-                <th className="text-right px-1 whitespace-nowrap">触发数</th>
-                <th className="text-right px-1 whitespace-nowrap">
+                <th className="text-center px-1 whitespace-nowrap">信号</th>
+                <th className="text-center px-1 whitespace-nowrap">触发数</th>
+                <th className="text-center px-1 whitespace-nowrap">
                   触发<br />收益
                 </th>
                 {/* ★ v2.1.31：**首次 / 续期内再触发** 分组（用户 2026-10-12："加上" ✓）——
                     两组收益常差很多（实测 `黄金坑启动`：首次 +4.956% vs 续期 +0.707% ✓），
                     而组合里同一只票只持一轮（≈ 首次口径 ✓）⇒ 不分列会被"样本均值"误导 ✓ */}
                 <th
-                  className="text-right px-1 whitespace-nowrap"
+                  className="text-center px-1 whitespace-nowrap"
                   title="首次/新开仓触发：同一标的**上一次触发已不在持有期内**（间隔 > 持有期 N 个交易日）⇒ 组合里相当于持有一轮 ✓"
                 >
                   首次<br />收益
                 </th>
                 <th
-                  className="text-right px-1 whitespace-nowrap"
+                  className="text-center px-1 whitespace-nowrap"
                   title="续期内再触发：同一标的**上一次触发还在持有期内**（间隔 ≤ N）⇒ 引擎语义是把持有天数【重置为 N 天】（不是加 N）✓。⚠ 这类样本在统计里**每次触发各算一个**，而组合里只持一轮 ⇒ 它与组合净值的差异主要来自这里 ✓"
                 >
                   续期<br />收益
                 </th>
-                <th className="text-right px-1 whitespace-nowrap">未触发数</th>
-                <th className="text-right px-1 whitespace-nowrap">
+                <th className="text-center px-1 whitespace-nowrap">未触发数</th>
+                <th className="text-center px-1 whitespace-nowrap">
                   未触发<br />收益
                 </th>
-                <th className="text-right px-1 whitespace-nowrap">差值</th>
-                <th className="text-right px-1 whitespace-nowrap">p值</th>
-                <th className="text-right px-1 whitespace-nowrap">
+                <th className="text-center px-1 whitespace-nowrap">差值</th>
+                <th className="text-center px-1 whitespace-nowrap">p值</th>
+                <th className="text-center px-1 whitespace-nowrap">
                   分位<br />收益
                 </th>
-                <th className="text-right px-1 whitespace-nowrap">IC</th>
-                <th className="text-right px-1 whitespace-nowrap">RankIC</th>
-                <th className="text-right px-1 whitespace-nowrap">ICIR</th>
-                <th className="text-right pl-2 whitespace-nowrap">结论</th>
+                <th className="text-center px-1 whitespace-nowrap">IC</th>
+                <th className="text-center px-1 whitespace-nowrap">RankIC</th>
+                <th className="text-center px-1 whitespace-nowrap">ICIR</th>
+                <th className="text-center pl-2 whitespace-nowrap">结论</th>
                 <th
-                  className="text-right px-1 whitespace-nowrap"
+                  className="text-center px-1 whitespace-nowrap"
                   title="事件研究：持有 = 该行「周期」时的收益中位数（仅 0/1 信号有值；悬停可看均值/绝对收益胜率/样本数）"
                 >
                   中位数
@@ -1775,7 +1783,7 @@ export default function SingleFactorTestPanel({
                     ⚠ 改宽度要**表头 + 两个 td 一起改** ✗（只改一处会被自动布局再分配掉 ✓）。
                     ★ v2.8.8c（用户 2026-10-16 ✓）：再加 `pl-3` ⇒ 与「中位数」那列**稍微空开点** ✓
                     （同列的 td 也一起加 ✓，否则表头与单元格左边缘不一致 ✗）。 */
-                  className="text-left pl-3 pr-1 w-[7.5rem] min-w-[7.5rem] whitespace-nowrap"
+                  className="text-center pl-3 pr-1 w-[7.5rem] min-w-[7.5rem] whitespace-nowrap"
                   title="因子研究（两块，按因子类型自动出现一个）：0/1 二值信号 → 事件研究（触发对齐 T=0 的收益分布）；连续因子 → 持仓期曲线（净值曲线 + 十分位曲线 + 成本敏感度表 + 可切换基准）"
                 >
                   因子研究
