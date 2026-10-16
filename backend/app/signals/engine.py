@@ -396,11 +396,27 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                  limit_judge: str = "legacy",
                  alloc_modes: Sequence[str] = ("event_even", "cash_even"),
                  lot: int = LOT_DEFAULT, rebal_band: float = 0.0,
+                 exit_rule=None,
                  cancel_cb=None) -> BtResult:
     """跑回测，返回**两种资金方案**的净值 + 成交/被拒明细 + 统计。
 
     ★ T1（v2.8.6）：`limit_judge` = **涨停判定口径** ✓（`legacy` 默认 / `open_only` 新口径 ✓）——
       详细语义见 `_limit_ctx` 的 docstring ✓；**默认值保证老路径逐位不变** ✓。
+
+    ★★ v2.8.8b（用户 2026-10-16 ✓，"接着做真算出来" ✓）：`exit_rule` = **含入场价的离场规则**
+      （`factors/exit_rules.py::EntryRule` ✓）—— 与 `signals/period_roll.py` 的**同一套**语义 ✓：
+        · 每天收盘后（**当日成交之后** ✓）用「当日价格行 + **当前入场价向量**」求值 ✓
+          （骨架 + 预计算列 ✓，见 `exit_rules` ✓）；
+        · 触发 ⇒ 该票**挂卖出**（`sell_q` ✓）⇒ 与进场同一套**滞后**执行 ✓（`sell_q` 里
+          `i < dec + lag` 那道闸门 ✓ ⇒ 不前视 ✓）；
+        · 与"信号离场"（`sell_q` 里 `sell_signal` ✓）共用同一套「跌停/停牌卖不出 ⇒ 逐日顺延」✓。
+      ⚠ 只有传了它才维护入场价向量 ✓（不勾离场 ⇒ **零额外成本** ✓）；
+      ⚠ 求值失败 ⇒ **关掉离场并写 `diag["exit_note"]`** ✗（绝不静默退化成"和对照一样" ✗ ——
+        2026-10-16 那次 39 vs 36 的事故就是栽在这一点上 ✓）。
+      ⚠⚠ 注意：**下面紧接着的原有说明段（`cancel_cb` 等）仍在本 docstring 内** ✓ ——
+        2026-10-16 加这段时我一度在这里提前写了**三引号**（把字符串闭合掉）✗ ⇒ 后半段变成裸代码
+        ⇒ `py_compile` 当场报 `invalid character` ✓（再加一次同样的错也被它抓住 ✓）。
+        ⇒ **别在这里补三引号** ✗：本 docstring 到原有那段末尾才结束 ✓。
 
     `cancel_cb`（v1.20.4）：可选取消检查回调 —— 主循环里**每 20 个交易日**调一次 ✓，
     约定「应取消时直接抛异常」（与 `panel_features_parallel` 同一约定 ✓）。
@@ -468,6 +484,20 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         dsz = np.zeros(len(codes), dtype=np.int64)
 
         basis: Dict[int, float] = {}                  # 列号 → 持仓成本（用于胜率统计）
+        # ★★ v2.8.8b（用户 2026-10-16 ✓）：**含入场价离场规则**的逐日状态（每个资金方案各一份 ✓）——
+        #   与 `period_roll` 完全同一套（那边 v2.6.0 落地 ✓）：按**列号**索引的数组 ✓
+        #     · `_avg_px[c]`   = 移动平均成本（含买入费 ✓ = 券商"成本价"；**卖出不改变** ✓）；
+        #     · `_first_px[c]` = **首次建仓那一笔**的每股成本 ✓（清仓后再买重新起算 ✓）；
+        #     · 未持有 ⇒ NaN ⇒ 规则里与它比较恒为假 ✓（不会凭空触发 ✓）。
+        #   ⚠ 只有传了 `exit_rule` 才维护 ✓（不勾离场 ⇒ 连数组都不动 ⇒ 零成本 ✓）；
+        #     求值失败 ⇒ `_rule_on=False` + 写 `diag["exit_note"]` ✗（**不许静默**退化 ✓）。
+        _avg_px = np.full(len(codes), np.nan, dtype=np.float64)
+        _first_px = np.full(len(codes), np.nan, dtype=np.float64)
+        _rule_on = exit_rule is not None
+        _rule_provided = exit_rule is not None        # 供 diag 回显（中途关掉也如实报 ✓）
+        _exit_note = ""
+        _exit_signals = 0
+        _exit_sells = 0
         # ★★ v2.1.51：**连续持有口径**（用户 2026-10-12："统一成连续持有" ✓）——
         #   每只票的**现金净额累计**（买 −(含费)、卖 +(扣费)）✓，到"总持仓归零"时结算一笔 ✓；
         #   持有天数直接用现成的 `dsz` 计数器 ✓（它按日累加持有天数 ✓，**不再**在信号刷新时清零 ✗）。
@@ -495,9 +525,15 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 cash -= amt + fee
                 if sh.get(c, 0) <= 0:
                     entry_c[c] = i                                 # ★ v2.1.51：从无到有 ⇒ 记连续持有起点 ✓
+                    # ★ v2.8.8b：**首次入场价** ✓（只有"从无到有"那一笔记 ✓，加仓**不刷新** ✓ ——
+                    #   与 `period_roll` 的 `first_px` 语义逐条一致 ✓）
+                    if _rule_on:
+                        _first_px[c] = ((amt + fee) / qty) if qty else np.nan
                 sh[c] = sh.get(c, 0) + qty
                 basis[c] = basis.get(c, 0.0) + amt + fee          # 含买入费的成本
                 pnl_acc[c] = pnl_acc.get(c, 0.0) - (amt + fee)     # ★ v2.1.51：现金流累计 ✓
+                if _rule_on:                                       # ★ v2.8.8b：移动平均成本（含费 = 券商成本价 ✓）
+                    _avg_px[c] = (basis[c] / sh[c]) if sh[c] > 0 else np.nan
             else:
                 cash += amt - fee
                 held = sh.get(c, 0)
@@ -506,6 +542,10 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 pnl_acc[c] = pnl_acc.get(c, 0.0) + (amt - fee)     # ★ v2.1.51：现金流累计 ✓
                 sh[c] = held - qty
                 basis[c] = max(0.0, b - avg * qty)
+                if _rule_on:
+                    # ★ v2.8.8b：**卖出不改变"每股成本"** ✓ —— 按比例结转 ⇒ `(B−B·p/Q)/(Q−p) ≡ B/Q` ✓
+                    #   （券商口径也是这个 ✓；与 `period_roll` 同一处逻辑 ✓）
+                    _avg_px[c] = (basis[c] / sh[c]) if sh[c] > 0 else np.nan
                 if sh[c] <= 0:
                     # ★★ v2.1.51：**总持仓归零 ⇒ 才结算一笔** ✗→✓（用户 2026-10-12："统一成连续持有" ✓）
                     #   原来：每次卖出都记一笔 ✗；再叠加"信号刷新就把 `dsz` 清零"✗ ⇒ 量出来的是
@@ -522,6 +562,9 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     sh.pop(c, None)
                     dsz[c] = 0                 # ★ 2b：数组版 ⇒ 显式清 0 ✓（等价于原 `pop` ✓）
                     basis.pop(c, None)
+                    if _rule_on:               # ★ v2.8.8b：清仓 ⇒ 入场价失效 ✓（下次买回重新起算 ✓）
+                        _avg_px[c] = np.nan
+                        _first_px[c] = np.nan
                     pnl_acc.pop(c, None)
                     entry_c.pop(c, None)
             # ⚠⚠ v1.20.7 性能（2026-09-18 cProfile 实测）：**逐笔明细构造占总耗时约 26%** ✗
@@ -617,6 +660,8 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 #   原来"每卖一次就记一笔" ✗ ⇒ 加上"刷新即清零" ⇒ 量出来是**每轮买卖往返**
                 #   （恒 = h = 60 ✗）。连续持有的结算已挪进 `_log_trade` 的"**持仓归零**"分支 ✓。
                 _log_trade(i, c, -1, sh[c], px, reason)
+                if reason == "exit_signal":        # ★ v2.8.8b：含入场价离场实际成交的笔数 ✓
+                    _exit_sells += 1
                 sell_q.pop(c, None)
             # ---- 2) 信号日：刷新持有天数（已持有 ⇒ 归零，卖单撤回）----
             for c in bk["buys"].get(i, []):
@@ -791,6 +836,23 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             for c in sh:
                 if c not in sell_q and dsz[c] >= _expiry_thr:
                     sell_q[c] = (i, "sell_expiry")
+            # ---- 4b) ★★ v2.8.8b：**含入场价离场规则**求值（当日成交**之后** ✓ ⇒ 用的是"今天收盘时
+            #      的持仓 + 入场价" ✓；`sell_q` 那道 `i < dec + lag` 闸门 ⇒ **滞后 lag 天执行** ✓
+            #      ⇒ 与进场同一套滞后、不前视 ✓）----
+            #   ⚠ 与 `period_roll` 的 4 条语义**逐条一致** ✓：调仓/信号刷新可撤单（上面 step 2 ✓）、
+            #     跌停/停牌卖不出 ⇒ 逐日顺延（step 1 ✓）、持币期间触发 ⇒ 不产生卖单（只遍历 `sh` ✓）。
+            if _rule_on:
+                try:
+                    _row_ex = exit_rule.eval_row(i, _avg_px, _first_px)
+                    for c in sh:
+                        if _row_ex[c] and c not in sell_q:
+                            sell_q[c] = (i, "exit_signal")
+                            _exit_signals += 1
+                except Exception as _e:                                        # noqa: BLE001
+                    # ★ 求值失败 ⇒ **关掉离场** + 留 note ✓（回测绝不崩 ✓；但**绝不静默** ✗ ——
+                    #   2026-10-16 那次"39 vs 36"就是静默退化成"和对照一样"✗ ⇒ 现在一定会说出来 ✓）
+                    _exit_note = _exit_note or ("入场价离场规则求值失败：%r" % (_e,))
+                    _rule_on = False
             # ---- 5) 逐日盯市 ----
             # ★★ v1.20.37 性能（2026-09-21 cProfile 实测，工具 `ai_test/prof_nav_bt.py` ✓）：
             #   这一行是**单点最大热点** —— tottime 5.457s + cumtime 7.809s / 36.115s = **21.6%** ✗
@@ -836,6 +898,16 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         net = navs[mode].pct_change().fillna(0.0).to_numpy()
         perf = _perf(net)
         out.stats[mode] = {
+            # ★★ v2.8.8b（用户 2026-10-16 ✓）：**含入场价离场通道**的回显 ✓ ——
+            #   键名与 `period_roll` 的**逐字对齐** ✓（`exit_enabled`/`exit_rule`/`exit_signals`/
+            #   `exit_sells`/`exit_note` ✓ ⇒ 前端与探针可用同一套读法 ✓）。
+            #   ⚠ `exit_note` = **未生效原因** ✓（求值失败时非空 ⇒ 必须显示给用户 ✓，
+            #     否则又回到"含离场与对照一模一样却不知道为什么"✗）。
+            "exit_enabled": bool(_rule_provided or bk["exits"]),
+            "exit_rule": bool(_rule_provided),
+            "exit_signals": int(_exit_signals),
+            "exit_sells": int(_exit_sells),
+            "exit_note": _exit_note,
             "alloc": _base,
             "rebal_band": band,
             "min_cash": round(float(min_cash), 2),

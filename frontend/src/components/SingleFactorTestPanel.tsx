@@ -1956,29 +1956,36 @@ export default function SingleFactorTestPanel({
                           {r.p_value === null ? '-' : fmtP(r.p_value)}
                         </td>
                         <td className="text-right px-1">
+                          {/* ★★ v2.8.8b（用户 2026-10-16 看图第四轮 ✓）：**柱子搞密集、也细点** ✗→✓ ——
+                              用户原话：「分位收益底下那个柱子太宽占格子太多了，给它搞密集一点，柱子也细点，
+                              这样按钮就不会到外面去了，就都能显示得下了」✓。
+                              实测旧口径：10 根柱 × 6px + 9 个间隙 × 3px = **87px** ✗（把「因子研究」列挤到
+                              表格外面 ✓，按钮显示不全 ✓）。改为 **3px + 1px** ⇒ 10×3+9×1 = **39px** ✓
+                              （省 ~48px ✓）；0/1 信号的双柱同理 6px→4px、gap 3px→1px ✓。
+                              ⚠ 高度计算（`h-6` 容器 + `≈20px` 上限）与悬停提示都没动 ✓（只改宽度与间隙 ✓）。 */}
                           {r.is_binary && hasDaily && dMax > 0 ? (
                             // 0/1 信号：信号组 vs 非信号组的逐日截面收益均值双柱（悬停直接显示两组数值与配对日差）
-                            <div className="inline-flex items-end gap-[3px] h-6 align-bottom">
+                            <div className="inline-flex items-end gap-[1px] h-6 align-bottom">
                               <div
-                                className={`w-[6px] ${dTrig >= 0 ? 'bg-emerald-500' : 'bg-red-400'}`}
+                                className={`w-[4px] ${dTrig >= 0 ? 'bg-emerald-500' : 'bg-red-400'}`}
                                 style={{ height: `${Math.max(3, Math.round((Math.abs(dTrig) / dMax) * 20))}px` }}
                                 title={dailyTip}
                               />
                               <div
-                                className={`w-[6px] ${dNot >= 0 ? 'bg-emerald-500' : 'bg-red-400'}`}
+                                className={`w-[4px] ${dNot >= 0 ? 'bg-emerald-500' : 'bg-red-400'}`}
                                 style={{ height: `${Math.max(3, Math.round((Math.abs(dNot) / dMax) * 20))}px` }}
                                 title={dailyTip}
                               />
                             </div>
                           ) : qr.length > 0 && maxAbs > 0 ? (
-                            <div className="inline-flex items-end gap-[3px] h-6 align-bottom" title={qrTip}>
+                            <div className="inline-flex items-end gap-[1px] h-6 align-bottom" title={qrTip}>
                               {qr.map((g) => {
                                 const h = Math.max(3, Math.round((Math.abs(g.mean_ret) / maxAbs) * 20))
                                 const c = g.mean_ret >= 0 ? 'bg-emerald-500' : 'bg-red-400'
                                 return (
                                   <div
                                     key={g.quantile}
-                                    className={`w-[6px] ${c}`}
+                                    className={`w-[3px] ${c}`}
                                     style={{ height: `${h}px` }}
                                     title={qrTip}
                                   />
@@ -2054,15 +2061,19 @@ export default function SingleFactorTestPanel({
                         </td>
                         {/* 因子研究：事件研究（0/1）与持仓曲线（连续）合成一列 —— 两者互斥，
                             按因子类型各出现一个；两个都没有时给一个说明性的短横
-                            ★ v2.8.8b：同列 td 也写死宽度（与表头一致 ✓）+ `align-top`（与变体行同一基准 ✓） */}
+                            ★ v2.8.8b：同列 td 写死宽度（与表头一致 ✓）+ `align-top`（与变体行同一基准 ✓） */}
                         <td className="text-center px-1 w-[7.5rem] min-w-[7.5rem] align-top">
-                          {/* ★★ v2.8.8（用户 2026-10-16 ✓）：`flex-wrap` + 离场曲线**独占第二行** ✗→✓ ——
-                              原因（用户原话）："排版有点丑，按钮都没有对齐，把第一个对照的离场曲线放第二行，
-                              然后后面俩的离场曲线就能跟上面的按钮对齐了" ✓。
-                              对照行原本是 [持仓曲线][离场曲线] 挤在**同一行** ✗ ⇒ 离场曲线偏右 ✗；
-                              而下面每个"含离场"变体行只有**一个**居中的离场曲线按钮 ⇒ 两者**水平错位** ✓。
-                              改成"离场曲线自己占一行且居中"后 ✓ ⇒ 上下所有离场曲线按钮的**横坐标一致** ✓。 */}
-                          <div className="flex flex-wrap items-center justify-center gap-1">
+                          {/* ★★ v2.8.8b（用户 2026-10-16 看图第四轮 ✓）：**固定两行网格** ✗→✓ ——
+                              用户原话：「旁边的按钮没勾离场因子的时候那个持仓曲线、事件研究的位置要跟前面
+                              水平对齐」✓。
+                              根因：这一格原来靠 `flex-wrap` **自动换行** ✗ ⇒ 「有离场」的行内容两行、
+                              「没离场」的行内容一行 ⇒ 两行网格高度不同 ⇒ 各行按钮的纵坐标**错开** ✓。
+                              ⇒ 现在写死**两行**：第一行「持仓曲线 / 事件研究」（`h-[22px]` ✓），
+                              第二行「离场曲线」（`h-[22px]` + `mt-1` ✓；没勾离场时**留空但照样占位** ✓）。
+                              ⇒ 全表所有行的这两行纵坐标**完全一致** ✓；与下面变体行的
+                              「`h-[26px]` 占位 + 按钮」也同一套网格（22 + 4 = 26 ✓）。
+                              ⚠ 改按钮内边距/字号时要同步改这几个高度 ✗（否则又错开 ✓）。 */}
+                          <div className="h-[22px] flex items-center justify-center gap-1">
                             {r.is_binary && (
                               <button
                                 onClick={() => openEventStudy(r)}
@@ -2081,21 +2092,6 @@ export default function SingleFactorTestPanel({
                                 持仓曲线
                               </button>
                             )}
-                            {/* ★ v2.8.0：勾了离场 ⇒ 这一行也给它一个「离场曲线」入口 ✓
-                                （= 对照 + 全部离场画在一起；与下面那些变体行同源 ✓） */}
-                            {vRows.length > 0 && (
-                              /* ★ v2.8.8：`basis-full` ⇒ **独占第二行并居中** ✓ ——
-                                 于是它的横坐标与下面每个变体行的「离场曲线」**一致** ✓（用户要的"对齐" ✓） */
-                              <div className="basis-full flex justify-center">
-                                <button
-                                  onClick={() => setExitModal({ row: r, ei: null, name: '' })}
-                                  className="px-1.5 py-0.5 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30 text-[11px] whitespace-nowrap"
-                                  title={`离场曲线（对照 + ${vRows.length} 条离场：${vRows.map((v) => v.name).join('、')}）`}
-                                >
-                                  离场曲线
-                                </button>
-                              </div>
-                            )}
                             {!r.is_binary && !(r.topk_curves || r.quantile_curves) && (
                               <span
                                 className="text-slate-300"
@@ -2104,6 +2100,19 @@ export default function SingleFactorTestPanel({
                                 -
                               </span>
                             )}
+                          </div>
+                          {/* ★ v2.8.0：勾了离场 ⇒ 这一行也给它一个「离场曲线」入口 ✓
+                              （= 对照 + 全部离场画在一起；与下面那些变体行同源 ✓） */}
+                          <div className="h-[22px] mt-1 flex items-center justify-center">
+                            {vRows.length > 0 ? (
+                              <button
+                                onClick={() => setExitModal({ row: r, ei: null, name: '' })}
+                                className="px-1.5 py-0.5 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30 text-[11px] whitespace-nowrap"
+                                title={`离场曲线（对照 + ${vRows.length} 条离场：${vRows.map((v) => v.name).join('、')}）`}
+                              >
+                                离场曲线
+                              </button>
+                            ) : null}
                           </div>
                         </td>
                       </>

@@ -325,7 +325,7 @@ def _period_roll_pick(hk_state: dict, row: dict, item: dict) -> tuple:
 
 def _signal_exit_nav(req, row: dict, evs: dict, item: dict, panel: dict, *,
                      with_exit: bool, exit_mask=None, exit_cache: Optional[dict] = None,
-                     exit_index: int = 0, exit_name: str = "") -> dict:
+                     exit_index: int = 0, exit_name: str = "", exit_rule=None) -> dict:
     """**0/1 信号因子**的含离场回测（**事件驱动口径** ✓，v2.8.0）—— 返回与 `period_roll` 同构的 dict ✓。
 
     **为什么单开这一条**（用户 2026-10-15 实测发现 ✓）：0/1 信号因子在单因子面板里**没有"每期名单"**
@@ -371,6 +371,11 @@ def _signal_exit_nav(req, row: dict, evs: dict, item: dict, panel: dict, *,
                           capital=float(req.capital), strict_limit=bool(req.strict_limit),
                           # ★ T1（v2.8.6）：涨停判定口径透传 ✓（`None` ⇒ 老口径 ✓ 逐位不变 ✓）
                           limit_judge=(req.limit_judge or "legacy"),
+                          # ★★ v2.8.8b（用户 2026-10-16 "接着做真算出来" ✓）：**含入场价的离场规则** ✓
+                          #   —— 事件驱动引擎现在也维护"逐日入场价" ✓（`run_backtest(exit_rule=…)` ✓，
+                          #   与 `period_roll` 同一套语义 ✓）⇒ 0/1 信号也能真算"入场价止损" ✓。
+                          #   ⚠ 只有 `with_exit` 才启用 ✓（"对照"那条必须干净 ✓）。
+                          exit_rule=(exit_rule if with_exit else None),
                           alloc_modes=["event_even"])
         if bt.nav is None or "event_even" not in getattr(bt.nav, "columns", []):
             _d = bt.diag or {}
@@ -384,6 +389,15 @@ def _signal_exit_nav(req, row: dict, evs: dict, item: dict, panel: dict, *,
                 "mode": "signal", "hold_days": hold, "with_exit": bool(with_exit),
                 "exit_index": (int(exit_index) if with_exit else None),
                 "exit_name": (str(exit_name) if with_exit else ""),
+                # ★★ v2.8.8b（用户 2026-10-16 ✓）：把离场通道的**诊断**带出来 ✓（与
+                #   `_panel_period_roll_nav` 的形状对齐 ✓ ⇒ 前端 `ExitCurveModal` 同一套读法 ✓）：
+                #   `exit_note` = 未生效原因 ✓ / `exit_signals`·`exit_sells` = 触发与成交笔数 ✓
+                #   ⚠ 键名取自引擎 stats（v2.8.8b 新增 ✓）；老任务没有 ⇒ 全为 None ⇒ 前端不误报 ✓。
+                "diag": {"exit_note": str(st.get("exit_note") or ""),
+                         "exit_enabled": st.get("exit_enabled"),
+                         "exit_rule": st.get("exit_rule"),
+                         "exit_signals": st.get("exit_signals"),
+                         "exit_sells": st.get("exit_sells")},
                 "stats": {k: v for k, v in st.items() if k != "perf"},
                 "perf": st.get("perf")}
     except Exception as e:                                            # noqa: BLE001
@@ -436,23 +450,43 @@ def _attach_signal_roll(req, row: dict, evs: dict, progress_cb=None,
             #   —— 用户原话：「**事件研究的离场曲线肯定也没算对**」✓，实测（`AR13_ID60`，
             #   `is_binary=True` ✓）三个统计键全是 `None` ✓ ⇒ **判断完全正确** ✓。
             #   ⇒ 这里**大声说**：这一档**未计算** ✓（不是"算了但没差异" ✗ —— 那会让人白读一条 Δ0 的表 ✓）。
-            if _it0.get("entry_dependent") and _it0.get("mask") is None:
-                _one = {"mode": "signal",
-                        "label": "信号驱动（含离场「%s」· 未计算）" % (_ename or "?"),
-                        "with_exit": True, "exit_index": _ei, "exit_name": _ename,
-                        "error": ("0/1 信号**暂不支持含入场价的离场公式**（入场价是回测状态量，"
-                                  "事件驱动引擎没有这条通道）⇒ 本档**未计算** ✗。"
-                                  "可改用不含入场价的离场公式（例如「收盘价 < MA(收盘价,20)」这类 ✓），"
-                                  "或把该因子按连续因子跑「每期全仓滚动」那条口径 ✓。")}
-                rows_exit.append({"exit": {"index": _ei, "name": _ename,
-                                           "id": str(getattr(_ex, "id", "") or ""),
-                                           "expression": str(getattr(_ex, "expression", "") or "")},
-                                  "items": [_one], "first": _one})
-                continue
+            # ★★ v2.8.8b（用户 2026-10-16「接着做真算出来」✓）：**含入场价的离场 ⇒ 现在真的算** ✗→✓
+            #   引擎侧已补上"逐日入场价"通道 ✓（`signals/engine.run_backtest(exit_rule=…)` ✓，
+            #   与 `period_roll` 同一套滞后与顺延规则 ✓）⇒ 0/1 信号也能真算「入场价止损」✓。
+            #   装配（骨架 `skel` + 预计算列对齐 ✓）与 `period_roll` 那条**逐行同一套** ✓；
+            #   ⚠ 装不上 ⇒ **明确报"未计算"** ✗（绝不再给一条"看起来和对照一样"的假曲线 ✓）。
+            _rule = None
+            if _it0.get("mask") is None:
+                _err_msg = ""
+                if _it0.get("skel") is not None:
+                    try:
+                        _rule = EntryRule(_it0["skel"], _it0.get("pre_exprs") or [],
+                                          float(req.exit_threshold),
+                                          _exit_pre_mats(_it0.get("pre_series") or [], panel,
+                                                         exit_cache, ei=_ei))
+                    except Exception as _e:                          # noqa: BLE001
+                        _rule = None
+                        _err_msg = "%s: %s" % (type(_e).__name__, _e)
+                else:
+                    _err_msg = str(_it0.get("error") or "该离场项缺骨架（含入场价的公式没装配 ✓）")
+                if _rule is None:
+                    _one = {"mode": "signal",
+                            "label": "信号驱动（含离场「%s」· 未计算）" % (_ename or "?"),
+                            "with_exit": True, "exit_index": _ei, "exit_name": _ename,
+                            "error": ("含入场价的离场规则**没能装配** ⇒ 本档**未计算** ✗（%s）。"
+                                      "请把这条公式反馈给开发 ✓" % (_err_msg or "未知原因"))}
+                    rows_exit.append({"exit": {"index": _ei, "name": _ename,
+                                               "id": str(getattr(_ex, "id", "") or ""),
+                                               "expression": str(getattr(_ex, "expression", "") or "")},
+                                      "items": [_one], "first": _one})
+                    continue
             _np(0.45 + 0.5 * _ei / max(1, n),
                 "信号驱动（事件口径 · 含离场「%s」）：回测中…" % (_ename or "?"))
             _one = _signal_exit_nav(req, row, evs, _it0, panel, with_exit=True,
                                     exit_mask=_it0.get("mask"), exit_cache=exit_cache,
+                                    # ★ v2.8.8b：含入场价的离场 ⇒ 把装配好的规则交下去 ✓
+                                    #   （非入场价型 ⇒ `_rule` 为 None ✓，走既有的 `exit_mask` 通道 ✓）
+                                    exit_rule=_rule,
                                     exit_index=_ei, exit_name=_ename)
             rows_exit.append({"exit": {"index": _ei, "name": _ename,
                                        "id": str(getattr(_ex, "id", "") or ""),
