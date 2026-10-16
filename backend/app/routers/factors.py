@@ -550,6 +550,16 @@ def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None,
                     _exits_err[_ei] = str(_e)
             elif _it0.get("entry_dependent") and _it0.get("error"):
                 _exits_err[_ei] = str(_it0["error"])
+            else:
+                # ★★ v2.8.8（用户 2026-10-16 报障 ✓）：**堵住静默洞** ✗→✓ ——
+                #   含入场价的离场公式若"既没骨架、也没 error"，旧代码**一声不吭** ✗ ⇒ `_rule=None`
+                #   ⇒ 含离场那条**等同对照**（曲线逐位相同、五个离场计数全 0 ✗）⇒ 用户看到的就是
+                #   "止损设得很紧却一次没触发、曲线也不对" ✓✓（实测任务 `cefb7bfc3f41` 正是这个症状 ✓：
+                #   `exit_enabled=True`/`exit_rule=True` 但 `exit_signals=0`、`trades` 与对照逐位相同 ✗）。
+                #   ⇒ 现在**大声说**：本档按不离场跑 + 指出这是装配问题 ✓（绝不假装算了 ✓）。
+                _exits_err[_ei] = (
+                    "含入场价的离场规则**没能装配**（缺骨架 skel / 预计算列）⇒ 本档已按**不离场**跑 ✗ "
+                    "（所以曲线会与对照逐位相同 ✓）。请把这条公式反馈给开发 ✓")
             out_exit: list = []
             for _k, (_it, _p) in enumerate(picks, start=1):
                 if _p[0] or not panel:
@@ -824,6 +834,11 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
                 "with_exit": bool(with_exit),
                 "exit_index": (int(exit_index) if with_exit else None),
                 "exit_name": (str(exit_name) if with_exit else ""),
+                # ★★ v2.8.8：把引擎的 `diag` **带出来** ✗→✓ —— 离场没生效时这里直接看到原因
+                #   （`exit_note` = 未生效原因 ✓ ｜ `exit_enabled` / `exit_rule` = 挂没挂上 ✓）；
+                #   旧实现把 diag 丢掉 ✗ ⇒ 用户只能看到"曲线和对照一样"却无从知道为什么 ✗
+                #   （2026-10-16 报障 ✓）。
+                "diag": dict(getattr(bt, "diag", None) or {}),
                 "stats": {k: v for k, v in stats.items() if k != "perf"},
                 "perf": stats.get("perf")}
     except Exception as e:                                   # noqa: BLE001

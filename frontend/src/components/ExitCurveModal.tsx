@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'   // ★ v2.8.8：图例显隐要用 useState ✓
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import type { PeriodRollNav, SingleFactorTestResult } from '../api'
 
@@ -54,6 +54,40 @@ export default function ExitCurveModal({ row, ei, name, onClose }: ExitCurveModa
       const nm = g?.exit?.name || g?.exit?.id || `离场${gi + 1}`
       push(`ex${gi}`, `含离场「${nm}」`, EXIT_COLORS[gi % EXIT_COLORS.length], one)
     })
+    return out
+  }, [row, ei])
+
+  // ★ v2.8.8（用户 2026-10-16 ✓）：**点图例显示/隐藏曲线** ✓（与持仓曲线弹窗同一习惯 ✓）
+  const [hidden, setHidden] = useState<Record<string, boolean>>({})
+
+  // ★★ v2.8.8（用户 2026-10-16 报障 ✓）：把"**为什么这条离场曲线和对照一模一样**"直接写在弹窗里 ✗→✓
+  //   背景：含入场价的离场公式走"骨架 + 逐日代入入场价"这条新路径 ✓；一旦**装配**或**列轴对齐**
+  //   出问题，引擎会**关掉离场**并在 `diag.exit_note` 记原因 ✗ ⇒ 含离场那条会**退化成对照** ✓
+  //   （用户看到的就是"两条曲线完全重合、止损一次没触发"✗，还以为是自己的参数问题 ✓）。
+  //   ⚠ 旧版响应里**根本不含 `diag`** ✗ ⇒ 前端无从判断；后端已改为带出来 ✓，这里必须显示 ✓。
+  const notes = useMemo(() => {
+    const out: string[] = []
+    const cmp = row.period_roll_items?.[0] ?? row.period_roll ?? null
+    if (cmp && !cmp.error) {
+      const n = String((cmp as unknown as { diag?: { exit_note?: string } }).diag?.exit_note || '')
+      if (n) out.push(`对照那条的离场通道没启用：${n}`)
+    }
+    for (const g of row.exit_rolls ?? []) {
+      const gi = g?.exit?.index ?? 0
+      if (ei != null && gi !== ei) continue
+      const nm = g?.exit?.name || g?.exit?.id || `离场${gi + 1}`
+      const one = ((g?.items ?? [])[0] ?? g?.first) || null
+      if (!one) continue
+      if (one.error) { out.push(`含离场「${nm}」没跑起来：${one.error}`); continue }
+      const st = (one.stats ?? {}) as Record<string, unknown>
+      const dg = ((one as unknown as { diag?: Record<string, unknown> }).diag ?? {})
+      const note = String(dg.exit_note || '')
+      if (note) {
+        out.push(`含离场「${nm}」的离场通道**没生效**（本档等同"对照"，所以曲线重合）：${note}`)
+      } else if (st.exit_rule === true && Number(st.exit_signals || 0) === 0) {
+        out.push(`含离场「${nm}」：规则已装配，但**一次都没触发** ⇒ 请把这条公式反馈给开发核对口径`)
+      }
+    }
     return out
   }, [row, ei])
 
@@ -154,6 +188,15 @@ export default function ExitCurveModal({ row, ei, name, onClose }: ExitCurveModa
             </table>
           </div>
 
+          {/* ★ v2.8.8：离场没生效/没触发的**原因**直接显示 ✓（不再让用户对着两条重合的曲线猜 ✗） */}
+          {notes.length > 0 && (
+            <div className="mb-2 rounded border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 px-2 py-1 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300">
+              {notes.map((t, i) => (
+                <div key={i}>⚠ {t}</div>
+              ))}
+            </div>
+          )}
+
           {data.length > 1 ? (
             <div className="bg-white">
               <ResponsiveContainer width="100%" height={300}>
@@ -162,10 +205,22 @@ export default function ExitCurveModal({ row, ei, name, onClose }: ExitCurveModa
                   <XAxis dataKey="d" tick={{ fontSize: 10 }} minTickGap={48} />
                   <YAxis tick={{ fontSize: 10 }} width={56} domain={['auto', 'auto']} />
                   <Tooltip formatter={(v: number | string) => (typeof v === 'number' ? v.toFixed(4) : v)} />
-                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  {/* ★★ v2.8.8（用户 2026-10-16 ✓）：**点图例可以显示/隐藏曲线** ✗→✓ ——
+                      用户原话："点图例要能显示/隐藏" ✓（与持仓曲线弹窗同一习惯 ✓）。
+                      ⚠ 只藏**折线本身** ✗，不动抽样/统计/表格 ✓ ⇒ 藏起来只看对照时，
+                        指标数字仍是各自算好的 ✓（不会被"隐藏"影响 ✓）。 */}
+                  <Legend
+                    wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
+                    onClick={(e: unknown) => {
+                      const k = (e as { dataKey?: string; payload?: { dataKey?: string } })?.dataKey
+                        ?? (e as { payload?: { dataKey?: string } })?.payload?.dataKey
+                      if (typeof k === 'string') setHidden((h) => ({ ...h, [k]: !h[k] }))
+                    }}
+                  />
                   {series.map((s, i) => (
                     <Line key={s.key} type="monotone" dataKey={s.key} name={s.label}
                           stroke={s.color} dot={false}
+                          hide={!!hidden[s.key]}
                           strokeWidth={i === 0 ? 1.6 : 2}
                           strokeDasharray={i === 0 ? '6 3' : undefined} />
                   ))}

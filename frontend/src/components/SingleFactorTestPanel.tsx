@@ -1560,6 +1560,13 @@ export default function SingleFactorTestPanel({
                   const on = e.target.checked
                   setExitOn(on)
                   if (!on) setExitKeys(new Set())     // 关掉 ⇒ 清空（免得"看不见却在生效" ✗）
+                  // ★★ v2.8.8（用户 2026-10-16 ✓）：**勾上离场 ⇒ 自动把「每期全仓滚动（逐点对拍）」也勾上** ✗→✓
+                  //   为什么必须联动：离场信号**只作用在"真金白银"那条回测上** ✓（见 api.ts 的说明 ✓）——
+                  //   后端无论如何都会为它跑 `period_roll` ✓（请求里也一直显式传 ✓）。但**勾选框没同步** ✗
+                  //   ⇒ 用户会看到"我没勾它，进度条/结果里却处处是它" ✗（2026-10-16 报障原话 ✓）。
+                  //   ⇒ 勾上离场时**顺手把那个勾也打上** ✓，让界面与事实一致 ✓。
+                  //   ⚠ 反方向**不联动**（关离场不取消它 ✓——用户可能是自己特意开的 ✓）。
+                  if (on) setPeriodRoll(true)
                 }}
               />
               <span className="font-semibold text-slate-600 dark:text-slate-300">
@@ -2035,7 +2042,13 @@ export default function SingleFactorTestPanel({
                         {/* 因子研究：事件研究（0/1）与持仓曲线（连续）合成一列 —— 两者互斥，
                             按因子类型各出现一个；两个都没有时给一个说明性的短横 */}
                         <td className="text-center px-1">
-                          <div className="flex items-center justify-center gap-1">
+                          {/* ★★ v2.8.8（用户 2026-10-16 ✓）：`flex-wrap` + 离场曲线**独占第二行** ✗→✓ ——
+                              原因（用户原话）："排版有点丑，按钮都没有对齐，把第一个对照的离场曲线放第二行，
+                              然后后面俩的离场曲线就能跟上面的按钮对齐了" ✓。
+                              对照行原本是 [持仓曲线][离场曲线] 挤在**同一行** ✗ ⇒ 离场曲线偏右 ✗；
+                              而下面每个"含离场"变体行只有**一个**居中的离场曲线按钮 ⇒ 两者**水平错位** ✓。
+                              改成"离场曲线自己占一行且居中"后 ✓ ⇒ 上下所有离场曲线按钮的**横坐标一致** ✓。 */}
+                          <div className="flex flex-wrap items-center justify-center gap-1">
                             {r.is_binary && (
                               <button
                                 onClick={() => openEventStudy(r)}
@@ -2057,13 +2070,17 @@ export default function SingleFactorTestPanel({
                             {/* ★ v2.8.0：勾了离场 ⇒ 这一行也给它一个「离场曲线」入口 ✓
                                 （= 对照 + 全部离场画在一起；与下面那些变体行同源 ✓） */}
                             {vRows.length > 0 && (
-                              <button
-                                onClick={() => setExitModal({ row: r, ei: null, name: '' })}
-                                className="px-1.5 py-0.5 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30 text-[11px] whitespace-nowrap"
-                                title={`离场曲线（对照 + ${vRows.length} 条离场：${vRows.map((v) => v.name).join('、')}）`}
-                              >
-                                离场曲线
-                              </button>
+                              /* ★ v2.8.8：`basis-full` ⇒ **独占第二行并居中** ✓ ——
+                                 于是它的横坐标与下面每个变体行的「离场曲线」**一致** ✓（用户要的"对齐" ✓） */
+                              <div className="basis-full flex justify-center">
+                                <button
+                                  onClick={() => setExitModal({ row: r, ei: null, name: '' })}
+                                  className="px-1.5 py-0.5 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30 text-[11px] whitespace-nowrap"
+                                  title={`离场曲线（对照 + ${vRows.length} 条离场：${vRows.map((v) => v.name).join('、')}）`}
+                                >
+                                  离场曲线
+                                </button>
+                              </div>
                             )}
                             {!r.is_binary && !(r.topk_curves || r.quantile_curves) && (
                               <span
@@ -2107,7 +2124,11 @@ export default function SingleFactorTestPanel({
                           {v.sells ? ` ｜ ${v.mode === 'signal' ? '卖出（含到期）' : '离场卖出'} ${v.sells}` : ''}
                         </div>
                       </td>
-                      <td className="text-right px-1">{r.horizon != null ? r.horizon : '-'}</td>
+                      {/* ★ v2.8.8（用户 2026-10-16 ✓）：变体行**不再重复写"周期 60"** ✗ ——
+                          它与上面那行是**同一个因子的同一个周期**（进场 + 某条离场 ✓）⇒ 重复写没有信息量 ✓，
+                          而且和上面那行叠起来显得"没对齐"（用户原话："离场的那俩就不用写周期60了，
+                          不然看起来也是没对齐" ✓）⇒ 留空格 ✓（列宽由表头撑着，不会塌 ✓）。 */}
+                      <td className="text-right px-1" />
                       <td colSpan={MIDCOLS} className="text-center text-[10px] text-slate-400">
                         统计列与「{r.name}」相同（离场只作用于实盘口径那条回测 ✓）
                       </td>

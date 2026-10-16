@@ -933,6 +933,14 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         return BtResult(diag={"error": "信号标的不在行情数据里", "missing": prep["missing"][:20]})
     _price, can_buy, can_sell, _PX, _RAW, _judge = _limit_ctx(prep, px_kind, strict_limit, limit_judge)
     n_row = len(cal)
+    # ★★ T7-b（v2.8.8，用户 2026-10-16："7 做" ✓）：**`batch_even` 也改成"真实股数的一手"** ✗→✓
+    #   —— v2.8.4（审计 #8）只统一了 `cash_even` / `event_even`（新买 + 补低配 + 再平衡买卖）与
+    #     `period_roll` **三处** ✓，本方案当时漏了 ✗ ⇒ 它仍在用 `int(金额 / 复权价 / lot) * lot` ✗
+    #     （= "**复权单位**的整手" ✗ ⇒ 真实股数 = q/f 常常不是整手 ✗，与另三处口径分叉 ✗）。
+    #   ⇒ 这里按标的预算**真实手数**（科创板 688/689 ⇒ 200 ✓，其余 100 ✓ —— 与主引擎同一套
+    #     `_lot_of` ✓ 一处定义 ✓），并把下面的取整全部换成 `_fit_real_lots`（含**最低 5 元佣金** ✓）。
+    #   ⚠ 影响面：**后复权**（f≥1）下本方案的历史数字会变 ✓（f=1 的不复权口径**逐位不变** ✓）。
+    _lot_arr = np.fromiter((_lot_of(c, lot) for c in codes), dtype=np.int64, count=len(codes))
 
     bkt = (signals["bucket"].astype(str).fillna("") if "bucket" in signals.columns
            else pd.Series([""] * len(signals), index=signals.index))
@@ -1040,9 +1048,18 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     nhold.pop(c, None)
                     pnl_c.pop(c, None)
                 basis[b].pop(c, None)
+        # ★ T7-b：**明细也按真实口径输出**（真实股数 × 真实价 = 真实金额 ✓）——
+        #   与主引擎/`period_roll` 在 v2.8.4 定下的同一条标准 ✓（账目仍按复权单位算 ✓，金额恒等 ✓）；
+        #   取不到真实价 ⇒ 退回复权口径（不装懂 ✓）；真实股数是**整手倍数** ✓（`tests/test_lot_by_market.py` 守着 ✓）。
+        _pxd = float(_RAW[i, c])
+        if np.isfinite(_pxd) and _pxd > 0:
+            _sh_disp, _px_disp2 = int(round(float(qty) * float(px) / _pxd)), _pxd
+        else:
+            _sh_disp, _px_disp2 = int(qty), px
         trades.append({"date": str(cal[i].date()), "code": codes[c],
-                       "side": "买" if side > 0 else "卖", "shares": int(qty),
-                       "price": round(px, 4), "amount": round(amt, 2), "fee": round(fee, 2),
+                       "side": "买" if side > 0 else "卖", "shares": _sh_disp,
+                       "price": round(_px_disp2, 4), "amount": round(amt, 2),
+                       "fee": round(fee, 2),
                        "reason": reason, "mode": mode, "batch": b})
 
     def _reject(i, b, c, reason, dec=None):
@@ -1091,7 +1108,10 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 n_defer_sell += 1
                 _reject(i, b, c, bad, dec)
                 continue
-            q = int(excess / px / lot) * lot
+            # ★ T7-b：按**真实股数的一手**取整（与主引擎 `rebalance_sell` 同一套 ✓）
+            _lt = int(_lot_arr[c])
+            q, _n = _fit_real_lots(_RAW[i, c], px, _lt, half, float("inf"), budget=excess)
+            q = min(float(q), float(sh[b][c])) if q > 0 else 0.0
             if q <= 0:
                 trim_q.pop(key, None)
                 continue
@@ -1148,7 +1168,10 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     _reject(i, b, c, bad, dec)
                     trim_q[(b, c)] = (dec, float(lst[c]), tot_u)
                     continue
-                q = int(excess / px / lot) * lot
+                # ★ T7-b：同上 —— 按**真实股数的一手**取整 ✓
+                _lt = int(_lot_arr[c])
+                q, _n = _fit_real_lots(_RAW[i, c], px, _lt, half, float("inf"), budget=excess)
+                q = min(float(q), float(sh[b][c])) if q > 0 else 0.0
                 if q > 0:
                     _log_trade(i, b, c, -1, q, px, "sell_trim_units")
                 trim_q.pop((b, c), None)
@@ -1179,7 +1202,12 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 need = sum(amt * (1 + half) for _c, amt, _px in ok)
                 scale = 1.0 if need <= cash[b] * 1.0001 else max(0.0, cash[b] / max(need, 1e-9))
                 for c, amt, px in ok:
-                    q = int(amt * scale / (px * (1 + half)) / lot) * lot
+                    # ★ T7-b：买入按**真实股数的一手** + **真实费用（含最低 5 元佣金）** 取整 ✓
+                    #   （与主引擎 `event_even`/`cash_even` 的买入同一套 ✓；`cash[b]` 是硬约束 ⇒
+                    #    小额批次的票会像另三处一样"买不起一手就不买" ✓，而不是买 0.6 手 ✗）
+                    _lt = int(_lot_arr[c])
+                    q, _n = _fit_real_lots(_RAW[i, c], px, _lt, half, float(cash[b]),
+                                           budget=amt * scale / (1.0 + half))
                     if q <= 0:
                         _reject(i, b, c, "no_cash", dec)
                         continue

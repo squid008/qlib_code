@@ -78,6 +78,35 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     if not codes:
         return BtResult(diag={"error": "信号标的不在行情数据里", "missing": prep["missing"][:20]})
     _price, can_buy, can_sell, PX, RAW, _judge = _limit_ctx(prep, px_kind, strict_limit, limit_judge)
+    # ★★ v2.8.8（用户 2026-10-16 报障 ✓）：**把离场矩阵对齐到引擎自己的列轴** ✗→✓ ——
+    #   调用方（`routers/factors.py` 的 `_exit_matrix` / `_exit_pre_mats`）是按 `panel["CLOSE"]`
+    #   的**全部列**建矩阵 ✓，而本函数内部的列轴是 `codes = sorted(set(信号 ∩ CLOSE 列))` ✗
+    #   ⇒ 两者**列数/顺序都可能不同**（实测 **39 vs 36** ✓）⇒
+    #     · 普通离场矩阵：被下面的形状自检拦下 ⇒ "本次不启用离场"（还算响 ✓）；
+    #     · **含入场价的规则**：没有自检 ✗ ⇒ 逐日 `eval_row` 直接抛
+    #       `ValueError: operands could not be broadcast together with shapes (39,) (36,)` ✗
+    #       ⇒ 引擎按"规则求值失败 ⇒ 关掉离场"处理 ⇒ **含离场曲线与对照逐位相同、五个离场计数全 0** ✗✗
+    #       （用户原话："我止损价设置得很紧不可能不触发，回测大概率有问题" ✓ —— 判断完全正确 ✓）。
+    #   ⇒ 修法：按**列名**把矩阵取成引擎要的那些列 ✓（矩阵列序 = `panel["CLOSE"].columns` ✓，
+    #     这是调用方用 `reindex(columns=…)` 保证的 ✓）；列名对不上 ⇒ 保持原样，交给下面原有自检 ✓。
+    _close_cols = list(panel["CLOSE"].columns)
+    _col_sel = None
+    if len(_close_cols) != len(codes):
+        try:
+            _idx_of = {c: k for k, c in enumerate(_close_cols)}
+            _col_sel = np.asarray([_idx_of[c] for c in codes], dtype=np.int64)
+        except KeyError:                                  # 列名不全对不上 ⇒ 不猜（交给自检 ✓）
+            _col_sel = None
+    if _col_sel is not None:
+        if exit_mat is not None:
+            _em0 = np.asarray(exit_mat)
+            if _em0.ndim == 2 and _em0.shape[1] == len(_close_cols):
+                exit_mat = _em0[:, _col_sel]
+        if exit_rule is not None:
+            _pms = list(getattr(exit_rule, "pre_mats", None) or [])
+            if _pms and all(np.asarray(m).ndim == 2 and np.asarray(m).shape[1] == len(_close_cols)
+                            for m in _pms):
+                exit_rule.bind([np.asarray(m)[:, _col_sel] for m in _pms])
     # ★ v2.1.17：**每个标的的整手股数**（科创板 688/689 ⇒ 200 股 ✓，其余 100 ✓）——
     #   按列号预算一次 ✓（`_lot_of` 是字符串判断，别放进逐票循环里 ✗）。
     lot_arr = np.fromiter((_lot_of(c, lot) for c in codes), dtype=np.int64, count=len(codes))
