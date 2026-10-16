@@ -2120,6 +2120,11 @@ export default function SingleFactorTestPanel({
                             {r.name}+{v.name}
                           </span>
                         </div>
+                        {/* ★ v2.8.8b（用户 2026-10-16 看图第三轮 ✓）：把「统计列与…相同」**并到指标同一行** ✗→✓ ——
+                            用户原话：「统计列与「负市值对数」相同（离场只作用于实盘口径那条回测 ✓）
+                            这个跑到下一行去了，跟年化12.9%那段**放在一行**」✓
+                            ⇒ 整行打通后格子够宽 ✓ ⇒ 两段合成一行 ✓（中间用**全角空格**留白 ✓ ——
+                            用户要求"中间要有空格"✓；注记用更浅的灰 ✓ 以便与主指标区分 ✓）。 */}
                         <div className="text-[10px] text-slate-500 mt-0.5">
                           年化 {typeof v.perf?.annual_return === 'number'
                             ? `${(v.perf.annual_return * 100).toFixed(1)}%` : '-'}
@@ -2134,9 +2139,9 @@ export default function SingleFactorTestPanel({
                             {v.dDd >= 0 ? '+' : ''}{(v.dDd * 100).toFixed(1)}pp
                           </b>
                           {v.sells ? ` ｜ ${v.mode === 'signal' ? '卖出（含到期）' : '离场卖出'} ${v.sells}` : ''}
-                        </div>
-                        <div className="text-[10px] text-slate-400 mt-0.5">
-                          统计列与「{r.name}」相同（离场只作用于实盘口径那条回测 ✓）
+                          <span className="text-slate-400">
+                            {'　｜　'}统计列与「{r.name}」相同（离场只作用于实盘口径那条回测 ✓）
+                          </span>
                         </div>
                       </td>
                       <td className="text-center px-1">
