@@ -133,3 +133,74 @@ def test_fit_lots_handles_bad_price(bad):
     """价格 NaN/非正 ⇒ 直接 0 ✓（不抛 ✗、不买 ✗）。"""
     assert eng._fit_lots(1000.0, bad, 100, 0.002, 1000.0) == 0
     assert isinstance(eng._fit_lots(1000.0, np.nan, 100, 0.002, 1000.0), int)
+
+
+# ---------------------------------------------------------------------------
+# ⑧ 整手取整按**真实股数**（v2.8.4 ✓ —— 用户 2026-10-16 举的就是下面第一个例子 ✓）
+# ---------------------------------------------------------------------------
+
+def test_real_lots_user_example_cannot_afford_one_lot():
+    """★ 用户原例：现金 685、真实价 10、复权价 6 ⇒ **一手真实成本 1000 元 ⇒ 买不起** ✓。
+
+    ⚠ 老代码会买"100 复权单位"= 600 元 = **60 真实股**（0.6 手 ✗）—— 这正是审计 #8 ✓。
+    """
+    q, n = eng._fit_real_lots(10.0, 6.0, 100, 0.002, 685.0)
+    assert (q, n) == (0.0, 0), "买不起一手 ⇒ 不买 ✓（老代码会买 60 真实股 ✗）"
+
+
+def test_real_lots_post_adjusted_buys_whole_real_lot():
+    """★ 反方向（**默认后复权** f≥1 ✓）：现金 1010、真实 10、复权 20 ⇒ **买 100 真实股** ✓。
+
+    ⚠ 老代码要 20×100 = 2000 元 ⇒ 买 **0**（少买 ✗）。
+    """
+    q, n = eng._fit_real_lots(10.0, 20.0, 100, 0.002, 1010.0)
+    assert n == 100
+    assert abs(q * 20.0 - 1000.0) < 1e-9, "折回复权单位后金额必须一致 ✓ %.6f" % (q * 20.0,)
+    assert n * 10.0 + max(n * 10.0 * 0.002, 5.0) <= 1010.0, "含最低佣金也必须买得起 ✓"
+
+
+def test_real_lots_budget_is_respected():
+    """预算（等权目标那种 ✓）：给他 2500 元额度 ⇒ 最多 200 真实股 ⇒ `q_adj` 金额 = 2000 ✓。"""
+    q, n = eng._fit_real_lots(10.0, 20.0, 100, 0.002, 1e9, budget=2500.0)
+    assert n == 200 and abs(q * 20.0 - 2000.0) < 1e-9
+
+
+def test_real_lots_degenerates_to_old_behavior_when_no_adjustment():
+    """★ `真实价 == 复权价`（**不复权**模式 ✓）⇒ **逐位退化成老行为** ✓（那套数字完全不动 ✓）。"""
+    for cash, px, lot in ((10000.0, 10.0, 100), (5000.0, 3.3, 200), (1010.0, 20.0, 100)):
+        q, n = eng._fit_real_lots(px, px, lot, 0.002, cash)
+        expect = eng._fit_lots(cash / (1.0 + 0.002), px, lot, 0.002, cash)
+        assert q == expect and n == expect, (cash, px, q, expect)
+
+
+def _panel_adj(adj_px: float, raw_px: float) -> dict:
+    """复权价（`CLOSE` ✓）与真实价（`CLOSE_RAW` ✓）**不一样**的面板 ⇒ 专门测 ⑧ ✓。"""
+    close = pd.DataFrame(adj_px, index=CAL, columns=CODES)
+    raw = pd.DataFrame(raw_px, index=CAL, columns=CODES)
+    return {"CALENDAR": pd.DataFrame(index=CAL), "CLOSE": close, "OPEN": close.copy(),
+            "CLOSE_RAW": raw, "OPEN_RAW": raw.copy(),
+            "LIMIT_UP": raw * 1.1, "LIMIT_DOWN": raw * 0.9, "_limits_inferred": True}
+
+
+def test_engine_buys_by_real_lots_end_to_end():
+    """★ 端到端：后复权（复权 20 / 真实 10）⇒ 成交额应是**真实整手的钱**（1000 ✓）。"""
+    sig = pd.DataFrame({"date": [CAL[0]], "code": ["S00"], "side": [1]})
+    out = run_period_roll(sig, _panel_adj(20.0, 10.0), fill="t1_open", cost=0.004,
+                          capital=1010.0, strict_limit=True)
+    tr = out.trades
+    buys = tr[tr["reason"] == "roll_in"] if not tr.empty else tr
+    assert len(buys) == 1, out.trades
+    amt = float(buys.iloc[0]["amount"])
+    assert abs(amt - 1000.0) < 1e-6, "成交额 = 100 真实股 × 10 元 = 1000 ✓ 实际 %s" % amt
+    assert abs((amt / 10.0) % 100) < 1e-9, "真实股数必须是整手 ✓"
+    assert out.stats["period_roll"]["min_cash_negative"] is False, out.stats["period_roll"]
+
+
+def test_engine_refuses_when_real_lot_unaffordable():
+    """★ 端到端（用户原例）：现金 685、真实 10、复权 6 ⇒ **不成交** ✓（老代码会买 60 真实股 ✗）。"""
+    sig = pd.DataFrame({"date": [CAL[0]], "code": ["S00"], "side": [1]})
+    out = run_period_roll(sig, _panel_adj(6.0, 10.0), fill="t1_open", cost=0.004,
+                          capital=685.0, strict_limit=True)
+    assert out.trades.empty or not (out.trades["side"] == "买").any(), out.trades
+    st = out.stats["period_roll"]
+    assert st["min_cash_negative"] is False and st["min_cash"] >= -1e-6, st

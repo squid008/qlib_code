@@ -35,7 +35,8 @@ import numpy as np
 import pandas as pd
 
 from .engine import (LOT_DEFAULT, REJECT_TEXT, BtResult, _FILL_LAG, _FILL_PRICE, _fee_of,
-                     _fit_lots, _limit_ctx, _lot_of, _perf, _prepare, _trades_frame)
+                     _fit_lots, _fit_real_lots, _limit_ctx, _lot_of, _perf, _prepare,
+                     _trades_frame)
 
 MODE = "period_roll"
 _LABEL = "每期全仓滚动（调仓日按当期名单等权重建）"
@@ -71,7 +72,7 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     cal, codes, col_of = prep["cal"], prep["codes"], prep["col_of"]
     if not codes:
         return BtResult(diag={"error": "信号标的不在行情数据里", "missing": prep["missing"][:20]})
-    _price, can_buy, can_sell, PX = _limit_ctx(prep, px_kind, strict_limit)
+    _price, can_buy, can_sell, PX, RAW = _limit_ctx(prep, px_kind, strict_limit)
     # ★ v2.1.17：**每个标的的整手股数**（科创板 688/689 ⇒ 200 股 ✓，其余 100 ✓）——
     #   按列号预算一次 ✓（`_lot_of` 是字符串判断，别放进逐票循环里 ✗）。
     lot_arr = np.fromiter((_lot_of(c, lot) for c in codes), dtype=np.int64, count=len(codes))
@@ -207,6 +208,21 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 avg_px[c] = np.nan
                 first_px[c] = np.nan
 
+    def _disp_row(i: int, c: int, q: float, px: float):
+        """成交明细的**展示口径**：`(真实股数, 真实价)` ✓（v2.8.4，审计 #8 ✓）。
+
+        账目仍按**复权单位**算（`q_adj × 复权价 = n_real × 真实价` ✓ 金额恒等 ✓）；这里只是把明细
+        换成"读者能对上账"的口径 ✓（真实股数 × 真实价 = 真实金额 ✓，且真实股数是**整手倍数** ✓ ——
+        `tests/test_lot_by_market.py` 一直守着这条 ✓）。真实价取不到 ⇒ 退回复权口径（不装懂 ✓）。
+        """
+        try:
+            _pxr = float(RAW[i, c])
+        except Exception:                                             # noqa: BLE001
+            return int(q), px
+        if np.isfinite(_pxr) and _pxr > 0:
+            return int(round(float(q) * float(px) / _pxr)), _pxr
+        return int(q), px
+
     def _sell(i: int, c: int, reason: str) -> bool:
         """卖出（含费用 ✓）；不可成交 ⇒ 记拒绝 + 返回 False ✓。"""
         nonlocal cash, fee_sum
@@ -224,7 +240,8 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         cash += amt - fee
         fee_sum += fee
         _acc(c, -q, amt, fee, i)                 # ★ v2.1.50：平仓台账 ✓
-        trades.append((i, c, -1, q, px, reason, MODE))
+        _sh_d, _px_d = _disp_row(i, c, q, px)    # ★ v2.8.4：明细按真实口径 ✓
+        trades.append((i, c, -1, _sh_d, _px_d, reason, MODE))
         return True
 
     def _buy(i: int, c: int, q: int, reason: str) -> bool:
@@ -244,7 +261,8 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             #   原来按 `cash/(px*(1+half))` 估费 ✗ ⇒ 小额单仍会被 5 元顶破 ⇒ 现金变负 ✗
             #   （用户 2026-10-16："肯定不能出现负数" ✓）。收敛到与主引擎**同一个** `_fit_lots` ✓。
             _lt = int(lot_arr[c])                   # v2.1.17：按标的自己的手数缩量 ✓
-            q = _fit_lots(cash / (1.0 + half), px, _lt, half, cash)
+            # ★ v2.8.4（审计 #8 ✓）：缩量也按**真实股数的一手**（一手 = 真实 100/200 股 ✓）
+            q, _n = _fit_real_lots(RAW[i, c], px, _lt, half, cash, budget=cash / (1.0 + half))
             if q <= 0:
                 rejects.append((i, c, "no_cash", None))
                 return False
@@ -254,7 +272,8 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         fee_sum += fee
         sh[c] = sh.get(c, 0) + q
         _acc(c, q, amt, fee, i)                  # ★ v2.1.50：建仓/加仓台账 ✓
-        trades.append((i, c, 1, q, px, reason, MODE))
+        _sh_d, _px_d = _disp_row(i, c, q, px)    # ★ v2.8.4：明细按真实口径 ✓
+        trades.append((i, c, 1, _sh_d, _px_d, reason, MODE))
         return True
 
     # ★ v2.6.0 / v2.7.0：含入场价规则的**逐日信号行**（每天收盘后算一行 ✓、`lag` 天后执行 ✓）——
@@ -356,7 +375,10 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     if px != px:
                         continue
                     _lt = int(lot_arr[c])                  # v2.1.17：按标的自己的手数取整 ✓
-                    wq = int(want_val / px / _lt) * _lt
+                    # ★ v2.8.4（审计 #8 ✓）：**目标手数也按"真实股数的一手"算** ✓
+                    #   （`cash=inf` ⇒ 这里只管"一手"、不掺现金约束 ✓；真正的现金约束在 `_buy` ✓）
+                    wq = _fit_real_lots(RAW[i, c], px, _lt, half, float("inf"),
+                                        budget=want_val)[0]
                     cur = sh.get(c, 0)
                     if wq < cur:
                         # 超配 ⇒ 减仓（卖不掉就留着，下一日再试 ✓）
@@ -374,7 +396,8 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         fee_sum += fee
                         sh[c] = wq
                         _acc(c, -dq, amt, fee, i)   # ★ v2.1.50：减仓台账 ✓
-                        trades.append((i, c, -1, dq, px2, "roll_trim", MODE))
+                        _sh_d, _px_d = _disp_row(i, c, dq, px2)   # ★ v2.8.4：明细按真实口径 ✓
+                        trades.append((i, c, -1, _sh_d, _px_d, "roll_trim", MODE))
                     elif wq > cur:
                         need_buy.append((c, wq - cur))
                 for c, dq in need_buy:             # 先卖后买：回款当天可用 ✓

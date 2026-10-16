@@ -89,6 +89,35 @@ def _fit_lots(budget: float, px: float, lot: int, half: float, cash: float) -> i
     return int(q)
 
 
+def _fit_real_lots(px_raw: float, px_adj: float, lot: int, half: float, cash: float,
+                   budget: Optional[float] = None) -> Tuple[float, int]:
+    """按**真实股数的一手**取整 ✓（v2.8.4，**审计 #8** ✓）—— 返回 `(q_adj, n_real)`。
+
+    **为什么必须按真实股数**：A 股"一手"是**真实 100 股**（科创板 200 ✓ ⇒ `lot` 由调用方按标的给 ✓），
+      而引擎内部持仓记的是**复权单位** ✗ ⇒ 老写法 `int(预算/复权价/lot)*lot` 取的是"**复权单位**的整手"
+      ✗ ⇒ 真实股数 = `q/f` 常常不是整手 ✗（用户 2026-10-16 举的例：现金 685、真实价 10、复权价 6
+      ⇒ 老代码买"100 复权单位"= 600 元 = **60 真实股**（0.6 手 ✗）；正解是**买不起一手就不买** ✓
+      —— 一手真实成本 100×10 = 1000 元 > 685 ✓）。
+
+    算法（用户自己提的就是这个 ✓）：
+      ① 在**真实价**上求最大整手：`n = max{ n | n×px_raw + fee(n×px_raw) ≤ cash }`（`n` 是 `lot` 的倍数 ✓，
+         含**最低 5 元佣金** ✓ —— 见 `_fit_lots` ✓）；
+      ② 折回复权单位：`q_adj = n × px_raw / px_adj` ✓（⇒ `q_adj×px_adj = n×px_raw` ⇒ **金额一分不差** ✓
+          ⇒ 收益率不受影响 ✓，变的只是取整粒度 ✓）。
+
+    ⚠ `px_adj == px_raw`（**不复权**模式 ✓）⇒ **逐位退化成老行为** ✓（那套数字完全不动 ✓）。
+    ⚠ 反方向也要知道（**默认后复权** f≥1 时 ✓）：老代码会因为"复权价更贵"而**少买甚至买不到** ✗
+      （实测：现金 1010、真实 10、复权 20 ⇒ 老代码买 **0**（要 2000 元 ✗）、正解买 **100 真实股** ✓）。
+    """
+    if px_raw != px_raw or px_adj != px_adj or px_raw <= 0 or px_adj <= 0:
+        return 0.0, 0
+    _budget = float(cash) if budget is None else min(float(budget), float(cash))
+    n = _fit_lots(_budget, float(px_raw), lot, half, cash)
+    if n <= 0:
+        return 0.0, 0
+    return float(n) * float(px_raw) / float(px_adj), int(n)
+
+
 _FILL_LAG = {"t_close": 0, "t1_open": 1, "t1_close": 1}          # 决策日 → 成交日
 _FILL_PRICE = {"t_close": "close", "t1_open": "open", "t1_close": "close"}
 
@@ -240,6 +269,15 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
     #     由 `tests/test_backtest_semantics.py` 的冻结基准守门 ✓）。
     _raw = O if px_kind == "open" else C
     PX = np.where(np.isfinite(_raw) & (_raw > 0), _raw, np.nan)
+    # ★★ v2.8.4（**审计 #8** ✓）：再暴露一份"**与成交时点匹配的真实价**"矩阵 ✓ ——
+    #   只用于**整手取整**（一手 = 真实 100 股 ✓，科创板 200 由 `lot_arr` 给 ✓）：
+    #   引擎内部持仓记的是**复权单位**（`PX` ✓），老代码 `int(预算/复权价/lot)*lot` 取的是
+    #   "**复权单位**的整手" ✗ ⇒ 真实股数 = q/f 往往**不是整手** ✗
+    #   （用户 2026-10-16 举的例：现金 685、真实 10、复权 6 ⇒ 老代码买"100 复权单位"= 60 真实股 ✗）。
+    #   ⚠ 面板缺 `CLOSE_RAW`/`OPEN_RAW` ⇒ `_prepare` 已退回 `C`/`O` ⇒ 这里等于复权价 ⇒ `f=1`
+    #     ⇒ **退化成老行为** ✓（**不复权模式**（默认口径之一 ✓）本来 f=1 ⇒ 逐位不变 ✓）。
+    _rawraw = OR if px_kind == "open" else CR
+    RAW = np.where(np.isfinite(_rawraw) & (_rawraw > 0), _rawraw, np.nan)
 
     def price(i: int, c: int, kind: str = None):
         if kind is None:
@@ -291,7 +329,7 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool):
             return "limit_down_open"
         return None
 
-    return price, can_buy, can_sell, PX
+    return price, can_buy, can_sell, PX, RAW
 
 
 # 成交明细的列名与**顺序**（= 旧 `_trade_row` 里 dict 的键序 ✓ 必须保持一致 ✗）
@@ -368,7 +406,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     bk = _bucket_signals(signals, prep)
     n_row = len(cal)
     # ★ v1.20.37：`PX` = 规范化成交价矩阵（见 `_limit_ctx` 说明 ✓）—— 供逐日聚合走数组 ✓
-    _price, can_buy, can_sell, PX = _limit_ctx(prep, px_kind, strict_limit)
+    _price, can_buy, can_sell, PX, RAW = _limit_ctx(prep, px_kind, strict_limit)
     # ★ v2.1.18：**按列号预算"每个标的的整手股数"** ✓（科创板 688/689 ⇒ 200 股 ✓，其余 100 ✓）——
     #   与 `period_roll` 同一套 `_lot_of` ✓（一处定义 ✓）。⚠ 逐票循环里绝不能现算字符串判断 ✗。
     #   ⚠ 尚未切换的点：`event_even` 的"买新信号"取整、`rebalance_buy`、`run_batch_backtest`
@@ -467,7 +505,21 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             #   而过顶有 **14.88 万笔** ⇒ 这是**最大的"逐笔开销"** ✓）。
             #   ⇒ 循环里**只存元组**（7 个原生值，零格式化 ✓），`str`/`round`/dict 组装全部挪到
             #     **末尾一次性做** ✓ ⇒ 语义逐位相同（末端生成的正是原来那些字段 ✓）。
-            trades.append((i, c, side, int(qty), price, reason, mode))
+            # ★★ v2.8.4（审计 #8 ✓）：成交明细按**真实口径**输出（真实股数 × 真实价 = 真实金额 ✓）
+            #   —— 账目仍按**复权单位**算（上面 `amt = qty*price` ✓，两者金额恒等 ✓）；
+            #   ⚠ 为什么要换展示口径：复权单位与真实股数只差一个因子（`q_adj = n_real/f` ✓）⇒
+            #     老写法明细里印的是复权单位 ✗ ⇒ 读者 `股数×价` 对不上金额 ✗、
+            #     而且**不是整手倍数** ✗（`tests/test_lot_by_market.py` 一直守着这条 ✓ ——
+            #     这轮就是它先把"明细写复权单位"挡回来的 ✓）。
+            #   ⚠ 卖出是"折回真实股数后取整" ⇒ 可能差不到 1 股（⇒ 明细的费与账目差几分钱 ✓），
+            #     **买入恒精确**（本来就是按真实整手买的 ✓）。
+            _px_disp = float(RAW[i, c])
+            if np.isfinite(_px_disp) and _px_disp > 0:
+                trades.append((i, c, side,
+                               int(round(float(qty) * float(price) / _px_disp)),
+                               _px_disp, reason, mode))
+            else:
+                trades.append((i, c, side, int(qty), price, reason, mode))
 
         def _reject(i, c, reason, decision_pos=None):
             # ⚠⚠ v1.20.20 性能（2026-09-18，与 v1.20.7 给 `_log_trade` 做的同一件事 ✓）：
@@ -586,8 +638,8 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         for c, _dec in ok:
                             px = _price(i, c)
                             _lt = int(lot_arr[c])           # v2.1.18：按标的自身手数取整 ✓
-                            # 真实费用（含最低佣金）回退 ⇒ 买得起的最大手数 ✓
-                            q = _fit_lots(_per, px, _lt, half, cash)
+                            # ★ v2.8.4（审计 #8 ✓）：**按真实股数的一手**取整（含最低佣金 ✓）
+                            q, _n = _fit_real_lots(RAW[i, c], px, _lt, half, cash, budget=_per)
                             if q <= 0:
                                 _reject(i, c, "no_cash")
                                 continue
@@ -629,7 +681,11 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                             dlt = sh[k] * px - tgt
                             _lt = int(lot_arr[k])          # v2.1.19：按标的自身手数（200/100 ✓）
                             if dlt > _gap_bt and dlt > px * _lt and can_sell(i, k) is None:
-                                q = min(int(dlt / px / _lt) * _lt, sh[k])
+                                # ★ v2.8.4（审计 #8 ✓）：**卖出量也按"真实股数的一手"** ✓
+                                #   （且不超过持仓 ✓；`cash=inf` ⇒ 这里只管手数 ✓）
+                                _qs, _ns = _fit_real_lots(RAW[i, k], px, _lt, half,
+                                                          float("inf"), budget=dlt)
+                                q = min(_qs, sh[k])
                                 if q > 0:
                                     _log_trade(i, k, -1, q, px, "rebalance_sell")
                         # ② 买新信号（含费；现金不足则按比例缩减）
@@ -638,9 +694,14 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         #   `need` 从 `0.0` 起、按 `ok` **原序**累加 ⇒ 与 `sum(...)` 结合序一致 ✓
                         need = 0.0
                         for c, _dec in ok:
-                            _v = _pxr[c]
                             _lt = int(lot_arr[c])      # v2.1.19：同上（预算是"该票的手数" ✓）
-                            need += int(tgt_eff / _v / _lt) * _lt * _v * (1 + half)
+                            # ★ v2.8.4（审计 #8 ✓）：预算估算也要走**真实股数的一手** ✓
+                            #   （否则 `scale` 按"复权单位整手"估 ⇒ 与实际买入粒度不一致 ⇒
+                            #    估多了白缩量、估少了白拒单 ✓；`_pxr` 仍是复权价、留给下面用 ✓）
+                            _vr = RAW[i, c]
+                            if _vr != _vr or _vr <= 0:
+                                continue
+                            need += int(tgt_eff / _vr / _lt) * _lt * _vr * (1 + half)
                         scale = 1.0 if need <= cash * 1.0001 else max(0.0, cash / max(need, 1e-9))
                         for c, _dec in ok:
                             px = _price(i, c)
@@ -650,7 +711,9 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                             #   `_fee_of(amt, half) = max(amt×half, 最低 5 元)` ✓ ⇒ 小额成交上两者不等
                             #   ⇒ 现金会被花成**负数**（实测 `event_even` 到 **−3216.71 元** ✗）。
                             #   v2.8.3：收敛到 `_fit_lots`（同一处逻辑 ✓，三处调用点不再各写一份 ✓）
-                            q = _fit_lots(tgt_eff * scale, px, _lt, half, cash)
+                            #   v2.8.4（审计 #8 ✓）：再改成**真实股数的一手**（`_fit_real_lots` ✓）
+                            q, _n = _fit_real_lots(RAW[i, c], px, _lt, half, cash,
+                                                   budget=tgt_eff * scale)
                             if q <= 0:
                                 _reject(i, c, "no_cash")
                                 continue
@@ -673,7 +736,9 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                             if dlt > _gap_bt and dlt > px * _lt and can_buy(i, k) is None:
                                 # ★★ v2.1.30 / v2.8.3（审计 #9 ✓）：同 ② —— 用**真实费用**
                                 #   （含最低佣金 ✓）取"买得起的最大手数" ⇒ 绝不透支 ✓
-                                q = _fit_lots(dlt / (1.0 + half), px, _lt, half, cash)
+                                #   v2.8.4（审计 #8 ✓）：按**真实股数的一手**取整 ✓
+                                q, _n = _fit_real_lots(RAW[i, k], px, _lt, half, cash,
+                                                       budget=dlt / (1.0 + half))
                                 if q > 0:
                                     _log_trade(i, k, 1, q, px, "rebalance_buy")
             # ---- 4) 到期卖出（在当日**开头状态**下判 days ≥ N − 成交延迟）----
@@ -841,7 +906,7 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     cal, codes, col_of = prep["cal"], prep["codes"], prep["col_of"]
     if not codes:
         return BtResult(diag={"error": "信号标的不在行情数据里", "missing": prep["missing"][:20]})
-    _price, can_buy, can_sell, _PX = _limit_ctx(prep, px_kind, strict_limit)
+    _price, can_buy, can_sell, _PX, _RAW = _limit_ctx(prep, px_kind, strict_limit)
     n_row = len(cal)
 
     bkt = (signals["bucket"].astype(str).fillna("") if "bucket" in signals.columns
