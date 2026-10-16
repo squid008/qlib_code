@@ -2061,9 +2061,12 @@ export default function SingleFactorTestPanel({
                             '-'
                           )}
                         </td>
-                        <td className="text-right px-1">{fmtRaw(r.ic, 4)}</td>
-                        <td className="text-right px-1">{fmtRaw(r.rank_ic, 4)}</td>
-                        <td className="text-right px-1">{fmtRaw(r.icir, 3)}</td>
+                        {/* ★ v2.8.8c（用户 2026-10-16 ✓）：IC / RankIC / ICIR 的**数据格也水平居中** ✗→✓
+                            （用户原话：「IC、rankic、ICIR 底下的数字也要水平居中」✓）——
+                            表头已居中 ✓，数据再靠右 ⇒ 视觉上"头在一处、数在另一处"✗ ⇒ 统一居中 ✓。 */}
+                        <td className="text-center px-1">{fmtRaw(r.ic, 4)}</td>
+                        <td className="text-center px-1">{fmtRaw(r.rank_ic, 4)}</td>
+                        <td className="text-center px-1">{fmtRaw(r.icir, 3)}</td>
                         <td className="text-center px-0 whitespace-nowrap">
                           {/* ★ v2.8.8c：`whitespace-nowrap` ⇒ 「彩票型」「有效✓」「待观察」都**一行放下** ✓
                               （宽度由表头的 `min-w-[5rem]` 撑着 ✓；居中与表头对齐 ✓） */}
