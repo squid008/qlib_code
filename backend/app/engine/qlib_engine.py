@@ -343,23 +343,30 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
 #           整条曲线被抬高 ✗ —— 所以**只比对特征顺序是不够的** ✗✓。
 #   ⚠ 本常量跟的是**口径**而不是发版号 ✓（同 `chip_store.CHIP_SEMANTICS` ✓）⇒ 单纯加日志/UI
 #     之类改动**不要**动它 ✓，否则每个已有产物都会白作废一次 ✗。
-TRAIN_SEMANTICS = "2.8.2"
+TRAIN_SEMANTICS = "2.8.3"
 # ★★ v2.8.2（**审计 #1** ✓）：训练口径**再变一次** —— 训练/验证段末从"测试起点前一天"
 #   退到"测试起点前 `h+1` 个**交易日**"（purge ✓，见 `_purged_train_end`）。为什么必须升这个戳：
 #   模型结果因此会变 ✓ ⇒ 旧 `model_artifacts.json` **绝不能**被复用（`_verify_reuse_train_semantics`
 #   会拦住 ✓，让用户重训 ✓），断点续跑的旧段结果也一并作废 ✓。
+# ★★ v2.8.3（用户 2026-10-16 拍板"**首日空仓**" ✓）：预测窗口不再前移 ⇒ **回测首日的调仓被取消**
+#   （首段开头空一个持仓周期 ✓）⇒ 结果又变一次 ⇒ **戳必须再升** ✓（否则 2.8.2 的旧产物会被复用 ✗）。
 
 
-def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg,
-                   predict_start: Optional[str] = None) -> dict:
+def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg) -> dict:
     """构造 dataset 配置。
+
     train_seg: (start, end) 训练段；test_seg: (start, end) 测试段（=回测窗口）。
-    predict_start: 可选。早于 test_seg[0] 的"预测起点"，用于滚动回测首段预热：
-      预测（SignalRecord / model.predict）从该日起生成，从而覆盖回测起点前
-      n_days_hold 个交易日，使回测首日调仓（shift=1，需用 T-1 信号）能拿到信号建仓，
-      避免首段开头整段空仓。回测窗口仍为 test_seg（由 PortAnaRecord start_time 决定），
-      预热期预测只被首日调仓的 T-1 取用，IC/分层统计由调用方用 clip_start 裁剪。
     handler 数据范围需覆盖 train + test + 特征窗口。
+
+    ★ v2.8.3（**用户 2026-10-16 拍板 ✓**）：**去掉\"首段预热\"，首日一律空仓** ✓ ——
+      原来会传一个早于 `test_seg[0]` 的 `predict_start`（"预热" ✓），让**回测首日**的 T−1 调仓
+      也能拿到信号 ✓、从而避免首段开头一个持仓周期的空仓 ✓。用户判断：**首日就该空仓**
+      （"你都没有训练数据哪里来的调仓信号呢对吧"✓）—— 按"更保险/更好解释"取 ✓。
+      ⚠ 事实层面同步一句（口径归口径 ✓）：预热那批在 v2.8.2 的 purge 之后**已经是样本外预测** ✓
+        （训练/验证段末退到测试起点前 h+1 个交易日 ✓），并不是"用了训练集信息"✗；
+        但**空仓**确实更保守、也更容易对外解释 ✓ ⇒ 按用户选择做 ✓。
+      ⚠ 代价（要如实说 ✓）：**首段开头会空仓约一个持仓周期**（净值一段平线 ✓）——
+        它正是当年加预热要解决的那个现象 ✓；要改回去只需恢复 `predict_start` 这条通路 ✓。
     """
     from qlib.utils import init_instance_by_config
 
@@ -464,14 +471,13 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg,
             "segments": {
                 "train": [train_start, train_fit_end],
                 "valid": [valid_start, train_end],
-                # 预测窗口：预热时从 predict_start（更早）起，回测窗口仍以 test_start 为准
-                # ★★ v2.8.2（**审计 #1 已修** ✓）：原来这里标注的残留 —— "`predict_start < test_start`
-                #   时首段 test 段会伸进训练窗口 ⇒ 首日调仓用**训练样本行**上的预测（轻度泄露 ✓）"
-                #   —— 用 **purge** 解决了 ✓（`_purged_train_end`：训练/验证段末退到测试起点前
-                #   h+1 个交易日 ✓）⇒ 预热期的那些行**不再属于**训练/验证段 ✓ ⇒ 它们的预测是
-                #   **样本外**的 ✓（预热本身仍有价值：首日调仓的 T-1 信号 ✓ 不产生整段空仓 ✓，
-                #   且用户拍板的口径是"**首日调仓不得使用训练期预测**" ✓ —— 现在满足 ✓）。
-                "test": [predict_start or test_start, test_end],
+                # ★★ v2.8.3（用户 2026-10-16 拍板 ✓）：test 段**从 test_start 起**（不再预热 ✓）
+                #   ⇒ 回测首日（全局调仓网格第 0 天）的 T−1 预测**不存在** ⇒ 那天**不调仓**
+                #   （qlib 拿到空预测 ⇒ 空决策 ⇒ 空仓 ✓，见 `_build_dataset` 的说明 ✓）。
+                #   v2.8.2 之前这里会传 `predict_start`（早于 test_start ✓）把预热期预测也算进来 ✓，
+                #   那会让首日调仓用上"训练窗内的行"（审计 #1 的泄露 ✓）—— purge 之后已不泄露，
+                #   但用户仍选择**空仓**这条更保守的口径 ✓。
+                "test": [test_start, test_end],
             },
         },
     }
@@ -1032,24 +1038,10 @@ def _purged_train_end(test_start: str, label_horizon: int) -> str:
     return out
 
 
-def _first_segment_warm_start(train_start: str, test_start: str, n_days_hold: int) -> Optional[str]:
-    """计算滚动回测首段的预热预测起点：test_start 之前的 n_days_hold 个交易日。
-
-    回测首日恰是全局调仓网格第 0 天，该日调仓需要 T-1 的信号（shift=1，防前视），
-    而预测若从 test_start 才开始，首日就无 T-1 信号可用 → 首段开头空仓约一个持仓
-    周期（净值出现平段）。把预测起点前移 n_days_hold 个交易日即可让首日正常建仓。
-    返回最早预热日 YYYY-MM-DD；区间不足/异常时返回 None（不预热，保持原行为）。
-    """
-    from qlib.data import D
-    try:
-        cals = D.calendar(start_time=train_start, end_time=test_start)
-        pre = [str(d)[:10] for d in cals if str(d)[:10] < str(test_start)[:10]]
-        if not pre:
-            return None
-        return pre[-min(int(n_days_hold or 1), len(pre))]
-    except Exception:
-        return None
-
+# ⚠ v2.8.3 删掉了 `_first_segment_warm_start`（"首段预热"的预测起点计算 ✓）——
+#   用户 2026-10-16 拍板"**首日空仓**" ✓ ⇒ test 段从 `test_start` 起、首日没有 T−1 预测 ⇒ 不调仓 ✓。
+#   它当年是为了消除"首段开头空仓一个持仓周期（净值平段）"而加的 ✓；现在按用户口径**接受那段平线** ✓。
+#   要改回去：恢复"test 段起点前移若干交易日 + 调用方用 clip_start 裁 IC/分层"这条通路 ✓。
 
 def _extend_all_nav(all_nav: list, seg_nav_points: list) -> None:
     """把一段的绝对净值点拼到全局净值曲线，重复日期跳过（保留先出现的点）。
@@ -1177,15 +1169,9 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             _spans.append((label, _now - _tick))
             _tick = _now
 
-        # 首段预热：把预测起点前移 n_days_hold 个交易日（回测窗口不变）。
-        # 回测首日恰是全局调仓网格第 0 天，需要 T-1 信号，若预测从段首才开始则首日无信号
-        # → 首段开头空仓一个持仓周期（净值平段）。预热后首日即可正常建仓。
-        warm_start = None
-        if seg_no == 1:
-            warm_start = _first_segment_warm_start(
-                train_start, test_start, max(1, int(req.n_days_hold or 1)))
-        dataset_config = _build_dataset(req, instruments, (train_start, train_end), (test_start, test_end),
-                                        predict_start=warm_start)
+        # ★ v2.8.3（用户 2026-10-16 拍板 ✓）：**不再做首段预热** ⇒ 首日空仓 ✓（见 `_build_dataset` ✓）。
+        dataset_config = _build_dataset(req, instruments, (train_start, train_end),
+                                        (test_start, test_end))
         dataset = init_instance_by_config(dataset_config)
 
         # 复用模式：加载对应段的模型权重，跳过训练
@@ -1243,8 +1229,10 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
             analysis = _compute_analysis(model, dataset, instruments, seg_label, benchmark=benchmark,
                                          label_horizon=req.label_horizon,
                                          rebalance_period=getattr(req, "layer_rebalance", None) or 1,
-                                         # IC/分层只统计回测窗口内的点，裁剪掉预热期预测
-                                         clip_start=str(test_start) if warm_start else None)
+                                         # IC/分层只统计回测窗口内的点（v2.8.3：预测本来就只从
+                                         # test_start 起 ⇒ 这里显式裁到 test_start 是**幂等**的 ✓，
+                                         # 但留着可以挡住"将来又有人加预热"这类回归 ✓）
+                                         clip_start=str(test_start))
             if analysis:
                 layers = analysis.get("layers")
                 if layers:

@@ -66,6 +66,29 @@ def _fee_of(amount: float, half: float) -> float:
     return fee if fee > MIN_FEE else MIN_FEE
 
 
+def _fit_lots(budget: float, px: float, lot: int, half: float, cash: float) -> int:
+    """在**现金**约束下取"买得起的最大手数" ✓（v2.8.3，**审计 #9** ✓）。
+
+    为什么单独收敛成一个函数：三处买入（`cash_even` / `event_even` 的新买与补低配 /
+    `period_roll._buy`）原来各写一份**估算** ✗ —— 都用「成交额 ×(1+半费)」估费，
+    而真实费用是 `max(成交额×half, **最低 5 元**)`（`_fee_of` ✓）⇒ **小额单被 5 元那一段顶破**
+    ⇒ 现金被花成**负数** ✗（审计实测：`event_even` 到 −3216.71 元，`period_roll`/`cash_even`
+    也有小额负值 ✓）。用户 2026-10-16 拍板：「**肯定不能出现负数**」✓。
+
+    · `budget` = 这笔**打算花多少**（元 ✓；含不含费由调用方决定 ✓）；
+    · 先按 `budget / px` 取整到手数 ✓，再用**真实费用**逐步回退到"买得起"为止 ✓；
+    · 返回 0 ⇒ 调用方按 `no_cash` 拒单 ✓（语义与原来一致 ✓）。
+    ⚠ 正常路径（钱够）**一位数字都不变** ✓ —— 只有原本会透支的买单被缩量 ✓。
+    """
+    if px != px or px <= 0 or int(lot) <= 0:          # NaN / 非正价 / 非正手数 ⇒ 不买 ✓
+        return 0
+    _lot = int(lot)
+    q = int(max(0.0, float(budget)) / float(px) / _lot) * _lot
+    while q > 0 and q * px + _fee_of(q * px, half) > cash + 1e-9:
+        q -= _lot
+    return int(q)
+
+
 _FILL_LAG = {"t_close": 0, "t1_open": 1, "t1_close": 1}          # 决策日 → 成交日
 _FILL_PRICE = {"t_close": "close", "t1_open": "open", "t1_close": "close"}
 
@@ -556,11 +579,15 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                 if ok:
                     if mode == "cash_even":
                         # ⚠ 份额要按「价 ×(1+单边费)」算，否则把费漏掉会现金微负（单测抓到）
-                        per = (cash / len(ok)) / (1.0 + half)
+                        # ★ v2.8.3（审计 #9 ✓）：**再把最低佣金预留出来** ✓ —— 原来只预留比例费 ✗
+                        #   ⇒ 小额单被 5 元顶破 ⇒ 现金变负 ✗（用户："肯定不能出现负数" ✓）
+                        _n_ok = max(1, len(ok))
+                        _per = max(0.0, (cash - MIN_FEE * _n_ok) / _n_ok) / (1.0 + half)
                         for c, _dec in ok:
                             px = _price(i, c)
                             _lt = int(lot_arr[c])           # v2.1.18：按标的自身手数取整 ✓
-                            q = int(per / px / _lt) * _lt
+                            # 真实费用（含最低佣金）回退 ⇒ 买得起的最大手数 ✓
+                            q = _fit_lots(_per, px, _lt, half, cash)
                             if q <= 0:
                                 _reject(i, c, "no_cash")
                                 continue
@@ -618,17 +645,12 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         for c, _dec in ok:
                             px = _price(i, c)
                             _lt = int(lot_arr[c])
-                            q = int(tgt_eff * scale / px / _lt) * _lt
-                            # ★★ v2.1.30：**成交前按「真实费用」硬校验一次现金** ✗→✓ ——
-                            #   上面所有估算都用 `成交额 × (1 + 半费)` ✗，而真实费用是
-                            #   `_fee_of(amt, half) = max(amt×half, 最低 5 元)` ✓ ⇒ 两者在小额成交上
-                            #   **不相等** ⇒ 现金会被花成**负数**（实测 `event_even` 到 **−3216.71 元** ✗，
-                            #   `period_roll`/`cash_even` 也有小额负值 ✓）。这里按"买得起的最大手数"截断 ✓
-                            #   —— 正常路径（钱够）**一位数字都不变** ✓（只有原本会透支的那些买单被缩量 ✓）。
-                            if q * px + _fee_of(q * px, half) > cash:
-                                q = int((cash / (1.0 + half)) / px / _lt) * _lt
-                                while q > 0 and q * px + _fee_of(q * px, half) > cash:
-                                    q -= _lt
+                            # ★★ v2.1.30：**成交前按「真实费用」硬校验一次现金** ✗→✓（审计 #9 ✓）
+                            #   —— 估算都用「成交额 × (1 + 半费)」✗，而真实费用是
+                            #   `_fee_of(amt, half) = max(amt×half, 最低 5 元)` ✓ ⇒ 小额成交上两者不等
+                            #   ⇒ 现金会被花成**负数**（实测 `event_even` 到 **−3216.71 元** ✗）。
+                            #   v2.8.3：收敛到 `_fit_lots`（同一处逻辑 ✓，三处调用点不再各写一份 ✓）
+                            q = _fit_lots(tgt_eff * scale, px, _lt, half, cash)
                             if q <= 0:
                                 _reject(i, c, "no_cash")
                                 continue
@@ -649,13 +671,9 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                             dlt = tgt - sh[k] * px
                             _lt = int(lot_arr[k])          # v2.1.19：补低配同样按标的自身手数 ✓
                             if dlt > _gap_bt and dlt > px * _lt and can_buy(i, k) is None:
-                                q = int(dlt / (px * (1 + half)) / _lt) * _lt
-                                # ★★ v2.1.30：同 ② —— 用**真实费用**核对（含最低佣金 ✓），
-                                #   原来的 `cash >= q*px*(1+half)` 是估费 ⇒ 仍可小额透支 ✗
-                                if q > 0 and q * px + _fee_of(q * px, half) > cash:
-                                    q = int((cash / (1.0 + half)) / px / _lt) * _lt
-                                    while q > 0 and q * px + _fee_of(q * px, half) > cash:
-                                        q -= _lt
+                                # ★★ v2.1.30 / v2.8.3（审计 #9 ✓）：同 ② —— 用**真实费用**
+                                #   （含最低佣金 ✓）取"买得起的最大手数" ⇒ 绝不透支 ✓
+                                q = _fit_lots(dlt / (1.0 + half), px, _lt, half, cash)
                                 if q > 0:
                                     _log_trade(i, k, 1, q, px, "rebalance_buy")
             # ---- 4) 到期卖出（在当日**开头状态**下判 days ≥ N − 成交延迟）----
@@ -732,6 +750,10 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             "alloc": _base,
             "rebal_band": band,
             "min_cash": round(float(min_cash), 2),
+            # ★ v2.8.3（审计 #9 ✓）：**现金绝不允许为负** —— 这里把它变成可断言的字段 ✓
+            #   （用户 2026-10-16："肯定不能出现负数" ✓；已有单测守 ✓）。它出现在界面/导出里
+            #   就等于"有 bug"，不是"资金给少了"的提示 ✓（老注释那句"等效加杠杆"已作废 ✗）。
+            "min_cash_negative": bool(min_cash < -1e-6),
             "final_nav": round(float(navs[mode].iloc[-1]), 4) if len(navs[mode]) else None,
             "total_return": (round(float(navs[mode].iloc[-1] - 1), 4) if len(navs[mode]) else None),
             "trades": len(trades),

@@ -35,7 +35,7 @@ import numpy as np
 import pandas as pd
 
 from .engine import (LOT_DEFAULT, REJECT_TEXT, BtResult, _FILL_LAG, _FILL_PRICE, _fee_of,
-                     _limit_ctx, _lot_of, _perf, _prepare, _trades_frame)
+                     _fit_lots, _limit_ctx, _lot_of, _perf, _prepare, _trades_frame)
 
 MODE = "period_roll"
 _LABEL = "每期全仓滚动（调仓日按当期名单等权重建）"
@@ -240,8 +240,11 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         amt = q * px
         fee = _fee_of(amt, half)
         if amt + fee > cash + 1e-9:                 # 现金不够 ⇒ 按可用现金缩量（整手 ✓）
+            # ★ v2.8.3（审计 #9 ✓）：缩量也要用**真实费用**（含最低 5 元 ✓）——
+            #   原来按 `cash/(px*(1+half))` 估费 ✗ ⇒ 小额单仍会被 5 元顶破 ⇒ 现金变负 ✗
+            #   （用户 2026-10-16："肯定不能出现负数" ✓）。收敛到与主引擎**同一个** `_fit_lots` ✓。
             _lt = int(lot_arr[c])                   # v2.1.17：按标的自己的手数缩量 ✓
-            q = int((cash / (px * (1.0 + half))) / _lt) * _lt
+            q = _fit_lots(cash / (1.0 + half), px, _lt, half, cash)
             if q <= 0:
                 rejects.append((i, c, "no_cash", None))
                 return False
@@ -420,6 +423,8 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     out.stats[MODE] = {
         "alloc": MODE, "label": _LABEL, "rebal_band": 0.0,
         "min_cash": round(float(min_cash), 2),
+        # ★ v2.8.3（审计 #9 ✓）：现金绝不允许为负 ✓（可断言字段，见 engine.py 同一字段 ✓）
+        "min_cash_negative": bool(min_cash < -1e-6),
         "final_nav": round(float(nav.iloc[-1]), 4) if len(nav) else None,
         "total_return": round(float(nav.iloc[-1] - 1), 4) if len(nav) else None,
         "trades": len(trades),
