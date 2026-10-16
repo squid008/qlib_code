@@ -2102,35 +2102,42 @@ export default function SingleFactorTestPanel({
                       key={`${r.id}:${r.horizon ?? '-'}:exit${v.gi}`}
                       className="border-b border-slate-100 dark:border-slate-700 bg-amber-50/60 dark:bg-amber-900/10"
                     >
-                      <td className="text-left py-1 pr-2">
-                        <div className="truncate" title={`含离场变体：${r.name} + ${v.name}`}>
+                      {/* ★★ v2.8.8b（用户 2026-10-16 看图后第二轮 ✓）：变体行**整行打通成一格** ✗→✓ ——
+                          用户原话：「2、3 行那个占了太宽的格子，你把 2、3 行不要只放一格行不行？
+                          跟『统计列与负市值对数相同』那一格**打通形成一行**，这样就没问题了吧？
+                          然后注意**中间要有空格**，还有**按钮要对齐**」✓
+                          ⇒ 旧实现把这三段分在**三个格子**里：① 因子名+指标（**窄** ✗ ⇒ "年化…Δ回撤…离场卖出"
+                          被截断 ✗）、② 空的"周期"格（v2.8.8 刚空的 ✓）、③ `colSpan={MIDCOLS}` 的
+                          "统计列与…相同"格 ✗ ⇒ ①/③ 都放不下文字 ✓。
+                          ⇒ 现在合并为**一格**（`colSpan = 因子 1 + 周期 1 + MIDCOLS` ✓），三段各占一行、
+                          段间留空隙 ✓ ⇒ 都能显示全 ✓；行尾仍是那个**居中的「离场曲线」按钮** ✓
+                          ⇒ 与上面基础行第二行的按钮**横坐标一致** ✓（用户要的"按钮要对齐" ✓）。
+                          ⚠ 列数校验：本行 = (1+1+MIDCOLS) + 1(按钮格) = MIDCOLS + 3 ✓
+                            = 表头列数 ✓（基础行 = 因子 1 + 周期 1 + MIDCOLS + 研究列 1 ✓）—— 不能算错 ✗。 */}
+                      <td colSpan={1 + 1 + MIDCOLS} className="text-left py-1 pr-2">
+                        <div title={`含离场变体：${r.name} + ${v.name}`}>
                           <span className="text-amber-700 dark:text-amber-400">
                             {r.name}+{v.name}
                           </span>
                         </div>
-                        <div className="text-[10px] text-slate-500 whitespace-nowrap">
+                        <div className="text-[10px] text-slate-500 mt-0.5">
                           年化 {typeof v.perf?.annual_return === 'number'
                             ? `${(v.perf.annual_return * 100).toFixed(1)}%` : '-'}
-                          ｜ 回撤 {typeof v.perf?.max_drawdown === 'number'
+                          {' ｜ '}回撤 {typeof v.perf?.max_drawdown === 'number'
                             ? `${(v.perf.max_drawdown * 100).toFixed(1)}%` : '-'}
-                          ｜ Δ年化{' '}
+                          {' ｜ '}Δ年化{' '}
                           <b className={v.dAnn >= 0 ? 'text-emerald-600' : 'text-red-500'}>
                             {v.dAnn >= 0 ? '+' : ''}{(v.dAnn * 100).toFixed(1)}pp
                           </b>
-                          ｜ Δ回撤{' '}
+                          {' ｜ '}Δ回撤{' '}
                           <b className={v.dDd >= 0 ? 'text-emerald-600' : 'text-red-500'}>
                             {v.dDd >= 0 ? '+' : ''}{(v.dDd * 100).toFixed(1)}pp
                           </b>
                           {v.sells ? ` ｜ ${v.mode === 'signal' ? '卖出（含到期）' : '离场卖出'} ${v.sells}` : ''}
                         </div>
-                      </td>
-                      {/* ★ v2.8.8（用户 2026-10-16 ✓）：变体行**不再重复写"周期 60"** ✗ ——
-                          它与上面那行是**同一个因子的同一个周期**（进场 + 某条离场 ✓）⇒ 重复写没有信息量 ✓，
-                          而且和上面那行叠起来显得"没对齐"（用户原话："离场的那俩就不用写周期60了，
-                          不然看起来也是没对齐" ✓）⇒ 留空格 ✓（列宽由表头撑着，不会塌 ✓）。 */}
-                      <td className="text-right px-1" />
-                      <td colSpan={MIDCOLS} className="text-center text-[10px] text-slate-400">
-                        统计列与「{r.name}」相同（离场只作用于实盘口径那条回测 ✓）
+                        <div className="text-[10px] text-slate-400 mt-0.5">
+                          统计列与「{r.name}」相同（离场只作用于实盘口径那条回测 ✓）
+                        </div>
                       </td>
                       <td className="text-center px-1">
                         <button
