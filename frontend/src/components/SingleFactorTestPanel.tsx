@@ -2213,9 +2213,15 @@ export default function SingleFactorTestPanel({
                              `h-[22px] mt-1` + `justify-start` ✓）⇒ 左边缘与纵向位置都对齐 ✓；
                           ③ 占位 = 22 + 4 = **26px**（= 基础行第一行按钮高 + `gap-1` ✓）。
                           ⚠ 改按钮内边距/字号时要**一起改这几个高度** ✗，否则又错开 ✓。 */}
-                      <td className="text-left px-1 w-[7.5rem] min-w-[7.5rem] align-top">
-                        <div className="h-[22px]" aria-hidden="true" />
-                        <div className="h-[22px] mt-1 flex items-center justify-start">
+                      {/* ★★ v2.8.8b（用户 2026-10-16 第五轮 ✓）：**垂直居中** ✗→✓ ——
+                          用户原话：「不是放第一行，而是要放在**第一第二行中间**的位置，**离上边有点距离、
+                          离下边有点距离**，这个叫水平对齐」✓
+                          ⇒ 变体行上面没有按钮 ✓ ⇒ 既不留空行把它挤到下面 ✗、也不贴第一行 ✗，
+                          而是**整格垂直居中** ✓（`align-middle` ✓）⇒ 上下各留一点空 ✓
+                          ⇒ 与隔壁基础行那两行按钮的**视觉中线**对齐 ✓（那就是用户说的"水平对齐" ✓）。
+                          ⚠ 基础行保持 `align-top` 的两行栈不变 ✓（它的离场曲线确实"贴在下边线" ✓）。 */}
+                      <td className="text-left px-1 w-[7.5rem] min-w-[7.5rem] align-middle">
+                        <div className="h-[22px] flex items-center justify-start">
                           <button
                             type="button"
                             onClick={() => setExitModal({ row: r, ei: v.gi, name: v.name })}
