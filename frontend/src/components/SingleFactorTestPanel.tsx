@@ -1698,7 +1698,92 @@ export default function SingleFactorTestPanel({
       {/* 结果表格 */}
       {results.length > 0 && (
         <div className="overflow-x-auto">
-          <table className="w-full text-[11px] border-collapse">
+          {/* ★★ v2.8.9（用户 2026-10-16 ✓）：**表改成 `table-fixed`** ✗→✓ —— **这才是"右边空一片"的根因** ✓。
+              用户原话：「是不是你**表格方式**不对啊，根因没找到啊，你看前面的周期、覆盖率、信号那几列就挨
+              那么近，但是 **IC 后面这几列就空那么多**」✓（判断完全正确 ✓）。
+              · 旧做法（`table-layout: auto` ✗）里，单元格上的 `width` 只是**建议** ✓ —— 浏览器算完各列内容宽度后
+                还会把**剩余宽度按比例再分配** ✗ ⇒ 我给 IC/RankIC/ICIR/结论/中位数/因子研究 定的宽**全被撑开** ✓；
+              · 而左半边（周期/覆盖率/信号/触发数 ✓）内容本来就小 ⇒ 分到的余量少 ⇒ 看着"挨得紧" ✓ ✓
+                ⇒ 于是呈现"**左紧右松**"✓（正是用户看到的样子 ✓ —— 我前几轮加 `w-`/去内边距都没用 ✗，
+                  因为方向上就错了 ✗）。
+              · `table-fixed` 下 `width` 是**硬约束** ✓ ⇒ 定宽的列**就是那么宽** ✓，余量只分给**没定宽**的列 ✓
+                ⇒ 尾部几列自然贴在一起 ✓。
+              ⚠ 前提：**列宽主要由表头那一行的 `w-[]` 决定** ✓（fixed 模式只看第一行 ✓）⇒ 以后要改列宽，
+                改表头即可 ✓；⚠ 内容超宽不会自动撑开 ✗ ⇒ 已有的 `whitespace-nowrap`/换行要自己保证 ✓。 */}
+          {/* ⚠★ 同一条改动里两个前提，缺一不可 ✓：
+              ① `table-fixed` ⇒ 定宽是硬约束 ✓；
+              ② **去掉 `w-full`** ✗→✓ —— 否则表格仍被强行拉到容器 100% ✓ ⇒ 余量还是会被摊给各列 ✗
+                 （`table-fixed` 只保证"按比例分配"是确定的，不保证"不分配" ✗）。
+                 去掉后：表宽 = 各列宽度之和 ✓ ⇒ 定宽的列**就是那么宽** ✓、没定宽的按内容 ✓
+                 ⇒ 尾部自然贴紧 ✓；若总和超过容器 ⇒ 外层 `overflow-x-auto` 横向滚动 ✓（不会挤压 ✓）。 */}
+          {/* ⚠★ 用**内联样式**写 `table-layout: fixed` ✗→✓（不再写 Tailwind 的 `table-fixed` 类 ✓）——
+              用户 2026-10-16 反馈"改成 colgroup 后没变" ✓ ⇒ 最可能是**那个类没被 Tailwind 生成** ✗
+              （一旦类不存在 ⇒ 仍是 `auto` 布局 ⇒ `colgroup` 的宽度只被当"建议" ⇒ 余量继续按比例摊开 ✗
+                = 用户看到的"没变" ✓）。改内联后**不依赖 CSS 生成管线** ✓，这一环不可能再失效 ✓。 */}
+          {/* ⚠★ 三个前提必须同时成立，缺一个就"没变" ✗（这是本问题绕了 6 轮的真正原因 ✓）：
+              ① `table-layout: fixed`（内联 ✓ 不依赖 Tailwind ✓）；
+              ② **表宽必须钉成"各列之和"** ✗→✓ —— `fixed` 但 `width:auto` 时浏览器**仍会把表拉到容器宽**
+                 再**按比例放大各列** ✗ ⇒ 实测出来正好 ≈ 我设的宽 ×1.15（与用户截图完全一致 ✓）；
+              ③ 去掉 `w-full` ✓（要的就是"不再填满" ✓）。
+              ⇒ `width: 'max-content'` = 表宽取各列宽之和 ✓（配 colgroup ⇒ 每列**就是**那么宽 ✓）；
+                总宽超过容器时由外层 `overflow-x-auto` 横向滚动 ✓（不挤压 ✓）。
+              ⚠ 以后调列宽：**只改下面的 `<colgroup>`** ✓（表头里的 `w-[]` 已冗余 ✓）。 */}
+          {/* ⚠★ 最终口径（用户 2026-10-16 ✓，三轮试错后定稿 ✓）：
+              · `tableLayout: 'fixed'` ⇒ 列宽**由 `colgroup` 定**（不被内容顶开 ✓、也不被浏览器重新分配 ✗）；
+              · `width: '100%'` ⇒ 表格**按比例填满容器** ✓ —— 这才是"整体都显示得下"的正确解 ✓：
+                  用 `max-content`（上一轮 ✗）会让总宽 = 各列之和 ≈1250px ⇒ 在 ~1100px 的窗口里**右边三列被截** ✗
+                  （用户反馈"更宽了" ✓ 正是这个 ✓）。
+              · `minWidth: '55rem'`（★ 关键 ✓）—— 用户 2026-10-16 反馈"还不够、**差太多**"✗，
+                根因是上一轮把 minWidth 设成 **68rem(1088px)** ✗ > 他的内容区（≈950px）⇒
+                **表格被强行撑到 1088px** ⇒ 右边几列被截 + 底部横向滚动条 ✓✓（他截图里那条滚动条就是它 ✓）。
+                ⇒ 降到 **55rem(880px)**：只要窗口比它宽（几乎总是 ✓）⇒ 表格就**正好等于容器宽** ✓
+                ⇒ **不会截断、不会出现横向滚动** ✓。
+              ⇒ 效果：列宽 = 容器宽 × `colgroup` 的**比例** ✓（尾部依旧贴紧 ✓，整体一屏显示 ✓）。
+              ⚠ 调"比例"只改 `<colgroup>` ✓（表头 `w-[]` 已冗余 ✓）。 */}
+          <table className="text-[11px] border-collapse"
+                 style={{ tableLayout: 'fixed', width: '100%', minWidth: '55rem' }}>
+            {/* ★★ v2.8.9：**`<colgroup>` 把所有列宽一次钉死** ✗→✓ ——
+                为什么必须这样：`table-fixed` 下**没定宽的列会按第一行（表头）的内容算** ✗ ⇒ 表头只有 2~3 个字
+                ⇒ 那些列会**太窄**、把下面的数字挤掉 ✗（例如「触发数」列要放 `4699714` ✓）。
+                ⇒ 这里按"数据实际需要"给全 19 列定宽 ✓（含 `{SHOW_TIMING_COL && <col/>}` 的耗时列 ✓，
+                  开启/关闭都不会错位 ✓）；宽度之和 ≈ 76rem（≈1220px ✓）⇒ 常规 1400px 屏**一屏放得下** ✓，
+                  更窄的屏走外层 `overflow-x-auto` 横向滚动 ✓（不再挤压 ✓）。
+                ⚠ 改列宽**只改这一处** ✓（表头上的 `w-[]` 现在是冗余的 ✓，别两处改出分歧 ✗）。 */}
+            <colgroup>
+              {/* ★★★ v2.8.9 关键修正（用户 2026-10-16 "还差很多" ✓）：**列宽合计必须 ≤ 容器宽** ✗→✓ ——
+                  CSS 规定：`table-layout: fixed` 下**表格宽度不能小于各列宽之和** ✗ ⇒ 之前合计 ≈70.75rem(1132px)
+                  ⇒ 表格**硬是 1132px** ⇒ 用户 ~950px 的内容区必然"右列被截 + 底部横向滚动条" ✓✓
+                  （前几轮我一直在调 `width`/`minWidth`/内边距 ✗，方向全错 ✗ —— 真约束是**这个和** ✓）。
+                  ⇒ 现在按"内容刚好放得下"逐列收紧，合计 **59.5rem ≈ 952px** ✓（与用户内容区相当 ✓）。
+                  ⚠ 以后加列/加宽，**必须同时核这个和** ✓，否则又会撑出滚动条 ✓。 */}
+              <col style={{ width: '6rem' }} />      {/* 因子（长名走 `truncate` ✓ 悬停看全 ✓） */}
+              <col style={{ width: '2.25rem' }} />   {/* 周期（`60 天` ✓） */}
+              {SHOW_TIMING_COL && <col style={{ width: '2.75rem' }} />}{/* 耗时（默认关 ✓） */}
+              <col style={{ width: '2.5rem' }} />    {/* 覆盖率（`100.00` ✓） */}
+              <col style={{ width: '2.25rem' }} />   {/* 信号（`连续`/`0/1` ✓） */}
+              <col style={{ width: '3rem' }} />      {/* 触发数（`875292` ✓） */}
+              <col style={{ width: '2.5rem' }} />    {/* 触发收益 */}
+              <col style={{ width: '2.5rem' }} />    {/* 首次收益 */}
+              <col style={{ width: '2.5rem' }} />    {/* 续期收益 */}
+              <col style={{ width: '3rem' }} />      {/* 未触发数（`4699714` ✓） */}
+              <col style={{ width: '2.75rem' }} />   {/* 未触发收益 */}
+              {/* ★ v2.8.9（用户 2026-10-16 ✓）：差值列 **6.5rem → 8.5rem** ✗→✓ ——
+                  用户原话：「刚才我看到很挤的一版其实还可以，**要解决差值列叠在一起的问题**就好了」✓。
+                  原因：这格是**两行**（上行 `6.864` ✓、下行小字 `日4.817 · t=6.4 · 日胜78.9%` ✓），
+                  下行 ≈110px ✗ > 6.5rem(104px) ⇒ 而且它是 `whitespace-nowrap` ✓ ⇒ **压到/叠到隔壁列上** ✓
+                  ⇒ 给足宽度把整行放下 ✓（本列现为 **7.5rem(120px)** ✓ —— 表宽 `width:100%` 时列宽会**按比例**
+                  缩放 ✓，所以留的是"比例" ✓；其余列按各自数据量核过：触发数 3.25rem 放得下
+                  `875292` ✓、未触发数 4rem 放得下 `4699714` ✓、结论 4.75rem 放得下「有效(反向)✓」✓）。 */}
+              <col style={{ width: '3.5rem' }} />    {/* 差值（小字已改走悬停 ✓ ⇒ 只需放数字 ✓） */}
+              <col style={{ width: '3rem' }} />      {/* p值（`<1e-300*` ✓） */}
+              <col style={{ width: '2.75rem' }} />   {/* 分位收益（柱子 39px ✓） */}
+              <col style={{ width: '2.75rem' }} />   {/* IC */}
+              <col style={{ width: '3rem' }} />      {/* RankIC */}
+              <col style={{ width: '2.75rem' }} />   {/* ICIR */}
+              <col style={{ width: '4.5rem' }} />    {/* 结论（「有效(反向)✓」要把最长的放下 ✓） */}
+              <col style={{ width: '2.75rem' }} />   {/* 中位数 */}
+              <col style={{ width: '5.25rem' }} />   {/* 因子研究（「离场曲线」按钮 ≈62px ✓） */}
+            </colgroup>
             <thead>
               <tr className="text-slate-500 border-b">
                 <th className="text-center py-1 pr-2 whitespace-nowrap">因子</th>
@@ -1767,9 +1852,13 @@ export default function SingleFactorTestPanel({
                     为什么之前"靠不近"✗：表格是 `w-full` ✓ ⇒ 余量被浏览器摊给**没定宽的列** ✗
                     ⇒ ICIR 这类列被撑宽 ⇒ 它右侧就空出一段 ✓（看着像"结论离得远"✗ —— 其实空格在 ICIR 里 ✓）。
                     定宽取值按内容（数据是 4 位小数的原始数 ✓ 例 `0.355`/`0.0572` ✓）留够即可 ✓。 */}
-                <th className="text-center px-1 whitespace-nowrap w-[3.25rem] min-w-[3.25rem]">IC</th>
-                <th className="text-center px-1 whitespace-nowrap w-[3.5rem] min-w-[3.5rem]">RankIC</th>
-                <th className="text-center px-1 whitespace-nowrap w-[3.25rem] min-w-[3.25rem]">ICIR</th>
+                {/* ★★★ v2.8.9：**这里原来是 `w-[..] min-w-[..]`，现在必须删掉** ✗→✓ ——
+                    用户 2026-10-16 "还差很多" ✓ 的真凶之一 ✓：`min-width` 是**硬性下限** ⇒ 它会**盖过
+                    `colgroup` 设的宽度** ✗ ⇒ 各列最小宽之和把表格顶大 ⇒ 右列被截 ✓✓。
+                    ⇒ 列宽**只有 `colgroup` 一个来源** ✓（这才是 `table-layout: fixed` 的正用法 ✓）。 */}
+                <th className="text-center px-1 whitespace-nowrap">IC</th>
+                <th className="text-center px-1 whitespace-nowrap">RankIC</th>
+                <th className="text-center px-1 whitespace-nowrap">ICIR</th>
                 {/* ★ v2.8.8c（用户 2026-10-16 ✓）：结论列**定个最小宽度** ✗→✓ ——
                     用户原话：「结论这列**稍微宽点**，让**彩票型**可以在一行放下。**有效后面的 √**
                     也可以一行写下」✓ ⇒ 旧版列太窄 ⇒ 「彩票型」被折成"彩票/型"、"有效✓"也被折 ✗。
@@ -1780,11 +1869,11 @@ export default function SingleFactorTestPanel({
                     表格是 `w-full` ✓ ⇒ 多余宽度会被浏览器**摊给没有定宽的列** ✗ ⇒ 结论/中位数/因子研究
                     各自被撑开 ⇒ 看着"空得远" ✗。定宽之后 ✓：余量留给前面的数据列 ✓，
                     这三列**贴在一起** ✓、整表也更容易一屏放下 ✓。 */}
-                <th className="text-center px-0 whitespace-nowrap w-[4.75rem] min-w-[4.75rem]">结论</th>
+                {/* ★★★ v2.8.9：`w-[]`/`min-w-[]` **全撤** ✓（列宽唯一来源 = `colgroup` ✓，见上 ✓） ——
+                    它们曾把这两列撑到 4.75rem/3.25rem 的**硬下限** ✗ ⇒ 是"还差很多"的一部分 ✓。 */}
+                <th className="text-center px-0 whitespace-nowrap">结论</th>
                 <th
-                  /* ★ v2.8.8c：「中位数」也**定宽**（3.5rem = 56px，刚够三个字 + 内边距 ✓）⇒ 它不会被
-                     余量撑开 ✓ ⇒ 自然**贴紧左边的「结论」** ✓（用户：中位数列靠近结论一点 ✓）。 */
-                  className="text-center px-0 whitespace-nowrap w-[3.25rem] min-w-[3.25rem]"
+                  className="text-center px-0 whitespace-nowrap"
                   title="事件研究：持有 = 该行「周期」时的收益中位数（仅 0/1 信号有值；悬停可看均值/绝对收益胜率/样本数）"
                 >
                   中位数
@@ -1800,7 +1889,7 @@ export default function SingleFactorTestPanel({
                     ⚠ 改宽度要**表头 + 两个 td 一起改** ✗（只改一处会被自动布局再分配掉 ✓）。
                     ★ v2.8.8c（用户 2026-10-16 ✓）：再加 `pl-3` ⇒ 与「中位数」那列**稍微空开点** ✓
                     （同列的 td 也一起加 ✓，否则表头与单元格左边缘不一致 ✗）。 */
-                  className="text-center pl-2 pr-1 w-[6.5rem] min-w-[6.5rem] whitespace-nowrap"
+                  className="text-center pl-2 pr-1 whitespace-nowrap"
                   title="因子研究（两块，按因子类型自动出现一个）：0/1 二值信号 → 事件研究（触发对齐 T=0 的收益分布）；连续因子 → 持仓期曲线（净值曲线 + 十分位曲线 + 成本敏感度表 + 可切换基准）"
                 >
                   因子研究
@@ -1890,15 +1979,26 @@ export default function SingleFactorTestPanel({
                   : ''
                 // 差值单元格悬停：配对日 ≥2 给完整检验详情；仅 1 个配对日说明"不足统计推断"；
                 // 无配对日（两组无同日样本）明示不计算——避免可见区显示误导性的 0。
-                const pairTitle =
+                // ★★ v2.8.9c（用户 2026-10-16 ✓）：**把两个口径都写进悬停** ✗→✓ ——
+                //   用户原话：「这个**差值 6.864** 是啥？怎么 TAG 里**没有一个数跟它对上**？」✓
+                //   根因：列里显示的是**样本级差值** ✓（后端 `diff = trig.mean − not_trig.mean` ✓，
+                //     每次触发 / 每个未触发**各算一个样本** ⇒ **触发多的日子权重大** ✓）；
+                //     而旧悬停**只写了日配对口径** ✗（`daily_diff` ✓ = 每天一个样本、只在"当天两组
+                //     都有样本"的**配对日**上算 ✓）⇒ 6.864%（样本级）与 4.817%（日配对）当然对不上 ✓
+                //     —— 两个都是对的，只是**口径不同** ✓（后端注释里早就记过同类困惑 ✓）。
+                //   ⇒ 现在**第一行先说清列里那个数** ✓，第二段才是日配对详情 ✓（不再让人对着两个数猜 ✗）。
+                const pairTitle = [
+                  `「差值」${fmt(r.diff, 3)}%（**样本级**口径：触发组样本均值 − 未触发组样本均值；`
+                  + '每次触发、每个未触发各算一个样本 ⇒ 触发多的日子权重更大）',
+                  '',
                   dT != null
                     ? (() => {
                         const band = r.daily_n > 0 ? 1.96 / Math.sqrt(r.daily_n) : 0
                         const s1 = r.daily_acf1 != null ? Math.abs(r.daily_acf1) > band : null
                         const s5 = r.daily_acf5 != null ? Math.abs(r.daily_acf5) > band : null
                         return [
-                          `按日配对检验（${r.daily_n} 个交易日）：`,
-                          `日差值均值 ${fmt(r.daily_diff, 3)}%`,
+                          `另一口径 · 按日配对检验（${r.daily_n} 个交易日）：`,
+                          `日差值均值 ${fmt(r.daily_diff, 3)}%（每天一个样本 ⇒ 与上面的样本级不同 ✓）`,
                           `HAC t=${fmtRaw(dT, 2)}（普通 t=${r.daily_t != null ? fmtRaw(r.daily_t, 2) : '-'}）`,
                           `相对收益胜率 ${fmt(r.daily_win, 2)}%（触发组日均 > 未触发组日配对的交易日占比）`,
                           `lag-1 自相关=${r.daily_acf1 ?? '-'}${s1 == null ? '' : s1 ? '（显著）' : '（不显著）'}`,
@@ -1909,7 +2009,8 @@ export default function SingleFactorTestPanel({
                       })()
                     : r.daily_diff != null
                       ? `按日配对检验：仅 ${r.daily_n} 个配对日，不足统计推断；日差 = 当日触发组−未触发组日截面均值差 ${fmt(r.daily_diff, 3)}%`
-                      : '无配对日（触发组与非触发组无任何同日样本），不计算日配对差'
+                      : '无配对日（触发组与非触发组无任何同日样本），不计算日配对差',
+                ].join('\n')
                 return (
                   <>
                   <tr key={`${r.id}:${r.horizon ?? '-'}`} className="border-b border-slate-100 dark:border-slate-700">
@@ -1919,7 +2020,7 @@ export default function SingleFactorTestPanel({
                       </td>
                     ) : (
                       <>
-                        <td className="py-1 pr-2" title={hoverFormula}>
+                        <td className="py-1 pr-2 truncate" title={hoverFormula}>
                           <span className="font-semibold">{r.name}</span>
                           <span className="text-slate-400 ml-1">[{r.source}]</span>
                         </td>
@@ -2011,11 +2112,13 @@ export default function SingleFactorTestPanel({
                           title={pairTitle}
                         >
                           <div>{fmt(r.diff, 3)}</div>
-                          {r.daily_diff != null && (
-                            <div className="text-slate-400 font-mono text-[9px] font-normal whitespace-nowrap">
-                              日{fmt(r.daily_diff, 3)} · t={dT != null ? fmtRaw(dT, 1) : '-'} · 日胜{r.daily_win != null ? fmt(r.daily_win, 1) : '-'}%
-                            </div>
-                          )}
+                          {/* ★★ v2.8.9（用户 2026-10-16 ✓）：**把这一行小字从格子里撤掉** ✗→✓ ——
+                              用户原话：「还不够，**差太多**」✓ —— 你截图底部有横向滚动条 ⇒ 内容区 ≈950px ✗，
+                              而列宽合计 ≈1130px ⇒ 差 ~180px ✓。
+                              这行小字（`日4.817 · t=6.4 · 日胜78.9%` ✓）实测要 ≈110px ✗ —— 是**最占宽度**的一块 ✓；
+                              而这些数字**本来就在本格的悬停提示里**（`title={pairTitle}` ✓，见上 ✓）
+                              ⇒ 撤掉文字**不丢任何信息** ✓，只省宽度 ✓（差值列 7.5rem → 3.5rem ✓）。
+                              ⚠ 想恢复：把这段放回来即可 ✓（`dT`/`r.daily_diff`/`r.daily_win` 都还在 ✓）。 */}
                         </td>
                         <td className="text-right px-1">
                           {r.p_value === null ? '-' : fmtP(r.p_value)}
@@ -2140,7 +2243,7 @@ export default function SingleFactorTestPanel({
                               （后者是用户前面明确要的 ✓："上头有按钮就贴在下边线" ✓）。
                             ⚠ 判据用 `vRows.length`（本行有没有含离场变体 ✓）——
                               它同时也是「离场曲线」按钮出不出现的条件 ✓ 两处一致 ✓。 */}
-                        <td className={`text-center pl-2 pr-1 w-[6.5rem] min-w-[6.5rem] ${
+                        <td className={`text-center pl-2 pr-1  ${
                           vRows.length > 0 ? 'align-top' : 'align-middle'
                         }`}>
                           {/* ★★ v2.8.8b（用户 2026-10-16 看图第四轮 ✓）：**固定两行网格** ✗→✓ ——
@@ -2286,7 +2389,7 @@ export default function SingleFactorTestPanel({
                           而是**整格垂直居中** ✓（`align-middle` ✓）⇒ 上下各留一点空 ✓
                           ⇒ 与隔壁基础行那两行按钮的**视觉中线**对齐 ✓（那就是用户说的"水平对齐" ✓）。
                           ⚠ 基础行保持 `align-top` 的两行栈不变 ✓（它的离场曲线确实"贴在下边线" ✓）。 */}
-                      <td className="text-center pl-2 pr-1 w-[6.5rem] min-w-[6.5rem] align-middle">
+                      <td className="text-center pl-2 pr-1  align-middle">
                         <div className="h-[22px] flex items-center justify-center">
                           <button
                             type="button"
@@ -2313,7 +2416,7 @@ export default function SingleFactorTestPanel({
             <b>触发分组：</b>0/1 信号为「因子值 &gt; 0.5」；连续因子按分位数分组（触发 = 前 20% 高分位，未触发 = 后 20% 低分位）。触发数为按剔除开关过滤后的数量（信号日 T 涨停 = 选股过滤；成交日 T+1 涨停/停牌 = 实际买不到，与回测一致）。
           </p>
           <p className="mt-1 text-slate-400 leading-relaxed">
-            <b>差值：</b>触发均值 − 未触发均值（正数说明触发组未来收益更高）；收益按信号日收盘价买入、持有「周期」列对应天数。<b>p值：</b>Mann-Whitney U 检验显著性（&lt;0.05 时标 *）。<b>IC：</b>逐日横截面 Pearson 相关均值。<b>ICIR：</b>平均 IC / IC 标准差。表中均为原始小数（不加 %），稳定性阈值 |ICIR| ≥ 0.05。
+            <b>差值：</b>触发组<b>样本</b>均值 − 未触发组<b>样本</b>均值（每次触发 / 每个未触发各算一个样本 ⇒ <b>触发多的日子权重更大</b>；正数说明触发组未来收益更高）。悬停里的「<b>日差值均值</b>」是<b>另一口径</b>（按交易日配对、每天一个样本，且只在"当天两组都有样本"的配对日上算）⇒ <b>两个数不同是正常的</b>，不是算错：前者按样本数加权、后者每天等权。收益按信号日收盘价买入、持有「周期」列对应天数，本列与各收益列显示为<b>百分数（已 ×100，不带 % 号）</b>。<b>p值：</b>Mann-Whitney U 检验显著性（&lt;0.05 时标 *）。<b>IC / RankIC / ICIR：</b>逐日横截面相关口径，列内为<b>原始小数</b>（未 ×100），稳定性阈值 |ICIR| ≥ 0.05。
           </p>
           <p className="mt-1 text-slate-400 leading-relaxed">
             <b>0/1 信号「有效 ✓」：</b>需同时满足四条：① 事件研究中位数 ≥ 0.50%；② 绝对收益胜率 ≥ 55%；③ 日配对超额 ≥ 门槛（= max(0.5%, 0.025%×持有期)：20 日 0.50%、40 日 1.00%）；④ 日配对稳定（|HAC t| ≥ 2 或 日胜率 ≥ 55%）。无基准时第③条不启用、第④条仍要求。
