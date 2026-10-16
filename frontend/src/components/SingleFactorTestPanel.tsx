@@ -1987,7 +1987,10 @@ export default function SingleFactorTestPanel({
                         </td>
                         <td className="text-right px-1">{fmt(r.not_trigger?.mean_ret, 3)}</td>
                         <td
-                          className={`text-right px-1 font-semibold ${(r.diff ?? 0) >= 0 ? 'text-red-500' : 'text-emerald-600'}`}
+                          /* ★ v2.8.8c（用户 2026-10-16 ✓）：**差值改为水平居中** ✗→✓ ——
+                             用户原话：「底下那个 -0.185 也是水平居中」✓（表头已居中 ✓ ⇒ 数字跟着居中对上 ✓）。
+                             ⚠ 它下面那行小字（日…·t=…·日胜…%）同格 ⇒ 一起居中 ✓（不拆开 ✓）。 */
+                          className={`text-center px-1 font-semibold ${(r.diff ?? 0) >= 0 ? 'text-red-500' : 'text-emerald-600'}`}
                           title={pairTitle}
                         >
                           <div>{fmt(r.diff, 3)}</div>
@@ -2115,7 +2118,7 @@ export default function SingleFactorTestPanel({
                               （后者是用户前面明确要的 ✓："上头有按钮就贴在下边线" ✓）。
                             ⚠ 判据用 `vRows.length`（本行有没有含离场变体 ✓）——
                               它同时也是「离场曲线」按钮出不出现的条件 ✓ 两处一致 ✓。 */}
-                        <td className={`text-left pl-3 pr-1 w-[7.5rem] min-w-[7.5rem] ${
+                        <td className={`text-center pl-3 pr-1 w-[7.5rem] min-w-[7.5rem] ${
                           vRows.length > 0 ? 'align-top' : 'align-middle'
                         }`}>
                           {/* ★★ v2.8.8b（用户 2026-10-16 看图第四轮 ✓）：**固定两行网格** ✗→✓ ——
@@ -2128,7 +2131,7 @@ export default function SingleFactorTestPanel({
                               ⇒ 全表所有行的这两行纵坐标**完全一致** ✓；与下面变体行的
                               「`h-[26px]` 占位 + 按钮」也同一套网格（22 + 4 = 26 ✓）。
                               ⚠ 改按钮内边距/字号时要同步改这几个高度 ✗（否则又错开 ✓）。 */}
-                          <div className="h-[22px] flex items-center justify-start gap-1">
+                          <div className="h-[22px] flex items-center justify-center gap-1">
                             {r.is_binary && (
                               <button
                                 onClick={() => openEventStudy(r)}
@@ -2166,7 +2169,7 @@ export default function SingleFactorTestPanel({
                               ⇒ 只有真有「离场曲线」按钮时才渲染这一行 ✓ ⇒ 单按钮行内容 22px ✓
                               ⇒ td 的 `align-middle` 才真正把它**竖直居中** ✓。 */}
                           {vRows.length > 0 ? (
-                            <div className="h-[22px] mt-1 flex items-center justify-start">
+                            <div className="h-[22px] mt-1 flex items-center justify-center">
                               <button
                                 onClick={() => setExitModal({ row: r, ei: null, name: '' })}
                                 className="px-1.5 py-0.5 rounded border border-amber-400 text-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30 text-[11px] whitespace-nowrap"
@@ -2261,8 +2264,8 @@ export default function SingleFactorTestPanel({
                           而是**整格垂直居中** ✓（`align-middle` ✓）⇒ 上下各留一点空 ✓
                           ⇒ 与隔壁基础行那两行按钮的**视觉中线**对齐 ✓（那就是用户说的"水平对齐" ✓）。
                           ⚠ 基础行保持 `align-top` 的两行栈不变 ✓（它的离场曲线确实"贴在下边线" ✓）。 */}
-                      <td className="text-left pl-3 pr-1 w-[7.5rem] min-w-[7.5rem] align-middle">
-                        <div className="h-[22px] flex items-center justify-start">
+                      <td className="text-center pl-3 pr-1 w-[7.5rem] min-w-[7.5rem] align-middle">
+                        <div className="h-[22px] flex items-center justify-center">
                           <button
                             type="button"
                             onClick={() => setExitModal({ row: r, ei: v.gi, name: v.name })}
