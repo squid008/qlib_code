@@ -14,14 +14,53 @@ qlib 原版 limit_threshold 是全局一个浮点数，用 $change 统一判断�
 
 涨停（收盘 >= 涨停价）禁止买入；跌停（收盘 <= 跌停价）禁止卖出；停牌（$close 为 NaN）双向禁。
 """
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 import pandas as pd
 
+from qlib.backtest.decision import Order
 from qlib.backtest.exchange import Exchange
 
 from .limits import mark_limit_down, mark_limit_up
 from .adjust import normalize_mode
+
+#: 冲击成本的**倍数封顶**（v2.8.5 ✓）：本单金额 / 当日成交额 的上限 ✓
+IMPACT_RATIO_CAP = 1.0
+
+
+def cap_impact_cost(trade_val: float, turnover: float, base_cost_rate: float,
+                    impact_cost: float, min_cost: float,
+                    cap: float = IMPACT_RATIO_CAP) -> Optional[float]:
+    """按"倍数封顶"重算交易成本 ✓（v2.8.5；2026-10-16 用户报的**滚动净值垮塌**根因 ✓）。
+
+    qlib 的滑点是**平方冲击**：`adj_cost_ratio = impact_cost × (本单金额 / 当日成交额)²`
+    （`qlib/backtest/exchange.py::_calc_trade_info_by_order` ✓）⇒ 单笔金额一旦**超过当日成交额**，
+    平方项就 > 1 ⇒ **成本可以比成交金额还大** ✗。实测（`ai_test/probe_impact_cost_1016.py` ✓，
+    本金 1 亿的回测）：190 万的单子打在当日成交额 **2.78 万**的票上 ⇒ 倍数 **68** ⇒ 那一笔成本
+    **1778 万** ✗；37 笔按公式合计 **7577.7 万** ⇒ 与 qlib recorder 里的 `total_cost`
+    （**7597.5 万** ✓）**逐位吻合** ⇒ 现金被当成本扣光（1e8 → **27 元** ✗）⇒ 净值一步砸到 **0.2402** ✓。
+
+    ⚠ 平台「成交量限制」默认留空（`volume_threshold=None` ⇒ 不限量 ✓）⇒ "单子远大于当日成交额"
+      的单**真会发生** ✓（要贴近实盘应显式给 0.1~0.25 ✓ —— 那是另一个**口径决定** ✓，
+      本函数只管"**别爆炸**" ✓）。
+
+    做法：把倍数**封顶到 `cap`（默认 1.0 ✓）**＝"最多吃掉当日全部成交额 ⇒ 冲击按 1 倍计" ✓。
+    ⚠ **正常回测逐位不变** ✓ —— 只有"单笔 > 当日成交额"时才命中（那时原成本本来就荒谬 ✓）；
+      因此本函数在不需要封顶时返回 `None` ✓，调用方保留父类原值 ✓。
+
+    返回：需要封顶时返回新成本 ✓；不需要（或数据不足）返回 `None` ⇒ 调用方**保持原值** ✓。
+    """
+    try:
+        tv = float(trade_val)
+        turn = float(turnover)
+    except (TypeError, ValueError):
+        return None
+    if not (tv > 0) or not (turn > 0) or tv != tv or turn != turn:
+        return None
+    if tv / turn <= float(cap):
+        return None
+    rate = float(base_cost_rate or 0.0) + float(impact_cost or 0.0) * float(cap) ** 2
+    return max(tv * rate, float(min_cost or 0.0))
 
 
 class BoardAwareExchange(Exchange):
@@ -60,6 +99,30 @@ class BoardAwareExchange(Exchange):
         self._exclude_any = self._exclude_st or self._exclude_gem or self._exclude_star
         self._forbid_by_dt = None  # 调仓日 -> 该日各股是否禁买（由 _mark_forbidden 构建）
         super().__init__(*args, **kwargs)
+
+    def _calc_trade_info_by_order(self, order, position, dealt_order_amount=None):
+        """包一层父类：**把冲击成本的"倍数"封顶** ✓（v2.8.5，见 `cap_impact_cost` 的说明 ✓）。
+
+        为什么必须在这一层做：qlib 的成本是**在父类内部**用"本单金额 / 当日成交额"的平方算出来的 ✗，
+        外部拿不到中间量 ⇒ 只能"算完再封顶" ✓（只改成本、不动成交量裁剪/整手/涨跌停那些判定 ✓）。
+
+        ⚠ 只在"单笔金额 > 当日成交额"时生效 ⇒ **正常回测逐位不变** ✓（这也让它成为"
+          防爆炸"的安全网，而不是改口径 ✗）。
+        ⚠ 取不到成交量/价格 ⇒ **保持父类结果** ✓（绝不为了"防爆炸"把回测搞崩 ✗）。
+        """
+        price, val, cost = super()._calc_trade_info_by_order(
+            order, position, dealt_order_amount if dealt_order_amount is not None else {})
+        try:
+            turnover = float(self.get_volume(order.stock_id, order.start_time,
+                                             order.end_time)) * float(price)
+            base = float(self.close_cost if order.direction == Order.SELL else self.open_cost)
+            new_cost = cap_impact_cost(val, turnover, base, float(self.impact_cost or 0.0),
+                                       float(self.min_cost or 0.0))
+            if new_cost is not None:
+                cost = new_cost
+        except Exception:                                                 # noqa: BLE001
+            pass
+        return price, val, cost
 
     def _adjust_quote_prices(self) -> None:
         """按复权模式调整 quote 价格列（$close 等原生为后复权价，见模块 docstring）：
