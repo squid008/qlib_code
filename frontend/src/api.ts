@@ -1250,6 +1250,13 @@ export interface EventNavRequest {
    * ⚠ 仅成交时点为**开盘**时生效 ✓（否则后端退回 `legacy` 并写进 `bt.diag["limit_judge"]` ✓）。
    */
   limit_judge?: string
+  /**
+   * ★★ v2.9.3（用户 2026-10-17 ✓）：**最大同时持仓数**（`null`/0 = 不限 ✓）。
+   * 为什么需要它：信号重触发间隔若远小于持有期 ⇒ 组合里几乎每只票一直在
+   * ⇒ 策略退化成「全市场等权满仓」✗，信号完全不体现在结果里 ✓
+   * （实测 hold=60 时策略 1.4698 vs 参照 1.4747，只差 0.33% ✓）。设上限才有"选择性" ✓。
+   */
+  max_positions?: number | null
 }
 
 export interface EventNavResult {
@@ -1257,6 +1264,19 @@ export interface EventNavResult {
   nav: Record<string, number | string | null>[]
   stats: Record<string, Record<string, any>>
   diag: Record<string, any>
+  /** ★ v2.9.3：**信号稀释诊断**（平均重触发间隔 / 预估持仓覆盖率 / 是否已退化 ✓） */
+  nav_diag?: {
+    n_events?: number
+    n_codes?: number
+    n_days?: number
+    retrigger_days?: number | null
+    hold_days?: number
+    hold_coverage?: number | null
+    diluted?: boolean
+    text?: string
+    max_positions?: number
+    bench_equal_note?: string
+  }
   nav_columns: string[]
   alloc_default: string
   /**

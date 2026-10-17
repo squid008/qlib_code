@@ -198,6 +198,14 @@ export default function EventStudyModal({
   //   （600 只抽样同机实测：k=5 → **0.68s**、k=60 → **1.48s**，**2.17×** ✓，被拒 3286 → 10200 ✓）。
   const NAV_SLOW_S = 10
   const [navCost, setNavCost] = useState(0.004)
+  // ★★ v2.9.3（用户 2026-10-17 ✓）：**最大同时持仓数** ✗→✓ ——
+  //   为什么必须有：信号若"每只票每 ~23 个交易日就重触发一次"、而持有期 60 天 ⇒
+  //   组合里几乎每只票一直持有 ⇒ 策略退化成「全市场等权满仓」✗
+  //   ⇒ 信号完全不体现在结果里 ✓（实测 hold=60：策略 1.4698 vs 参照 1.4747，只差 0.33% ✓）。
+  //   设个上限才有"选择性"：先到先得、超出的新信号明确拒单（`reason=max_positions` ✓）。
+  //   `null` = 不限 ✓（默认，老行为逐位不变 ✓）；输入框与生效值分开 ⇒ 能删光 ✓。
+  const [navMaxPos, setNavMaxPos] = useState<number | null>(null)
+  const [navMaxPosInput, setNavMaxPosInput] = useState('')
   // v2.1.0：导出 XLSX（后端生成，图用**当前面板截图** ⇒ 所见即所得 ✓）
   const [expBusy, setExpBusy] = useState(false)
   const [expMsg, setExpMsg] = useState<{ text: string; ok: boolean } | null>(null)
@@ -253,7 +261,8 @@ export default function EventStudyModal({
     //     ⇒ 界面上「曲线已算好、却一直显示计算中…」✗（缓存命中本就是"秒出" ⇒ busy=false ✓）。
     // ★ v2.1.65：**键里必须带成交时点** ✗→✓ —— 否则面板切"次日开盘/次日收盘"时会命中同一份
     //   前端缓存 ⇒ 净值**纹丝不动** ✗（用户 2026-10-12 实测"两个数一模一样" ✓ 的一层原因 ✓）。
-    const key = `${navK}|${navCost}|${tid ?? ''}|${reqRef.current?.fill ?? ''}`
+    // ★ v2.9.3：`max_positions` 也进前端缓存键 ✗→✓（否则改了上限会命中旧图 ⇒"选了没生效"✗）
+    const key = `${navK}|${navCost}|${navMaxPos ?? 0}|${tid ?? ''}|${reqRef.current?.fill ?? ''}`
     const hit = navCacheRef.current.get(key)
     if (hit) {
       setNavRes(hit)
@@ -293,6 +302,8 @@ export default function EventStudyModal({
         //   （后端写死 ✗）⇒ 面板切"次日收盘"也看不出任何变化 ✗（用户 2026-10-12 实测 ✓）。
         // ★ T1（v2.8.6）：**涨停判定口径**也一起发 ✓（否则面板换了口径、这条净值纹丝不动 ✗）
         runEventNav({ task_id: tid ?? '', hold_days: navK, cost: navCost, factor_id: expr,
+                      // ★ v2.9.3：持仓上限一起发 ✓（`null` ⇒ 不发 ⇒ 后端按"不限" ✓ 老行为不变 ✓）
+                      max_positions: navMaxPos ?? undefined,
                       fill: req?.fill ?? undefined,
                       limit_judge: req?.limit_judge ?? undefined })
           .then((r) => {
@@ -371,7 +382,7 @@ export default function EventStudyModal({
     //     `slowRef` 拦截 ✓（`byButton` 判断只放过"点按钮"那种 ✓）⇒ 两条语义同时成立 ✓：
     //       · 快公式：改周期 ⇒ **自动算** ✓（含上下箭头 / 换公式 / 改成本 ✓）
     //       · 慢公式：改周期 ⇒ **等按钮** ✓；点按钮 ⇒ 算 ✓
-  }, [result, navK, navCost, sourceTaskId, navTick])                          // eslint-disable-line react-hooks/exhaustive-deps
+  }, [result, navK, navCost, navMaxPos, sourceTaskId, navTick])               // eslint-disable-line react-hooks/exhaustive-deps
 
   const taskRef = useRef<string | null>(null)
   const timerRef = useRef<number | null>(null)
@@ -1266,6 +1277,53 @@ export default function EventStudyModal({
                     onChange={(e) => setNavCost(Number(e.target.value))}
                   />
                 </label>
+                {/* ★★ v2.9.3（用户 2026-10-17 ✓）：**最大同时持仓数** ✗→✓ ——
+                    空 = 不限（默认 ✓ 老行为不变 ✓）；填了就"先到先得"，超出的新信号拒单
+                    （`reason=max_positions` ✓ 导出/被拒明细里可数 ✓）。
+                    ⚠ 设了上限 ⇒ 后端**隐藏未触发组参照线**（它不限只数 ⇒ 不可比 ✗）。 */}
+                <label className="flex items-center gap-1 text-slate-500"
+                       title="最多同时持有多少只（空 = 不限）。不设上限时，若信号重触发间隔远小于持仓周期，组合会退化成「全市场等权满仓」⇒ 信号完全不体现在净值里（看左边黄色警告）。设上限才有选择性：先到先得，超出的新信号拒建仓。">
+                  最大持仓数
+                  <input
+                    type="number"
+                    min={1}
+                    max={2000}
+                    className="w-16 border rounded px-1 py-0.5"
+                    value={navMaxPosInput}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setNavMaxPosInput(v)
+                      const n = Number(v)
+                      if (v.trim() === '') {
+                        setNavMaxPos(null)                 // 删光 ⇒ 恢复"不限" ✓（老行为 ✓）
+                      } else if (Number.isFinite(n) && n >= 1) {
+                        setNavMaxPos(Math.max(1, Math.min(2000, Math.round(n))))
+                      }
+                      // 其余非法（0/负数）⇒ 不动 ⇒ 图保留上次 ✓
+                    }}
+                  />
+                  <span className="text-slate-400">（空=不限）</span>
+                </label>
+                {/* ★★ v2.9.3：**信号稀释警告** ✗→✓ —— 用户 2026-10-17 的困惑（"配对每 60 日落后
+                    0.45pp，怎么 4 年净值只差 1.8%"）就是它引起的 ✓：持有期 ≫ 重触发间隔时
+                    组合已退化为全市场等权 ⇒ 这条曲线基本只是 beta ✗。放在同一行下方（basis-full ✓）。 */}
+                {navRes?.nav_diag?.diluted && (
+                  <div className="basis-full text-[11px] leading-relaxed text-amber-800 bg-amber-50
+                                  border border-amber-300 rounded px-2 py-1">
+                    ⚠ {navRes.nav_diag.text}
+                    {navRes.nav_diag.retrigger_days != null && (
+                      <span className="text-amber-700">
+                        {' '}（诊断：{navRes.nav_diag.n_events} 个触发 / {navRes.nav_diag.n_codes} 只 /
+                        {navRes.nav_diag.n_days} 个交易日 ⇒ 平均重触发间隔 {navRes.nav_diag.retrigger_days} 天）
+                      </span>
+                    )}
+                  </div>
+                )}
+                {navRes?.nav_diag?.bench_equal_note && (
+                  <div className="basis-full text-[11px] text-slate-500">
+                    ℹ {navRes.nav_diag.bench_equal_note}
+                  </div>
+                )}
                 {/* ⚠ v1.20.13：`navSlow || navBusy` ✓ —— 慢公式**首次自动算**的那几十秒也要能看到
                     「计算中…」✗（否则界面像卡死了 ✓）；算完且判定为快 ⇒ `navSlow=false` ⇒ 按钮收起 ✓ */}
                 {(navSlow || navBusy) && (

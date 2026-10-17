@@ -125,6 +125,9 @@ REJECT_TEXT = {
     "limit_up": "涨停买不进", "limit_up_open": "开盘一字涨停买不进",
     "limit_down": "跌停卖不出（顺延）", "limit_down_open": "开盘一字跌停卖不出（顺延）",
     "suspended": "停牌", "no_cash": "资金不足", "no_price": "该日无行情",
+    # ★★ v2.9.3（用户 2026-10-17 ✓）：**已达最大同时持仓数** ⇒ 该信号不建仓 ✓
+    #   （不静默丢弃 ✗ —— 导出/被拒明细里能数出"信号被上限挡掉多少次" ✓）
+    "max_positions": "已达最大同时持仓数（本次信号未建仓）",
 }
 
 
@@ -396,6 +399,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                  limit_judge: str = "legacy",
                  alloc_modes: Sequence[str] = ("event_even", "cash_even"),
                  lot: int = LOT_DEFAULT, rebal_band: float = 0.0,
+                 max_positions: int = 0,
                  exit_rule=None,
                  cancel_cb=None) -> BtResult:
     """跑回测，返回**两种资金方案**的净值 + 成交/被拒明细 + 统计。
@@ -705,6 +709,20 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                         sell_q.pop(c, None)
                         continue
                     ok.append((c, dec))
+                # ★★ v2.9.3（用户 2026-10-17 ✓）：**最大同时持仓数**上限 ✗→✓ ——
+                #   为什么需要它 ✗：信号若"每只票每 ~23 个交易日就重触发一次"，而持有期 60 天
+                #   ⇒ 组合里**几乎每只票都一直持有** ⇒ 策略退化成"全市场等权满仓" ✗
+                #   ⇒ 信号完全不体现在结果里 ✓（2026-10-17 实测：hold=60 时策略与参照线只差 0.33% ✓）。
+                #   ⇒ 用 `max_positions` 卡住"同时持有多少只" ✓：**先到先得**（按信号到达顺序 ✓），
+                #     超出的新信号**明确拒单**（reason=`max_positions` ✓，导出/明细可数 ✓），
+                #     已持有的老仓不动 ✓（到期/卖出腾出名额后，新信号才能进 ✓）。
+                #   ⚠ 只为"首次建仓"设卡 ✓；`c in sh`（续持/刷新）在上面的分支已 `continue` ✗ 不受影响 ✓。
+                if max_positions > 0 and mode != "batch_even":
+                    _room = max(0, int(max_positions) - len(sh))
+                    if len(ok) > _room:
+                        for _c, _dec in ok[_room:]:
+                            _reject(i, _c, "max_positions", _dec)
+                        ok = ok[:_room]
                 if ok:
                     if mode == "cash_even":
                         # ⚠ 份额要按「价 ×(1+单边费)」算，否则把费漏掉会现金微负（单测抓到）

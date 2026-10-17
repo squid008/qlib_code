@@ -1922,6 +1922,10 @@ class EventNavRequest(BaseModel):
     cost: float = 0.004
     capital: float = 1e9
     benchmark: str = "SH000300"
+    # ★★ v2.9.3（用户 2026-10-17 ✓）：**最大同时持仓数** ✓（`None`/0 = 不限 ✓，老行为逐位不变 ✓）
+    #   为什么需要它：信号重触发间隔若远小于持有期 ⇒ 组合里几乎每只票一直在 ⇒ 退化成"全市场等权" ✗
+    #   ⇒ 信号完全不体现在结果里 ✓（实测 hold=60 时策略与参照线只差 0.33% ✓）。设个上限才有"选择性" ✓。
+    max_positions: Optional[int] = None
     # ⚠ 两种来源：① 独立事件研究任务（`/event-study`）⇒ 用 `_ev`；
     #   ② 单因子测试的"秒开"路径（弹窗直接用表格里的 event_study 结果，没有独立任务）
     #      ⇒ 任务状态里存的是**按表达式分组**的 `_evs`，用因子表达式取。
@@ -2145,15 +2149,19 @@ _NAV_CANCEL: set = set()
 _NAV_CANCEL_MAX = 64
 
 
-def _nav_bt_key(codes, ev, start, end, k, cost, capital, modes, fill: str = "t1_open"):
+def _nav_bt_key(codes, ev, start, end, k, cost, capital, modes, fill: str = "t1_open",
+                max_positions: int = 0):
     # ★ v2.1.65：**`fill` 必须进回测缓存键** ✗→✓ —— 否则面板从"次日开盘"切到"次日收盘"时
     #   会**命中同一份缓存** ✗ ⇒ 净值不动 ⇒ 用户看到"两个数一模一样" ✗✓（就是这个现象 ✓）。
     # ★★ v2.8.2（**审计 #3** ✓）：**事件内容指纹**也必须进键 ✗→✓ —— 原来只用
     #   「条数 + 首末触发日」代表一组事件 ✗（连 `hash(ev.code)` 都没有 ✓）⇒ 同股票池 +
     #   同触发数 + 同首末触发日的两组不同信号会命中同一份 `BtResult` ✗（净值直接搬错 ✓）。
+    # ★★ v2.9.3：`max_positions` 也必须进键 ✗→✓ —— 否则改了上限会**命中旧缓存** ✗
+    #   ⇒ 净值纹丝不动 ⇒ 又是一个"选了没生效" ✓（本项目最贵的一类 bug ✓）。
     return (len(codes), hash(tuple(codes)), str(start), str(end),
             len(ev), str(ev["dt"].iloc[0]), str(ev["dt"].iloc[-1]), _ev_fingerprint(ev),
-            int(k), float(cost), float(capital), tuple(modes), str(fill))
+            int(k), float(cost), float(capital), tuple(modes), str(fill),
+            int(max_positions or 0))
 
 
 def _nav_cache_key(codes, start, end, strict: bool = True):
@@ -2295,7 +2303,10 @@ def event_study_nav(req: EventNavRequest):
         _fill_nav = str(req.fill or rq.get("fill") or "t1_open").strip().lower()
         if _fill_nav not in ("t1_open", "t1_close", "t_close"):
             _fill_nav = "t1_open"
-        _btk = _nav_bt_key(codes, ev, start, end, k, req.cost, req.capital, _modes, _fill_nav)
+        # ★★ v2.9.3：持仓上限进缓存键 ✓（改上限必须重算 ✗ 不能命中旧的 ✓）
+        _maxpos = int(req.max_positions or 0)
+        _btk = _nav_bt_key(codes, ev, start, end, k, req.cost, req.capital, _modes, _fill_nav,
+                           max_positions=_maxpos)
         # 取消源（v1.20.5）：登记本次请求序号；同事件指纹来了更新的请求 ⇒ 本次立即自停 ✓
         _seq = _nav_req_begin(_nav_req_key(codes, ev, start, end))
 
@@ -2329,6 +2340,8 @@ def event_study_nav(req: EventNavRequest):
                               capital=float(req.capital), strict_limit=True,
                               # ★ T1（v2.8.6）：判停口径跟随请求 ✓（`None` ⇒ 老口径 ✓ 数字不变 ✓）
                               limit_judge=(getattr(req, "limit_judge", None) or "legacy"),
+                              # ★★ v2.9.3：`max_positions` 透传 ✓（让组合"有选择性" ✓）
+                              max_positions=_maxpos,
                               alloc_modes=_modes, cancel_cb=_cancel_cb)
             with _NAV_BT_LOCK:
                 while len(_NAV_BT_CACHE) >= _NAV_BT_CAP:
@@ -2365,26 +2378,58 @@ def event_study_nav(req: EventNavRequest):
         #   （实测沪深300 = 0.957，而池内等权 = 1.4125 ✓ 差 48% ✗ ⇒ 结论会看反 ✓）。
         #   ∴ 把「未触发组等权」也画成一条曲线 ✓（同日剔除当日触发股 ✓、等权 ✓、无成本 ✓），
         #     与超额曲线**同源** ✓ ⇒ "事件到底跑没跑赢它自己的基准"一眼可见 ✓。
+        # ★★ v2.9.3（用户 2026-10-17 ✓）：**「信号稀释」诊断** ✗→✓ ——
+        #   用户当场质疑（完全正确 ✓）：「日配对每 60 日落后 0.45pp ⇒ 4 年该落后 7.5%，
+        #   怎么净值只差 1.8%？」⇒ 实测根因：信号**每只票约 23 个交易日就重触发一次**，
+        #   而持有期 60 天 ⇒ 任一时刻约 **93% 的票都在持仓** ⇒ 组合退化成「全市场等权」✗
+        #   ⇒ 信号被完全稀释 ✓（实测 hold=60 时策略 1.4698 vs 参照 1.4747，只差 0.33% ✓）。
+        #   ⇒ 这里把「平均重触发间隔 / 预估持仓覆盖率」算出来一起回传 ✓，
+        #     前端在覆盖率过高时**标黄警告** ✓（否则这种图会被误读成"信号有效" ✗）。
+        nav_diag: dict = {}
         try:
-            # ★★ v2.9.1（用户 2026-10-17 ✓）：**同持有期** ✓ —— 传当前 `k`（= 界面「持仓周期」✓）：
-            #   旧的"只持 1 天"会让参照线天然吃亏（策略吃 60 天 beta、参照只吃 1 天 ✗）
-            #   ⇒ 图上 1.449 vs 0.785 全是口径差 ✗。现在两条线持有期一致 ✓ 才叫可比 ✓。
-            _un = _untrig_nav_series(state, ev, start, end, hold=int(k))
-            if _un is not None and len(_un):
-                _s = pd.Series({pd.Timestamp(d): float(v) for d, v in _un})
-                nav = nav.copy()
-                nav["bench_equal"] = _s.reindex(nav.index).ffill()
-                try:
-                    from ..engine.perf_metrics import compute_perf      # 与上面净值统计同一个 ✓
-                    _ret = nav["bench_equal"].pct_change().fillna(0.0).to_numpy()
-                    stats["bench_equal"] = compute_perf(_ret)
-                except Exception:                                  # noqa: BLE001
-                    pass
-        except Exception as _ue:                                  # noqa: BLE001
-            # 参照线失败只影响展示（与基准失败同一策略 ✓）⇒ 不拖垮净值曲线 ✓
-            timings["untrig_error"] = repr(_ue)[:160]
+            _n_ev = int(len(ev))
+            _n_code = int(pd.Series(ev["code"]).nunique()) if _n_ev else 0
+            _n_day = int(len(pd.DatetimeIndex(nav.index).unique()))
+            _gap = (float(_n_day) * float(_n_code) / float(_n_ev)) if (_n_ev and _n_code) else 0.0
+            _cover = (1.0 - (1.0 - 1.0 / _gap) ** float(k)) if _gap > 0 else None
+            _diluted = bool(_cover is not None and _cover >= 0.8)
+            nav_diag = {"n_events": _n_ev, "n_codes": _n_code, "n_days": _n_day,
+                        "retrigger_days": (round(_gap, 2) if _gap else None),
+                        "hold_days": int(k), "max_positions": _maxpos,
+                        "hold_coverage": (round(float(_cover), 4) if _cover is not None else None),
+                        "diluted": _diluted,
+                        "text": (("持有期 %d 天 ≥ 平均重触发间隔 %.1f 天 ⇒ 约 %.0f%% 的票在任一时刻都在持仓"
+                                  " ⇒ 组合已退化为「全市场等权」，这条曲线基本反映的是 beta，不是信号 ✗"
+                                  % (int(k), _gap, float(_cover) * 100.0))
+                                 if _diluted else "")}
+        except Exception:                                          # noqa: BLE001 —— 诊断失败不影响主结果 ✓
+            nav_diag = {}
+        # ⚠ 设了持仓上限 ⇒ **参照线不可比** ✗（它不限只数）⇒ 不画、并如实说明 ✓
+        #   （宁可不给对照，也不给一条口径不同的对照 ✓ —— 与 v2.9.1 同一个教训 ✓）
+        if _maxpos:
+            nav_diag["bench_equal_note"] = ("已设「最大同时持仓数 %d」⇒ 参照线（不限只数）与本策略**不可比**"
+                                            " ⇒ 已隐藏；想看参照就先把上限清空 ✓" % _maxpos)
+        else:
+            try:
+                # ★★ v2.9.1（用户 2026-10-17 ✓）：**同持有期** ✓ —— 传当前 `k`（= 界面「持仓周期」✓）：
+                #   旧的"只持 1 天"会让参照线天然吃亏（策略吃 60 天 beta、参照只吃 1 天 ✗）
+                #   ⇒ 图上 1.449 vs 0.785 全是口径差 ✗。现在两条线持有期一致 ✓ 才叫可比 ✓。
+                _un = _untrig_nav_series(state, ev, start, end, hold=int(k))
+                if _un is not None and len(_un):
+                    _s = pd.Series({pd.Timestamp(d): float(v) for d, v in _un})
+                    nav = nav.copy()
+                    nav["bench_equal"] = _s.reindex(nav.index).ffill()
+                    try:
+                        from ..engine.perf_metrics import compute_perf      # 与上面净值统计同一个 ✓
+                        _ret = nav["bench_equal"].pct_change().fillna(0.0).to_numpy()
+                        stats["bench_equal"] = compute_perf(_ret)
+                    except Exception:                                  # noqa: BLE001
+                        pass
+            except Exception as _ue:                                  # noqa: BLE001
+                # 参照线失败只影响展示（与基准失败同一策略 ✓）⇒ 不拖垮净值曲线 ✓
+                timings["untrig_error"] = repr(_ue)[:160]
         return {"hold_days": k, "nav": nav_rows(nav), "stats": stats, "diag": bt.diag,
-                "nav_columns": [str(c) for c in nav.columns],
+                "nav_columns": [str(c) for c in nav.columns], "nav_diag": nav_diag,
                 "alloc_default": "event_even", "timings": timings}
     except _NavCancelled:
         # 被"更新的那次 k"顶掉 ⇒ 如实告知（前端此时通常已切到新的 key ✓，一般看不到这条 ✓）
