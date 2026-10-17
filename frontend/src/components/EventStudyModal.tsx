@@ -1304,9 +1304,27 @@ export default function EventStudyModal({
                   />
                   <span className="text-slate-400">（空=不限）</span>
                 </label>
+                {/* ⚠ v1.20.13：`navSlow || navBusy` ✓ —— 慢公式**首次自动算**的那几十秒也要能看到
+                    「计算中…」✗（否则界面像卡死了 ✓）；算完且判定为快 ⇒ `navSlow=false` ⇒ 按钮收起 ✓
+                    ★★ v2.9.3b（用户 2026-10-17 ✓）：**按钮必须紧跟「最大持仓数（空=不限）」** ✗→✓ ——
+                    用户原话：「重新计算按钮放在最大持仓数（空=不限）后面，**不要放到下面去了**」✓。
+                    上一版把黄色警告放在按钮**前面** ✗，而警告带 `basis-full`（= 强制占满一行 ✓）
+                    ⇒ 按钮被挤到第二行 ✓。⇒ 现在**先按钮、后警告** ✓：按钮留在第一行 ✓，
+                    警告（`basis-full`）自然换到下一行 ✓ —— 两者都要，且顺序不能反 ✗。 */}
+                {(navSlow || navBusy) && (
+                  <button
+                    type="button"
+                    onClick={() => setNavTick((t) => t + 1)}
+                    disabled={navBusy}
+                    className="border rounded px-2 py-0.5 text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
+                  >
+                    {navBusy ? '计算中…' : navRes ? '重新计算' : '计算'}
+                  </button>
+                )}
                 {/* ★★ v2.9.3：**信号稀释警告** ✗→✓ —— 用户 2026-10-17 的困惑（"配对每 60 日落后
                     0.45pp，怎么 4 年净值只差 1.8%"）就是它引起的 ✓：持有期 ≫ 重触发间隔时
-                    组合已退化为全市场等权 ⇒ 这条曲线基本只是 beta ✗。放在同一行下方（basis-full ✓）。 */}
+                    组合已退化为全市场等权 ⇒ 这条曲线基本只是 beta ✗。
+                    ⚠ 必须在**按钮之后** ✓（`basis-full` 换行 ✓，否则会把按钮挤下去 ✗）。 */}
                 {navRes?.nav_diag?.diluted && (
                   <div className="basis-full text-[11px] leading-relaxed text-amber-800 bg-amber-50
                                   border border-amber-300 rounded px-2 py-1">
@@ -1323,18 +1341,6 @@ export default function EventStudyModal({
                   <div className="basis-full text-[11px] text-slate-500">
                     ℹ {navRes.nav_diag.bench_equal_note}
                   </div>
-                )}
-                {/* ⚠ v1.20.13：`navSlow || navBusy` ✓ —— 慢公式**首次自动算**的那几十秒也要能看到
-                    「计算中…」✗（否则界面像卡死了 ✓）；算完且判定为快 ⇒ `navSlow=false` ⇒ 按钮收起 ✓ */}
-                {(navSlow || navBusy) && (
-                  <button
-                    type="button"
-                    onClick={() => setNavTick((t) => t + 1)}
-                    disabled={navBusy}
-                    className="border rounded px-2 py-0.5 text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
-                  >
-                    {navBusy ? '计算中…' : navRes ? '重新计算' : '计算'}
-                  </button>
                 )}
                 {/* ⚠ v1.20.11（用户 2026-09-18 要求）：**长提示、"计算中…（期间旧曲线保留）"、
                     以及 v1.20.10 删除的耗时行，一律不再显示** ✗ —— 按钮自身就是提示 ✓
