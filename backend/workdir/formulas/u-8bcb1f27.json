@@ -229,12 +229,13 @@
   },
   {
     "id": "3df62039463f",
-    "name": "CPX",
-    "text": "K=1;\n买线:=EMA(C,3);\n卖线:=EMA(SLOPE(C,21)*20+C,42);\nB_RAW:=CROSS(买线,卖线);\nS_RAW:=CROSS(卖线,买线);\nB_FILTER:=FILTER(B_RAW, K);\nS_FILTER:=FILTER(S_RAW, K);\nLAST_B:=BARSLAST(B_FILTER);\nLAST_S:=BARSLAST(S_FILTER);\nCPX:IF(LAST_B=0,1,IF(LAST_S=0,-1,IF(LAST_B<LAST_S,1,-1)));",
+    "name": "CPX_tdx",
+    "text": "K=1;\n买线:=EMA(C,3);\n卖线:=EMA(SLOPE(C,21)*20+C,42);\nB_RAW:=CROSS(买线,卖线);\nS_RAW:=CROSS(卖线,买线);\nB_FILTER:=FILTER(B_RAW, K);\nS_FILTER:=FILTER(S_RAW, K);\nLAST_B:=BARSLAST(B_FILTER);\nLAST_S:=BARSLAST(S_FILTER);\nCPX_tdx:IF(LAST_B=0,1,IF(LAST_S=0,-1,IF(LAST_B<LAST_S,1,-1)));",
     "expression": "If(Eq(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),0),1,If(Eq(BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1)),0),-1,If(Lt(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1))),1,-1)))",
     "created_at": "2026-09-17 20:10:27",
-    "updated_at": "2026-09-17 20:13:52",
-    "codegen": "1.21.4"
+    "updated_at": "2026-10-17 08:32:09",
+    "codegen": "1.21.4",
+    "author_modified_by": "u-8bcb1f27"
   },
   {
     "id": "4f3f038c05b5",
