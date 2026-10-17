@@ -345,10 +345,10 @@
     "text": "B点:ref(CPX,1)<0 and CPX>0;",
     "expression": "And(Lt(Ref(If(Eq(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),0),1,If(Eq(BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1)),0),-1,If(Lt(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1))),1,-1))),1),0),Gt(If(Eq(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),0),1,If(Eq(BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1)),0),-1,If(Lt(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1))),1,-1))),0))",
     "created_at": "2026-09-23 10:17:42",
-    "updated_at": "2026-10-17 12:33:46",
+    "updated_at": "2026-10-17 13:09:16",
     "codegen": "",
-    "sort_key": -26.0,
-    "pinned": true,
+    "sort_key": -14.0,
+    "pinned": false,
     "author_modified_by": "u-8bcb1f27"
   },
   {
@@ -357,10 +357,10 @@
     "text": "S点:ref(CPX,1)>0 and CPX<0;",
     "expression": "And(Gt(Ref(If(Eq(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),0),1,If(Eq(BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1)),0),-1,If(Lt(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1))),1,-1))),1),0),Lt(If(Eq(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),0),1,If(Eq(BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1)),0),-1,If(Lt(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1))),1,-1))),0))",
     "created_at": "2026-09-23 10:18:02",
-    "updated_at": "2026-10-17 12:33:46",
+    "updated_at": "2026-10-17 13:09:16",
     "codegen": "",
-    "sort_key": -25.0,
-    "pinned": true,
+    "sort_key": -13.0,
+    "pinned": false,
     "author_modified_by": "u-8bcb1f27"
   },
   {
