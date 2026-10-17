@@ -1818,14 +1818,26 @@ _UNTRIG_LOCK = threading.Lock()
 _UNTRIG_CAP = 4
 
 
-def _untrig_nav_series(state: dict, ev, start: str, end: str) -> List[tuple]:
-    """未触发组等权净值序列 ✓（`[(日期, 净值), ...]`；起点 1.0 ✓）。"""
+def _untrig_nav_series(state: dict, ev, start: str, end: str, hold: int = 1) -> List[tuple]:
+    """未触发组等权净值序列 ✓（`[(日期, 净值), ...]`；起点 1.0 ✓）。
+
+    ★★ v2.9.1（用户 2026-10-17 ✓）：**必须与策略同持有期** ✗→✓ ——
+      用户原话：「那肯定是**同口径**才能比啊，未触发组也得是**同持有期**才行啊」✓。
+      · 旧实现只持 **1 天**（每日等权、天天换仓 ✗）⇒ 而策略是**买入持有 N 天** ✓
+        ⇒ 两条曲线**持有期差 N 倍** ✗ ⇒ 图上「策略 1.449 vs 参照 0.785」根本不是 alpha ✓
+        （这是 2026-10-17 那轮"配对检验说没优势、净值却说有优势"的**真正来源** ✓）；
+      · 现在 `hold` = 该次请求的 `hold_days`（= 界面上的「持仓周期」✓）：
+        每个交易日把「当日未触发股」等权买入、**持有 hold 个交易日**、到期卖出 ✓
+        （重叠批次按**每只票等权**合并 ✓，与策略 `event_even` 的等权口径一致 ✓）。
+      ⚠ `hold <= 1` 时**保持旧行为**（逐日等权、天天换仓 ✓）⇒ 老调用/老测试逐位不变 ✓。
+    """
     rq = (state or {}).get("_req") or {}
     universe = str(rq.get("universe") or "all")
     pa = str(rq.get("price_adjust") or "backward")
     price_round = bool(rq.get("price_round", True))
     price_field = "$open" if str(rq.get("fill") or "").startswith("t1_open") else "$close"
-    key = (universe, str(start), str(end), pa, price_round, price_field, int(len(ev)))
+    hold = max(1, int(hold or 1))
+    key = (universe, str(start), str(end), pa, price_round, price_field, int(len(ev)), hold)
     with _UNTRIG_LOCK:
         got = _UNTRIG_CACHE.get(key)
     if got is not None:
@@ -1844,7 +1856,7 @@ def _untrig_nav_series(state: dict, ev, start: str, end: str) -> List[tuple]:
     with np.errstate(all="ignore"):
         ret = arr[1:] / arr[:-1] - 1.0
     valid = np.isfinite(ret)
-    # ---- 剔除「前一日触发」的标的（与超额曲线同一约定：触发日 T ⇒ 从 T+1 起不在这条线上 ✓）----
+    # ---- 触发矩阵（同一份数据给「1 天口径」与「同持有期口径」两条路径用 ✓）----
     dates = list(piv.index)
     pos = {str(d)[:10]: i for i, d in enumerate(dates)}
     col = {str(c).upper(): j for j, c in enumerate(piv.columns)}
@@ -1855,14 +1867,40 @@ def _untrig_nav_series(state: dict, ev, start: str, end: str) -> List[tuple]:
         j = col.get(str(c).upper())
         if i is None or j is None:
             continue
-        if i + 1 < len(dates):                     # 信号日 T ⇒ 剔除 T+1 那一格收益 ✓
-            _r.append(i)                           # ret 的第 i 行 = (T → T+1) ✓
-            _c.append(j)
+        _r.append(i)
+        _c.append(j)
+    trig = np.zeros(arr.shape, dtype=bool)
     if _r:
-        valid[np.asarray(_r, dtype=np.intp), np.asarray(_c, dtype=np.intp)] = False
-    with np.errstate(all="ignore"):
-        means = np.nanmean(np.where(valid, ret, np.nan), axis=1)
-    nav = np.cumprod(np.where(np.isfinite(means), 1.0 + means, 1.0))
+        trig[np.asarray(_r, dtype=np.intp), np.asarray(_c, dtype=np.intp)] = True
+
+    if hold <= 1:
+        # ---- 旧口径（持 1 天：逐日等权、天天换仓 ✓）—— 语义与 v2.9.0 **逐位不变** ✓ ----
+        valid1 = valid.copy()
+        if _r:
+            rr = np.asarray(_r, dtype=np.intp)
+            cc = np.asarray(_c, dtype=np.intp)
+            keep = rr + 1 < len(dates)             # 信号日 T ⇒ 剔除 T+1 那一格收益 ✓
+            valid1[rr[keep], cc[keep]] = False
+        with np.errstate(all="ignore"):
+            means = np.nanmean(np.where(valid1, ret, np.nan), axis=1)
+        nav = np.cumprod(np.where(np.isfinite(means), 1.0 + means, 1.0))
+    else:
+        # ---- ★ 同持有期口径（用户 2026-10-17 ✓）：未触发股也**买入持有 hold 天、到期卖出** ✓ ----
+        #   每个交易日 T：把「当日未触发股」等权买入（T+1 起持有 ✓）；持有满 hold 个交易日卖出 ✓；
+        #   重叠批次**按每只票等权合并**（与 `event_even` 的等权口径一致 ✓）。
+        n_ret, n_col = ret.shape
+        ent = np.zeros((n_ret + hold + 2, n_col), dtype=np.float64)
+        exi = np.zeros_like(ent)
+        untrig = ~trig[:n_ret]                     # 第 t 行 = 当日**未触发**的票 ✓
+        ent[1:n_ret + 1] = untrig.astype(np.float64)
+        exi[1 + hold:n_ret + 1 + hold] = untrig.astype(np.float64)
+        held = np.cumsum(ent - exi, axis=0)[:n_ret] > 0.5
+        rr = np.where(held & np.isfinite(ret), ret, np.nan)
+        cnt = np.sum(np.isfinite(rr), axis=1).astype(np.float64)
+        with np.errstate(all="ignore"):
+            sums = np.nansum(rr, axis=1)
+        means = np.where(cnt > 0, sums / np.maximum(cnt, 1.0), 0.0)
+        nav = np.cumprod(1.0 + means)
     nav = np.concatenate([[1.0], nav])             # ret 比 dates 少一行 ✓ ⇒ 首日补 1.0 ✓
     out = [(str(d)[:10], float(v)) for d, v in zip(dates, nav)]
     with _UNTRIG_LOCK:
@@ -2328,7 +2366,10 @@ def event_study_nav(req: EventNavRequest):
         #   ∴ 把「未触发组等权」也画成一条曲线 ✓（同日剔除当日触发股 ✓、等权 ✓、无成本 ✓），
         #     与超额曲线**同源** ✓ ⇒ "事件到底跑没跑赢它自己的基准"一眼可见 ✓。
         try:
-            _un = _untrig_nav_series(state, ev, start, end)
+            # ★★ v2.9.1（用户 2026-10-17 ✓）：**同持有期** ✓ —— 传当前 `k`（= 界面「持仓周期」✓）：
+            #   旧的"只持 1 天"会让参照线天然吃亏（策略吃 60 天 beta、参照只吃 1 天 ✗）
+            #   ⇒ 图上 1.449 vs 0.785 全是口径差 ✗。现在两条线持有期一致 ✓ 才叫可比 ✓。
+            _un = _untrig_nav_series(state, ev, start, end, hold=int(k))
             if _un is not None and len(_un):
                 _s = pd.Series({pd.Timestamp(d): float(v) for d, v in _un})
                 nav = nav.copy()

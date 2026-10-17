@@ -83,6 +83,70 @@ def test_cache_hit_avoids_second_load(monkeypatch):
     assert calls["n"] == 1
 
 
+def _patch2(monkeypatch, wide, codes=("A", "B")):
+    monkeypatch.setattr("app.factors.single_test._resolve_instruments",
+                        lambda universe, start: list(codes))
+    monkeypatch.setattr("app.factors.event_study.load_px_wide", lambda *a, **k: wide)
+
+
+def test_same_hold_keeps_position_through_trigger(monkeypatch):
+    """★★ v2.9.1（用户 2026-10-17 ✓）：**同持有期** —— T 日买入的仓位要**持满 hold 天**，
+    中途该票触发也**不提前踢出** ✓（这正是与"只持 1 天"的本质区别 ✓）。
+
+    构造（就是为了放大那个差异 ✓）：A 在 **D1→D2 大涨 +50%**，而 A 恰好在 **D1 触发** ✓。
+      · **旧口径（hold=1）**：A 触发 ⇒ 把 A 在 D1→D2 那一格**剔掉** ✗ ⇒ 正好错过这 +50% ✓
+        （实测净值 1.00 —— 这就是"参照线天生吃亏"的机制 ✓）；
+      · **同持有期（hold=2）**：D0 建仓的 A 仍在持有期内 ✓ ⇒ 吃到 +50%
+        ⇒ D2→D3 那天 (A +50% + B 0%)/2 = +25% ⇒ 净值 **1.25** ✓。
+    """
+    wide = pd.DataFrame({"A": [100.0, 100.0, 150.0, 150.0],   # D1→D2 大涨 +50% ✓
+                         "B": [100.0, 100.0, 100.0, 100.0]}, index=DATES)
+    _patch2(monkeypatch, wide)
+    state = {"_req": {"universe": "all", "fill": "t1_open"}}
+    ev = pd.DataFrame({"dt": ["2022-01-05"], "code": ["A"]})   # D1 触发 A ✓
+
+    nav2 = [v for _, v in F._untrig_nav_series(state, ev, "2022-01-04", "2022-01-07", hold=2)]
+    assert nav2[0] == pytest.approx(1.0)
+    assert nav2[1] == pytest.approx(1.0)          # D0 建的仓从 D1 起才计收益 ✓
+    assert nav2[3] == pytest.approx(1.25)         # ★ 吃到触发次日的 +50%（旧口径会错过 ✓）
+
+    F._UNTRIG_CACHE.clear()
+    nav1 = [v for _, v in F._untrig_nav_series(state, ev, "2022-01-04", "2022-01-07", hold=1)]
+    assert nav1[3] == pytest.approx(1.0)          # 旧口径：触发次日那一格被剔 ⇒ 错过全部涨幅 ✓
+
+
+def test_hold_default_is_legacy_one_day(monkeypatch):
+    """不传 `hold` ⇒ **旧口径逐位不变** ✓（老调用/老测试不受影响 ✓）。"""
+    _patch(monkeypatch, _fake_wide())
+    state = {"_req": {"universe": "all", "price_adjust": "backward", "fill": "t1_open"}}
+    ev = pd.DataFrame({"dt": ["2022-01-04"], "code": ["A"]})
+    default = [v for _, v in F._untrig_nav_series(state, ev, "2022-01-04", "2022-01-07")]
+    F._UNTRIG_CACHE.clear()
+    explicit = [v for _, v in F._untrig_nav_series(state, ev, "2022-01-04", "2022-01-07", hold=1)]
+    assert default == pytest.approx(explicit)
+    assert default == pytest.approx([1.0, 0.95, 0.95, 0.95])
+
+
+def test_cache_key_includes_hold(monkeypatch):
+    """★ 缓存键**必须含 hold** ✗ —— 否则 60 天口径会命中 1 天口径的旧结果 ✓（静默错 ✗）。"""
+    calls = {"n": 0}
+
+    def _load(*a, **k):
+        calls["n"] += 1
+        return _fake_wide()
+
+    monkeypatch.setattr("app.factors.single_test._resolve_instruments",
+                        lambda universe, start: ["A", "B", "C"])
+    monkeypatch.setattr("app.factors.event_study.load_px_wide", _load)
+    state = {"_req": {"universe": "all", "fill": "t1_open"}}
+    ev = pd.DataFrame({"dt": ["2022-01-04"], "code": ["A"]})
+    F._untrig_nav_series(state, ev, "2022-01-04", "2022-01-07", hold=1)
+    F._untrig_nav_series(state, ev, "2022-01-04", "2022-01-07", hold=2)
+    assert calls["n"] == 2
+    F._untrig_nav_series(state, ev, "2022-01-04", "2022-01-07", hold=2)
+    assert calls["n"] == 2                       # 同 hold ⇒ 命中 ✓
+
+
 def test_nonfinite_prices_are_ignored(monkeypatch):
     """停牌/脏价（NaN、0、inf）不进均值 ✓（与超额曲线同一清洗 ✓）。"""
     wide = _fake_wide()
