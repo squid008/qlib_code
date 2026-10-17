@@ -86,5 +86,29 @@
     "sort_key": -26.0,
     "pinned": true,
     "author_modified_by": "u-1dc0ce59"
+  },
+  {
+    "id": "502cebe1e98e",
+    "name": "空头",
+    "text": "空头:CPX<0;",
+    "expression": "Lt(If(Eq(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),0),1,If(Eq(BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1)),0),-1,If(Lt(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1))),1,-1))),0)",
+    "created_at": "2026-09-23 10:23:26",
+    "updated_at": "2026-10-17 08:37:32",
+    "codegen": "1.21.4",
+    "sort_key": -27.0,
+    "pinned": true,
+    "author_modified_by": "u-1dc0ce59"
+  },
+  {
+    "id": "2738de060f6b",
+    "name": "多头",
+    "text": "多头:CPX>0;",
+    "expression": "Gt(If(Eq(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),0),1,If(Eq(BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1)),0),-1,If(Lt(BARSLAST(FILTER(And(Gt(EMA($close,3),EMA(Add(Mul(Slope($close,21),20),$close),42)),Le(Ref(EMA($close,3),1),Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1))),1)),BARSLAST(FILTER(And(Gt(EMA(Add(Mul(Slope($close,21),20),$close),42),EMA($close,3)),Le(Ref(EMA(Add(Mul(Slope($close,21),20),$close),42),1),Ref(EMA($close,3),1))),1))),1,-1))),0)",
+    "created_at": "2026-09-23 10:23:14",
+    "updated_at": "2026-10-17 08:37:33",
+    "codegen": "1.21.4",
+    "sort_key": -28.0,
+    "pinned": true,
+    "author_modified_by": "u-1dc0ce59"
   }
 ]
