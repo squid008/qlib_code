@@ -83,5 +83,12 @@
     "updated_at": "2026-10-17 09:17:04",
     "author": "u-1dc0ce59",
     "author_user": "admin"
+  },
+  {
+    "id": "a23987ac8be2",
+    "deleted": true,
+    "updated_at": "2026-10-17 12:04:51",
+    "author": "u-1dc0ce59",
+    "author_user": "admin"
   }
 ]
