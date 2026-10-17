@@ -1,4 +1,4 @@
-# 依赖与构建产物
+﻿# 依赖与构建产物
 node_modules/
 frontend/node_modules/
 frontend/dist/
@@ -75,3 +75,8 @@ md/upload.md
 
 # 后端 stderr 日志（本机运行产物 ✓）
 backend/server.err
+
+# 公式库备份文件（*.json.bak-<时间>）**永不入库** ✗ —— 2026-10-17 用户明确要求：
+#   「这个备份的删掉，GIT 上不要留这个」✓；1.2MB/份 ×3 份曾被我 git add -A 带进库 ✗。
+backend/workdir/formulas/*.bak*
+backend/workdir/formulas/*.json.bak*
