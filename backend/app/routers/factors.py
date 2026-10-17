@@ -2404,30 +2404,34 @@ def event_study_nav(req: EventNavRequest):
                                  if _diluted else "")}
         except Exception:                                          # noqa: BLE001 —— 诊断失败不影响主结果 ✓
             nav_diag = {}
-        # ⚠ 设了持仓上限 ⇒ **参照线不可比** ✗（它不限只数）⇒ 不画、并如实说明 ✓
-        #   （宁可不给对照，也不给一条口径不同的对照 ✓ —— 与 v2.9.1 同一个教训 ✓）
-        if _maxpos:
-            nav_diag["bench_equal_note"] = ("已设「最大同时持仓数 %d」⇒ 参照线（不限只数）与本策略**不可比**"
-                                            " ⇒ 已隐藏；想看参照就先把上限清空 ✓" % _maxpos)
-        else:
-            try:
-                # ★★ v2.9.1（用户 2026-10-17 ✓）：**同持有期** ✓ —— 传当前 `k`（= 界面「持仓周期」✓）：
-                #   旧的"只持 1 天"会让参照线天然吃亏（策略吃 60 天 beta、参照只吃 1 天 ✗）
-                #   ⇒ 图上 1.449 vs 0.785 全是口径差 ✗。现在两条线持有期一致 ✓ 才叫可比 ✓。
-                _un = _untrig_nav_series(state, ev, start, end, hold=int(k))
-                if _un is not None and len(_un):
-                    _s = pd.Series({pd.Timestamp(d): float(v) for d, v in _un})
-                    nav = nav.copy()
-                    nav["bench_equal"] = _s.reindex(nav.index).ffill()
-                    try:
-                        from ..engine.perf_metrics import compute_perf      # 与上面净值统计同一个 ✓
-                        _ret = nav["bench_equal"].pct_change().fillna(0.0).to_numpy()
-                        stats["bench_equal"] = compute_perf(_ret)
-                    except Exception:                                  # noqa: BLE001
-                        pass
-            except Exception as _ue:                                  # noqa: BLE001
-                # 参照线失败只影响展示（与基准失败同一策略 ✓）⇒ 不拖垮净值曲线 ✓
-                timings["untrig_error"] = repr(_ue)[:160]
+        # ★★ v2.9.5（用户 2026-10-17 ✓）：设了持仓上限**也照画参照线** ✗→✓ ——
+        #   用户原话：「我改 50 只后**非触发组曲线没了**？」✓ —— 上一版（v2.9.3）为了"不给不可比对照"
+        #   干脆**隐藏**了它 ✗，但用户要的是"能看见、心里有数"，不是"看不见" ✓。
+        #   ⇒ 现在**照常画** ✓，只在下方如实标注：它**不限只数** ⇒ **仅作参照、不可直接比较** ✓
+        #   （宁可给一条带警告的参照，也不让用户以为"曲线丢了"✗）。
+        try:
+            # ★★ v2.9.1（用户 2026-10-17 ✓）：**同持有期** ✓ —— 传当前 `k`（= 界面「持仓周期」✓）：
+            #   旧的"只持 1 天"会让参照线天然吃亏（策略吃 60 天 beta、参照只吃 1 天 ✗）
+            #   ⇒ 图上 1.449 vs 0.785 全是口径差 ✗。现在两条线持有期一致 ✓ 才叫可比 ✓。
+            _un = _untrig_nav_series(state, ev, start, end, hold=int(k))
+            if _un is not None and len(_un):
+                _s = pd.Series({pd.Timestamp(d): float(v) for d, v in _un})
+                nav = nav.copy()
+                nav["bench_equal"] = _s.reindex(nav.index).ffill()
+                try:
+                    from ..engine.perf_metrics import compute_perf      # 与上面净值统计同一个 ✓
+                    _ret = nav["bench_equal"].pct_change().fillna(0.0).to_numpy()
+                    stats["bench_equal"] = compute_perf(_ret)
+                except Exception:                                      # noqa: BLE001
+                    pass
+                if _maxpos:
+                    nav_diag["bench_equal_note"] = (
+                        "参照线（未触发组等权）**不限只数**，而本策略已设「最大同时持仓数 %d」"
+                        " ⇒ 两者**口径不同、仅作参照**（不能拿它的高低直接判定信号好坏 ✓）"
+                        % _maxpos)
+        except Exception as _ue:                                      # noqa: BLE001
+            # 参照线失败只影响展示（与基准失败同一策略 ✓）⇒ 不拖垮净值曲线 ✓
+            timings["untrig_error"] = repr(_ue)[:160]
         return {"hold_days": k, "nav": nav_rows(nav), "stats": stats, "diag": bt.diag,
                 "nav_columns": [str(c) for c in nav.columns], "nav_diag": nav_diag,
                 "alloc_default": "event_even", "timings": timings}
