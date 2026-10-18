@@ -3,6 +3,27 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.10] - 2026-10-18
+
+### Changed（**P0-C-3：`run_single_factor_tests` 713 → 530 行** ✓ ＋ 机械外提的**天花板**已探到 ✗）
+
+- 外提两块 ✓：`_sft_horizon_loop`（161 行，「`for h in horizons:` 整个回测循环」✓）、
+  `_sft_exit_curves`（91 行，「`if exit_out is not None and exit_cols:` 离场曲线段」✓）
+  ⇒ `run_single_factor_tests` **713 → 530 行** ✓（−26%）。
+- **自动选块脚本**（`auto_split.py` ✓，dry-run → apply ✓）固化了全部踩坑判据 ✓：
+  只挑 `If/Try/For/While/With` 整块 ✓；排除"占函数体 ≥70%"的候选 ✗（否则等于把整个函数改名 ✗）；
+  多块不重叠 ✓；`break/continue` 仅当外层有循环才拒绝 ✓；缩进按块**实际缩进**降到 4 ✓。
+- **★ 诚实结论：机械外提到这里到头了** ✗
+  · `_sft_horizon_loop` 有 **43 个形参** ✗ —— 能跑、显式、无隐藏状态 ✓，但**参数列表本身就是新的阅读负担** ✗
+    ⇒ 下一步应把它需要的状态**收成一个 context 对象/命名元组** ✓（这需要读块内语义 ✗，不能自动 ✓）；
+  · `_quantile_curve_block`（**594 行** ✗）内层**没有 ≥80 行的整块** ✗（扁平结构 ✓）⇒ 自动工具无候选 ✓
+    ⇒ 只能**按语义拆**（分位曲线 / 成本敏感度 / TOP-K / IC 四块 ✓），需要通读 ✓。
+- **验收** ✓：`ruff` **0 错误** ✓ ｜ **1009 passed** ✓（数字零变化 ✓）｜ CI ✓ ｜ 后端重启 ✓。
+- **P0-C-4（下一步，需人工读码 ✓）**：
+  ① `run_single_factor_tests`（530 ✗）与 `_quantile_curve_block`（594 ✗）按**语义**拆；
+  ② `_sft_horizon_loop` 的 43 形参 → 收进 `SftContext`（约 20 个字段 ✓）；
+  目标：**本文件不再有 >300 行的函数** ✓。
+
 ## [2.9.9] - 2026-10-18
 
 ### Changed（**P0-C-2：`_continuous_stats` 736 行 → 173 行** ✓）

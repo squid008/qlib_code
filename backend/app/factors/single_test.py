@@ -1390,91 +1390,18 @@ def run_single_factor_tests(
     #      （`LABEL_h` ✓ 面板里本来就有 ⇒ **零额外取数** ✓）与同期**未触发**样本的差 ✓ ——
     #      这才回答"离场是躲开了下跌，还是砍掉了上涨" ✓（比两条净值相减可靠得多 ✓，
     #      也是我们自己的老规矩：不许用净值比值下结论 ✓）。
-    if exit_out is not None and exit_cols:
-        _items: List[dict] = []
-        _dt_lv = df.index.names.index("datetime")
-        _days = int(pd.Index(df.index.get_level_values(_dt_lv)).nunique())
-        _n_cell = int(len(df))
-        _first_day = (str(pd.Timestamp(df.index.get_level_values(_dt_lv).min()).date())
-                      if _n_cell else "")
-        _last_day = (str(pd.Timestamp(df.index.get_level_values(_dt_lv).max()).date())
-                     if _n_cell else "")
-        for _i, _e in enumerate(_exits):
-            _it: dict = {"index": _i,
-                         "id": str(_e.get("id") or ""), "name": str(_e.get("name") or ""),
-                         "source": str(_e.get("source") or "custom"),
-                         "expression": _e["expression"],
-                         "threshold": float(exit_threshold)}
-            if exit_cols[_i] is None:                # ★ v2.7.0：含入场价 ⇒ 回测里逐日算 ✓
-                _it["entry_dependent"] = True
-                _sp = exit_specs[_i] or {}
-                if _sp.get("error"):
-                    _it["error"] = _sp["error"]
-                elif _sp.get("skel") is not None:
-                    # 交给路由：骨架 + **预计算列的现成 Series**（面板刚算好 ✓，内存直传不序列化 ✓）
-                    _it["skel"] = _sp["skel"]
-                    _it["pre_exprs"] = _sp.get("pre_exprs") or []
-                    try:
-                        _it["pre_series"] = [df[c] for c in _sp.get("pre_cols") or []]
-                    except Exception as _e2:         # noqa: BLE001
-                        _it["error"] = "离场预计算列取数失败：%s: %s" % (type(_e2).__name__, _e2)
-                _items.append(_it)
-                continue
-            try:
-                _exv = pd.to_numeric(df[exit_cols[_i]], errors="coerce")
-                _hit = (_exv > float(exit_threshold)).fillna(False)
-                _n_hit = int(_hit.sum())
-                _rate = (round(_n_hit / float(_n_cell), 4) if _n_cell else None)
-                _it["mask"] = _hit
-                _it["stats"] = {
-                    "threshold": float(exit_threshold),
-                    "hit_cells": _n_hit,
-                    "n_cells": _n_cell,
-                    "rate": _rate,
-                    "n_days": _days,
-                    "avg_per_day": (round(_n_hit / float(_days), 1) if _days else None),
-                    "first_day": _first_day,
-                    "last_day": _last_day,
-                }
-                # ③ 离场事件研究：每个预测周期各一份（`LABEL_h` 已在面板里 ⇒ 只做 groupby ✓）
-                _eff: dict = {}
-                for h in horizons:
-                    lc = label_cols[h]
-                    if lc not in df.columns:
-                        continue
-                    lab = pd.to_numeric(df[lc], errors="coerce")
-                    ok = lab.notna()
-                    tg, ct = lab[_hit & ok], lab[(~_hit) & ok]
-                    if len(tg) < 2 or len(ct) < 2:
-                        continue
-                    _eff[str(int(h))] = {
-                        "horizon": int(h), "n_trig": int(len(tg)), "n_ctrl": int(len(ct)),
-                        "mean_trig": round(float(tg.mean()), 6),
-                        "mean_ctrl": round(float(ct.mean()), 6),
-                        "median_trig": round(float(tg.median()), 6),
-                        "median_ctrl": round(float(ct.median()), 6),
-                        "diff_mean": round(float(tg.mean() - ct.mean()), 6),
-                        "diff_median": round(float(tg.median() - ct.median()), 6),
-                    }
-                _it["effect"] = _eff
-                if progress_cb:
-                    progress_cb(None, 30.0,
-                                "离场「%s」触发率 %.1f%%（%d/%d 格）%s"
-                                % (_it["name"] or _it["id"] or "?", 100.0 * (_rate or 0.0),
-                                   _n_hit, _n_cell,
-                                   "  ⚠ 触发过半 ⇒ 近似只持有 1 天" if (_rate or 0.0) > 0.5 else ""))
-            except Exception as e:                                    # noqa: BLE001
-                _dump_sft_error(e)
-                _it["error"] = "离场信号计算失败: %s: %s" % (type(e).__name__, e)
-            _items.append(_it)
-        exit_out["items"] = _items
-        if _items:                                  # ★ 兼容 v2.4.3 的**单数**取法（= 第一个离场 ✓）
-            exit_out["mask"] = _items[0].get("mask")
-            exit_out["stats"] = (_items[0].get("stats")
-                                 or ({"error": _items[0]["error"]}
-                                     if _items[0].get("error") else None))
-        if not _items:
-            exit_out["error"] = "没有可用的离场因子（表达式为空或重复）"
+    _sft_exit_curves(
+            _exits=_exits,
+        df=df,
+        e=e,
+        exit_cols=exit_cols,
+        exit_out=exit_out,
+        exit_specs=exit_specs,
+        exit_threshold=exit_threshold,
+        horizons=horizons,
+        label_cols=label_cols,
+        progress_cb=progress_cb,
+    )
 
     out: Dict[int, list] = {}
     es_inst = df_full.index.names.index("instrument")
@@ -1482,161 +1409,51 @@ def run_single_factor_tests(
     _es_px_cache: Dict[str, object] = {}      # col_name -> 触发股价格宽表（同因子跨周期复用）
     _es_res_cache: Dict[str, dict] = {}       # col_name -> 事件研究结果（同因子跨周期复用，见下）
     _full_wide_box: Dict[str, object] = {}    # 全样本价格宽表（基准曲线用，跨因子复用一次）
-    for h in horizons:
-        lc = label_cols[h]
-        if lc not in df.columns:
-            out[h] = [{**_test_one(pd.DataFrame(), f, ""), "error": "label 列缺失"} for f in factors]
-            continue
-        if progress_cb:
-            progress_cb(h, 0.0, f"统计 {h} 日周期...")
-        # 只保留该周期需要的列，避免每周期持有全量面板
-        need = [c for c in (factor_cols + base_names + tag_names + [lc]) if c in df.columns]
-        if "CLOSE_FF" in df.columns:      # 逐日盯市用（v1.18.48）
-            need.append("CLOSE_FF")
-        # ★ v2.1.26：开盘价两列也必须进 `sub` ✗→✓（`t1_open` 口径要用它当买入价/盯市价 ✓）——
-        #   与 `CLOSE_FF` 同理：它们不在上面那几个清单里（`base_names` 里是 `OPEN`/`T1_OPEN`
-        #   的**原始列**，而逐日盯市要的是 ffill 之后的 `OPEN_FF` ✓）。
-        for _oc in ("OPEN", "OPEN_FF"):
-            if _oc in df.columns and _oc not in need:
-                need.append(_oc)
-        sub = df[need].copy()
-        sub.rename(columns={lc: "LABEL"}, inplace=True)
-        results = []
-        total = len(factors)
-        for i, (f, col_name) in enumerate(zip(factors, col_map), start=1):
-            if progress_cb:
-                progress_cb(h, 100.0 * ((i - 1) / total), f"测试因子 {i}/{total}: {f.get('name') or f.get('id')}")
-            if cancelled is not None and cancelled():
-                raise FactorTestCancelled()
-            if col_name is None:
-                results.append({**_test_one(pd.DataFrame(), f, ""), "error": "因子表达式为空"})
-                continue
-            trig_out: list = []
-            _ph_t0 = _tmod.perf_counter()
-            r = _test_one(
-                sub,
-                f,
-                col_name,
-                exclude_limit_up_signal=exclude_limit_up_signal,
-                exclude_limit_up_trade=exclude_limit_up_trade,
-                exclude_suspended=exclude_suspended,
-                exclude_st_t1=exclude_st_t1,
-                exclude_stock_gem=exclude_stock_gem,
-                exclude_stock_kcb=exclude_stock_kcb,
-                cancelled=cancelled,
-                trig_index_out=trig_out,
-                holdings_out=holdings_out,      # 每期持仓索引（导出用；None ⇒ 零开销 ✓）
-                fill=fill,                      # v2.1.22：成交时点（开盘/收盘 ✓）
-                quantiles=quantiles,
-                rebalance_period=rebalance_period,
-                topk_list=topk_list,
-                horizon=h,          # 调仓期默认跟随预测周期（「用预测周期调仓换股」）
-                bench_close=bench_close,        # 可切换基准（同口径，见 benchmark_curves）
-                bench_default=bench_default,
-            )
-            # 事件研究（0/1 信号顺带计算，v1.18.7）：稀疏信号按日配对会退化成单票
-            # 收益序列（触发日只有 1 只票），须以「每次触发」为样本单位才有意义。
-            # 复用本面板的 PX 列，无需二次加载（相对独立事件研究任务省掉一次全量加载）。
-            if r.get("is_binary") and trig_out and trig_out[0] is not None and len(trig_out[0]):
-                try:
-                    if cancelled is not None and cancelled():
-                        raise FactorTestCancelled()
-                    # v1.18.35：先构造（或复用）**全样本宽表**，触发股宽表直接取列子集
-                    # （等价且免去 mask + 二次 unstack：全 A「趋势顶底」实测 3.86s → ~0.05s）
-                    if "w" not in _full_wide_box:
-                        _full_wide_box["w"] = _full_px_wide(df_full, es_inst)
-                    _px = _es_px_cache.get(col_name)
-                    if _px is None:
-                        _px = _event_px_from_full(_full_wide_box.get("w"), trig_out[0], es_inst)
-                        if _px is None:  # 兜底：全样本宽表不可用时回退原路径
-                            _px = _event_px_wide(df_full, trig_out[0], es_inst)
-                        _es_px_cache[col_name] = _px
-                    if _px is not None and len(_px):
-                        # v1.18.37 跨周期复用：事件研究只取决于「触发事件集合 + es_k」，
-                        # 二者都与预测周期 h 无关（触发由因子自身决定、es_k 为所有周期的上界），
-                        # 因此多周期下逐周期重算完全等价、纯属浪费（全 A 实测单次
-                        # build_event_stats + compute_baseline_curves ≈ 11.2s，N 个周期白烧
-                        # (N-1)×11.2s）。首周期算完存缓存，其余周期浅拷贝复用（多周期结果
-                        # 逐位相同，实测 MD5 指纹一致）。
-                        _cached_es = _es_res_cache.get(col_name)
-                        if _cached_es is not None:
-                            r["event_study"] = dict(_cached_es)
-                        else:
-                            _ev = pd.DataFrame({
-                                "code": trig_out[0].get_level_values(es_inst).astype(str).values,
-                                "dt": pd.to_datetime(trig_out[0].get_level_values(es_dt)).values,
-                            })
-                            # v1.19.60：把触发事件**带出去**（键 = 因子表达式）⇒ 路由层存进任务状态，
-                            # 供「事件研究」弹窗里的净值曲线复用（不然"秒开"路径没有任务 id、拿不到事件）。
-                            # ⚠ 不进 HTTP 响应（几万行会撑大结果）。
-                            if events_out is not None:
-                                events_out[str(f.get("expression") or col_name)] = _ev
-                            # ★ v2.1.56：口径跟随成交时点 ✓ —— `t_close` = "信号日当天成交" ⇒ lag=0 ✓；
-                            #   `t1_open`/`t1_close` 都是次日成交 ⇒ lag=1 ✓，且价格表已由上面的
-                            #   `px_field` 选好（开盘/收盘 ✓）⇒ **买/卖同一张表** ✓ 不混合 ✓。
-                            _es = build_event_stats(_px, _ev, es_k,
-                                                    lag=(0 if str(fill) == "t_close" else 1),
-                                                    fill=str(fill))
-                            # 补参数信息：前端头部展示用，并据此判断「最长持有」是否需要重算
-                            _es["params"] = {
-                                "universe": universe,
-                                "start_date": start_date,
-                                "end_date": end_date,
-                                "max_k": es_k,
-                                # ★ v2.1.56：**口径回传** ✓ —— 前端图注据此写"T+1 开盘/收盘买入"✓
-                                #   （此前这里没有 `fill` ✗ ⇒ 图注只能回退写"T+1 收盘买入" ✗，
-                                #    与面板选的成交时点矛盾 ✓ —— 用户看到的就是这一处 ✓）
-                                "fill": str(fill),
-                                # ★★ v2.1.57：**剔除开关也要回传** ✗→✓（实测：导出的 `_meta` 里
-                                #   一直是 `None` ✗ ⇒ 回灌侧只能按页面默认跑 ⇒ 与弹窗对不上 ✓）。
-                                #   为什么漏了：v2.1.54 只在**重算**那条链（`factors/event_study.py
-                                #   ::run_event_study`）加了这几项 ✓，而**导出取的是「秒开」的结果** ✓
-                                #   ⇒ 只要没点过"重算"，文件里就永远缺这几项 ✗（用户 18:07 那份 ✓）。
-                                "exclude_limit_up_signal": bool(exclude_limit_up_signal),
-                                "exclude_limit_up_trade": bool(exclude_limit_up_trade),
-                                "exclude_suspended": bool(exclude_suspended),
-                                "exclude_st_t1": bool(exclude_st_t1),
-                                "exclude_stock_gem": bool(exclude_stock_gem),
-                                "exclude_stock_kcb": bool(exclude_stock_kcb),
-                                "price_adjust": pa,
-                                # ★★ v2.1.74（用户 2026-10-12："每个参数都仔细检查一下…导出有没有漏" ✓）：
-                                #   这几项**过去只在人读页出现** ✗（审计确认 ✓）⇒ 文件不自足 ⇒
-                                #   回灌只能按页面默认跑 ⇒ "导出的 ≠ 复现的" ✓。
-                                #   ⚠ 顺手清掉一处**重复键** ✗（`"price_adjust"` 写了两遍 ✓ ⇒ 后写的覆盖前者 ✓，
-                                #     数值上没炸但极易误导 ✓）。
-                                "price_round": bool(price_round),
-                                "suspend_remove": bool(suspend_remove),
-                                "freeze_suspended_price": bool(freeze_suspended_price),
-                                "warmup_days": (int(warmup_days) if warmup_days is not None else None),
-                            }
-                            r["event_study"] = _es   # 先挂主结果，保证基准失败不影响事件研究
-                            # 基准（未触发组）+ 超额（日配对口径）：仅展示，不参与判定。
-                            # 全样本宽表一次构造、跨因子复用（约 1300×5000，50MB 量级）。
-                            try:
-                                _fw = _full_wide_box.get("w")  # 已在上方构造（w 不存在时为 None）
-                                if _fw is not None and len(_fw):
-                                    _es["baseline"] = compute_baseline_curves(
-                                        _px, _fw, _ev, es_k)
-                            except Exception as _bl_e:   # 基准失败只影响展示，不拖垮事件研究
-                                _es["baseline_error"] = repr(_bl_e)
-                            _es_res_cache[col_name] = _es
-                except FactorTestCancelled:
-                    raise
-                except Exception as _es_e:       # 诊断：暴露事件研究失败原因（前端忽略该字段）
-                    import traceback as _tb
-                    r["event_study_error"] = "%r @ %s" % (
-                        _es_e, _tb.format_exc().strip().splitlines()[-1])
-            _ph_item = _tmod.perf_counter() - _ph_t0
-            r["timing"] = {
-                "init_s": round(_ph_init, 3),       # 一次性 qlib 初始化（仅首个任务有值）
-                "feature_s": round(_ph_feat, 3),    # 面板/特征加载（全池共享，各因子相同）
-                "item_s": round(_ph_item, 3),       # 本因子：统计 + 事件研究
-                "total_s": round(_ph_init + _ph_feat + _ph_item, 3),
-            }
-            results.append(r)
-        out[h] = results
-        if progress_cb:
-            progress_cb(h, 100.0, f"{h} 日周期完成")
+    _sft_horizon_loop(
+            _es_px_cache=_es_px_cache,
+        _es_res_cache=_es_res_cache,
+        _full_wide_box=_full_wide_box,
+        _ph_feat=_ph_feat,
+        _ph_init=_ph_init,
+        _tmod=_tmod,
+        base_names=base_names,
+        bench_close=bench_close,
+        bench_default=bench_default,
+        cancelled=cancelled,
+        col_map=col_map,
+        df=df,
+        df_full=df_full,
+        end_date=end_date,
+        es_dt=es_dt,
+        es_inst=es_inst,
+        es_k=es_k,
+        events_out=events_out,
+        exclude_limit_up_signal=exclude_limit_up_signal,
+        exclude_limit_up_trade=exclude_limit_up_trade,
+        exclude_st_t1=exclude_st_t1,
+        exclude_stock_gem=exclude_stock_gem,
+        exclude_stock_kcb=exclude_stock_kcb,
+        exclude_suspended=exclude_suspended,
+        factor_cols=factor_cols,
+        factors=factors,
+        fill=fill,
+        freeze_suspended_price=freeze_suspended_price,
+        holdings_out=holdings_out,
+        horizons=horizons,
+        label_cols=label_cols,
+        out=out,
+        pa=pa,
+        price_round=price_round,
+        progress_cb=progress_cb,
+        quantiles=quantiles,
+        rebalance_period=rebalance_period,
+        start_date=start_date,
+        suspend_remove=suspend_remove,
+        tag_names=tag_names,
+        topk_list=topk_list,
+        universe=universe,
+        warmup_days=warmup_days,
+    )
     return out
 
 
@@ -2518,4 +2335,260 @@ def _quantile_curve_block(*, _REBAL, _dec_p, _dts, _med, _qbest, _rkcol, _side, 
         except Exception as _e2:      # 与 `event_study_error` 同一处理风格
             result["topk_sensitivity_error"] = "%r @ %s" % (
                 _e2, __import__("traceback").format_exc().strip().splitlines()[-1])
+
+
+def _sft_horizon_loop(*, _es_px_cache, _es_res_cache, _full_wide_box, _ph_feat, _ph_init, _tmod, base_names, bench_close, bench_default, cancelled, col_map, df, df_full, end_date, es_dt, es_inst, es_k, events_out, exclude_limit_up_signal, exclude_limit_up_trade, exclude_st_t1, exclude_stock_gem, exclude_stock_kcb, exclude_suspended, factor_cols, factors, fill, freeze_suspended_price, holdings_out, horizons, label_cols, out, pa, price_round, progress_cb, quantiles, rebalance_period, start_date, suspend_remove, tag_names, topk_list, universe, warmup_days) -> None:
+    """★ P0-C-3（2026-10-18 ✓）：从 `run_single_factor_tests` **原样外提**的一段 ✓（逻辑零改动 ✓）。
+
+    外提原因：该段 **155 行** ✗；形参 = AST 推导的自由变量（43 个 ✓）；
+    结果仍原地改 `result` / 入参对象 ✓（与原来完全一致 ✓）。
+    """
+    for h in horizons:
+        lc = label_cols[h]
+        if lc not in df.columns:
+            out[h] = [{**_test_one(pd.DataFrame(), f, ""), "error": "label 列缺失"} for f in factors]
+            continue
+        if progress_cb:
+            progress_cb(h, 0.0, f"统计 {h} 日周期...")
+        # 只保留该周期需要的列，避免每周期持有全量面板
+        need = [c for c in (factor_cols + base_names + tag_names + [lc]) if c in df.columns]
+        if "CLOSE_FF" in df.columns:      # 逐日盯市用（v1.18.48）
+            need.append("CLOSE_FF")
+        # ★ v2.1.26：开盘价两列也必须进 `sub` ✗→✓（`t1_open` 口径要用它当买入价/盯市价 ✓）——
+        #   与 `CLOSE_FF` 同理：它们不在上面那几个清单里（`base_names` 里是 `OPEN`/`T1_OPEN`
+        #   的**原始列**，而逐日盯市要的是 ffill 之后的 `OPEN_FF` ✓）。
+        for _oc in ("OPEN", "OPEN_FF"):
+            if _oc in df.columns and _oc not in need:
+                need.append(_oc)
+        sub = df[need].copy()
+        sub.rename(columns={lc: "LABEL"}, inplace=True)
+        results = []
+        total = len(factors)
+        for i, (f, col_name) in enumerate(zip(factors, col_map), start=1):
+            if progress_cb:
+                progress_cb(h, 100.0 * ((i - 1) / total), f"测试因子 {i}/{total}: {f.get('name') or f.get('id')}")
+            if cancelled is not None and cancelled():
+                raise FactorTestCancelled()
+            if col_name is None:
+                results.append({**_test_one(pd.DataFrame(), f, ""), "error": "因子表达式为空"})
+                continue
+            trig_out: list = []
+            _ph_t0 = _tmod.perf_counter()
+            r = _test_one(
+                sub,
+                f,
+                col_name,
+                exclude_limit_up_signal=exclude_limit_up_signal,
+                exclude_limit_up_trade=exclude_limit_up_trade,
+                exclude_suspended=exclude_suspended,
+                exclude_st_t1=exclude_st_t1,
+                exclude_stock_gem=exclude_stock_gem,
+                exclude_stock_kcb=exclude_stock_kcb,
+                cancelled=cancelled,
+                trig_index_out=trig_out,
+                holdings_out=holdings_out,      # 每期持仓索引（导出用；None ⇒ 零开销 ✓）
+                fill=fill,                      # v2.1.22：成交时点（开盘/收盘 ✓）
+                quantiles=quantiles,
+                rebalance_period=rebalance_period,
+                topk_list=topk_list,
+                horizon=h,          # 调仓期默认跟随预测周期（「用预测周期调仓换股」）
+                bench_close=bench_close,        # 可切换基准（同口径，见 benchmark_curves）
+                bench_default=bench_default,
+            )
+            # 事件研究（0/1 信号顺带计算，v1.18.7）：稀疏信号按日配对会退化成单票
+            # 收益序列（触发日只有 1 只票），须以「每次触发」为样本单位才有意义。
+            # 复用本面板的 PX 列，无需二次加载（相对独立事件研究任务省掉一次全量加载）。
+            if r.get("is_binary") and trig_out and trig_out[0] is not None and len(trig_out[0]):
+                try:
+                    if cancelled is not None and cancelled():
+                        raise FactorTestCancelled()
+                    # v1.18.35：先构造（或复用）**全样本宽表**，触发股宽表直接取列子集
+                    # （等价且免去 mask + 二次 unstack：全 A「趋势顶底」实测 3.86s → ~0.05s）
+                    if "w" not in _full_wide_box:
+                        _full_wide_box["w"] = _full_px_wide(df_full, es_inst)
+                    _px = _es_px_cache.get(col_name)
+                    if _px is None:
+                        _px = _event_px_from_full(_full_wide_box.get("w"), trig_out[0], es_inst)
+                        if _px is None:  # 兜底：全样本宽表不可用时回退原路径
+                            _px = _event_px_wide(df_full, trig_out[0], es_inst)
+                        _es_px_cache[col_name] = _px
+                    if _px is not None and len(_px):
+                        # v1.18.37 跨周期复用：事件研究只取决于「触发事件集合 + es_k」，
+                        # 二者都与预测周期 h 无关（触发由因子自身决定、es_k 为所有周期的上界），
+                        # 因此多周期下逐周期重算完全等价、纯属浪费（全 A 实测单次
+                        # build_event_stats + compute_baseline_curves ≈ 11.2s，N 个周期白烧
+                        # (N-1)×11.2s）。首周期算完存缓存，其余周期浅拷贝复用（多周期结果
+                        # 逐位相同，实测 MD5 指纹一致）。
+                        _cached_es = _es_res_cache.get(col_name)
+                        if _cached_es is not None:
+                            r["event_study"] = dict(_cached_es)
+                        else:
+                            _ev = pd.DataFrame({
+                                "code": trig_out[0].get_level_values(es_inst).astype(str).values,
+                                "dt": pd.to_datetime(trig_out[0].get_level_values(es_dt)).values,
+                            })
+                            # v1.19.60：把触发事件**带出去**（键 = 因子表达式）⇒ 路由层存进任务状态，
+                            # 供「事件研究」弹窗里的净值曲线复用（不然"秒开"路径没有任务 id、拿不到事件）。
+                            # ⚠ 不进 HTTP 响应（几万行会撑大结果）。
+                            if events_out is not None:
+                                events_out[str(f.get("expression") or col_name)] = _ev
+                            # ★ v2.1.56：口径跟随成交时点 ✓ —— `t_close` = "信号日当天成交" ⇒ lag=0 ✓；
+                            #   `t1_open`/`t1_close` 都是次日成交 ⇒ lag=1 ✓，且价格表已由上面的
+                            #   `px_field` 选好（开盘/收盘 ✓）⇒ **买/卖同一张表** ✓ 不混合 ✓。
+                            _es = build_event_stats(_px, _ev, es_k,
+                                                    lag=(0 if str(fill) == "t_close" else 1),
+                                                    fill=str(fill))
+                            # 补参数信息：前端头部展示用，并据此判断「最长持有」是否需要重算
+                            _es["params"] = {
+                                "universe": universe,
+                                "start_date": start_date,
+                                "end_date": end_date,
+                                "max_k": es_k,
+                                # ★ v2.1.56：**口径回传** ✓ —— 前端图注据此写"T+1 开盘/收盘买入"✓
+                                #   （此前这里没有 `fill` ✗ ⇒ 图注只能回退写"T+1 收盘买入" ✗，
+                                #    与面板选的成交时点矛盾 ✓ —— 用户看到的就是这一处 ✓）
+                                "fill": str(fill),
+                                # ★★ v2.1.57：**剔除开关也要回传** ✗→✓（实测：导出的 `_meta` 里
+                                #   一直是 `None` ✗ ⇒ 回灌侧只能按页面默认跑 ⇒ 与弹窗对不上 ✓）。
+                                #   为什么漏了：v2.1.54 只在**重算**那条链（`factors/event_study.py
+                                #   ::run_event_study`）加了这几项 ✓，而**导出取的是「秒开」的结果** ✓
+                                #   ⇒ 只要没点过"重算"，文件里就永远缺这几项 ✗（用户 18:07 那份 ✓）。
+                                "exclude_limit_up_signal": bool(exclude_limit_up_signal),
+                                "exclude_limit_up_trade": bool(exclude_limit_up_trade),
+                                "exclude_suspended": bool(exclude_suspended),
+                                "exclude_st_t1": bool(exclude_st_t1),
+                                "exclude_stock_gem": bool(exclude_stock_gem),
+                                "exclude_stock_kcb": bool(exclude_stock_kcb),
+                                "price_adjust": pa,
+                                # ★★ v2.1.74（用户 2026-10-12："每个参数都仔细检查一下…导出有没有漏" ✓）：
+                                #   这几项**过去只在人读页出现** ✗（审计确认 ✓）⇒ 文件不自足 ⇒
+                                #   回灌只能按页面默认跑 ⇒ "导出的 ≠ 复现的" ✓。
+                                #   ⚠ 顺手清掉一处**重复键** ✗（`"price_adjust"` 写了两遍 ✓ ⇒ 后写的覆盖前者 ✓，
+                                #     数值上没炸但极易误导 ✓）。
+                                "price_round": bool(price_round),
+                                "suspend_remove": bool(suspend_remove),
+                                "freeze_suspended_price": bool(freeze_suspended_price),
+                                "warmup_days": (int(warmup_days) if warmup_days is not None else None),
+                            }
+                            r["event_study"] = _es   # 先挂主结果，保证基准失败不影响事件研究
+                            # 基准（未触发组）+ 超额（日配对口径）：仅展示，不参与判定。
+                            # 全样本宽表一次构造、跨因子复用（约 1300×5000，50MB 量级）。
+                            try:
+                                _fw = _full_wide_box.get("w")  # 已在上方构造（w 不存在时为 None）
+                                if _fw is not None and len(_fw):
+                                    _es["baseline"] = compute_baseline_curves(
+                                        _px, _fw, _ev, es_k)
+                            except Exception as _bl_e:   # 基准失败只影响展示，不拖垮事件研究
+                                _es["baseline_error"] = repr(_bl_e)
+                            _es_res_cache[col_name] = _es
+                except FactorTestCancelled:
+                    raise
+                except Exception as _es_e:       # 诊断：暴露事件研究失败原因（前端忽略该字段）
+                    import traceback as _tb
+                    r["event_study_error"] = "%r @ %s" % (
+                        _es_e, _tb.format_exc().strip().splitlines()[-1])
+            _ph_item = _tmod.perf_counter() - _ph_t0
+            r["timing"] = {
+                "init_s": round(_ph_init, 3),       # 一次性 qlib 初始化（仅首个任务有值）
+                "feature_s": round(_ph_feat, 3),    # 面板/特征加载（全池共享，各因子相同）
+                "item_s": round(_ph_item, 3),       # 本因子：统计 + 事件研究
+                "total_s": round(_ph_init + _ph_feat + _ph_item, 3),
+            }
+            results.append(r)
+        out[h] = results
+        if progress_cb:
+            progress_cb(h, 100.0, f"{h} 日周期完成")
+
+
+def _sft_exit_curves(*, _exits, df, e, exit_cols, exit_out, exit_specs, exit_threshold, horizons, label_cols, progress_cb) -> None:
+    """★ P0-C-3（2026-10-18 ✓）：从 `run_single_factor_tests` **原样外提**的一段 ✓（逻辑零改动 ✓）。
+
+    外提原因：该段 **85 行** ✗；形参 = AST 推导的自由变量（10 个 ✓）；
+    结果仍原地改 `result` / 入参对象 ✓（与原来完全一致 ✓）。
+    """
+    if exit_out is not None and exit_cols:
+        _items: List[dict] = []
+        _dt_lv = df.index.names.index("datetime")
+        _days = int(pd.Index(df.index.get_level_values(_dt_lv)).nunique())
+        _n_cell = int(len(df))
+        _first_day = (str(pd.Timestamp(df.index.get_level_values(_dt_lv).min()).date())
+                      if _n_cell else "")
+        _last_day = (str(pd.Timestamp(df.index.get_level_values(_dt_lv).max()).date())
+                     if _n_cell else "")
+        for _i, _e in enumerate(_exits):
+            _it: dict = {"index": _i,
+                         "id": str(_e.get("id") or ""), "name": str(_e.get("name") or ""),
+                         "source": str(_e.get("source") or "custom"),
+                         "expression": _e["expression"],
+                         "threshold": float(exit_threshold)}
+            if exit_cols[_i] is None:                # ★ v2.7.0：含入场价 ⇒ 回测里逐日算 ✓
+                _it["entry_dependent"] = True
+                _sp = exit_specs[_i] or {}
+                if _sp.get("error"):
+                    _it["error"] = _sp["error"]
+                elif _sp.get("skel") is not None:
+                    # 交给路由：骨架 + **预计算列的现成 Series**（面板刚算好 ✓，内存直传不序列化 ✓）
+                    _it["skel"] = _sp["skel"]
+                    _it["pre_exprs"] = _sp.get("pre_exprs") or []
+                    try:
+                        _it["pre_series"] = [df[c] for c in _sp.get("pre_cols") or []]
+                    except Exception as _e2:         # noqa: BLE001
+                        _it["error"] = "离场预计算列取数失败：%s: %s" % (type(_e2).__name__, _e2)
+                _items.append(_it)
+                continue
+            try:
+                _exv = pd.to_numeric(df[exit_cols[_i]], errors="coerce")
+                _hit = (_exv > float(exit_threshold)).fillna(False)
+                _n_hit = int(_hit.sum())
+                _rate = (round(_n_hit / float(_n_cell), 4) if _n_cell else None)
+                _it["mask"] = _hit
+                _it["stats"] = {
+                    "threshold": float(exit_threshold),
+                    "hit_cells": _n_hit,
+                    "n_cells": _n_cell,
+                    "rate": _rate,
+                    "n_days": _days,
+                    "avg_per_day": (round(_n_hit / float(_days), 1) if _days else None),
+                    "first_day": _first_day,
+                    "last_day": _last_day,
+                }
+                # ③ 离场事件研究：每个预测周期各一份（`LABEL_h` 已在面板里 ⇒ 只做 groupby ✓）
+                _eff: dict = {}
+                for h in horizons:
+                    lc = label_cols[h]
+                    if lc not in df.columns:
+                        continue
+                    lab = pd.to_numeric(df[lc], errors="coerce")
+                    ok = lab.notna()
+                    tg, ct = lab[_hit & ok], lab[(~_hit) & ok]
+                    if len(tg) < 2 or len(ct) < 2:
+                        continue
+                    _eff[str(int(h))] = {
+                        "horizon": int(h), "n_trig": int(len(tg)), "n_ctrl": int(len(ct)),
+                        "mean_trig": round(float(tg.mean()), 6),
+                        "mean_ctrl": round(float(ct.mean()), 6),
+                        "median_trig": round(float(tg.median()), 6),
+                        "median_ctrl": round(float(ct.median()), 6),
+                        "diff_mean": round(float(tg.mean() - ct.mean()), 6),
+                        "diff_median": round(float(tg.median() - ct.median()), 6),
+                    }
+                _it["effect"] = _eff
+                if progress_cb:
+                    progress_cb(None, 30.0,
+                                "离场「%s」触发率 %.1f%%（%d/%d 格）%s"
+                                % (_it["name"] or _it["id"] or "?", 100.0 * (_rate or 0.0),
+                                   _n_hit, _n_cell,
+                                   "  ⚠ 触发过半 ⇒ 近似只持有 1 天" if (_rate or 0.0) > 0.5 else ""))
+            except Exception as e:                                    # noqa: BLE001
+                _dump_sft_error(e)
+                _it["error"] = "离场信号计算失败: %s: %s" % (type(e).__name__, e)
+            _items.append(_it)
+        exit_out["items"] = _items
+        if _items:                                  # ★ 兼容 v2.4.3 的**单数**取法（= 第一个离场 ✓）
+            exit_out["mask"] = _items[0].get("mask")
+            exit_out["stats"] = (_items[0].get("stats")
+                                 or ({"error": _items[0]["error"]}
+                                     if _items[0].get("error") else None))
+        if not _items:
+            exit_out["error"] = "没有可用的离场因子（表达式为空或重复）"
 
