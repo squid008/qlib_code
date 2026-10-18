@@ -47,7 +47,10 @@ def normalize_mode(mode: str) -> str:
     return m if m in VALID_MODES else "none"
 
 
-# v1.19.97：前复权**已物化**的价格字段 → 对应物化字段名（`ai_test/build_preclose.py` 生成 ✓，
+# v1.19.97：前复权**已物化**的价格字段 → 对应物化字段名（**`backend/tools/build_preclose.py`**
+# 生成 ✓ —— ⚠ 2026-10-18 修正：原注释写的是 `ai_test/build_preclose.py` ✗，
+# 而 `ai_test/` 是**可随时清空的草稿区**（不入 git ✓）⇒ 指向那里等于没有出处 ✓；脚本一直住在
+# `backend/tools/` ✓。
 # 公式 = `后复权 ÷ factor_last` ✓，四个字段共用同一个 factor_last ⇒ **同尺度** ✓，
 # 各字段用自己 bin 的 `first_idx` ⇒ 与原字段**逐位同轴** ✓）。
 # ⚠ 未列入的字段在 forward 下**落回真实价** ✓（不会拼出空字段名 ✗）。
