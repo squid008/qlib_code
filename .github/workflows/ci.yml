@@ -40,11 +40,14 @@ jobs:
 
       - name: pytest + 覆盖率（纯逻辑；datareq 无数据自动跳过）
         # ★ v2.9.6（2026-10-18 ✓）：**覆盖率门槛 = 防倒退** ✗→✓
-        #   基线 53.42% → **55.13%**（2026-10-18 P0-B 之后实测 ✓）；每期只许**上调** ✓（ratchet ✓）。
-        #   ⚠ 改这个数字必须同时写进 md/change_log.md ✓（否则下一个人不知道为什么是 55 ✗）
+        #   ⚠ **门槛要按 CI 实测校准** ✗→✓（2026-10-18 实测教训 ✓）：
+        #     本机 55.13% ／ **CI 54.72%** —— CI 无行情数据 ⇒ 4 个用例 skip、约 10 个走不同分支
+        #     ⇒ **同一份代码 CI 恒低 0.4~0.5 个百分点** ✓。第一版按本机 55 设门槛 ⇒ CI 直接红 ✗。
+        #   ⇒ 规则：**门槛 = CI 实测值向下取整**（现 54 ✓）；每期只许**上调** ✓（ratchet ✓）。
+        #   ⚠ 改这个数字必须同时写进 md/change_log.md ✓（否则下一个人不知道为什么是 54 ✗）
         run: >-
           python -m pytest tests -m "not datareq" -q
-          --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=55
+          --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=54
 
       - name: ruff 静态检查
         run: python -m ruff check app tests tools

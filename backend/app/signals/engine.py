@@ -37,7 +37,9 @@ import pandas as pd
 # ⚠ 费用**只有一处**实现（`matching.fee_of` ✓）—— 资金路径与成交明细必须同源 ✓，
 #   否则"明细与账对不上" ✗（v2.1.16 定下的纪律 ✓）。
 # ---------------------------------------------------------------------------
-from .matching import (                       # noqa: E402（保持原文件结构：常量区之后 ✓）
+# noqa: E402 —— 这个 import 故意放在常量区之后（保持原文件结构 ✓）；
+# ⚠ 别把说明写进 `noqa:` 里面 ✗（ruff 会报 "Invalid noqa directive" ✓，2026-10-18 实测 ✓）。
+from .matching import (                       # noqa: E402
     FILL_LAG as _FILL_LAG,
     FILL_PRICE as _FILL_PRICE,
     LOT_DEFAULT, LOT_KCB, MIN_FEE, REJECT_TEXT,
