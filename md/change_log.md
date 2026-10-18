@@ -3,6 +3,34 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.13] - 2026-10-18
+
+### Changed（**P1-A-2 第二半：事件研究组 + 请求模型拆出** ✓ —— `factors.py` 2,489 → **1,422 行** ✓）
+
+- 新增两个模块 ✓：
+  · **`routers/factors_models.py`（156 行 ✓）**：5 个请求模型 ✓ —— 抽它的原因很实在 ✓：
+    `EventStudyRequest.factor` 用的就是 **`SingleFactorTestFactor`** ✗ ⇒ 这正是 2.9.12 那次
+    **拆不动**的隐藏耦合 ✓（分组扫描只看了函数、没看**类注解** ✗）。
+  · **`routers/factors_event.py`（560 行 ✓）**：事件研究 7 个名字（`event_study` /
+    `event_study_nav` / `nav_cancel` / `progress` / `cancel` / `clear` / `_untrig_nav_series` ✓）。
+- `routers/factors.py` **2,056 → 1,422 行** ✓（**累计 2,489 → 1,422，−43%** ✓）；
+  现在四块分离：`factors`（目录类 + 单因子 + 再导出 ✓ 1,422）｜ `factors_single`?（待搬 ✓）｜
+  `factors_event`（560 ✓）｜ `factors_models`（156 ✓）｜ `factors_state`（312 ✓）｜ `factors_formulas`（274 ✓）。
+- **★ 坑 10（最贵的一个 ✓）**：拆完用 `from .factors_event import *` 做 re-export ✗ ⇒
+  **星号导入把 `router` 也覆盖了** ✗ ⇒ `factors.router` 变成事件模块的 router ⇒
+  ① 事件路由被注册两次 ⇒ **12 条 `Duplicate Operation ID` 警告** ✓；
+  ② 本文件自己的端点挂在**没人引用的旧 router** 上 ⇒ 会静默消失 ✗。
+  ⇒ 改成**显式列出名字**（并把 `router` 排除 ✓）后，openapi 恢复 **51 路径 / 54 操作** ✓、警告归零 ✓。
+- **坑 11**：又一处 `monkeypatch` 打空 ✓ —— `test_event_study_slot_release.py` 用
+  `import app.routers.factors as F` 去 patch `get_task_manager` / `run_event_study` ✗
+  ⇒ 端点搬走后点数不到 ✓（1 个用例红 ✓）⇒ 改指向 `factors_event` ✓ 后 **1009 passed** ✓。
+  ⚠ 这已是同类问题的第 3 次（2.9.11 公式库、2.9.13 事件研究 ✓）⇒ 结论：**拆分模块必须同步搜
+  `import app.routers.X as Y` 的测试** ✓。
+- **验收** ✓：`py_compile` ✓ ｜ `ruff` ✓ ｜ **1009 passed** ✓（行为零变化 ✓）｜
+  **openapi 51/54 不变 + 无 Duplicate Operation ID** ✓ ｜ CI ✓ ｜ 后端重启 ✓。
+- **下一步（P1-A-2 收尾）** ✓：把**单因子测试组**（~1,230 行）搬成 `factors_single.py` ⇒
+  `factors.py` 预计落到 **~200 行**（只剩目录类 3 个端点 ✓）。
+
 ## [2.9.12] - 2026-10-18
 
 ### Changed（**P1-A-2 第一半：状态层抽成 `routers/factors_state.py`** ✓ —— 拆分的"前置解耦" ✓）

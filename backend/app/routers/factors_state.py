@@ -292,3 +292,21 @@ def _nav_panel_cached(codes, start, end, *, strict: bool = True):
             _NAV_PANEL_CACHE.pop(next(iter(_NAV_PANEL_CACHE)))
         _NAV_PANEL_CACHE[key] = panel
     return panel, False
+
+
+def _json_safe(o):
+    """递归把非有限 float（NaN/±Inf）替换为 None，保证 JSON 序列化不 500。
+
+    单因子统计在极端样本下（如 60 日收益、触发组样本过小、0/0 比值、HAC 方差钳制等）
+    可能天然产生 NaN/Inf——这些字段应传给前端展示为 null，而不是让整个任务
+    progress/result 接口抛 "Out of range float values are not JSON compliant"（表现为任务卡死）。
+    """
+    if isinstance(o, float):
+        if o != o or o in (float("inf"), float("-inf")):
+            return None
+        return o
+    if isinstance(o, dict):
+        return {k: _json_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_json_safe(v) for v in o]
+    return o

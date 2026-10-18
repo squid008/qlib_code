@@ -19,7 +19,10 @@ import time
 
 import pytest
 
-import app.routers.factors as F
+# ★ v2.9.13（P1-A-2 ✓ 2026-10-18）：`event_study` 端点已搬到 `routers/factors_event.py` ✓
+#   ⇒ 这里必须指向**新模块**，否则 `monkeypatch.setattr(F, "run_event_study", ...)` 打空 ✗
+#   （实测：`test_progress_exposes_timings_and_cached` 红 ✓ —— 与 2.9.11 那次同一类耦合 ✓）。
+import app.routers.factors_event as F
 from app.engine.task_manager import TaskManager
 
 
