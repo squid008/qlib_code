@@ -115,7 +115,8 @@ def _system_avail_gb() -> float:
         import psutil
 
         return psutil.virtual_memory().available / (1024 ** 3)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("panel_expr.py", e)
         return 999.0
 
 
@@ -152,7 +153,8 @@ def _auto_node_cache_mb(n_jobs: int) -> int:
         if (avail_gb >= _AUTO_NODE_CACHE_MIN_AVAIL_GB
                 and avail_gb / n_jobs >= _AUTO_NODE_CACHE_MIN_PER_JOB_GB):
             return 1024
-    except Exception:
+    except Exception as e:
+        _log_swallowed("panel_expr.py", e)
         pass
     return 512
 
@@ -162,7 +164,8 @@ def _series_mem_bytes(s: pd.Series) -> int:
     try:
         arr = s.array
         return int(arr.nbytes) if hasattr(arr, "nbytes") else int(s.to_numpy(dtype=np.float64).nbytes)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("panel_expr.py", e)
         return 0
 
 
@@ -203,7 +206,8 @@ def _feature_dir() -> str:
 
         if QLIB_PROVIDER_URI:
             return os.path.join(QLIB_PROVIDER_URI, "features")
-    except Exception:
+    except Exception as e:
+        _log_swallowed("panel_expr.py", e)
         pass
     return os.path.join(os.path.abspath("."), "..", "data", "cn_data", "features")
 
@@ -228,7 +232,8 @@ def reset_caches() -> None:
     for _mm in list(_MERGED_MM.values()):
         try:
             _mm.close()
-        except Exception:                                                 # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("panel_expr.py", e)
             pass
     _MERGED_MM.clear()
     _SEG_CACHE.clear()
@@ -317,7 +322,8 @@ def _merged_index(field: str):
             return None
         insts, off, cnt, stt = raw["inst"], raw["off"], raw["cnt"], raw["start"]
         m = {insts[i]: (off[i], cnt[i], stt[i]) for i in range(len(insts))}
-    except Exception:
+    except Exception as e:
+        _log_swallowed("panel_expr.py", e)
         return None
     _MERGED_IDX[field] = (st.st_mtime_ns, m, time.monotonic())
     _MERGED_MM[field] = np.memmap(p, dtype="<f4", mode="r")
@@ -444,7 +450,8 @@ def _warn_if_materialized_missing(key: str, s: "pd.Series") -> None:
         arr = np.asarray(s.to_numpy(dtype=float, copy=False), dtype=float)
         if arr.size == 0 or np.isfinite(arr).any():
             return                                            # 有值 ⇒ 正常 ✓
-    except Exception:                                         # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("panel_expr.py", e)
         return
     # ★ v1.20.87：`mkt_*` 整列 NaN ⇒ **先试现算回退** ✓（用户 2026-10-09 追问：
     #   「如果 IS_GOLD_PIT 我把物化文件删了，它会**自动回退**不走物化路线计算吗？」⇒ 原来不会 ✗：
@@ -1051,7 +1058,8 @@ def chip_turn_of(ev) -> "pd.Series":
         _t = ev.field("$turn")
         if bool(_t.notna().any()):
             _turn_field = _t
-    except Exception:                             # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("panel_expr.py", e)
         _turn_field = None
     if _turn_field is not None:
         # ⚠⚠⚠ v1.20.44 **单位自适应（修 100 倍 BUG ✗，2026-09-21 实测确认）**：
@@ -1089,7 +1097,8 @@ def chip_turn_of(ev) -> "pd.Series":
         try:
             ev._chip_turn_meta["turn_missing_ratio"] = float(
                 (_real.isna()).to_numpy().mean())
-        except Exception:                                     # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("panel_expr.py", e)
             pass
         return _filled
     return _chip_turn_proxy(ev, _px_raw, _vol, _mc)
@@ -1117,15 +1126,18 @@ def _chip_turn_proxy(ev, _px_raw, _vol, _mc) -> "pd.Series":
             _lv = ("instrument" if "instrument" in _ratio.index.names
                    else _ratio.index.names[0])
             _rs = _ratio.groupby(level=_lv).transform("median")
-        except Exception:                         # noqa: BLE001 —— 分组失败就用原值（退化为池级行为 ✓）
+        except Exception as e:  # noqa: BLE001 —— 分组失败就用原值（退化为池级行为 ✓）
+            _log_swallowed("panel_expr.py", e)
             _rs = _ratio
         _vol_sh = (_vol * 100.0).where(_rs < 0.1, _vol)   # 判为"手"⇒×100 ✓，否则原样（"股" ✓）
         try:
             ev._chip_turn_meta = {"mode": "proxy",
                                   "lots_ratio": float((_rs < 0.1).to_numpy().mean())}
-        except Exception:                         # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("panel_expr.py", e)
             ev._chip_turn_meta = {"mode": "proxy"}
-    except Exception:                             # noqa: BLE001 —— 无 amount 就按"股"处理
+    except Exception as e:  # noqa: BLE001 —— 无 amount 就按"股"处理
+        _log_swallowed("panel_expr.py", e)
         pass
     return (_vol_sh * _px_raw / _mc).where(_mc > 0)
 
@@ -1244,7 +1256,8 @@ class PanelEvaluator:
         """
         try:
             from .chip_store import DEFAULT_FIELDS as _MAT
-        except Exception:                                     # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("panel_expr.py", e)
             _MAT = ()
         if key in _MAT:
             # ⚠ 轻量构造（单测里 `PanelEvaluator.__new__` 不走 `__init__` ✓）没有 `_full`
@@ -2182,7 +2195,8 @@ def _segment_bnd(idx) -> np.ndarray:
     if isinstance(idx, pd.MultiIndex):
         try:
             c = np.asarray(idx.codes[0])
-        except Exception:
+        except Exception as e:
+            _log_swallowed("panel_expr.py", e)
             c = None
         if c is not None and len(c) == n and (c >= 0).all():
             codes = c
@@ -2365,7 +2379,8 @@ def _tree_ext_days(node) -> int:
         base = max(_tree_ext_days(a) for a in (args[0], args[1]) if hasattr(a, "op"))
         try:
             n = float(args[2].raw) if len(args) > 2 and getattr(args[2], "op", None) == "const" else 0.0
-        except Exception:
+        except Exception as e:
+            _log_swallowed("panel_expr.py", e)
             n = 0.0
         if n >= 1:
             return base + (int(n) - 1)
@@ -2375,7 +2390,8 @@ def _tree_ext_days(node) -> int:
         base = _tree_ext_days(args[0]) if args else 0
         try:
             n = float(args[1].raw) if len(args) > 1 and getattr(args[1], "op", None) == "const" else 0.0
-        except Exception:
+        except Exception as e:
+            _log_swallowed("panel_expr.py", e)
             n = 0.0
         if n >= 1:
             return base + (int(n) - 1)
@@ -2388,7 +2404,8 @@ def _tree_ext_days(node) -> int:
         base = _tree_ext_days(args[0]) if args else 0
         try:
             k = int(args[1].raw) if args[1].op == "const" else 0
-        except Exception:
+        except Exception as e:
+            _log_swallowed("panel_expr.py", e)
             k = 0
         return base + max(k, 0)  # 正 k=取过去 k 天前 → 左侧多读 k 天
     # 其余组合/一元：两侧取 max
@@ -2408,7 +2425,8 @@ def _expr_ext_days(expr: str) -> int:
     try:
         node = parse_expr(str(expr))
         return _tree_ext_days(node)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("panel_expr.py", e)
         # 解析失败退化为旧的顶层 EMA 正则（保守兜底）
         import math as _math
         need = 0
@@ -2575,14 +2593,16 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
             hit = expr_cache.load(ck)
             if hit is not None:
                 return hit
-        except Exception:                        # noqa: BLE001 —— 缓存不许影响正确性 ✗
+        except Exception as e:  # noqa: BLE001 —— 缓存不许影响正确性 ✗
+            _log_swallowed("panel_expr.py", e)
             ck = None
     out = _panel_features_uncached(instruments, fields, start_time, end_time,
                                    cancel_cb=cancel_cb, warmup_days=warmup_days)
     if ck:
         try:
             expr_cache.save(ck, out)
-        except Exception:                        # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("panel_expr.py", e)
             pass
     return out
 
@@ -2718,9 +2738,11 @@ def _force_terminate_executor(ex):
                 try:
                     if p.is_alive():
                         p.terminate()
-                except Exception:
+                except Exception as e:
+                    _log_swallowed("panel_expr.py", e)
                     pass
-    except Exception:
+    except Exception as e:
+        _log_swallowed("panel_expr.py", e)
         pass
 
 
@@ -2817,7 +2839,8 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
         else:
             _avail_mb = _system_avail_gb() * 1024.0
             bin_cache_mb = max(64, min(768, int(_avail_mb * 0.4 / n_jobs)))
-    except Exception:
+    except Exception as e:
+        _log_swallowed("panel_expr.py", e)
         pass
 
     parts: dict = {}
@@ -2866,3 +2889,21 @@ def panel_features_parallel(instruments: Sequence[str], fields: Sequence[Tuple[s
     # 跨块股票不重叠 → concat + sort 即完整（无需全局 reindex）。
     ordered = [parts[i] for i in range(n_chunk) if i in parts]
     return pd.concat(ordered).sort_index()
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 本文件里的 logger 名字不统一 ✗（`panel_expr` 用 `_LOGGER` ✓、`qlib_engine` 用 `logger` ✓），
+      而且历史上出现过"logger 在某个平台上是 None"✓（2.9.26 事故 ✗：把静默改成崩溃 ✓）
+      ⇒ 这里**两个都认** ✓，再兜底 `logging.getLogger(__name__)` ✓；
+      `contextlib.suppress` 明确声明"日志失败也无所谓"✓（也避免被静默债务棘轮算成新债 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = (globals().get("logger")
+              or globals().get("_LOGGER")
+              or _logging.getLogger(__name__))
+        lg.debug("[吞] %s: %r", where, exc)

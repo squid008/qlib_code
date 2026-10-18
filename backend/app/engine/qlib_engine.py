@@ -99,7 +99,8 @@ def _once_log(key: str, msg: str, level: str = "warning") -> None:
     try:
         _lg = _get_logger(__name__)
         (_lg.warning if level == "warning" else _lg.info)(msg)
-    except Exception:                                     # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("qlib_engine.py", e)
         pass
 
 
@@ -171,7 +172,8 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
             raise ValueError(f"缺少回测日期字段 {dfield}")
         try:
             datetime.strptime(str(dval), "%Y-%m-%d")
-        except Exception:
+        except Exception as e:
+            _log_swallowed("qlib_engine.py", e)
             raise ValueError(f"回测日期字段 {dfield} 格式不合法: {dval!r}（应为 YYYY-MM-DD）")
     if str(req.end_date) < str(req.start_date):
         raise ValueError(f"结束日期({req.end_date})不能早于开始日期({req.start_date})")
@@ -190,7 +192,8 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
                 )
     except ValueError:
         raise
-    except Exception:
+    except Exception as e:
+        _log_swallowed("qlib_engine.py", e)
         # 获取日历失败不阻塞（可能数据源不同），由后续逻辑报错
         pass
 
@@ -203,7 +206,8 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
             from ..services import artifacts_service as _art_svc
             try:
                 src_dir = _art_svc.find_artifact_dir(resume_from)
-            except Exception:
+            except Exception as e:
+                _log_swallowed("qlib_engine.py", e)
                 src_dir = None
             if src_dir and os.path.isdir(src_dir):
                 art_dir = src_dir
@@ -212,7 +216,8 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
                 #   （用户 2026-09-22 实测：续测运行期间 /artifacts、/features、/snapshot 全 404 ✗）。
                 try:
                     _art_svc.note_resume_task(art_dir, task_id)
-                except Exception:                              # noqa: BLE001
+                except Exception as e:  # noqa: BLE001
+                    _log_swallowed("qlib_engine.py", e)
                     pass
             else:
                 art_dir = _make_artifact_dir(work_dir, task_id, req)
@@ -244,7 +249,8 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
         from .resource import apply_active_jobs
 
         apply_active_jobs()
-    except Exception:
+    except Exception as e:
+        _log_swallowed("qlib_engine.py", e)
         pass
 
     _report(6, "磁盘治理（清理旧缓存/旧产物）...")
@@ -253,7 +259,8 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
         from .storage_cleanup import cleanup_storage
 
         cleanup_storage(work_dir)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("qlib_engine.py", e)
         pass
 
     _report(7, "准备实验追踪（mlflow）...")
@@ -776,7 +783,8 @@ def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> Back
         from qlib.data.data import Cal
         try:
             _, _, single_base, _ = Cal.locate_index(req.start_date, req.start_date, freq="day", future=True)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("qlib_engine.py", e)
             single_base = None
         port_analysis_config = _build_port_config(req, benchmark, req.start_date, req.end_date,
                                                   account=req.initial_capital, instruments=instruments,
@@ -878,7 +886,8 @@ def _save_segment_result(art_dir, seg_no, nav_points, trades, total_return, end_
         if trpl is not None:
             with open(os.path.join(seg_dir, "train_pl.pkl"), "wb") as f:
                 pickle.dump(trpl, f, protocol=4)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("qlib_engine.py", e)
         # 段结果保存失败不阻塞回测（仅影响续跑/中途查看）
         pass
 
@@ -916,7 +925,8 @@ def _load_segment_result(art_dir, seg_no):
             with open(p, "rb") as f:
                 train_pl = pickle.load(f)
         return data, test_pl, train_pl
-    except Exception:
+    except Exception as e:
+        _log_swallowed("qlib_engine.py", e)
         return None
 
 
@@ -952,7 +962,8 @@ def _save_partial_result(art_dir, segments_done, segments_total, all_nav, layer_
         path = os.path.join(art_dir, "partial_result.json")
         with open(path, "w", encoding="utf-8") as f:
             _json.dump(partial, f, ensure_ascii=False, default=str)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("qlib_engine.py", e)
         pass
 
 
@@ -976,13 +987,15 @@ def _build_merged_analysis(all_test_pred_label, all_train_pred_label, layer_segm
                     b_start = merged_pl.index.get_level_values("datetime").min()
                     b_end = merged_pl.index.get_level_values("datetime").max()
                     merged_bench = _compute_benchmark_returns(benchmark, b_start, b_end)
-                except Exception:
+                except Exception as e:
+                    _log_swallowed("qlib_engine.py", e)
                     merged_bench = None
             merged_groups = _compute_layers(merged_pl, benchmark_ret=merged_bench,
                                             rebalance_period=rebalance_period)
             if merged_groups:
                 merged_layers = {"segment": "汇总", "groups": merged_groups, "benchmark": benchmark}
-        except Exception:
+        except Exception as e:
+            _log_swallowed("qlib_engine.py", e)
             merged_layers = None
     merged_test = None
     if all_test_pred_label:
@@ -990,7 +1003,8 @@ def _build_merged_analysis(all_test_pred_label, all_train_pred_label, layer_segm
             merged_pl = pd.concat(all_test_pred_label)
             merged_pl = merged_pl[~merged_pl.index.duplicated(keep="first")]
             merged_test = _compute_ic(merged_pl)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("qlib_engine.py", e)
             merged_test = None
     merged_train = None
     if all_train_pred_label:
@@ -998,7 +1012,8 @@ def _build_merged_analysis(all_test_pred_label, all_train_pred_label, layer_segm
             merged_pl = pd.concat(all_train_pred_label)
             merged_pl = merged_pl[~merged_pl.index.duplicated(keep="first")]
             merged_train = _compute_ic(merged_pl)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("qlib_engine.py", e)
             merged_train = None
     return merged_layers, merged_test, merged_train
 
@@ -1029,7 +1044,8 @@ def _purged_train_end(test_start: str, label_horizon: int) -> str:
             _once_log("train-purge", "[dataset] 训练/验证段末按 **purge** 退到 %s（测试起点 %s 前 "
                                     "%d 个交易日 ✓ 审计 #1）" % (out, str(test_start)[:10], need))
             return out
-    except Exception:                                                     # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("qlib_engine.py", e)
         pass
     out = _offset_date(test_start, -(need * 2))
     _once_log("train-purge-fallback",
@@ -1103,7 +1119,8 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
     from qlib.data.data import Cal
     try:
         _, _, rebalance_base, _ = Cal.locate_index(req.start_date, req.start_date, freq="day", future=True)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("qlib_engine.py", e)
         rebalance_base = None
 
     for idx, seg in enumerate(segments):
@@ -1501,3 +1518,21 @@ def _model_config(model_name: str, req: BacktestRequest) -> Dict[str, Any]:
         "module_path": "qlib.contrib.model.gbdt",
         "kwargs": kwargs,
     }
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 本文件里的 logger 名字不统一 ✗（`panel_expr` 用 `_LOGGER` ✓、`qlib_engine` 用 `logger` ✓），
+      而且历史上出现过"logger 在某个平台上是 None"✓（2.9.26 事故 ✗：把静默改成崩溃 ✓）
+      ⇒ 这里**两个都认** ✓，再兜底 `logging.getLogger(__name__)` ✓；
+      `contextlib.suppress` 明确声明"日志失败也无所谓"✓（也避免被静默债务棘轮算成新债 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = (globals().get("logger")
+              or globals().get("_LOGGER")
+              or _logging.getLogger(__name__))
+        lg.debug("[吞] %s: %r", where, exc)

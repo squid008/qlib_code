@@ -45,9 +45,12 @@ BIG_FILES = {
     # ⚠ 这份清单是**第一版漏掉 3 个真·巨头**后补的 ✓（棘轮测试自己抓出来的 ✓）：
     #   `panel_expr.py` **2,868 行** ✗ 才是全仓最大文件（比 `single_test.py` 还大 ✓）。
     "factors/single_test.py": 2700,
-    "factors/panel_expr.py": 2900,
+    # ⚠ 2026-10-18：P2-A 第四批给 `panel_expr` 加了 40 行日志（23 处调用 + helper ✓）
+    #   ⇒ 2868 → 2909 ✓（`qlib_engine` 1503 → 1538 ✓ 仍在上限内 ✓）。上限随之调大 ✓，
+    #   但**只允许因为"留痕"而涨** ✗ —— 加业务逻辑请先拆 ✓。
+    "factors/panel_expr.py": 2950,
     "factors/ops_ext.py": 2200,
-    "engine/qlib_engine.py": 1550,
+    "engine/qlib_engine.py": 1560,
     "routers/factors_single.py": 1250,
     "signals/engine.py": 1400,
 }

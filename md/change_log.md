@@ -3,6 +3,29 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.29] - 2026-10-18
+
+### Changed（**P2-A 第四批：`panel_expr.py` + `qlib_engine.py`** ✓ —— 静默 **107 → 90**）
+
+- 收掉 **40 处**静默捕获 ✓（只加一行 debug 日志 ✓，**控制流未变** ✓）：
+  · `factors/panel_expr.py` **23 处** ✓ —— 面板求值器（**性能热点** ✓）：节点缓存、`.day.bin`
+    读取、公共子式复用、字段覆盖推断失败时全静默 ✗ ⇒ 结果偏了也不知道为什么 ✓；
+  · `engine/qlib_engine.py` **17 处** ✓ —— 主回测引擎：训练产物 / 指标兜底 / 资源探测失败静默 ✗
+    ⇒ "回测跑完了但某块数据缺了"，日志里查不到 ✓（2.9.28 那类"少一条曲线"的温床 ✓）。
+- **两个文件的 logger 名字不同** ✗（`panel_expr` 用 `_LOGGER` ✓、`qlib_engine` 用 `logger` ✓）
+  ⇒ helper 里**两个都认** ✓，再兜底 `logging.getLogger(__name__)` ✓；
+  仍沿用"**追加到文件末尾**" + `contextlib.suppress` 的组合 ✓（2.9.26 事故的教训 ✓）。
+- **执行前先 grep 命名冲突** ✓（2.9.28 的 `F823` 教训 ✓）：确认两个文件都**没有** `_log_swallowed` ✓。
+- **棘轮同步（诚实记录增长来源）** ✓：
+  · `test_code_health.py`：`panel_expr.py` 2868 → **2909**（+41 行日志 ✓，上限 2900 → **2950** ✓）、
+    `qlib_engine.py` 1503 → 1538 ✓（上限 1550 → 1560 ✓）；
+    ⚠ 注释里写明"**只允许因为留痕而涨** ✗ —— 加业务逻辑请先拆"✓；
+  · `test_except_ratchet.py`：基线 107 → **90** ✓。
+- **校验** ✓：`py_compile` ✓ ｜ `ruff` **0 错误** ✓ ｜ 全量 **1063 passed** ✓ ｜ CI ✓。
+- **静默债务进度** ✓：**163 → 90**（−45%）✓；剩余集中：`market_stat.py` 7 ｜
+  `routers/factors_single.py` 6 ｜ `engine/charts.py` 5 ｜ `artifacts_service.py` 4 ｜
+  `signals/pricing.py` 4 ｜ `engine/data_cache.py` 3 ✓。
+
 ## [2.9.28] - 2026-10-18
 
 ### Changed（**P2-A 第三批：`engine/metrics.py` + `factors/single_test.py`** ✓ —— 静默 **130 → 107**）
