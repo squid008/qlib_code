@@ -191,7 +191,8 @@ def _attach_signal_roll(req, row: dict, evs: dict, progress_cb=None,
         if progress_cb:
             try:
                 progress_cb(frac, msg)
-            except Exception:                                         # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _log_swallowed("factors_single.py", e)
                 pass
 
     _exits = list(getattr(req, "exit_factors", None) or [])
@@ -305,7 +306,8 @@ def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None,
         if progress_cb:
             try:
                 progress_cb(frac, msg)
-            except Exception:                     # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _log_swallowed("factors_single.py", e)
                 pass                              # 报进度失败绝不影响回测 ✓
 
     tc = row.get("topk_curves") or {}
@@ -498,7 +500,8 @@ def _exit_matrix(mask, panel: dict, cache: Optional[dict] = None, ei: int = 0):
         w = mask.unstack(level="instrument")
         w = w.reindex(index=cl.index, columns=list(cl.columns)).fillna(False)
         mat = w.to_numpy(dtype=bool)
-    except Exception:                                              # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("factors_single.py", e)
         mat = None
     if cache is not None:
         for k in [k for k in cache if k[1] != pkey]:                # 面板变了 ⇒ 旧的全丢 ✓
@@ -636,7 +639,8 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
             _last = _cd[-1]
             try:
                 nav = nav.loc[[i for i in nav.index if str(i)[:10] <= _last]]
-            except Exception:                                    # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _log_swallowed("factors_single.py", e)
                 pass
             if not len(nav):
                 return {"error": "截断到调仓日（%s）后无净值" % _last}
@@ -652,7 +656,8 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
                 try:
                     from ..logger import get_logger
                     get_logger("factors").warning("period_roll 截断后重算指标失败: %r", e)
-                except Exception:
+                except Exception as e:
+                    _log_swallowed("factors_single.py", e)
                     pass
         return {"dates": [str(x)[:10] for x in nav.index],
                 # ⚠ 精度 9 位（不是 6 ✓）：对拍脚本要求"逐位一致"，取到 6 位会留下
@@ -676,7 +681,8 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
         try:
             from ..logger import get_logger
             get_logger("factors").warning("period_roll 面板侧计算失败: %r", e)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("factors_single.py", e)
             pass
         return {"error": repr(e)}
 
@@ -1188,7 +1194,8 @@ def single_factor_test_cancel(task_id: str):
     try:
         manager = get_task_manager(config.WORK_DIR)
         manager.wake_external_waiters()
-    except Exception:
+    except Exception as e:
+        _log_swallowed("factors_single.py", e)
         pass
     return {"ok": True, "message": "已请求取消，正在终止..."}
 
@@ -1231,3 +1238,17 @@ def single_factor_test_tasks(limit: int = 20):
         )
     return {"tasks": out}
 
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 本模块**没有模块级 logger** ✗（`factors_single` 是内联 `get_logger("factors")` 用法 ✓）
+      ⇒ 这里用 `logging.getLogger(__name__)` ✓（= `app.routers.xxx` ✓，能与其它日志一起看 ✓）。
+    ⚠ 全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

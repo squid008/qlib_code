@@ -51,7 +51,8 @@ BIG_FILES = {
     "factors/panel_expr.py": 2950,
     "factors/ops_ext.py": 2200,
     "engine/qlib_engine.py": 1560,
-    "routers/factors_single.py": 1250,
+    # ⚠ 2026-10-18：P2-A 第六批给路由层加日志 ⇒ `factors_single.py` 1233 → 1254 ✓（上限 1260 ✓）
+    "routers/factors_single.py": 1260,
     "signals/engine.py": 1400,
 }
 

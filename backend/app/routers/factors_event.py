@@ -475,7 +475,8 @@ def event_study_nav(req: EventNavRequest):
                                   " ⇒ 组合已退化为「全市场等权」，这条曲线基本反映的是 beta，不是信号 ✗"
                                   % (int(k), _gap, float(_cover) * 100.0))
                                  if _diluted else "")}
-        except Exception:                                          # noqa: BLE001 —— 诊断失败不影响主结果 ✓
+        except Exception as e:  # noqa: BLE001 —— 诊断失败不影响主结果 ✓
+            _log_swallowed("factors_event.py", e)
             nav_diag = {}
         # ★★ v2.9.5（用户 2026-10-17 ✓）：设了持仓上限**也照画参照线** ✗→✓ ——
         #   用户原话：「我改 50 只后**非触发组曲线没了**？」✓ —— 上一版（v2.9.3）为了"不给不可比对照"
@@ -495,7 +496,8 @@ def event_study_nav(req: EventNavRequest):
                     from ..engine.perf_metrics import compute_perf      # 与上面净值统计同一个 ✓
                     _ret = nav["bench_equal"].pct_change().fillna(0.0).to_numpy()
                     stats["bench_equal"] = compute_perf(_ret)
-                except Exception:                                      # noqa: BLE001
+                except Exception as e:  # noqa: BLE001
+                    _log_swallowed("factors_event.py", e)
                     pass
                 if _maxpos:
                     nav_diag["bench_equal_note"] = (
@@ -545,7 +547,8 @@ def event_study_cancel(task_id: str):
     try:
         manager = get_task_manager(config.WORK_DIR)
         manager.wake_external_waiters()
-    except Exception:
+    except Exception as e:
+        _log_swallowed("factors_event.py", e)
         pass
     return {"ok": True, "message": "已请求取消，正在终止..."}
 
@@ -558,3 +561,17 @@ def event_study_clear():
             _EST_TASKS.pop(k, None)
     return {"ok": True, "cleared": len(done_keys)}
 
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 本模块**没有模块级 logger** ✗（`factors_single` 是内联 `get_logger("factors")` 用法 ✓）
+      ⇒ 这里用 `logging.getLogger(__name__)` ✓（= `app.routers.xxx` ✓，能与其它日志一起看 ✓）。
+    ⚠ 全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

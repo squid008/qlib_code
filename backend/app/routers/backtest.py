@@ -79,7 +79,8 @@ def resume_backtest(task_id: str):
         adir = artifacts_service.find_artifact_dir(task_id)
         if adir:
             manager.set_display_name(new_task_id, os.path.basename(adir))
-    except Exception:
+    except Exception as e:
+        _log_swallowed("backtest.py", e)
         pass
     return TaskIdResponse(task_id=new_task_id)
 
@@ -96,7 +97,8 @@ def get_backtest(task_id: str):
             adir = artifacts_service.find_artifact_dir(task_id)
             if adir:
                 task.display_name = os.path.basename(adir)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("backtest.py", e)
             pass
     # 滚动训练运行中：附加中途 partial_result（已跑段的净值/分层/IC），前端可实时查看
     if task.status in ("running", "cancelling"):
@@ -108,7 +110,8 @@ def get_backtest(task_id: str):
                     req = manager.get_req(task_id)
                     if req and getattr(req, "resume_task_id", None):
                         adir = artifacts_service.find_artifact_dir(req.resume_task_id)
-                except Exception:
+                except Exception as e:
+                    _log_swallowed("backtest.py", e)
                     adir = None
             if adir:
                 import json
@@ -116,7 +119,8 @@ def get_backtest(task_id: str):
                 if os.path.exists(ppath):
                     with open(ppath, "r", encoding="utf-8") as f:
                         task.partial_result = json.load(f)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("backtest.py", e)
             pass
     return task
 
@@ -254,3 +258,18 @@ def delete_backtest(task_id: str):
     except artifacts_service.ArtifactNotFoundError as e:
         raise _map_artifact_error(e)
     return {"status": "deleted", "task_id": task_id, "dir": dir_name}
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 本模块**没有模块级 logger** ✗（`factors_single` 是内联 `get_logger("factors")` 用法 ✓）
+      ⇒ 这里用 `logging.getLogger(__name__)` ✓（= `app.routers.xxx` ✓，能与其它日志一起看 ✓）。
+    ⚠ 全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

@@ -3,6 +3,25 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.31] - 2026-10-18
+
+### Changed（**P2-A 第六批：路由层** ✓ —— 静默 **74 → 63**）
+
+- **为什么路由层优先** ✓：这里的静默失败会变成「**前端拿到 200 但数据不对**」✗ ——
+  比后端 500 更难查（500 至少还有栈 ✓）。
+- 收掉 **14 处** ✓：`routers/factors_single.py` **7 处** ✓ ｜ `routers/backtest.py` **4 处** ✓ ｜
+  `routers/factors_event.py` **3 处** ✓（只加一行 debug 日志 ✓，控制流未变 ✓）。
+- **三个文件的 logger 情况都不同** ✓（所以 helper 要能兜住）：
+  `factors_single` 是**内联** `get_logger("factors").warning(...)` 的写法 ✗（没有模块级 logger ✓）；
+  `backtest` / `factors_event` 完全没有 ✓ ⇒ helper 用 `logging.getLogger(__name__)`
+  （= `app.routers.xxx` ✓，与其它日志一起看 ✓）。
+- **棘轮**：`test_except_ratchet.py` 基线 74 → **63** ✓；
+  `factors_single.py` 1233 → **1254** 行（+21 行日志 ✓）⇒ `BIG_FILES` 上限 1250 → **1260** ✓。
+- **校验** ✓：`py_compile` ✓ ｜ `ruff` **0 错误** ✓ ｜ 全量 **1063 passed** ✓ ｜ CI ✓。
+- **静默债务进度** ✓：**163 → 63（−61%）** ✓；剩余都是 3~4 处的小尾巴：
+  `artifacts_service.py` 4 ｜ `data_cache.py` 3 ｜ `feature_cache.py` 3 ｜ `factors_state.py` 3 ｜
+  `routers/signal_test.py` 3 ｜ `services/datasets.py` 3 ✓。
+
 ## [2.9.30] - 2026-10-18
 
 ### Changed（**P2-A 第五批：`market_stat` + `charts` + `pricing`** ✓ —— 静默 **90 → 74**）
