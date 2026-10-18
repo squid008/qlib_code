@@ -15,5 +15,12 @@ export default defineConfig({
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     // 只跑一次就退出（CI 用 ✓）；本地想看 watch 就 `npx vitest`
     watch: false,
+    // ★★ v2.9.20（2026-10-18 ✓）：**默认线程池在 GitHub 的 Linux runner 上起不来** ✗ ——
+    //   实测 CI 报 `TypeError: Cannot read properties of undefined (reading 'bind')`
+    //   且 **0 个用例被收集** ✓（本地 Windows 完全正常 ✓ ⇒ 是 tinypool 的 worker 绑定问题 ✗）。
+    //   ⇒ 换成**进程池**（forks ✓）：每个测试文件一个子进程 ✓，不依赖 worker_threads ✓。
+    //   代价：启动稍慢（本项目 11 条用例、~0.5s ✓ 可忽略 ✓）。
+    pool: 'forks',
+    poolOptions: { forks: { singleFork: true } },
   },
 })

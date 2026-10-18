@@ -3,6 +3,26 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.20] - 2026-10-18
+
+### Fixed（CI 的 vitest 起不来 ✗→✓：**默认线程池在 Linux runner 上崩** ⇒ 换 `forks` 进程池）
+
+- **2.9.19 之后 CI 的进展** ✓：`安装依赖` ✓（`npm ci`→`npm install --legacy-peer-deps` 生效 ✓）、
+  `tsc` ✓ —— 只剩 `前端单测（vitest）` 红 ✗。
+- **现象** ✗（CI 日志 ✓）：
+  ```
+  Unhandled Error: TypeError: Cannot read properties of undefined (reading 'bind')
+  Test Files  no tests  ｜ Tests  no tests  ｜ Errors  1 error
+  ```
+  ⇒ **0 个用例被收集** ✗，报在启动阶段 ✓；而**本地 Windows 完全正常** ✓（11/11 绿 ✓）。
+- **判断** ✓：`tinypool`（vitest 默认的 worker 线程池）在 GitHub 的 Linux runner 上**绑定失败** ✗。
+- **改法** ✓：`vitest.config.ts` 里 `pool: 'forks'` + `poolOptions.forks.singleFork: true` ✓
+  —— 每个测试文件跑**子进程**、不依赖 `worker_threads` ✓。代价：启动稍慢（11 条用例 ~0.5s ✓ 无所谓 ✓）。
+  同时把 `vitest` 从 `^2.1.9` **钉死成 `2.1.9`** ✓（避免 CI 与本地漂到不同小版本 ✗）。
+- **本地验证** ✓：`npx vitest run` **exit=0** ✓（forks 池下 11 条仍全绿 ✓）。
+- **教训** ✓（连吃两轮 ✗）：**"本地绿"不等于"CI 绿"** —— 前端链路有 3 处平台差异 ✓
+  （`npm ci` vs `legacy-peer-deps` ✓、Node 20 vs 本地 ✓、线程池 ✓）⇒ 以后**每次动前端依赖/配置都要看 CI** ✗。
+
 ## [2.9.19] - 2026-10-18
 
 ### Fixed（**CI 从 2.9.17 起一直红** ✗→✓：`npm ci` 换成 `npm install --legacy-peer-deps`）
