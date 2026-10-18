@@ -66,7 +66,14 @@ jobs:
           node-version: 20
 
       - name: 安装依赖
-        run: npm ci
+        # ★★ v2.9.19（2026-10-18 ✓）：`npm ci` → `npm install --legacy-peer-deps` ✗→✓
+        #   为什么必须改：CI 从 2.9.17 起**一直是红的** ✗ —— 报的是 npm 的**用法错误**
+        #   （`npm error Usage: npm ci` + 一大串 options ✓），真因是：
+        #     · 本仓库的 lockfile 是带 `--legacy-peer-deps` 生成的 ✓
+        #       （`@testing-library/react@16` 对 React 有 peer 声明 ✗，不加就 ERESOLVE ✓）；
+        #     · 而 `npm ci` 会**重新校验 peer** ✗ ⇒ 直接 `EUSAGE` 退出 ✓。
+        #   代价：不再"严格复现 lockfile"✗ —— 但换来确定性（与本地同一套 flag ✓）✓。
+        run: npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: TypeScript 类型检查
         run: npx tsc --noEmit -p tsconfig.json

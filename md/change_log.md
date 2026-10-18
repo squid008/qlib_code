@@ -3,6 +3,25 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.19] - 2026-10-18
+
+### Fixed（**CI 从 2.9.17 起一直红** ✗→✓：`npm ci` 换成 `npm install --legacy-peer-deps`）
+
+- **现象** ✓：`b094df9`（只加前端测试依赖那个提交）起，CI 连续 **4 个提交红** ✗
+  （`b094df9` / `f0ba98e` / `e322ef6` / `271f5ed` 全 failure ✓），而**本地全绿** ✓。
+- **根因** ✓（日志里是 npm 的**用法错误**，不是业务失败 ✗）：
+  ```
+  npm error Usage: npm ci
+  npm error [--install-strategy ...] ...
+  ```
+  · 本仓库 lockfile 是带 **`--legacy-peer-deps`** 生成的 ✓
+    （`@testing-library/react@16` 对 React 有 peer 声明 ✗，不加就 ERESOLVE ✓）；
+  · 而 **`npm ci` 会重新校验 peer** ✗ ⇒ `EUSAGE` 直接退出 ✓ ⇒ 后面 tsc / vitest 全没跑到 ✓。
+- **改法** ✓：CI 的「安装依赖」改成 **`npm install --legacy-peer-deps --no-audit --no-fund`** ✓
+  —— 与本地**同一套 flag** ✓；代价是不再"严格复现 lockfile"✗，但换来确定性 ✓。
+- **教训** ✓：**CI 一红就要立刻查，不能等** ✗ —— 这 4 个提交期间我一直以为"本地绿就是绿"✗，
+  而 CI 其实在**第一步装依赖**就挂了 ✓（`npm ci` 与 `--legacy-peer-deps` 天生冲突 ✓）。
+
 ## [2.9.18] - 2026-10-18
 
 ### Added（**P1-C-2：任务状态落盘** ✓ —— 治「重启就丢结果」✗）
