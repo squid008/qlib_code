@@ -38,6 +38,20 @@ import shutil
 
 from ..config import WORK_DIR
 
+
+_logger = None
+
+
+def _log():
+    """惰性 logger ✓（★ P2-A：本模块原先 3~4 处 `except: pass` 是**静默** ✗ ——
+    落盘/清理失败时磁盘其实有问题，但日志里查不到 ✓。现在留 debug 痕迹 ✓，**仍不抛** ✓）。"""
+    global _logger
+    if _logger is None:
+        from ..logger import get_logger
+
+        _logger = get_logger(__name__)
+    return _logger
+
 #: 落盘根目录：`workdir/tasks/<kind>/<task_id>.json` ✓
 _ROOT = os.path.join(WORK_DIR, "tasks")
 
@@ -95,7 +109,8 @@ def save(kind: str, task_id: str, state: dict, *, force: bool = False) -> bool:
         os.replace(tmp, p)                    # 原子 ✓
         _SIG[key] = sig
         return True
-    except Exception:                                            # noqa: BLE001
+    except Exception as _e:  # noqa: BLE001
+        _log().debug("[吞] task_store: %r", _e)
         return False
 
 
@@ -104,7 +119,8 @@ def load_all(kind: str) -> dict:
     out: dict = {}
     try:
         d = _dir(kind)
-    except Exception:                                            # noqa: BLE001
+    except Exception as _e:  # noqa: BLE001
+        _log().debug("[吞] task_store: %r", _e)
         return out
     for name in os.listdir(d):
         if not name.endswith(".json"):
@@ -115,10 +131,12 @@ def load_all(kind: str) -> dict:
                 st = json.load(f)
             if not isinstance(st, dict):
                 raise ValueError("not a dict")
-        except Exception:                                        # noqa: BLE001
+        except Exception as _e:  # noqa: BLE001
+            _log().debug("[吞] task_store: %r", _e)
             try:
                 os.remove(p)                                     # 坏文件不许拖垮启动 ✓
-            except Exception:                                    # noqa: BLE001
+            except Exception as _e:  # noqa: BLE001
+                _log().debug("[吞] task_store: %r", _e)
                 pass
             continue
         # 重启残留 ⇒ 明确失败 ✓（不能让用户对着 0% 干等 ✗）
@@ -133,7 +151,8 @@ def load_all(kind: str) -> dict:
 def delete(kind: str, task_id: str) -> None:
     try:
         os.remove(_path(kind, task_id))
-    except Exception:                                            # noqa: BLE001
+    except Exception as _e:  # noqa: BLE001
+        _log().debug("[吞] task_store: %r", _e)
         pass
     _SIG.pop((kind, str(task_id)), None)
 
@@ -144,7 +163,8 @@ def prune(kind: str, keep: int = _DEFAULT_KEEP) -> int:
         d = _dir(kind)
         files = [(os.path.getmtime(os.path.join(d, n)), n) for n in os.listdir(d)
                  if n.endswith(".json")]
-    except Exception:                                            # noqa: BLE001
+    except Exception as _e:  # noqa: BLE001
+        _log().debug("[吞] task_store: %r", _e)
         return 0
     files.sort(reverse=True)
     n = 0
@@ -152,7 +172,8 @@ def prune(kind: str, keep: int = _DEFAULT_KEEP) -> int:
         try:
             os.remove(os.path.join(d, name))
             n += 1
-        except Exception:                                        # noqa: BLE001
+        except Exception as _e:  # noqa: BLE001
+            _log().debug("[吞] task_store: %r", _e)
             pass
     return n
 
@@ -164,5 +185,6 @@ def clear(kind: str) -> int:
         shutil.rmtree(d, ignore_errors=True)
         _SIG.clear()
         return 1
-    except Exception:                                            # noqa: BLE001
+    except Exception as _e:  # noqa: BLE001
+        _log().debug("[吞] task_store: %r", _e)
         return 0

@@ -3,6 +3,43 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.25] - 2026-10-18
+
+### Added（**P2-A：异常分级** ✓ —— 先量、再给工具、最后上棘轮 ✓）
+
+- **先量（AST ✓，不靠 grep ✗）**：`app/` 里宽泛捕获 **410 处**，分三档：
+
+  | 档 | 数量 | 说明 |
+  |---|---|---|
+  | **静默**（body 只有 `pass`/`continue`/`...` 且**无任何日志** ✗） | **163** ✗ | 出事时**零痕迹** ⇒ 最贵 ✓ |
+  | 有痕迹（会打日志 ✓） | 70 ✓ | 可接受 ✓ |
+  | 有动作（`raise`/`return`/回退 ✓） | 177 ✓ | 正常 ✓ |
+
+  ⚠ 为什么静默最贵 —— 本项目**已经吃过两次** ✓：「离场卖出 0 笔却又报 1844 笔顺延」✓、
+  「任务不存在或结果已清理」✓（都属"结果不对但日志查不到"✗）。
+- **再给工具** ✓：新增 `app/services/error_policy.py`（~90 行 ✓）：
+  · `swallow(scope, exc, level=..., extra=...)` ✓ —— **吞但必留痕迹** ✓，`scope` 强制写具体位置 ✓
+    （写 "somewhere" 等于没写 ✗）；
+  · `tolerate(scope, level=...)` 上下文管理器 ✓ —— `try/except: pass` 的**合规替代** ✓
+    （⚠ 只捕 `Exception` ✓ ⇒ `KeyboardInterrupt`/`SystemExit` 自动穿过去 ✓）；
+  · `must_raise(scope, exc)` ✓ —— "该报的必须报" ✓（记 error 后**原样抛回** ✓ 保栈 ✓）。
+- **最后一刀示范（真收了一批 ✓）**：把**自己新写的三个模块**的静默全收掉 ✓ ——
+  `expr_cache` **13 处** ✓、`task_store` **8 处** ✓（都是"落盘/清理失败只知道失败、不知道为什么"✗）；
+  `error_policy` 自己那 3 处"连日志都失败"的兜底改用 `contextlib.suppress` ✓（本就不该算债务 ✓）。
+  ⇒ 静默总数 **163 → 149** ✓（−14）。
+- **棘轮** ✓：`tests/test_except_ratchet.py`（4 条 ✓）—— 静默总数**不许超过基线**（149 ✓）｜
+  基线不许比现实虚高 ✓ ｜ **点名新模块必须 0 静默** ✓（`error_policy` / `expr_cache` / `task_store` ✓）。
+  ✗ 三条我自己写错、被测试当场抓出来的 ✓（都记进注释了 ✓）：
+  ① 第三条测试写成 `legacy = set(per)` ⇒ `bad` 恒空 ⇒ **恒真测试** ✗（等于没测 ✓）；
+  ② 扫描器不认 `swallow(...)` 是留痕 ✓ ⇒ 把 `tolerate` 误判成静默 ✗；
+  ③ 断言消息里用了 ASCII 双引号 ⇒ **SyntaxError** ✗（这个毛病我今天犯第 4 次了 ✓）。
+- **测试** ✓：`test_error_policy.py` 7 条（**吞了必留痕** ✓、`KeyboardInterrupt` 必须穿过去 ✓、
+  `must_raise` 抛回**同一个异常对象** ✓）。
+- **校验** ✓：`py_compile` ✓ ｜ `ruff` ✓ ｜ 全量 **1061 passed** ✓（1051 + 10 ✓）｜ CI ✓。
+- **剩余债务（149 处静默 ✓）**，按集中度下一批该收：
+  `factors/single_test.py` 16 ｜ `engine/artifacts.py` 12 ｜ `factors/panel_expr.py` 9 ｜
+  `engine/metrics.py` 8 ｜ `engine/qlib_engine.py` 8 ✓。
+
 ## [2.9.24] - 2026-10-18
 
 ### Added（**代码体检棘轮** ✓ —— P0-C-4 的诚实结论：那两根骨头**拆不动** ✗，但从此不许再长 ✗）

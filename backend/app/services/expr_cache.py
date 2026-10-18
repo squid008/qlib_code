@@ -62,6 +62,20 @@ _MAX_ENTRY_MB = 512.0
 #: 命中/未命中计数（诊断用 ✓；不参与清理逻辑 ✓）
 _STATS = {"hit": 0, "miss": 0, "save": 0, "skip": 0, "prune": 0}
 
+_logger = None
+
+
+def _log():
+    """惰性 logger ✓（★ P2-A：本模块以前 11 处 `except: pass` **全是静默** ✗ ——
+    缓存写入失败时磁盘其实在报警，但日志里一个字都没有 ✓。现在全部留 debug 痕迹 ✓；
+    **仍然不抛** ✓（缓存是增强 ✗，不许影响正确性 ✓）。"""
+    global _logger
+    if _logger is None:
+        from ..logger import get_logger
+
+        _logger = get_logger(__name__)
+    return _logger
+
 
 def enabled() -> bool:
     """开关 ✓（`QLIB_EXPR_CACHE=0` 关闭 ✓）。"""
@@ -98,13 +112,16 @@ def load(k: str) -> Optional[pd.DataFrame]:
         _STATS["hit"] += 1
         try:
             os.utime(p, None)                 # 命中即"续命" ✓（TTL 按最近使用 ✓ 不是写入时间 ✓）
-        except Exception:                     # noqa: BLE001
+        except Exception as _e:  # noqa: BLE001
+            _log().debug("[吞] expr_cache: %r", _e)
             pass
         return df
-    except Exception:                          # noqa: BLE001
+    except Exception as _e:  # noqa: BLE001
+        _log().debug("[吞] expr_cache: %r", _e)
         try:
             os.remove(p)
-        except Exception:                      # noqa: BLE001
+        except Exception as _e:  # noqa: BLE001
+            _log().debug("[吞] expr_cache: %r", _e)
             pass
         _STATS["miss"] += 1
         return None
@@ -129,7 +146,8 @@ def save(k: str, df: pd.DataFrame) -> bool:
         _STATS["save"] += 1
         prune()                                # ★ 每次写完就清理 ✓（用户要求 ✓）
         return True
-    except Exception:                          # noqa: BLE001
+    except Exception as _e:  # noqa: BLE001
+        _log().debug("[吞] expr_cache: %r", _e)
         _STATS["skip"] += 1
         return False
 
@@ -153,7 +171,8 @@ def prune(ttl_days: float = None, max_files: int = None, max_mb: float = None) -
             p = os.path.join(_ROOT, name)
             try:
                 st = os.stat(p)
-            except Exception:                  # noqa: BLE001
+            except Exception as _e:  # noqa: BLE001
+                _log().debug("[吞] expr_cache: %r", _e)
                 continue
             rows.append((st.st_mtime, st.st_size, p))
         now = time.time()
@@ -165,7 +184,8 @@ def prune(ttl_days: float = None, max_files: int = None, max_mb: float = None) -
                     os.remove(p)
                     n += 1
                     continue
-                except Exception:              # noqa: BLE001
+                except Exception as _e:  # noqa: BLE001
+                    _log().debug("[吞] expr_cache: %r", _e)
                     pass
             keep.append((mt, size, p))
         # ② 个数 ✓（按最近使用保留最新的 N 个 ✓）
@@ -174,7 +194,8 @@ def prune(ttl_days: float = None, max_files: int = None, max_mb: float = None) -
             try:
                 os.remove(p)
                 n += 1
-            except Exception:                  # noqa: BLE001
+            except Exception as _e:  # noqa: BLE001
+                _log().debug("[吞] expr_cache: %r", _e)
                 pass
         keep = keep[:keep_n]
         # ③ 总量 ✓（从最旧的删起 ✓）
@@ -187,11 +208,13 @@ def prune(ttl_days: float = None, max_files: int = None, max_mb: float = None) -
                     os.remove(p)
                     n += 1
                     total -= size / (1024.0 * 1024.0)
-                except Exception:              # noqa: BLE001
+                except Exception as _e:  # noqa: BLE001
+                    _log().debug("[吞] expr_cache: %r", _e)
                     pass
         if n:
             _STATS["prune"] += n
-    except Exception:                          # noqa: BLE001
+    except Exception as _e:  # noqa: BLE001
+        _log().debug("[吞] expr_cache: %r", _e)
         pass
     return n
 
@@ -205,7 +228,8 @@ def stats() -> dict:
                 if name.endswith(".parquet"):
                     files += 1
                     mb += os.path.getsize(os.path.join(_ROOT, name)) / (1024.0 * 1024.0)
-    except Exception:                          # noqa: BLE001
+    except Exception as _e:  # noqa: BLE001
+        _log().debug("[吞] expr_cache: %r", _e)
         pass
     out = dict(_STATS)
     out.update({"files": files, "mb": round(mb, 2), "enabled": enabled(),
@@ -223,14 +247,17 @@ def clear() -> int:
                     try:
                         os.remove(os.path.join(_ROOT, name))
                         n += 1
-                    except Exception:          # noqa: BLE001
+                    except Exception as _e:  # noqa: BLE001
+                        _log().debug("[吞] expr_cache: %r", _e)
                         pass
-    except Exception:                          # noqa: BLE001
+    except Exception as _e:  # noqa: BLE001
+        _log().debug("[吞] expr_cache: %r", _e)
         pass
     return n
 
 
 try:                                           # 进程启动时清理一次 ✓（用户要求"定期清理" ✓）
     prune()
-except Exception:                              # noqa: BLE001
+except Exception as _e:  # noqa: BLE001
+    _log().debug("[吞] expr_cache: %r", _e)
     pass
