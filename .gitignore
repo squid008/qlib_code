@@ -79,4 +79,9 @@ backend/server.err
 # 公式库备份文件（*.json.bak-<时间>）**永不入库** ✗ —— 2026-10-17 用户明确要求：
 #   「这个备份的删掉，GIT 上不要留这个」✓；1.2MB/份 ×3 份曾被我 git add -A 带进库 ✗。
 backend/workdir/formulas/*.bak*
+# 覆盖率产物（★ v2.9.6 ✓ 永不入库 ✓）
+.coverage
+.coverage.*
+cov.json
+htmlcov/
 backend/workdir/formulas/*.json.bak*

@@ -8,3 +8,28 @@ exclude = ["__pycache__", "workdir"]
 
 [tool.ruff.lint]
 select = ["E9", "F821", "F811", "F823"]
+
+# ---------------------------------------------------------------------------
+# pytest / 覆盖率（★ v2.9.6，2026-10-18 ✓ P0-A「先有尺子」✓）
+#
+# 背景：此前**没有覆盖率度量** ✗ ⇒ "测试够不够"只能靠感觉 ✓；加 `--cov` 后：
+#   · 基线（2026-10-18 实测）= **53.42%**（18,098 语句 / 覆盖 9,668 ✓，966 用例 ✓）；
+#   · CI 用 `--cov-fail-under` 卡住**不许倒退** ✓，每期往上调（ratchet ✓）：
+#       53（2.9.6）→ 目标 75+（P1 拆完路由与前端断言后 ✓）。
+# ⚠ `markers` 必须声明 ✓ —— 否则每个 datareq 用例都会报 `PytestUnknownMarkWarning` ✗。
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "datareq: 需要本地行情/物化数据的用例（CI 无数据 ⇒ 用 -m 'not datareq' 跳过 ✓）",
+]
+
+[tool.coverage.run]
+source = ["app"]
+# `patches/` 是 qlib 运行时补丁（导入即生效、没有可测分支 ✓）⇒ 排除，避免虚低 ✗
+omit = ["app/engine/patches/*"]
+
+[tool.coverage.report]
+skip_covered = true
+show_missing = true
+precision = 2

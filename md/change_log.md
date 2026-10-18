@@ -3,6 +3,36 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.6] - 2026-10-18
+
+### Added（**P0-A：给"测试够不够"装一把尺子** —— 覆盖率基线 + CI 防倒退门槛 ✓）
+
+- **动机**：此前**没有任何覆盖率度量** ✗ ⇒ 「测试够不够 / 重构会不会打穿」只能靠感觉 ✓。
+  用户要求把工程质量做到 **9.5+** ⇒ **先有尺子**，否则就是口号 ✗。
+- **基线（2026-10-18 实测 ✓，`pytest --cov=app -m "not datareq"`）**：
+
+  | 指标 | 数值 |
+  |---|---|
+  | 用例 | **966 passed**（23 deselected = `datareq` ✓）｜ 耗时 ~69s |
+  | **总覆盖率** | **53.54%**（语句 17,849 / 覆盖 9,556 ✓；已 omit `app/engine/patches/*` ✓） |
+  | 文件数 | 96 ｜ **<50% 的 31 个** ｜ **=0% 的 7 个** |
+
+  **最差（= 下一步要补的）**：`routers/signal_test.py` **0%（418 语句）**、
+  `routers/backtest.py` 0%（158）、`main.py` 0%（72）、`routers/data.py` 0%（62）、
+  `signals/models.py` 0%（42）、`engine/cost_curves.py` 0%（41）、`routers/datasets.py` 0%（36）、
+  `engine/charts.py` 2.9%、`signals/pricing.py` 8.6%、`engine/inst_mask.py` 8.8%。
+  ⇒ **路由层（~800 语句）是最大空洞** ✓ 且用 `TestClient` 就能补 ✓（P1 阶段做 ✓）。
+- **改动** ✓：
+  · `backend/pyproject.toml` 新增 `[tool.pytest.ini_options]`（声明 `datareq` 标记 ⇒ **消掉
+    `PytestUnknownMarkWarning`** ✓）＋ `[tool.coverage.run/report]`（`source=app`、omit patches、
+    `skip_covered`、`show_missing` ✓）；
+  · `.github/workflows/ci.yml`：pip 加 **`pytest-cov`** ✓；pytest 步骤加
+    `--cov=app --cov-report=term-missing:skip-covered --cov-fail-under=53` ✓ ⇒ **覆盖率只许涨不许跌** ✓
+    （ratchet：53 → 每期上调，目标 75+ ✓）；
+  · `.gitignore` 加 `.coverage*` / `cov.json` / `htmlcov/` ✓（永不入库 ✓）。
+- **校验** ✓：本地用**与 CI 完全相同的命令**跑通 —— `966 passed` ✓、
+  `TOTAL 53.54%` ✓、`Required test coverage of 53% reached` ✓、只剩 1 个 pandas FutureWarning ✓。
+
 ## [2.9.5] - 2026-10-17
 
 ### Changed（设了「最大同时持仓数」时：**参照线照画，只标注"仅作参照"** ✗→✓）
