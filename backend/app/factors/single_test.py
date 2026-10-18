@@ -703,6 +703,7 @@ def _test_one(
     result["trigger_split"] = _trigger_split(trig, int(horizon or 0), _cal_s)
     result["not_trigger"] = _stat_group(not_trig, n_lu_t, n_lu_t1, n_susp, n_extra)
     _pair_and_verdict(
+        cancelled=cancelled,
         name=name,
         not_trig=not_trig,
         result=result,
@@ -719,9 +720,27 @@ def _test_one(
     _continuous_stats(
         _frame=_frame,
         _sub_pos=_sub_pos,
+        bench_close=bench_close,
+        bench_default=bench_default,
+        cancelled=cancelled,
+        col=col,
+        df=df,
+        exclude_limit_up_signal=exclude_limit_up_signal,
+        exclude_limit_up_trade=exclude_limit_up_trade,
+        exclude_st_t1=exclude_st_t1,
+        exclude_stock_gem=exclude_stock_gem,
+        exclude_stock_kcb=exclude_stock_kcb,
+        exclude_suspended=exclude_suspended,
+        factor=factor,
+        fill=fill,
+        holdings_out=holdings_out,
+        horizon=horizon,
         name=name,
+        quantiles=quantiles,
+        rebalance_period=rebalance_period,
         result=result,
         sub=sub,
+        topk_list=topk_list,
     )
     return result
 
@@ -1621,11 +1640,11 @@ def run_single_factor_tests(
     return out
 
 
-def _pair_and_verdict(*, name, not_trig, result, sub, trig) -> None:
+def _pair_and_verdict(*, cancelled, name, not_trig, result, sub, trig) -> None:
     """★ P0-C（2026-10-18 ✓）：从 `_test_one` **原样外提**的一段 ✓（逻辑零改动 ✓）。
 
     外提原因：该段 **100 行** ✗，混在 1,104 行的 `_test_one` 里读不动 ✓。
-    形参 = AST 推导的**自由变量**（5 个 ✓），全部关键字传入 ✓；
+    形参 = AST 推导的**自由变量**（6 个 ✓），全部关键字传入 ✓；
     结果仍通过**原地改 `result`** 回传 ✓（与原来完全一致 ✓）。
     """
     if len(trig) > 0 and len(not_trig) > 0:
@@ -1730,11 +1749,11 @@ def _pair_and_verdict(*, name, not_trig, result, sub, trig) -> None:
             pass
 
 
-def _continuous_stats(*, _frame, _sub_pos, name, result, sub) -> None:
+def _continuous_stats(*, _frame, _sub_pos, bench_close, bench_default, cancelled, col, df, exclude_limit_up_signal, exclude_limit_up_trade, exclude_st_t1, exclude_stock_gem, exclude_stock_kcb, exclude_suspended, factor, fill, holdings_out, horizon, name, quantiles, rebalance_period, result, sub, topk_list) -> None:
     """★ P0-C（2026-10-18 ✓）：从 `_test_one` **原样外提**的一段 ✓（逻辑零改动 ✓）。
 
     外提原因：该段 **729 行** ✗，混在 1,104 行的 `_test_one` 里读不动 ✓。
-    形参 = AST 推导的**自由变量**（5 个 ✓），全部关键字传入 ✓；
+    形参 = AST 推导的**自由变量**（23 个 ✓），全部关键字传入 ✓；
     结果仍通过**原地改 `result`** 回传 ✓（与原来完全一致 ✓）。
     """
     if not result["is_binary"] and len(sub) >= 100:
