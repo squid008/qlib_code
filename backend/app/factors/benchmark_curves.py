@@ -36,7 +36,8 @@ def default_benchmark(universe: str) -> str:
         from app.engine.utils import _pick_benchmark
 
         code = str(_pick_benchmark(universe or "", []))
-    except Exception:
+    except Exception as e:
+        _log_swallowed("benchmark_curves.py", e)
         code = "SH000300"
     return code if code in BENCH_NAMES else "SH000300"
 
@@ -69,14 +70,16 @@ def load_bench_close(codes: Iterable[str] = BENCH_CODES, start=None, end=None,
 
         pdf = panel_features(want, [("$close", "CLOSE")], start, end,
                              cancel_cb=cancelled, warmup_days=0)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("benchmark_curves.py", e)
         return None
     if pdf is None or len(pdf) == 0 or "CLOSE" not in pdf.columns:
         return None
     try:
         s = pdf["CLOSE"]
         wide = s.unstack(level=s.index.names.index("instrument")).sort_index()
-    except Exception:
+    except Exception as e:
+        _log_swallowed("benchmark_curves.py", e)
         return None
     wide = wide.reindex(columns=[c for c in want if c in wide.columns])
     if not wide.shape[1] or len(wide) < 2:
@@ -207,7 +210,8 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int,
             try:
                 _e = int(idx.searchsorted(pd.Timestamp(str(end_date)[:10]), side="right"))
                 _endb = min(_endb, _e)
-            except Exception:            # noqa: BLE001 —— 附加信息，绝不拖垮主流程
+            except Exception as e:  # noqa: BLE001 —— 附加信息，绝不拖垮主流程
+                _log_swallowed("benchmark_curves.py", e)
                 pass
         # ★ v2.1.42：起点也**比首个 T+1 早一格** ✓（= 组合面板的首个交易日 ✓）——
         #   组合的日频序列以区间首日的 0 收益起步 ✓，基准照抄 ⇒ 两边天数一致 ✓。
@@ -229,3 +233,17 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int,
                           "n_partial": n_partial,
                           "perf": compute_perf(net)}
     return out
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

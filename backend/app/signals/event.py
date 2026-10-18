@@ -59,13 +59,15 @@ def _event_fingerprint(cache_ns: str, events: pd.DataFrame, close_trig: pd.DataF
         h.update(("|src=%s" % code_fingerprint(
             "app/signals/event.py", "app/factors/event_study.py",
             "app/signals/pricing.py")).encode("utf-8"))
-    except Exception:                                              # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("event.py", e)
         h.update(b"|src=na")
     h.update(("cv=%s|ns=%s|k=%d" % (_EVENT_CACHE_VERSION, cache_ns, max_k)).encode("utf-8"))
     try:
         from ..engine.feature_cache import _data_version
         h.update(("|dv=%s" % _data_version()).encode("utf-8"))
-    except Exception:                                   # 数据版本取不到就退化为不校验
+    except Exception as e:  # 数据版本取不到就退化为不校验
+        _log_swallowed("event.py", e)
         pass
     pair = events[["dt", "code"]].astype(str)
     h.update(("|ev=%d" % len(pair)).encode("utf-8"))
@@ -131,7 +133,8 @@ def run_event_study(events: pd.DataFrame, close_trig: pd.DataFrame,
                 if isinstance(hit, dict) and "curve" in hit:
                     hit["cached"] = True
                     return hit
-        except Exception:                               # 缓存坏了当未命中（不能因缓存挡住主流程）
+        except Exception as e:  # 缓存坏了当未命中（不能因缓存挡住主流程）
+            _log_swallowed("event.py", e)
             path = None
 
     es = build_event_stats(close_trig, ev, max_k, n_raw=int(len(events)),
@@ -151,7 +154,8 @@ def run_event_study(events: pd.DataFrame, close_trig: pd.DataFrame,
             with open(tmp, "wb") as f:
                 pickle.dump(es, f, protocol=pickle.HIGHEST_PROTOCOL)
             os.replace(tmp, path)                       # 原子替换：并发/中断不会留下半个文件
-        except Exception:
+        except Exception as e:
+            _log_swallowed("event.py", e)
             pass
     return es
 
@@ -185,3 +189,17 @@ def normalize_events(df: pd.DataFrame) -> pd.DataFrame:
     ev["date"] = pd.to_datetime(ev["date"])
     ev = ev.drop_duplicates().sort_values(["date", "code"]).reset_index(drop=True)
     return ev
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

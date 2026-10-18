@@ -44,7 +44,8 @@ def _make_cancel_callback(check_cancel_fn, heartbeat_fn=None):
     def _cb(env):
         try:
             iter_no = int(getattr(env, "iteration", 0))
-        except Exception:
+        except Exception as e:
+            _log_swallowed("cancel_train.py", e)
             iter_no = 0
         if iter_no % CHECK_EVERY_N_ITER == 0:
             if heartbeat_fn is not None:                     # ★ 原地刷新消息（百分数不变 ✓）
@@ -96,7 +97,8 @@ def patch_cancel_callbacks():
                 return _orig_lgb_train(params, train_set, num_boost_round, *args, **kwargs)
 
             lgb.train = _patched_lgb_train
-        except Exception:
+        except Exception as e:
+            _log_swallowed("cancel_train.py", e)
             pass
 
         # ---- XGBoost（必须是 TrainingCallback 子类）----
@@ -114,7 +116,8 @@ def patch_cancel_callbacks():
                 return _orig_xgb_train(params, dtrain, num_boost_round, *args, **kwargs)
 
             xgb.train = _patched_xgb_train
-        except Exception:
+        except Exception as e:
+            _log_swallowed("cancel_train.py", e)
             pass
 
         _APPLIED = True
@@ -124,3 +127,17 @@ def patch_cancel_callbacks():
             "训练取消回调已启用：LightGBM/XGBoost 每 %d 轮检查一次取消（QLIB_CANCEL_CHECK_ITER）",
             CHECK_EVERY_N_ITER,
         )
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

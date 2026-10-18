@@ -139,7 +139,8 @@ class RQAlphaDataSource(DataSource):
             return datetime(int(s[0:4]), int(s[4:6]), int(s[6:8]),
                             int(s[8:10]) if len(s) > 8 else 0,
                             int(s[10:12]) if len(s) > 10 else 0)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("rqalpha_source.py", e)
             raise DataNotAvailableError(f"无法解析日期: {v}")
 
     def _filter_by_date(self, arr, start_dt: datetime, end_dt: datetime):
@@ -186,7 +187,8 @@ class RQAlphaDataSource(DataSource):
                 return bars
         except DataNotAvailableError:
             raise
-        except Exception:
+        except Exception as e:
+            _log_swallowed("rqalpha_source.py", e)
             pass
 
         # 指数日线（指数代码可能用 XSHG 或 XSHE 后缀，需尝试多种形式）
@@ -216,7 +218,8 @@ class RQAlphaDataSource(DataSource):
                             factor=1.0,
                         ))
                     return bars
-        except Exception:
+        except Exception as e:
+            _log_swallowed("rqalpha_source.py", e)
             pass
 
         raise DataNotAvailableError(f"数据源中没有 {instrument} 的日线数据")
@@ -314,11 +317,13 @@ class RQAlphaDataSource(DataSource):
                 q = report_str[5]
                 month = {"1": "03", "2": "06", "3": "09", "4": "12"}.get(q, "12")
                 report_date = date(y, int(month), 31)
-            except Exception:
+            except Exception as e:
+                _log_swallowed("rqalpha_source.py", e)
                 report_date = None
             try:
                 ann_date = datetime.strptime(qdate_str[:10], "%Y-%m-%d").date()
-            except Exception:
+            except Exception as e:
+                _log_swallowed("rqalpha_source.py", e)
                 ann_date = None
             if start_date and ann_date and ann_date < datetime.strptime(start_date[:10], "%Y-%m-%d").date():
                 continue
@@ -428,3 +433,17 @@ class RQAlphaDataSource(DataSource):
                 s = str(int(v))
                 result.append(date(int(s[0:4]), int(s[4:6]), int(s[6:8])))
         return result
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

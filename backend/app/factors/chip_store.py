@@ -75,7 +75,8 @@ def write_chip_meta(payload: Dict) -> None:
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
-    except Exception:                                     # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("chip_store.py", e)
         pass
 
 
@@ -102,7 +103,8 @@ def chip_meta_state() -> Dict:
             for n in os.listdir(fdir):
                 if os.path.exists(os.path.join(fdir, n, "chip_cost_95.day.bin")):
                     n_chip += 1
-        except Exception:                                 # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("chip_store.py", e)
             pass
         info["n_chip_cost_95"] = n_chip
         p = chip_meta_path()
@@ -263,3 +265,17 @@ def materialize(codes: Sequence[str], start_time: str, end_time: str,
         "turn_meta": dict(getattr(ev, "_chip_turn_meta", {}) or {}),
     })
     return out
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

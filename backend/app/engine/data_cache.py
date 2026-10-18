@@ -46,7 +46,8 @@ def _auto_cache_limit_gb() -> float:
 
         avail = resource.memory_available_gb()
         return max(0.5, min(4.0, round(avail * 0.15, 1)))
-    except Exception:
+    except Exception as e:
+        _log_swallowed("data_cache.py", e)
         return 1.0
 
 
@@ -114,7 +115,8 @@ class DataCache:
         limit = self._max_gb if self._max_gb is not None else _auto_cache_limit_gb()
         try:
             self.evict_if_over(limit)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("data_cache.py", e)
             pass
 
     def get(self, instruments, fields, start, end):
@@ -145,7 +147,8 @@ class DataCache:
             for v in self._cache.values():
                 try:
                     total_mem += v["df"].memory_usage(deep=True).sum() / 1024 ** 3
-                except Exception:
+                except Exception as e:
+                    _log_swallowed("data_cache.py", e)
                     pass
         return {
             "entries": n,
@@ -178,7 +181,8 @@ class DataCache:
         for v in self._cache.values():
             try:
                 total += v["df"].memory_usage(deep=True).sum() / 1024 ** 3
-            except Exception:
+            except Exception as e:
+                _log_swallowed("data_cache.py", e)
                 pass
         return total
 
@@ -187,3 +191,17 @@ class DataCache:
 # 上限默认按机器可用内存动态自适应（16G≈2G / 48G≈4G / 服务器96G=4G封顶），
 # 可用 QLIB_DATA_CACHE_GB 显式覆盖（如服务器固定 8）。
 SHARED_CACHE = DataCache(max_gb=None)
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

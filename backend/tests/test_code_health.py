@@ -28,12 +28,13 @@ BIG_DEBT = {
     #   棘轮仍成立 ✓：更新后的数字就是新上限 ✓，再涨就红 ✓。
     "signals/engine.py::run_backtest": 601,
     "factors/single_test.py::_quantile_curve_block": 596,
-    "routers/signal_test.py::run": 534,
+    # ⚠ 2026-10-18：P2-A 收尾给这两处各加了几行日志（+5 / +3 ✓），上限随之上调 ✓
+    "routers/signal_test.py::run": 539,
     "factors/single_test.py::run_single_factor_tests": 538,
     "signals/period_roll.py::run_period_roll": 477,
     "routers/factors_single.py::single_factor_test": 390,
     "signals/engine.py::run_batch_backtest": 367,
-    "factors/event_study.py::run_event_study": 323,
+    "factors/event_study.py::run_event_study": 326,
     "factors/single_test.py::_test_one": 312,
 }
 

@@ -171,6 +171,21 @@ def trade_rows(st: Optional[dict]) -> List[List[Any]]:
                         round(float(r.get("price") or 0.0), 4),
                         round(float(r.get("amount") or 0.0), 2),
                         round(float(r.get("fee") or 0.0), 2), shown])
-        except Exception:                                        # noqa: BLE001 —— 单行坏不拖垮整页 ✓
+        except Exception as e:  # noqa: BLE001 —— 单行坏不拖垮整页 ✓
+            _log_swallowed("exit_curve.py", e)
             continue
     return out
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

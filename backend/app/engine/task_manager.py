@@ -279,7 +279,8 @@ class TaskManager:
                         logger.info("任务 %s 内存采样：进程树峰值归因 %.2fGB/任务（%d 次采样）",
                                     task_id, _peak_gb, _samples)
                         resource.note_task_peak_memory(_peak_gb, task_id)
-                except Exception:                                # noqa: BLE001
+                except Exception as e:  # noqa: BLE001
+                    _log_swallowed("task_manager.py", e)
                     pass
             resource.release_task_jobs()
             # 按任务归还（幂等）：强制停止可能已代本任务归还过（线程永久卡死时）
@@ -315,7 +316,8 @@ class TaskManager:
             patch_qlib_parallel(base_dir=self._work_dir if self._work_dir else None)
             # 2) 训练中途可取消补丁：monkey-patch lightgbm/xgboost.train，注入每 N 轮取消检查
             patch_cancel_callbacks()
-        except Exception:
+        except Exception as e:
+            _log_swallowed("task_manager.py", e)
             # 补丁失败不阻塞回测（退回单任务可靠运行）
             pass
 
@@ -575,3 +577,17 @@ def get_task_manager(work_dir: Optional[str] = None) -> TaskManager:
     if _manager is None:
         _manager = TaskManager(work_dir=work_dir)
     return _manager
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

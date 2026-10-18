@@ -123,7 +123,8 @@ def _apply_excludes(ev: "pd.DataFrame", panel: Dict, flags: Dict, warnings: List
         """宽表按「同一日历 + 同一列序」取成 ndarray ✓（缺列即 NaN ✓）。"""
         try:
             return df.reindex(index=cal, columns=cols).to_numpy(dtype=np.float64, copy=False)
-        except Exception:                                        # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("signal_test.py", e)
             return None
 
     p = np.clip(pos, 0, max(len(cal) - 1, 0))
@@ -417,7 +418,8 @@ def run(req: SignalTestRequest) -> Dict:
                 nav["nav_official_bench"] = offb
             try:
                 ok_n, bad_n = _amount_match(res.trades, perf_res.perf)
-            except Exception:
+            except Exception as e:
+                _log_swallowed("signal_test.py", e)
                 ok_n, bad_n = 0, 0
             exact_end = float(nav["nav_exact"].iloc[-1])
             off_end = float(off.iloc[-1]) if off is not None else None
@@ -619,7 +621,8 @@ def run(req: SignalTestRequest) -> Dict:
             _calt = pd.to_datetime(_Dq.calendar())
             _posx = int((_calt <= pd.Timestamp(end)).sum())
             _end_ext = str(_calt[min(_posx + int(horizon) + 3, len(_calt) - 1)].date())
-        except Exception:                                     # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("signal_test.py", e)
             _end_ext = end
         # ★★ v2.1.73：**事件研究的价表要按文件口径取** ✗→✓ ——
         #   `_px_es` 非空（文件要求「不复权」✓）⇒ 用它（真实价 + 按分取整 ✓，与面板那次一致 ✓）；
@@ -729,7 +732,8 @@ def run(req: SignalTestRequest) -> Dict:
             try:
                 from ..logger import get_logger
                 _log = get_logger("signals")
-            except Exception:                                    # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _log_swallowed("signal_test.py", e)
                 pass
             _msg = ("[事件研究·本次运行] file=%s 事件=%s 池=%s fill=%s 剔除(T/T+1/停)=%s/%s/%s ｜ %s"
                     % (req.filename, es.get("n_events"), pool_key, _fill,
@@ -739,7 +743,8 @@ def run(req: SignalTestRequest) -> Dict:
                 _log.info(_msg)
             with open("workdir/signal_es_trace.log", "a", encoding="utf-8") as _f:
                 _f.write(_msg + "\n")
-        except Exception:                                        # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("signal_test.py", e)
             pass
         es["coverage"] = coverage(ev, panel["CLOSE"])
         es["pool"] = {"key": pool_key, "n_codes": int(pool_n),
@@ -761,7 +766,8 @@ def run(req: SignalTestRequest) -> Dict:
         try:
             if "bucket" in sig.columns and int(sig["bucket"].nunique()) > 1:
                 specs.append("batch_even")
-        except Exception:                          # 批次信息异常不影响其它方案
+        except Exception as e:  # 批次信息异常不影响其它方案
+            _log_swallowed("signal_test.py", e)
             pass
         bt = run_backtest(sig, panel, hold_days=horizon, fill=req.fill, cost=req.cost,
                           capital=req.capital, strict_limit=req.strict_limit,
@@ -808,3 +814,17 @@ def run(req: SignalTestRequest) -> Dict:
                             % nb_skip)
     resp["elapsed"] = round(time.perf_counter() - t_all, 3)
     return resp
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

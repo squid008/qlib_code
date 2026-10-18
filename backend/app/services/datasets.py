@@ -85,7 +85,8 @@ def read_marker(name: str) -> dict:
         return {}
     try:
         return json.loads(p.read_text(encoding="utf-8-sig")) or {}
-    except Exception:                                                     # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("datasets.py", e)
         return {}
 
 
@@ -145,7 +146,8 @@ def active_name() -> str:
             name = (json.loads(ACTIVE_FILE.read_text(encoding="utf-8-sig")) or {}).get("name")
             if name and name in available():      # 只认"存在且口径可自证"的数据集 ✓
                 return name
-    except Exception:                                                     # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("datasets.py", e)
         pass
     av = available()
     return av[0] if av else "cn_data"
@@ -171,10 +173,12 @@ def _mtime(name: str) -> float:
         try:
             # 顺带把 `features/` 目录本身的 mtime 并进去（新增/删除股票目录时能立刻察觉 ✓）
             t = max(t, (d / "features").stat().st_mtime)
-        except Exception:                                                 # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("datasets.py", e)
             pass
         return t
-    except Exception:                                                     # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("datasets.py", e)
         return 0.0
 
 
@@ -205,7 +209,8 @@ def probe(name: str, use_cache: bool = True) -> dict:
         try:
             cal = (d / "calendars" / "day.txt").read_text(encoding="utf-8").split()
             cal_days, first, last = len(cal), (cal[0] if cal else ""), (cal[-1] if cal else "")
-        except Exception:                                                 # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("datasets.py", e)
             pass
         feats = d / "features"
         if feats.is_dir():
@@ -407,3 +412,17 @@ def _running_tasks() -> str:
         return "、".join(parts)
     except Exception as e:                                                # noqa: BLE001
         return "任务占用未知（%s: %s）" % (type(e).__name__, e)
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

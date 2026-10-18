@@ -43,7 +43,8 @@ def looks_like_export(raw: Any) -> bool:
     try:
         with zipfile.ZipFile(io.BytesIO(b)) as z:
             wb = z.read("xl/workbook.xml").decode("utf-8", "ignore")
-    except Exception:                                              # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("qlib_export.py", e)
         return False
     return ('name="%s"' % spec.SHEET_META) in wb or spec.SHEET_META in wb
 
@@ -185,7 +186,8 @@ def parse_export(raw: Any, filename: str = "") -> Optional[ParseResult]:
         try:
             info = normalize_code(code)
             codes.append(info.qlib_code if info is not None and info.qlib_code else code)
-        except Exception:                                          # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("qlib_export.py", e)
             codes.append(code)                                     # 归一失败就原样用（不因一只票炸整份 ✓）
     sig = pd.DataFrame({
         "date": pd.to_datetime([d for d, _c in pairs]),
@@ -216,3 +218,17 @@ def parse_export(raw: Any, filename: str = "") -> Optional[ParseResult]:
         res.add_issue(0, "", "文件含 %d 个资金方案（%s），本次只用「%s」的持仓 ✓"
                       % (len(modes), "、".join(modes), picked_mode))
     return res
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

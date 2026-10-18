@@ -33,7 +33,8 @@ def code_fingerprint(*paths: str) -> str:
             fp = p if os.path.isabs(p) else os.path.join(_BACKEND_DIR, p)
             st = os.stat(fp)
             parts.append("m%d-s%d" % (int(st.st_mtime), int(st.st_size)))
-        except Exception:                                            # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("code_fp.py", e)
             parts.append("na")
     return "|".join(parts) if parts else "na"
 
@@ -41,3 +42,17 @@ def code_fingerprint(*paths: str) -> str:
 def modules_fingerprint(names: Iterable[str]) -> str:
     """按**模块名**取指纹（相对 backend 根 ✓），如 `modules_fingerprint(["app.signals.event"])` ✓。"""
     return code_fingerprint(*["%s.py" % n.replace(".", "/") for n in names])
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

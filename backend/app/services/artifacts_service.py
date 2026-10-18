@@ -47,7 +47,8 @@ def _resume_of(task_id: str) -> Optional[str]:
         req = get_task_manager(config.WORK_DIR).get_req(task_id)
         rid = getattr(req, "resume_task_id", None) if req else None
         return str(rid) if rid else None
-    except Exception:                                          # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("artifacts_service.py", e)
         return None
 
 
@@ -76,12 +77,14 @@ def _dir_with_resume_marker(task_id: str) -> Optional[str]:
             try:
                 with open(p, "r", encoding="utf-8") as f:
                     data = json.load(f)
-            except Exception:                                  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _log_swallowed("artifacts_service.py", e)
                 continue
             ids = data.get("task_ids") if isinstance(data, dict) else data
             if isinstance(ids, list) and str(task_id) in [str(x) for x in ids]:
                 return d
-    except Exception:                                          # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("artifacts_service.py", e)
         pass
     return None
 
@@ -102,7 +105,8 @@ def note_resume_task(src_dir: str, task_id: str) -> None:
             try:
                 with open(p, "r", encoding="utf-8") as f:
                     data = json.load(f) or {}
-            except Exception:                                  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _log_swallowed("artifacts_service.py", e)
                 data = {}
         ids = data.get("task_ids") if isinstance(data, dict) else None
         ids = list(ids) if isinstance(ids, list) else []
@@ -111,7 +115,8 @@ def note_resume_task(src_dir: str, task_id: str) -> None:
         with open(p, "w", encoding="utf-8") as f:
             json.dump({"task_ids": ids, "updated_at": _time.strftime("%Y-%m-%d %H:%M:%S")},
                       f, ensure_ascii=False, indent=1)
-    except Exception:                                          # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("artifacts_service.py", e)
         logger.warning("写 resume_tasks.json 失败: %s", p)
 
 
@@ -223,7 +228,8 @@ def build_feature_formulas(params: dict, feature_names: list) -> list:
         try:
             return {r["name"]: (r.get("expression") or "")
                     for r in (get_catalog(dataset).get("flat") or [])}
-        except Exception:                         # 目录不可用 ⇒ 退化为"未知"，不影响其它列
+        except Exception as e:  # 目录不可用 ⇒ 退化为"未知"，不影响其它列
+            _log_swallowed("artifacts_service.py", e)
             return {}
 
     a158, a360 = _flat("Alpha158"), _flat("Alpha360")
@@ -235,7 +241,8 @@ def build_feature_formulas(params: dict, feature_names: list) -> list:
         try:
             t = translate_formula(text, library=_lib)
             custom[t.name] = (text, t.expression)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("artifacts_service.py", e)
             continue                              # 翻译失败的历史公式：跳过（不阻塞其它列）
 
     items = []
@@ -398,7 +405,8 @@ def scan_history() -> dict:
     resume_sources = set()
     try:
         resume_sources = _manager.running_resume_sources()
-    except Exception:
+    except Exception as e:
+        _log_swallowed("artifacts_service.py", e)
         pass
 
     items = []
@@ -433,7 +441,8 @@ def scan_history() -> dict:
             try:
                 with open(result_file, "r", encoding="utf-8") as f:
                     annual_return = json.load(f).get("annualized_return")
-            except Exception:
+            except Exception as e:
+                _log_swallowed("artifacts_service.py", e)
                 annual_return = None
 
         parts = name.rsplit("_", 1)
@@ -477,7 +486,8 @@ def scan_history() -> dict:
             try:
                 with open(seq_file, "r", encoding="utf-8") as f:
                     seq = int(json.load(f).get("seq", 0))
-            except Exception:
+            except Exception as e:
+                _log_swallowed("artifacts_service.py", e)
                 seq = None
 
         items.append({
@@ -535,3 +545,17 @@ def delete_artifacts(task_id: str) -> Optional[str]:
         raise ArtifactNotFoundError("拒绝删除非产物目录")
     shutil.rmtree(target, ignore_errors=True)
     return os.path.basename(base)
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

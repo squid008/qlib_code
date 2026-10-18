@@ -27,11 +27,26 @@ import pandas as pd
 
 from qlib.data.dataset.loader import QlibDataLoader
 
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 本文件有**模块级 try**（导入期就要用 ✓）⇒ helper 必须定义在它**之前** ✓
+      （所以这里放在 import 之后、业务代码之前 ✓，而不是像其它文件那样追加到 EOF ✗）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+
+
 try:
     from ..config import WORK_DIR
 
     _CACHE_DIR = os.path.join(WORK_DIR, "feature_cache")
-except Exception:  # pragma: no cover
+except Exception as e:  # pragma: no cover
+    _log_swallowed("feature_cache.py", e)
     _CACHE_DIR = os.path.join(os.path.abspath("."), "feature_cache")
 
 
@@ -46,7 +61,8 @@ def _provider_uri() -> str:
         from ..config import QLIB_PROVIDER_URI as _u
 
         return _u or ""
-    except Exception:  # pragma: no cover
+    except Exception as e:  # pragma: no cover
+        _log_swallowed("feature_cache.py", e)
         return os.environ.get("QLIB_PROVIDER_URI") or ""
 
 
@@ -98,7 +114,8 @@ def bump_data_version(qlib_dir=None, note: str = "") -> str:
             f.write(body)
         os.replace(tmp, p)
         return body
-    except Exception:                                                     # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("feature_cache.py", e)
         return ""
 
 
@@ -121,7 +138,8 @@ def _data_version() -> str:
                 mtime = max(mtime, os.path.getmtime(cal))
             if mtime:
                 return str(mtime)
-    except Exception:                                                     # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("feature_cache.py", e)
         pass
     return "unknown"
 
@@ -190,7 +208,8 @@ def _code_version() -> str:
                 _st = os.stat(_p)
                 _sig.append("%s:%d-%d" % (os.path.basename(_p),
                                           int(_st.st_mtime), int(_st.st_size)))
-            except Exception:                                     # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _log_swallowed("feature_cache.py", e)
                 pass
         _CODE_SIG = ";".join(_sig) or "na"
     return _CODE_SIG
@@ -241,7 +260,8 @@ def _load_cache(path):
     try:
         with open(path, "rb") as f:
             return pickle.load(f)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("feature_cache.py", e)
         return None
 
 
@@ -252,7 +272,8 @@ def _save_cache(path, df):
         with open(tmp, "wb") as f:
             pickle.dump(df, f, protocol=4)
         os.replace(tmp, path)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("feature_cache.py", e)
         pass
     _prune_cache()                    # v1.18.69：写入后就地治理（上限 / 过期 / LRU）
 
@@ -315,7 +336,8 @@ def _prune_cache(max_bytes=None, max_age_days=None, max_files=None):
             except OSError:
                 pass
         return (removed, total)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("feature_cache.py", e)
         return (0, 0)
 
 
@@ -373,7 +395,8 @@ class CachedQlibDataLoader(QlibDataLoader):
             from .inst_mask import _daily_member_mask
 
             mk = _daily_member_mask(u, df.index)
-        except Exception:      # 过滤失败不致命：退化旧口径
+        except Exception as e:  # 过滤失败不致命：退化旧口径
+            _log_swallowed("feature_cache.py", e)
             return df
         if mk is None or bool(mk.all()):
             return df

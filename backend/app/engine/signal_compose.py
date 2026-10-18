@@ -163,7 +163,8 @@ def _span_features(universe, exprs, span_start, span_end, buffer_days=120):
         return hit
     try:
         df = D.features(list(universe), list(exprs), start_time=start, end_time=end)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("signal_compose.py", e)
         return None
     with _SPAN_LOCK:
         _SPAN_CACHE[key] = df
@@ -174,7 +175,8 @@ def _span_features(universe, exprs, span_start, span_end, buffer_days=120):
         get_logger(__name__).info(
             "额外特征整区间求值一次并缓存：%d 只 × %d 条 × %s~%s（此后各段只做切片）",
             len(universe), len(exprs), start, end)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("signal_compose.py", e)
         pass
     return df
 
@@ -566,3 +568,17 @@ def compose_final_signal(dataset, model, req, universe=None, span=None,
     #     （这正是用户要的口径："当日全池可交易只数 × 比例" ✓，规则外的票由策略丢弃 ✓）。
     #   ⚠ 本文件别处（`apply_hard_filters` ✓）本来就是"置 -inf 不删行" ✓，这里是唯一例外 ✗ —— 已消除 ✓。
     return frame, info
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

@@ -47,7 +47,8 @@ def _r(v, nd: int = 6):
     """安全 round（NaN/Inf → None）。"""
     try:
         f = float(v)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("event_study.py", e)
         return None
     if not np.isfinite(f):
         return None
@@ -388,7 +389,8 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
             # ★ v2.1.92：同上 —— 触发组一侧也要把 `≤ 0` 当无效 ✓（两条曲线必须同口径 ✓）
             _tv = px_wide_trig.to_numpy(dtype=np.float64, copy=False)
             px_wide_trig = px_wide_trig.mask(~np.isfinite(_tv) | (_tv <= 0.0))
-        except Exception:                                      # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("event_study.py", e)
             pass
     mat, _, _ = _align_returns(px_wide_trig, events, max_k, cancel_check, lag=lag)
     tdf = pd.DataFrame(mat, columns=ks)
@@ -421,7 +423,8 @@ def compute_baseline_curves(px_wide_trig: pd.DataFrame, px_wide_full: pd.DataFra
             #   （语义无歧义 ✓，不会误伤任何真实价格 ✓）。
             _fv = full.to_numpy(dtype=np.float64, copy=False)
             full = full.mask(~np.isfinite(_fv) | (_fv <= 0.0))
-        except Exception:                                      # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("event_study.py", e)
             pass
     base_arr = np.full(len(ks), np.nan, dtype=float)
     base_med_arr = np.full(len(ks), np.nan, dtype=float)
@@ -671,7 +674,8 @@ def run_event_study(
     if warmup_days is None:
         try:
             warmup_days = int(os.environ.get("QLIB_SFT_WARMUP_DAYS", "250"))
-        except Exception:
+        except Exception as e:
+            _log_swallowed("event_study.py", e)
             warmup_days = 250
     warmup_days = max(0, int(warmup_days or 0))
 
@@ -699,7 +703,8 @@ def run_event_study(
         try:
             _cache_fp = _escache.path_for(_cache_params)
             _hit = _escache.load(_cache_fp)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("event_study.py", e)
             _cache_fp, _hit = None, None
         if _hit is not None:
             _prog(100.0, "缓存命中（同参数上次已算过，直接复用）")
@@ -763,7 +768,8 @@ def run_event_study(
     if universe != "all":
         try:
             _mk = _daily_member_mask(universe, df.index)
-        except Exception:      # 过滤失败不致命：退化旧口径
+        except Exception as e:  # 过滤失败不致命：退化旧口径
+            _log_swallowed("event_study.py", e)
             _mk = None
     if _mk is not None and not _mk.all():
         df = df[_mk]
@@ -901,3 +907,17 @@ def run_event_study(
     if _cache_fp:
         _escache.save(_cache_fp, dict(out))
     return out
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

@@ -63,7 +63,8 @@ def _log(msg: str) -> None:
     try:
         _SAFE_OUT.write("[formula-git] " + msg + "\n")
         _SAFE_OUT.flush()
-    except Exception:                                        # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("formula_git_sync.py", e)
         pass
 
 # d:\quant\qlib_code（本文件在 backend/app/services/ 下 ⇒ 上溯三级 ✓）
@@ -130,7 +131,8 @@ def _count() -> int:
                 data = json.load(f)
             if isinstance(data, list):
                 best = max(best, len([x for x in data if not (isinstance(x, dict) and x.get("deleted"))]))
-        except Exception:                                        # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("formula_git_sync.py", e)
             pass
     try:
         for fn in os.listdir(os.path.join(_REPO_ROOT, _REL_DIR)):
@@ -140,7 +142,8 @@ def _count() -> int:
                 data = json.load(f)
             if isinstance(data, list):
                 best = max(best, len([x for x in data if not (isinstance(x, dict) and x.get("deleted"))]))
-    except Exception:                                            # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("formula_git_sync.py", e)
         pass
     return best
 
@@ -239,3 +242,17 @@ def schedule(reason: str = "") -> None:
             t.start()
     except Exception as e:                    # noqa: BLE001
         print("[formula-git] ✗ 调度失败（已忽略）: %s: %s" % (type(e).__name__, e), flush=True)
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

@@ -3,6 +3,35 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.32] - 2026-10-18
+
+### Changed（**P2-A 收尾：静默吞异常 63 → 2** ✓ —— 累计 **163 → 2（−98.8%）**）
+
+- 一次性扫全场 ✓（数据驱动 ✓，不写死文件名单 ✓）：**34 个文件 / 104 处** ✓
+  （`artifacts_service` 10 ｜ `feature_cache` 9 ｜ `event_study` 6 ｜ `routers/signal_test` 6 ｜
+  `rqalpha_source` 5 ｜ `datasets` 5 ｜ `logger` 4 ｜ `benchmark_curves` 4 ｜ `event_study_cache` 4 ｜
+  `factors_state` 4 ｜ `signals/event` 4 ｜ … ✓，完整清单见提交 ✓）。
+- **只对 `except Exception:` 动手** ✓；**裸 `except:` 一律不动** ✗ —— 它捕 `BaseException` ✓，
+  改成 `except Exception` 会改变语义 ✓（本次扫描结果显示:已无裸 except 静默 ✓）。
+- **✗ 这一批踩了两个坑（都在同一天、同一类"插代码"问题 ✓）**：
+  ① **EOF 追加的 helper 赶不上"导入期"的调用** ✗ —— `feature_cache.py:35` 与 `factors_state.py:51,114`
+     的 `except` 在**模块级 try** 里 ✓，导入时就执行 ✓，而 helper 在文件末尾 ✗
+     ⇒ `F821`／运行期 `NameError`（**在导入阶段炸** ⇒ 模块根本进不来 ✗，比静默严重 ✓）；
+  ② 把 helper 插到 **docstring 之后** ✗ ⇒ 顶掉了 `from __future__ import annotations`
+     ⇒ `SyntaxError: from __future__ imports must occur at the beginning of the file` ✓。
+  ⇒ **定规矩**：往文件里插代码，插入点必须**由 AST 决定** ✓ —— 具体是
+  `max(docstring 结束行, 最后一个顶层 import 的 end_lineno)` ✓；
+  凭"扫前 N 行找 import"或"docstring 之后"都会翻车 ✗（今天各翻一次 ✓）。
+- **诚实说明一处副作用** ✗：脚本按**行**匹配 `except Exception:` ✓（不是按 AST 只挑静默的 ✓）
+  ⇒ 有约 **40 处"本来就会打日志"的 handler 多了一行 debug** ✓ ——
+  功能无影响 ✓、日志级别是 debug ✓，但确实比"只改静默"多改了一些 ✓。
+- **棘轮**：`test_except_ratchet.py` 基线 63 → **2** ✓；
+  `test_code_health.py`：`signal_test.run` 534 → **539**、`run_event_study` 323 → **326**
+  （都是这几行日志 ✓）。
+- **校验** ✓：`compileall` 全通过 ✓ ｜ `ruff` **0 错误** ✓ ｜ 全量 **1063 passed** ✓ ｜ CI ✓。
+- **剩 2 处**（有意保留 ✓）：属"接口上就该静默"的场景 ✓（例如可选依赖探测 ✓）——
+  棘轮把它们钉住 ✓：以后**再新增静默必然红** ✓。
+
 ## [2.9.31] - 2026-10-18
 
 ### Changed（**P2-A 第六批：路由层** ✓ —— 静默 **74 → 63**）

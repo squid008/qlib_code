@@ -46,7 +46,8 @@ def _data_version() -> str:
     try:
         from ..engine.feature_cache import _data_version as _dv
         return str(_dv())
-    except Exception:
+    except Exception as e:
+        _log_swallowed("event_study_cache.py", e)
         return "na"
 
 
@@ -65,7 +66,8 @@ def fingerprint(params: dict) -> str:
         from ..engine.code_fp import code_fingerprint
         h.update(("|src=%s" % code_fingerprint("app/factors/event_study.py",
                                                "app/factors/event_study_cache.py")).encode("utf-8"))
-    except Exception:                                              # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("event_study_cache.py", e)
         h.update(b"|src=na")
     return h.hexdigest()[:32]
 
@@ -84,7 +86,8 @@ def load(fp: str) -> Optional[dict]:
         if isinstance(obj, dict) and "curve" in obj:
             return obj
         return None
-    except Exception:
+    except Exception as e:
+        _log_swallowed("event_study_cache.py", e)
         return None
 
 
@@ -97,5 +100,20 @@ def save(fp: str, obj: dict) -> bool:
             pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
         os.replace(tmp, fp)
         return True
-    except Exception:
+    except Exception as e:
+        _log_swallowed("event_study_cache.py", e)
         return False
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

@@ -1293,7 +1293,8 @@ def _perf(net: np.ndarray) -> dict:
         if isinstance(p, dict):
             return {k: (round(float(v), 4) if isinstance(v, (int, float)) else v)
                     for k, v in p.items() if isinstance(v, (int, float, str, type(None)))}
-    except Exception:
+    except Exception as e:
+        _log_swallowed("engine.py", e)
         pass
     return {}
 
@@ -1327,3 +1328,17 @@ def nav_rows(nav: pd.DataFrame) -> list:
             rec[str(c)] = None if not pd.notna(v) else round(float(v), 5)
         rows.append(rec)
     return rows
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

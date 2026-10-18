@@ -32,7 +32,8 @@ def _warn_once(key: str, msg: str) -> None:
     try:
         from ..logger import get_logger
         get_logger(__name__).warning(msg)
-    except Exception:                                     # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("inst_mask.py", e)
         pass
 
 
@@ -116,7 +117,8 @@ def _daily_member_mask(universe: str, index: pd.MultiIndex) -> Optional[np.ndarr
             try:
                 s = np.datetime64(pd.Timestamp(p[1][:10]).to_datetime64())
                 e = np.datetime64(pd.Timestamp(p[2][:10]).to_datetime64())
-            except Exception:
+            except Exception as e:
+                _log_swallowed("inst_mask.py", e)
                 continue
             spans.setdefault(c, []).append((s, e))
 
@@ -141,3 +143,17 @@ def _daily_member_mask(universe: str, index: pd.MultiIndex) -> Optional[np.ndarr
     if ok.any():
         out[ok] = mat[r[ok], cc[ok]]
     return out
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

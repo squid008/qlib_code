@@ -213,7 +213,8 @@ def dataset_tag() -> Dict[str, str]:
                 j = json.load(f)
             out["label"] = str(j.get("label") or "")
             out["convention"] = str(j.get("convention") or "")
-    except Exception:                                              # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("spec.py", e)
         pass
     return out
 
@@ -490,7 +491,8 @@ def read_export(src: Any, *, expect_kind: Optional[str] = None) -> ExportDoc:
     finally:
         try:
             wb.close()
-        except Exception:                                            # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("spec.py", e)
             pass
     if expect_kind and doc.kind and doc.kind != expect_kind:
         doc.warnings.append("文件来自「%s」模块，与当前入口（%s）不同" % (doc.kind, expect_kind))
@@ -616,3 +618,17 @@ def param_display_rows(params: Dict[str, Any]) -> List[Tuple[str, Any, Optional[
             val = "、".join(str(x) for x in val)
         out.append((label, val, fmt))
     return out
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

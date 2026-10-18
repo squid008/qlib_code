@@ -56,7 +56,8 @@ def _fallback_benchmark(benchmark: str, start_time: str, end_time: str,
         df = D.features([benchmark], ["$close"], start_time=start_time, end_time=end_time)
         if df is not None and len(df) > 0:
             return benchmark
-    except Exception:
+    except Exception as e:
+        _log_swallowed("utils.py", e)
         pass
     # benchmark 无数据，回退到成分股
     if instruments:
@@ -66,7 +67,8 @@ def _fallback_benchmark(benchmark: str, start_time: str, end_time: str,
                 df = D.features([code], ["$close"], start_time=start_time, end_time=end_time)
                 if df is not None and len(df) > 0:
                     return str(code)
-            except Exception:
+            except Exception as e:
+                _log_swallowed("utils.py", e)
                 continue
     return benchmark
 
@@ -115,3 +117,17 @@ def _make_artifact_dir(work_dir: str, task_id: str, req: BacktestRequest) -> str
     path = os.path.join(work_dir, "artifacts", name)
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

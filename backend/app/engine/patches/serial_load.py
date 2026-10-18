@@ -96,20 +96,23 @@ def _kill_worker_pids() -> List[int]:
     killed: List[int] = []
     try:
         import psutil
-    except Exception:
+    except Exception as e:
+        _log_swallowed("serial_load.py", e)
         logger.warning("强制停止：psutil 不可用，无法杀取数 worker（已置协作式取消标志）")
         return killed
     try:
         for ch in psutil.Process(os.getpid()).children(recursive=True):
             try:
                 cl = " ".join(ch.cmdline() or [])
-            except Exception:
+            except Exception as e:
+                _log_swallowed("serial_load.py", e)
                 continue
             if "popen_loky" in cl or "reusable_executor" in cl:   # loky worker 的稳定特征
                 try:
                     ch.kill()
                     killed.append(ch.pid)
-                except Exception:
+                except Exception as e:
+                    _log_swallowed("serial_load.py", e)
                     pass
     except Exception as e:
         logger.warning("强制停止：枚举/终止取数 worker 失败：%r", e)
@@ -144,3 +147,17 @@ def kill_and_reset_loky_pool() -> List[int]:
     killed = _kill_worker_pids()
     logger.warning("强制停止：joblib/loky 池已重置，杀掉 %d 个取数 worker（PID %s）", len(killed), killed)
     return killed
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

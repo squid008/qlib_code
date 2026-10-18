@@ -168,7 +168,8 @@ def _patch_recorder_end_run() -> None:
         # 这里先用 recorder 自己的 client + run_id 正确写回本线程独立 db。
         try:
             self.client.set_terminated(self.id, status)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("qlib_parallel.py", e)
             # 兜底：set_terminated 异常时回退原实现（尽力而为，不阻断回测）
             _orig(self, status)
             return
@@ -184,7 +185,8 @@ def _patch_recorder_end_run() -> None:
                 if getattr(stack[i].info, "run_id", None) == self.id:
                     stack.pop(i)
                     break
-        except Exception:
+        except Exception as e:
+            _log_swallowed("qlib_parallel.py", e)
             pass
 
     _end_run._patched_by_qlib_parallel = True
@@ -208,3 +210,17 @@ def patch_qlib_parallel(base_dir: Optional[str] = None, default_exp_name: Option
         logging.getLogger(__name__).info(
             "qlib 并行补丁已应用：R 已替换为线程本地版本（支持多线程并发回测）"
         )
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

@@ -20,6 +20,20 @@
   （"够用就好、不做 LRU 统计"✓ —— 这里追求的是**不涨内存** ✓，不是命中率 ✓）。
 - **删除即 tombstone 式的"清理"** ✓：清理端点只清已完成任务 ✓（跑着的不动 ✓）。
 """
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
+
 import hashlib
 import json
 import threading
@@ -47,7 +61,8 @@ _SFT_LOCK = threading.Lock()
 try:                                     # 启动即恢复 ✓（坏文件由 task_store 自己删掉 ✓）
     _SFT_TASKS.update(task_store.load_all("sft"))
     task_store.prune("sft", 60)          # 只留最近 60 个文件 ✓（不涨磁盘 ✓）
-except Exception:                        # noqa: BLE001 —— 恢复失败 ⇒ 就当没有 ✓（不阻塞启动 ✓）
+except Exception as e:  # noqa: BLE001 —— 恢复失败 ⇒ 就当没有 ✓（不阻塞启动 ✓）
+    _log_swallowed("factors_state.py", e)
     pass
 
 def _sft_store(task_id: str, state: dict) -> None:
@@ -109,7 +124,8 @@ _EST_RESULT_KEEP = 3   # 内存治理：只保留最近 3 个完成任务的结�
 try:                                     # 启动即恢复 ✓
     _EST_TASKS.update(task_store.load_all("est"))
     task_store.prune("est", 60)          # 只留最近 60 个文件 ✓
-except Exception:                        # noqa: BLE001
+except Exception as e:  # noqa: BLE001
+    _log_swallowed("factors_state.py", e)
     pass
 
 def _est_get(task_id: str):
@@ -180,7 +196,8 @@ def pr_bt_stash_put(task_id, row: dict, item: Optional[dict], with_exit: bool,
             }
             while len(_PR_BT_STASH) > _PR_BT_CAP:
                 _PR_BT_STASH.pop(next(iter(_PR_BT_STASH)))
-    except Exception:                                  # noqa: BLE001 —— 登记失败**绝不能影响回测** ✓
+    except Exception as e:  # noqa: BLE001 —— 登记失败**绝不能影响回测** ✓
+        _log_swallowed("factors_state.py", e)
         pass
 
 def pr_bt_stash_get(task_id, factor_key, horizon, ei):
@@ -247,7 +264,8 @@ def _ev_fingerprint(ev) -> int:
             return 0
         h = pd.util.hash_pandas_object(ev[cols], index=False).to_numpy(dtype=np.uint64)
         return int(h.sum()) if h.size else 0
-    except Exception:                                             # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("factors_state.py", e)
         # 指纹算不出来 ⇒ 退回 0（等于旧行为 ✓）—— 宁可少命中缓存（重算一次 ✗ 慢一点 ✓），
         # 也**绝不能**因为指纹异常就误命中别人的结果 ✓。
         return 0
@@ -333,3 +351,4 @@ def _json_safe(o):
     if isinstance(o, (list, tuple)):
         return [_json_safe(v) for v in o]
     return o
+

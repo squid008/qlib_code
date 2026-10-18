@@ -120,7 +120,8 @@ class BoardAwareExchange(Exchange):
                                        float(self.min_cost or 0.0))
             if new_cost is not None:
                 cost = new_cost
-        except Exception:                                                 # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("board_exchange.py", e)
             pass
         return price, val, cost
 
@@ -247,12 +248,28 @@ class BoardAwareExchange(Exchange):
             return pd.Series(False, index=ids)
         try:
             dt = pd.Timestamp(start_time)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("board_exchange.py", e)
             return pd.Series(False, index=ids)
         col = self._forbid_by_dt.get(dt)
         if col is None:
             return pd.Series(False, index=ids)
         try:
             return col.reindex(ids, fill_value=True).astype(bool)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("board_exchange.py", e)
             return pd.Series(False, index=ids)
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

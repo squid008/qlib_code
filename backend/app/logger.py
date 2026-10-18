@@ -45,11 +45,13 @@ class _Utf8SafeStream:
             try:
                 self._buffer.write(text.encode("utf-8", "replace"))
                 return len(text)
-            except Exception:                                    # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _log_swallowed("logger.py", e)
                 pass
         try:
             return self._stream.write(text)
-        except Exception:                                        # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("logger.py", e)
             return len(text)          # ⚠ 日志绝不许把回测搞崩 ✗ ⇒ 吞掉并假装写成功 ✓
 
     def flush(self):
@@ -57,13 +59,15 @@ class _Utf8SafeStream:
             try:
                 if f is not None:
                     f.flush()
-            except Exception:                                    # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _log_swallowed("logger.py", e)
                 pass
 
     def isatty(self):
         try:
             return bool(self._stream.isatty())
-        except Exception:                                        # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            _log_swallowed("logger.py", e)
             return False
 
 
@@ -86,3 +90,17 @@ def _build_default_logger(name: str) -> logging.Logger:
 def get_logger(name: str = "qlib") -> logging.Logger:
     """获取统一 logger。name 传模块名（如 __name__），用于定位来源。"""
     return _build_default_logger(name)
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
