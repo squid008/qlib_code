@@ -73,7 +73,7 @@ def _sys_mem_info():
         ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
         return int(stat.ullTotalPhys), int(stat.ullAvailPhys)
     except Exception as e:
-        logger.debug("[吞] resource.py: %r", e)
+        _dbg("resource.py", e)
         pass
 
     try:
@@ -88,7 +88,7 @@ def _sys_mem_info():
             if total:
                 return total, (avail or total)
     except Exception as e:
-        logger.debug("[吞] resource.py: %r", e)
+        _dbg("resource.py", e)
         pass
 
     # 兜底：给一个保守默认（8GB 总量 / 6GB 可用）
@@ -205,7 +205,7 @@ def start_peak_sampler(interval: float = 2.0):
     try:
         import psutil
     except Exception as e:  # noqa: BLE001
-        logger.debug("[吞] resource.py: %r", e)
+        _dbg("resource.py", e)
         return None
     stop_flag = threading.Event()
     state = {"peak_gb": 0.0, "active_at_peak": 1, "samples": 0}
@@ -214,7 +214,7 @@ def start_peak_sampler(interval: float = 2.0):
         try:
             me = psutil.Process(os.getpid())
         except Exception as e:  # noqa: BLE001
-            logger.debug("[吞] resource.py: %r", e)
+            _dbg("resource.py", e)
             return
         while not stop_flag.is_set():
             try:
@@ -223,7 +223,7 @@ def start_peak_sampler(interval: float = 2.0):
                     try:
                         total += ch.memory_info().rss
                     except Exception as e:  # noqa: BLE001
-                        logger.debug("[吞] resource.py: %r", e)
+                        _dbg("resource.py", e)
                         pass
                 gb = total / 1024 ** 3
                 if gb > state["peak_gb"]:
@@ -231,7 +231,7 @@ def start_peak_sampler(interval: float = 2.0):
                     state["active_at_peak"] = max(1, _active_jobs)
                 state["samples"] += 1
             except Exception as e:  # noqa: BLE001
-                logger.debug("[吞] resource.py: %r", e)
+                _dbg("resource.py", e)
                 pass
             stop_flag.wait(interval)
 
@@ -453,7 +453,7 @@ def _patch_loky_nowin() -> None:
         _loky_patched = True
         _log().info("loky 子进程 CreateProcess 已加 CREATE_NO_WINDOW（免弹黑色命令行窗口）")
     except Exception as e:
-        logger.debug("[吞] resource.py: %r", e)
+        _dbg("resource.py", e)
         pass
 
 
@@ -475,10 +475,10 @@ def _apply_kernels(jobs: int) -> None:
                 from .patches.serial_load import install_serial_load
                 install_serial_load()
             except Exception as e:
-                logger.debug("[吞] resource.py: %r", e)
+                _dbg("resource.py", e)
                 pass
     except Exception as e:
-        logger.debug("[吞] resource.py: %r", e)
+        _dbg("resource.py", e)
         pass
 
 
@@ -505,3 +505,20 @@ def apply_active_jobs() -> None:
     with _jobs_lock:
         jobs = task_jobs_for_active(max(1, _active_jobs))
         _apply_kernels(jobs)
+
+
+def _dbg(where, exc):
+    """**留痕兜底** ✓（P2-A ✓ 2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 为什么不用裸 `logger.debug(...)` ✗：本文件（以及 `metrics.py`）的 `logger`
+      **可能是 None** ✓（有的初始化在 Windows-only 分支里 ✓）⇒ 直接调用会把
+      "静默吞掉"变成"**更响的崩溃**" ✗✗（CI 上 10 个用例就是这么红的 ✓）。
+    ⚠ 也不许用 `except: pass` ✗ —— 那正是本模块要消灭的"静默"✓；
+      这里用 `contextlib.suppress` ✓：**明确声明"日志失败也无所谓"** ✓。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

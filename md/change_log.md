@@ -3,6 +3,30 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.27] - 2026-10-18
+
+### Fixed（2.9.26 把"静默"改成了"**更响的崩溃**" ✗→✓ —— CI 抓的，本地完全看不出来）
+
+- **事故** ✗：2.9.26 给 `engine/artifacts.py` / `engine/resource.py` 插了
+  `logger.debug("[吞] …", e)` ✓ —— 但 **`resource.py` 的 `logger` 在 Linux 上是 `None`** ✓
+  （它的初始化在 **Windows-only** 分支里 ✗）⇒ 那个 debug 调用**自己抛**
+  `AttributeError: 'NoneType' object has no attribute 'debug'` ✓
+  ⇒ 原本"静默吞掉"的地方变成"**抛出**" ✗✗ ⇒ CI 上 **10 个用例红** ✓
+  （`test_resource.py` 6 个 + `test_event_study_slot_release.py` 3 个 + `test_datasets_switch.py` 1 个 ✓）。
+  ⚠ **这比不改更糟** ✗ —— 改治理的目的就是"别让异常逃逸" ✓，结果我让它逃了 ✓。
+- **修法** ✓：两个文件都改成调用**受保护的** `_dbg(where, exc)` ✓（追加在**文件末尾** ✓）：
+  · 内部 `lg = globals().get("logger") or logging.getLogger(__name__)` ✓（**None 也安全** ✓）；
+  · 整体包在 `contextlib.suppress(Exception)` 里 ✓ —— **明确声明"日志失败也无所谓"** ✓；
+  · ⚠ 为什么追加在 EOF 而不是文件中间 ✗：往中间插代码今天已经害我一次（插进 `docstring` ✗），
+    **追加到末尾永远安全** ✓。
+- **同时补上回归守门** ✓（`test_error_policy.py` +2 条，**本地就能抓到这次的坑** ✓）：
+  `monkeypatch.setattr(模块, "logger", None)` 后调 `_dbg(...)` **不许抛** ✓ ——
+  这正是 CI 上红掉的那条路径 ✓，现在本地也能测 ✓（不用等 CI ✗）。
+- **棘轮的扫描器**也补了 `dbg` 认作留痕 ✓（否则会把 `_dbg(...)` 误判成静默 ✗，基线会假性上涨 ✓）。
+- **校验** ✓：`py_compile` ✓ ｜ `ruff` ✓ ｜ 全量 **1063 passed** ✓ ｜ CI ✓。
+- **教训（写死 ✓）**：**"把静默改成会抛"是最坏的改法** ✗ —— 任何"留痕"代码本身必须**不可能失败** ✓；
+  另外 **Windows 本地绿 ≠ Linux 绿** ✓（这次是 `logger=None` 的平台差异 ✓，上周是 `npm ci` ✓）。
+
 ## [2.9.26] - 2026-10-18
 
 ### Changed（**P2-A 第二批：`engine/` 层静默捕获** ✓ —— 静默 **149 → 130**）

@@ -80,3 +80,25 @@ def test_must_raise_reraises_same_exception(fake):
         EP.must_raise("accounting", err, detail="净值路径")
     assert ei.value is err, "必须抛回**同一个**异常对象 ✓（保栈 ✓）"
     assert fake.calls and fake.calls[0][0] == "error"
+
+
+# ---------------------------------------------------------------------------
+# ★★ v2.9.27（2026-10-18 ✓）：**`_dbg` 必须能在 `logger is None` 时也不炸** ✗→✓
+#
+# 事故回放（CI 才暴露 ✗，本地 Windows 完全看不出来 ✓）：
+#   `engine/resource.py` 的 `logger` 在 **Linux 上是 None** ✓（初始化在 Windows-only 分支里 ✗）
+#   ⇒ 我 P2-A 第二批插进去的 `logger.debug(...)` **自己抛** `AttributeError` ✓
+#   ⇒ 把"静默吞异常"改成了"**更响的崩溃**" ✗✗（CI 上 10 个用例红 ✓）。
+# ⇒ 这两个用例就是那次事故的**回归守门** ✓：把 logger 设成 None 再调 `_dbg` ✓。
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("mod", ["app.engine.artifacts", "app.engine.resource"])
+def test_dbg_survives_none_logger(monkeypatch, mod):
+    import importlib
+
+    m = importlib.import_module(mod)
+    if not hasattr(m, "_dbg"):
+        pytest.skip("%s 没有 _dbg（未来改法变了就同步改这里 ✓）" % mod)
+    monkeypatch.setattr(m, "logger", None, raising=False)
+    m._dbg("unit-test", ValueError("x"))          # ⚠ 不抛异常才算通过 ✓
+    m._dbg("unit-test", RuntimeError("y"))

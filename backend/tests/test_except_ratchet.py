@@ -27,7 +27,9 @@ SILENT_BASELINE = 130
 _SILENT_NODES = (ast.Pass, ast.Continue, ast.Break, ast.Expr)
 #: ⚠ `swallow` 必须算"有痕迹" ✓ —— 它**就是**本项目的留痕通路 ✓
 #:   （第一版漏了 ⇒ 把 `tolerate` 里 `swallow(...)` 误判成静默 ✗，实测抓出来的 ✓）。
-_LOG_HINTS = ("log", "logger", "print", "warn", "error", "info", "debug", "swallow")
+#: ⚠ `dbg` 也要算 ✓ —— `engine/` 那两个文件用的是**受保护的** `_dbg(where, exc)` ✓
+#:   （它内部兜住"logger 为 None"✓，因为 `resource.py` 的 logger 在 Linux 上就是 None ✗）。
+_LOG_HINTS = ("log", "logger", "print", "warn", "error", "info", "debug", "dbg", "swallow")
 
 
 def _is_log_call(node) -> bool:
