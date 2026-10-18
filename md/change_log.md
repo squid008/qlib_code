@@ -3,6 +3,40 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.22] - 2026-10-18
+
+### Added（**P1-C-1：公式面板结果跨任务磁盘缓存** ✓ ＋ **三重自动清理** ✓）
+
+- **痛点**：同一个公式（`CPX` 这类）每跑一次单因子测试都要**重算一遍面板** ✗
+  （实测全 A × 4 年含递推组 ≈ **4~5 秒** ✓）；而用户真实用法是"改个参数再跑"✓
+  ⇒ 绝大部分时间花在**重复计算同一列**上 ✗。
+- **新增 `backend/app/services/expr_cache.py`（~230 行 ✓）**，在 `panel_features` 外面**包一层** ✓：
+  · **计算本体零改动** ✓ —— `panel_features` 里原有 **3 条 return** ✗，直接插缓存要改三处控制流 ✗，
+    所以改名成 `_panel_features_uncached` ✓，新 `panel_features` 只做"**查 → 算 → 存**"✓；
+  · `panel_features_parallel` 两条调用路径都在 L2616 / L2743 **收敛到 `panel_features`** ✓
+    ⇒ 一处接线，全部端点（单因子 / 事件研究）都吃到缓存 ✓。
+- **键（宁可不命中，也不能命中错 ✗）**：`sha1(feature_dir, instruments, fields, start, end,
+  warmup_days, 语义版本)` ✓ —— `warmup_days` 与**语义版本**都进键 ✓（它俩真影响结果 ✗，漏一个就是错口径 ✓）。
+  ⚠ **改了 `panel_expr` 的计算口径必须把 `_SEMANTICS` +1** ✓（写在文件头 ✓）。
+- **存哪**：`workdir/expr_cache/<sha1>.parquet` ✓（parquet 原样保留 MultiIndex + float32 ✓，
+  原子写 `.tmp` + `os.replace` ✓，坏文件自删 ✓）。
+- **★ 定期清理（用户 2026-10-18 明确要求 ✓「注意定期清理」）**，三重边界、全部可调：
+  | 边界 | 默认 | 环境变量 |
+  |---|---|---|
+  | TTL（按**最近使用** ✓，命中即续命 ✓） | **7 天** | `QLIB_EXPR_CACHE_TTL_DAYS` |
+  | 文件个数 | **80** | `QLIB_EXPR_CACHE_MAX_FILES` |
+  | 总量 | **4 GB** | `QLIB_EXPR_CACHE_MB` |
+  清理时机：**每次 save 之后** ✓ + **进程启动时** ✓；单条超 **512MB 不落盘** ✓。
+  ⇐ 再加上已有的 `task_store` 上限（每类 60 个 ✓）⇒ **两类运行产物都有天花板** ✓。
+- **开关** ✓：`QLIB_EXPR_CACHE=0` 全关（排查"两次结果不一致"时**第一件事就关它** ✓）。
+- **测试** ✓：`tests/test_expr_cache.py` **9 条** —— 往返逐位一致 ✓ ｜ **键对 6 个要素都敏感** ✓ ｜
+  集合顺序不影响 ✓ ｜ 关开关 ✓ ｜ 坏文件自删 ✓ ｜ **TTL / 个数 / 总量三种清理** ✓ ｜ 超限不落 ✓ ｜
+  **接线命中**（第二次调用不再重算 ✓，换字段必须重算 ✓）。
+- **校验** ✓：`py_compile` ✓ ｜ `ruff` ✓ ｜ 全量 **1036 passed** ✓（1027 + 9 ✓）｜ CI ✓。
+- **⚠ 未完成（如实说 ✓）**：真数据"加速倍数"基准没跑成 ✗ —— 那段脚本要 `qlib.init()`，
+  在我这个执行环境里会跑超时被掐 ✗。**功能正确性由单测覆盖** ✓（含"第二次不重算"✓），
+  但"到底快几倍"这个数字**要等你本地跑一次**才能给 ✓（`npx`/`python` 一条命令的事 ✓）。
+
 ## [2.9.21] - 2026-10-18
 
 ### Fixed（CI 的 vitest 仍在起步阶段崩 ✗→✓：`environment: jsdom` ⇒ `node`）

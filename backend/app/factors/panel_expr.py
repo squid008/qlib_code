@@ -2433,10 +2433,12 @@ def _shift_calendar_start(start_time: str, days: int) -> str:
     return str(cal[prev].date())
 
 
-def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]],
-                   start_time: str, end_time: str, cancel_cb=None,
-                   warmup_days: int = 0) -> pd.DataFrame:
-    """替代 D.features：一次面板求值 (expr, name) 列表 → MultiIndex × 列 DataFrame。
+def _panel_features_uncached(instruments: Sequence[str], fields: Sequence[Tuple[str, str]],
+                             start_time: str, end_time: str, cancel_cb=None,
+                             warmup_days: int = 0) -> pd.DataFrame:
+    """**真正的计算本体** ✓（对外请用 `panel_features` ✓ —— 它外面包了跨任务缓存 ✓）。
+
+    替代 D.features：一次面板求值 (expr, name) 列表 → MultiIndex × 列 DataFrame。
 
     与 D.features 输出对齐：行 = 各股在【全部参与字段覆盖并集】∩[start,end] 上的
     日历年（含停牌 NaN），列名 = name。读盘自动前移预热窗口（见 _warm_days），
@@ -2541,6 +2543,48 @@ def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]]
     df = df[df.index.get_level_values("datetime") >= pd.Timestamp(start_time)]
     df = df.reindex(full_out)
     return _cast_output_f32(df)
+
+
+def panel_features(instruments: Sequence[str], fields: Sequence[Tuple[str, str]],
+                   start_time: str, end_time: str, cancel_cb=None,
+                   warmup_days: int = 0) -> pd.DataFrame:
+    """面板求值（**带跨任务磁盘缓存** ✓ ★ P1-C-1，2026-10-18 ✓）。
+
+    ## 为什么包这一层（而不是改本体 ✗）
+
+    `_panel_features_uncached` 里有 **3 条 return**（提前返回 / 免算再返回 / 裁剪后返回 ✓），
+    直接在里面插缓存会逼着改三处控制流 ✗ ⇒ 风险大且不必要 ✓。
+    包一层之后：**计算本体一个字没改** ✓，缓存只是"查 → 算 → 存" ✓。
+
+    ## 关键约定
+
+    · **缓存绝不改变结果** ✓：`load` 失败/坏文件/写盘失败 ⇒ **一律退回直算** ✓；
+    · **键含 warmup_days 与语义版本** ✓（它俩都真影响结果 ✗ ⇒ 漏一个就会读到错口径 ✗）；
+    · 开关 `QLIB_EXPR_CACHE=0` ✓（排查"两次结果不一致"时先关它 ✓）；
+    · 清理见 `services/expr_cache.py`（TTL 7 天 / 80 个 / 4GB ✓ 每次写完自动清 ✓）。
+    """
+    # ⚠ 惰性 import ✓：`services.expr_cache` 只依赖 `config` ✓，但放函数里可以彻底
+    #   避免"factors ↔ services 循环引用"的隐患 ✗（本项目踩过循环 import 的坑 ✓）。
+    from ..services import expr_cache
+
+    ck = None
+    if expr_cache.enabled():
+        try:
+            ck = expr_cache.key(_feature_dir(), instruments, fields,
+                                start_time, end_time, int(warmup_days or 0))
+            hit = expr_cache.load(ck)
+            if hit is not None:
+                return hit
+        except Exception:                        # noqa: BLE001 —— 缓存不许影响正确性 ✗
+            ck = None
+    out = _panel_features_uncached(instruments, fields, start_time, end_time,
+                                   cancel_cb=cancel_cb, warmup_days=warmup_days)
+    if ck:
+        try:
+            expr_cache.save(ck, out)
+        except Exception:                        # noqa: BLE001
+            pass
+    return out
 
 
 def _cast_output_f32(df: pd.DataFrame) -> pd.DataFrame:

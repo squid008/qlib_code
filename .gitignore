@@ -91,3 +91,6 @@ backend/workdir/formulas/*.json.bak*
 
 # 任务状态落盘（★ v2.9.18 P1-C-2 ✓）—— 运行时产物，**永不入库** ✗
 backend/workdir/tasks/
+
+# 公式面板结果缓存（★ v2.9.22 P1-C-1 ✓）—— 运行时产物，**永不入库** ✗
+backend/workdir/expr_cache/
