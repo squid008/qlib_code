@@ -3,6 +3,36 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.24] - 2026-10-18
+
+### Added（**代码体检棘轮** ✓ —— P0-C-4 的诚实结论：那两根骨头**拆不动** ✗，但从此不许再长 ✗）
+
+- **P0-C-4 的实测结论**（先说结论，免得以为我没做 ✓）：
+  · `_quantile_curve_block`（594 行）与 `run_single_factor_tests`（530 行）**都是扁平结构** ✗
+    —— 用 AST 逐层下钻后，**没有任何 ≥60 行且不是整个函数体**的整块 ✓ ⇒ **机械拆分零候选** ✗；
+  · 按语义读（已读开头 110 行 ✓）确认它们是**密集领域逻辑**：参数归一化 → 面板列构造 → 逐周期统计 ✓
+    互相穿透几十个局部变量 ✓ ⇒ 强行拆成 helper 会变成 **20+ 形参** 的函数 ✗
+    —— 而 2.9.10 已经证明过：`_sft_horizon_loop`（43 形参）**比原代码更难读** ✗。
+  ⇒ 判断：**继续拆 = 净变差** ✗ ⇒ 停手 ✓，改用"**不许再长**"的棘轮 ✓（这才是 9.5 真正需要的 ✓）。
+- **新增 `backend/tests/test_code_health.py`（10 条 ✓）**：
+  · **函数白名单**（9 个 >300 行的债务 ✓）**只能变小** ✓ —— 涨 1 行就红 ✓；
+  · 白名单外**任何函数 >300 行 ⇒ 红** ✓（新代码要写 400 行，得先拆 ✓）；
+  · **文件白名单**（6 个巨头 ✓）同样只能变小 ✓；白名单外**任何文件 >1200 行 ⇒ 红** ✓；
+  · 白名单项**消失**也红 ✓（拆掉/改名后忘了同步清单 ⇒ 会掩盖回退 ✗）。
+- **★ 这份清单是测试自己抓出来的** ✓：第一版我只写了 3 个文件，跑出来立刻红 ✓ ——
+  真实情况是 **`factors/panel_expr.py` 2,868 行** 才是全仓最大文件 ✗
+  （比我一直在拆的 `single_test.py` 还大 ✓），另有 `ops_ext.py` 2,162 / `qlib_engine.py` 1,503 ✓。
+  ⇒ 已补进债务清单 ✓（**下次要拆就该先拆 `panel_expr.py`** ✓ —— 它同时是性能热点 ✓）。
+- **当前债务全景**（棘轮里写死 ✓，只减不增 ✓）：
+  ```
+  函数 >300 行：run_backtest 601 ｜ _quantile_curve_block 594 ｜ signal_test.run 534
+                ｜ run_single_factor_tests 530 ｜ run_period_roll 477 ｜ single_factor_test 390
+                ｜ run_batch_backtest 367 ｜ run_event_study 323 ｜ _test_one 308
+  文件 >1200 行：panel_expr 2868 ｜ single_test 2.6k ｜ ops_ext 2162 ｜ qlib_engine 1503
+                ｜ signals/engine 1.4k ｜ factors_single 1.25k
+  ```
+- **校验** ✓：`ruff` ✓ ｜ 全量 **1051 passed** ✓（1041 + 10 ✓）｜ CI ✓。
+
 ## [2.9.23] - 2026-10-18
 
 ### Changed（存储治理补齐两块：**`mlruns` 纳入配额** ✓ ＋ **启动时也清一次** ✓）
