@@ -3,6 +3,29 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.14] - 2026-10-18
+
+### Changed（**P1-A-2 收尾：单因子测试组拆出** ✓ —— `routers/factors.py` **2,489 → 286 行** ✓✓）
+
+- 新模块 **`routers/factors_single.py`（1,162 行 ✓）**：16 个名字 ✓ —— 期初滚动/离场曲线 helper
+  （`_attach_period_roll` / `_attach_signal_roll` / `_panel_period_roll_nav` / `_exit_matrix` /
+  `_exit_pre_mats` / `_exit_list` / `_apply_exit_validation` / `_period_roll_pick` / `_signal_exit_nav` ✓）
+  + 结果渲染 `_sft_render_view` ✓ + **5 个端点**（提交/进度/取消/清理/列表 ✓）。
+- **`routers/factors.py` 1,422 → 286 行** ✓（**原 2,489 ⇒ 只剩 11.5%** ✓）—— 只留
+  `operators` / `datasets` / `catalog` 三个目录类端点 ✓ + 显式再导出 ✓。
+- **四模块终态** ✓：`factors.py` **286** ✓ ｜ `factors_single.py` **1,162** ✓ ｜
+  `factors_event.py` **560** ✓ ｜ `factors_state.py` **312** ✓ ｜ `factors_formulas.py` **274** ✓ ｜
+  `factors_models.py` **156** ✓。
+- **这次一次过（前两刀的坑全部固化 ✓）**：
+  · 区间**含装饰器** ✓（坑 8）；
+  · re-export **显式列名、绝不 `import *`** ✓（坑 10 —— 星号会覆盖 `router` ⇒ 重复注册 ✗）；
+  · 新模块 header 复用原 import 块 + 显式从 `factors_state` / `factors_models` 导入 ✓；
+  · 缺的 9 个依赖（`EntryRule` / `uses_entry` / `split_entry_rule` / `_bad_date_arg` /
+    `get_task_manager` / `config` / `FactorTestCancelled` / `HoldingsIndex` /
+    `run_single_factor_tests` ✓）靠 **ruff F821 一次列全** ✓ 再批量补 ✓（比逐个试快得多 ✓）。
+- **验收** ✓：`py_compile` ✓ ｜ `ruff` **0 错误** ✓ ｜ **1009 passed（这次连测试都不用改 ✓）** ｜
+  **openapi 51 路径 / 54 操作 不变 + 无重复 Operation ID** ✓ ｜ CI ✓ ｜ 后端重启 ✓。
+
 ## [2.9.13] - 2026-10-18
 
 ### Changed（**P1-A-2 第二半：事件研究组 + 请求模型拆出** ✓ —— `factors.py` 2,489 → **1,422 行** ✓）

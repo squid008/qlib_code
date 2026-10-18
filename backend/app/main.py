@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from . import config, __version__
 from .logger import get_logger
 from .routers import (backtest, data, datasets, export_xlsx, factors, factors_event,
-                      factors_formulas, signal_test)
+                      factors_formulas, factors_single, signal_test)
 
 logger = get_logger(__name__)
 
@@ -119,6 +119,8 @@ def create_app() -> FastAPI:
     app.include_router(factors_formulas.router)
     # ★ v2.9.13（P1-A-2 ✓）：**事件研究组**已拆出 ✓（同为 `/api/factors` 前缀 ⇒ URL 不变 ✓）
     app.include_router(factors_event.router)
+    # ★ v2.9.14（P1-A-2 ✓ 收尾）：**单因子测试组**已拆出 ✓（同 `/api/factors` 前缀 ⇒ URL 不变 ✓）
+    app.include_router(factors_single.router)
     app.include_router(export_xlsx.router)      # v2.1.0：XLSX 导出（沿 /api/factors/export/*）
     app.include_router(signal_test.router)
 
