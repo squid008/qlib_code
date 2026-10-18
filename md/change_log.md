@@ -3,6 +3,27 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.16] - 2026-10-18
+
+### Changed（**P1-B 第二步：`SingleFactorTestPanel.tsx` 2,483 → 2,124 行** ✓ —— 纯逻辑外提）
+
+- 新增 **`components/sftLogic.ts`（393 行 ✓）**：把面板里 **416 行"无 JSX / 无 state / 无副作用"**
+  的纯逻辑整段搬走 ✓ —— 结论判定（`verdictOf` / `watchReasonOf*` ✓）、前瞻收益（`esPointOf` /
+  `esExcessOf` ✓）、导出表头（`exportHeaders` / `EXPORT_FORMULA_HEADERS` ✓）、K 档预设（`K_PRESETS` /
+  `kLabel` ✓）、区间解析（`parseHorizons` / `horizonHint` / `HORIZON_SYNTAX` ✓）、
+  以及 22 个 interface/type ✓。
+- 面板侧只 import **它仍用到的 16 个** ✓（tsconfig 开了 `noUnusedLocals` ✗ ⇒ 多导一个就构建失败 ✓）。
+- **棘轮同步收紧** ✓：`test_frontend_structure.py` 里 `PANEL` 上限 **2500 → 2150** ✓
+  （拆分同时把"只许变好"的门槛压下去 ✓，防回潮 ✓）。
+- **✗ 三个坑（都是"看上去纯、其实不纯" ✓）**：
+  ① 整段 L24~L439 搬走 ⇒ TS1005 ×14 ✗ —— 因为里面有 **`class EsErrorBoundary`（含 JSX 的错误边界 ✓）**
+     ⇒ 新文件没有 React ⇒ 解析失败 ✓。⇒ 按 `class … }` 跨度把它**留在面板** ✓；
+  ② 我顺手删了 `sftLogic` 的 `verdictRules` 导入 ✗ ⇒ **TS2304 ×4** ✓（该文件自己在用 ✓）
+     ⇒ 只删**面板**那一行 ✓；
+  ③ 新文件里 `../types` 与部分 `../api` 类型没用上 ✗ ⇒ TS6192/6196 ✓ ⇒ 按报错逐个删 ✓。
+- **验收** ✓：`npx tsc -b` **0 错误** ✓ ｜ `npm run build` ✓（built in 6.72s ✓）｜ 结构断言 10 passed ✓ ｜
+  全量 pytest ✓ ｜ CI ✓ ｜ 后端重启 ✓。
+
 ## [2.9.15] - 2026-10-18
 
 ### Added（**P1-B 第一步：给前端装安全网** —— 10 条结构断言 ✓，把这几天的 UI 事故全部变成红灯 ✓）

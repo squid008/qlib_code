@@ -136,7 +136,7 @@ def test_recalc_button_precedes_dilution_warning():
 # ---------- ⑤ 防"上帝文件"回潮（ratchet ✓）----------
 
 @pytest.mark.parametrize("path,cap", [
-    (PANEL, 2500),
+    (PANEL, 2150),
     (APP, 2100),
     (MODAL, 1600),
 ])
