@@ -131,7 +131,8 @@ def _aggregate_from_nav(all_nav: list, seg_results: list) -> BacktestResult:
     # 备注滚动段数（用 report_df 附带，避免改动模型字段）
     try:
         result.report_df = {"rolling_segments": len(seg_results)}
-    except Exception:
+    except Exception as e:
+        _log_swallowed("metrics.py", e)
         pass
     return result
 
@@ -143,7 +144,8 @@ def _find_report_fallback():
     try:
         from ..config import WORK_DIR
         base = WORK_DIR
-    except Exception:
+    except Exception as e:
+        _log_swallowed("metrics.py", e)
         base = "."
     patterns = [
         os.path.join(base, "mlruns", "*", "*", "artifacts", "portfolio_analysis", "report_normal*.pkl"),
@@ -158,7 +160,8 @@ def _find_report_fallback():
     try:
         with open(files[-1], "rb") as f:
             return pickle.load(f)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("metrics.py", e)
         return None
 
 
@@ -180,7 +183,8 @@ def _extract_result(par, recorder, initial_account: Optional[float] = None) -> B
             report = recorder.load_object(key)
             if report is not None:
                 break
-        except Exception:
+        except Exception as e:
+            _log_swallowed("metrics.py", e)
             continue
 
     # 方式二：par.load
@@ -190,7 +194,8 @@ def _extract_result(par, recorder, initial_account: Optional[float] = None) -> B
                 report = par.load(key)
                 if report is not None:
                     break
-            except Exception:
+            except Exception as e:
+                _log_swallowed("metrics.py", e)
                 continue
 
     # 方式三：全局搜索 mlruns 下的报告文件
@@ -291,7 +296,8 @@ def _extract_end_position(recorder) -> Optional[dict]:
                 positions = recorder.load_object(key)
                 if positions is not None:
                     break
-            except Exception:
+            except Exception as e:
+                _log_swallowed("metrics.py", e)
                 continue
         if not positions:
             return None
@@ -312,7 +318,8 @@ def _extract_end_position(recorder) -> Optional[dict]:
                 account[str(k)] = entry
         account["cash"] = float(p.get("cash") or 0.0)
         return account
-    except Exception:
+    except Exception as e:
+        _log_swallowed("metrics.py", e)
         return None
 
 
@@ -324,7 +331,8 @@ def _get_segment_end_account(par, recorder) -> Optional[float]:
             report = recorder.load_object(key)
             if report is not None:
                 break
-        except Exception:
+        except Exception as e:
+            _log_swallowed("metrics.py", e)
             continue
     if report is None or not hasattr(report, "columns") or "account" not in report.columns:
         return None
@@ -332,7 +340,8 @@ def _get_segment_end_account(par, recorder) -> Optional[float]:
         acct = report["account"].dropna()
         if len(acct) > 0:
             return float(acct.iloc[-1])
-    except Exception:
+    except Exception as e:
+        _log_swallowed("metrics.py", e)
         pass
     return None
 
@@ -349,7 +358,8 @@ def _extract_trades(par, recorder) -> list:
             from ..config import WORK_DIR
             # WORK_DIR 形如 backend/app/../workdir，需 normpath 后取 dirname 得到 backend 目录
             base = os.path.normpath(os.path.dirname(WORK_DIR))
-        except Exception:
+        except Exception as e:
+            _log_swallowed("metrics.py", e)
             base = os.path.abspath(".")
         patterns = [
             os.path.join(base, "mlruns", "*", "*", "artifacts", "portfolio_analysis",
@@ -366,7 +376,8 @@ def _extract_trades(par, recorder) -> list:
         try:
             with open(files[-1], "rb") as f:
                 return pickle.load(f)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("metrics.py", e)
             return None
 
     indicator = None
@@ -378,7 +389,8 @@ def _extract_trades(par, recorder) -> list:
             indicator = recorder.load_object(key)
             if indicator is not None:
                 break
-        except Exception:
+        except Exception as e:
+            _log_swallowed("metrics.py", e)
             continue
 
     # 校验方式一的 indicator 是否包含订单历史；否则回退到文件
@@ -419,7 +431,8 @@ def _extract_trades(par, recorder) -> list:
                 if raw_dir is not None:
                     try:
                         direction = 1 if float(raw_dir) > 0 else -1
-                    except Exception:
+                    except Exception as e:
+                        _log_swallowed("metrics.py", e)
                         direction = None
                 trades.append({
                     "date": date_str,
@@ -431,6 +444,23 @@ def _extract_trades(par, recorder) -> list:
                     "trade_cost": float(trade_cost.data[i]) if trade_cost is not None and i < len(trade_cost.data) else None,
                     "ffr": float(ffr.data[i]) if ffr is not None and i < len(ffr.data) else None,
                 })
-    except Exception:
+    except Exception as e:
+        _log_swallowed("metrics.py", e)
         pass
     return trades
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 为什么不用裸 `logger.debug(...)` ✗：本文件**没有 logger**（`metrics.py` / `single_test.py` ✓），
+      而别处已出现过"logger 在 Linux 上为 None"的情况 ✓（2.9.26 事故 ✗：直接把静默改成了崩溃 ✓）。
+    ⚠ 也不用 `except: pass` ✗ —— 那正是"静默"，而这里用 `contextlib.suppress` ✓：
+      明确声明"日志失败也无所谓"✓，不会被静默债务棘轮算成新债 ✓。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

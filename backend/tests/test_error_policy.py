@@ -97,8 +97,8 @@ def test_dbg_survives_none_logger(monkeypatch, mod):
     import importlib
 
     m = importlib.import_module(mod)
-    if not hasattr(m, "_dbg"):
-        pytest.skip("%s 没有 _dbg（未来改法变了就同步改这里 ✓）" % mod)
+    if not hasattr(m, "_log_swallowed"):
+        pytest.skip("%s 没有 _log_swallowed（未来改法变了就同步改这里 ✓）" % mod)
     monkeypatch.setattr(m, "logger", None, raising=False)
-    m._dbg("unit-test", ValueError("x"))          # ⚠ 不抛异常才算通过 ✓
-    m._dbg("unit-test", RuntimeError("y"))
+    m._log_swallowed("unit-test", ValueError("x"))          # ⚠ 不抛异常才算通过 ✓
+    m._log_swallowed("unit-test", RuntimeError("y"))

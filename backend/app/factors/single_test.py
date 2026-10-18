@@ -69,7 +69,8 @@ def _bad_date_arg(start_date, end_date) -> str:
             return f"{lbl}格式无效：{v}（需为 YYYY-MM-DD）"
         try:
             pd.Timestamp(s)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("single_test.py", e)
             return f"{lbl}无效：{v}（该日期不存在，请检查年/月/日，如 6 月没有 31 日）"
     return ""
 
@@ -105,7 +106,8 @@ def _dump_sft_error(exc: Exception) -> None:
             f.write("Operators in this process: %s\n" % sorted(Operators._ops.keys()))
             f.write(traceback.format_exc())
             f.write("\n")
-    except Exception:
+    except Exception as e:
+        _log_swallowed("single_test.py", e)
         pass
 
 
@@ -227,7 +229,8 @@ def _quantile_curves(mat: pd.DataFrame) -> dict:
         _val = pd.Series(np.asarray(means.values, dtype=float))
         _m = float(_val.corr(_idx, method="spearman"))
         _mono = round(_m, 4) if np.isfinite(_m) else None
-    except Exception:                                    # noqa: BLE001 —— 缺库/数据异常时不阻塞
+    except Exception as e:  # noqa: BLE001 —— 缺库/数据异常时不阻塞
+        _log_swallowed("single_test.py", e)
         _mono = None
     return {
         "n_groups": len(qs),
@@ -298,7 +301,8 @@ def _event_px_wide(df_full: pd.DataFrame, trig_index, inst_lv: int):
         if len(sub) == 0:
             return None
         return sub.unstack(level=inst_lv).sort_index().ffill()
-    except Exception:
+    except Exception as e:
+        _log_swallowed("single_test.py", e)
         return None
 
 
@@ -329,7 +333,8 @@ def _full_wide_key(df_full: pd.DataFrame, inst_lv: int):
         #   （v2.1.56 起 PX 会随成交时点切换 ⇒ 这个坑变成现实风险 ✓）。
         _mid = float(px.iloc[_n // 2]) if _n else float("nan")
         return (len(idx), n_inst, str(dt[0]), str(dt[-1]), inst_lv, sample, _mid)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("single_test.py", e)
         return None
 
 
@@ -350,7 +355,8 @@ def _event_px_from_full(full_wide: pd.DataFrame, trig_index, inst_lv: int):
         if len(cols) == 0:
             return None
         return full_wide[cols]
-    except Exception:
+    except Exception as e:
+        _log_swallowed("single_test.py", e)
         return None
 
 
@@ -367,7 +373,8 @@ def _full_px_wide(df_full: pd.DataFrame, inst_lv: int):
             return hit
     try:
         w = df_full["PX"].unstack(level=inst_lv).sort_index().ffill()
-    except Exception:
+    except Exception as e:
+        _log_swallowed("single_test.py", e)
         return None
     if key is not None and w is not None:
         _FULL_WIDE_CACHE[key] = w
@@ -431,7 +438,8 @@ def _trigger_split(trig: Optional[pd.DataFrame], hold_days: int,
                 "win_rate": (round(float((v > 0).mean()), 4) if v.size else None),
             }
         return out
-    except Exception:                                        # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("single_test.py", e)
         return None
 
 
@@ -593,7 +601,8 @@ def _test_one(
     try:
         uniq = vals.round(6).unique()
         result["is_binary"] = len(uniq) <= 2 and set(map(float, uniq)).issubset({0.0, 1.0})
-    except Exception:
+    except Exception as e:
+        _log_swallowed("single_test.py", e)
         result["is_binary"] = False
 
     # IC / RankIC / ICIR（连续因子专用，v1.18.35）
@@ -611,7 +620,8 @@ def _test_one(
                 result.update(icr)
         except FactorTestCancelled:
             raise
-        except Exception:
+        except Exception as e:
+            _log_swallowed("single_test.py", e)
             pass
 
     # 触发 vs 未触发：0/1 稀疏信号按 >0.5 分组；连续因子按分位数分组
@@ -683,7 +693,8 @@ def _test_one(
     if trig_index_out is not None:
         try:
             trig_index_out.append(trig.index)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("single_test.py", e)
             trig_index_out.append(None)
     result["limit_up_excluded"] = t_lu_t + t_lu_t1 + t_susp
     result["limit_up_excluded_t"] = t_lu_t
@@ -698,7 +709,8 @@ def _test_one(
     try:
         _dt_lv_s = df.index.names.index("datetime") if "datetime" in df.index.names else 1
         _cal_s = pd.Index(sorted(pd.unique(df.index.get_level_values(_dt_lv_s))))
-    except Exception:                                        # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("single_test.py", e)
         _cal_s = None
     result["trigger_split"] = _trigger_split(trig, int(horizon or 0), _cal_s)
     result["not_trigger"] = _stat_group(not_trig, n_lu_t, n_lu_t1, n_susp, n_extra)
@@ -776,7 +788,8 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
                 _e = _f if isinstance(_f, str) else _f[0]
                 if ("EMA(" in _e) or ("EMA_TDX(" in _e) or ("SMA(" in _e):
                     return None
-        except Exception:
+        except Exception as e:
+            _log_swallowed("single_test.py", e)
             pass
     # 取消探针：cancelled() 为 True 时抛 FactorTestCancelled 上传（由路由层标记 cancelled）。
     # 面板求值器每表达式/每块调用一次；注意必须先于 except Exception 捕获，否则被吞成回退 qlib。
@@ -1066,7 +1079,8 @@ def run_single_factor_tests(
             pos = int((cal_ts <= pd.Timestamp(end_date)).sum())
             n_need = max(n_max, es_k)
             load_end = str(cal_ts[min(pos + n_need + 3, len(cal_ts) - 1)].date())
-        except Exception:
+        except Exception as e:
+            _log_swallowed("single_test.py", e)
             # 日历不可用时退回 end_date 原样加载（其合法性已在函数入口校验过）
             load_end = end_date
 
@@ -1081,7 +1095,8 @@ def run_single_factor_tests(
     if warmup_days is None:
         try:
             warmup_days = int(_os.environ.get("QLIB_SFT_WARMUP_DAYS", "250"))
-        except Exception:
+        except Exception as e:
+            _log_swallowed("single_test.py", e)
             warmup_days = 250
     warmup_days = max(0, int(warmup_days or 0))
     load_start = start_date
@@ -1091,7 +1106,8 @@ def run_single_factor_tests(
             _cal_ts = pd.to_datetime(_D.calendar())
             _pos = int((_cal_ts < pd.Timestamp(start_date)).sum())
             load_start = str(_cal_ts[max(0, _pos - warmup_days)].date())
-        except Exception:
+        except Exception as e:
+            _log_swallowed("single_test.py", e)
             load_start = start_date
 
     # 基准（可切换）指数行情：**一次取全候选** ⇒ 前端纯切换、零重算（定稿口径）。
@@ -1103,7 +1119,8 @@ def run_single_factor_tests(
 
         bench_default = default_benchmark(universe)
         bench_close = load_bench_close(BENCH_CODES, load_start, load_end, cancelled=cancelled)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("single_test.py", e)
         bench_close, bench_default = None, None
 
     # 因子去重编号
@@ -1249,14 +1266,16 @@ def run_single_factor_tests(
             try:
                 _st = __import__("os").stat(__file__)
                 _sig = "m%d-s%d" % (int(_st.st_mtime), int(_st.st_size))
-            except Exception:                                     # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _log_swallowed("single_test.py", e)
                 pass
             _pc = _cache_path(
                 instruments, list(fields), all_cols, start_date, load_end,
                 extra="sft|v=%s|w=%s|f=%s|e=%s" % (_sig, warmup_days,
                                                   freeze_suspended_price, end_date),
             )
-        except Exception:
+        except Exception as e:
+            _log_swallowed("single_test.py", e)
             _pc = None
     df = _load_cache(_pc) if _pc else None
     if df is not None:
@@ -1272,7 +1291,8 @@ def run_single_factor_tests(
         if df is not None and _pc:
             try:
                 _save_cache(_pc, df)
-            except Exception:
+            except Exception as e:
+                _log_swallowed("single_test.py", e)
                 pass      # 缓存写失败不影响主流程
     _ph_feat = _tmod.perf_counter() - _ph_t0
     if df is None:
@@ -1377,7 +1397,8 @@ def run_single_factor_tests(
         #   （不生成它的话：`_px_row` 取不到价 ⇒ 全 NaN ⇒ 期初价全 NaN ⇒ `_perf_of` 早退
         #    ⇒ **年化/回撤/夏普整块消失** ✗ —— 实测 `perf 含档 = []` ✓）。
         df["OPEN_FF"] = df.groupby(level=_inst_lv_ff)["OPEN"].ffill()
-    except Exception:
+    except Exception as e:
+        _log_swallowed("single_test.py", e)
         df["CLOSE_FF"] = df["CLOSE"] if "CLOSE" in df.columns else np.nan
         df["OPEN_FF"] = df["OPEN"] if "OPEN" in df.columns else np.nan
 
@@ -1476,7 +1497,8 @@ def _pair_and_verdict(*, cancelled, name, not_trig, result, sub, trig) -> None:
                 result["p_value"] = float(p)
             except FactorTestCancelled:
                 raise
-            except Exception:
+            except Exception as e:
+                _log_swallowed("single_test.py", e)
                 result["p_value"] = None
         # 按日配对检验：逐日 触发均值-未触发均值 作为日差值序列做单样本 t 检验。
         # 原始 MWU p 值在百万级样本下必然趋近 0，信息量低；日差值序列（约交易日数个点）
@@ -1509,9 +1531,11 @@ def _pair_and_verdict(*, cancelled, name, not_trig, result, sub, trig) -> None:
                         trig.reset_index().to_csv(
                             _os_dump.path.join(_dump_dir, "trig_%s.csv" % _safe),
                             encoding="utf-8-sig")
-                    except Exception:
+                    except Exception as e:
+                        _log_swallowed("single_test.py", e)
                         pass
-            except Exception:
+            except Exception as e:
+                _log_swallowed("single_test.py", e)
                 pass
             # 口径 = 配对日（科学口径）：触发/非触发组的日截面均值都只在"当天两组都有
             # 样本"的配对日上计算。若按各自独立全集（daily_trig 只统计有触发的日、
@@ -1548,7 +1572,8 @@ def _pair_and_verdict(*, cancelled, name, not_trig, result, sub, trig) -> None:
                     th = _hac_t(x)
                     if th is not None:
                         result["daily_t_hac"] = round(th, 4)
-                except Exception:
+                except Exception as e:
+                    _log_swallowed("single_test.py", e)
                     pass
                 # 自相关（lag-1/lag-5）与方差稳定性（后半/前半方差比）
                 try:
@@ -1558,11 +1583,13 @@ def _pair_and_verdict(*, cancelled, name, not_trig, result, sub, trig) -> None:
                     v0 = float(x[:half].var())
                     v1 = float(x[half:].var())
                     result["daily_var_ratio"] = round((v1 / v0) if v0 > 1e-12 else float("nan"), 2)
-                except Exception:
+                except Exception as e:
+                    _log_swallowed("single_test.py", e)
                     pass
         except FactorTestCancelled:
             raise
-        except Exception:
+        except Exception as e:
+            _log_swallowed("single_test.py", e)
             pass
 
 
@@ -1607,7 +1634,8 @@ def _continuous_stats(*, _frame, _sub_pos, bench_close, bench_default, cancelled
                 if _pxc in df.columns:
                     try:
                         tmp[_pxc] = _frame(_sub_pos, (_pxc,))[_pxc].reindex(tmp.index)
-                    except Exception:
+                    except Exception as e:
+                        _log_swallowed("single_test.py", e)
                         pass
                     break
             # ★★ v2.1.25（B 修复）：**开盘价也要搬进 `tmp`** ✗→✓ ——
@@ -1619,7 +1647,8 @@ def _continuous_stats(*, _frame, _sub_pos, bench_close, bench_default, cancelled
                 if _pxc in df.columns:
                     try:
                         tmp[_pxc] = _frame(_sub_pos, (_pxc,))[_pxc].reindex(tmp.index)
-                    except Exception:
+                    except Exception as e:
+                        _log_swallowed("single_test.py", e)
                         pass
                     break
             # 组内名次**只算一次**（v1.18.45）：原实现把 `rank(method="first")` 放在 `_q` 的
@@ -1737,7 +1766,8 @@ def _continuous_stats(*, _frame, _sub_pos, bench_close, bench_default, cancelled
                     _e, __import__("traceback").format_exc().strip().splitlines()[-1])
         except FactorTestCancelled:
             raise
-        except Exception:
+        except Exception as e:
+            _log_swallowed("single_test.py", e)
             result["quintile_ret"] = None
 
 
@@ -1851,7 +1881,8 @@ def _quantile_curve_block(*, _REBAL, _dec_p, _dts, _med, _qbest, _rkcol, _side, 
                         _mf.write("%s enter kind=%s k=%s h=%s REBAL=%s nd=%s\n"
                                   % (__import__("time").strftime("%H:%M:%S"),
                                      _k_kind, _k_val, horizon, _REBAL, _nd))
-            except Exception:                              # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _log_swallowed("single_test.py", e)
                 pass
             _h_i = int(horizon or 0)
             # ★ 探针（2026-09-18）：放在**函数入口**，早退也要留下痕迹 ——
@@ -2027,7 +2058,8 @@ def _quantile_curve_block(*, _REBAL, _dec_p, _dts, _med, _qbest, _rkcol, _side, 
                         with open(r"D:\quant\qlib_code\ai_test\perf_debug_err.txt",
                                   "w", encoding="utf-8") as _ef:
                             _ef.write(repr(_de) + "\n" + _tb.format_exc())
-                    except Exception:                 # noqa: BLE001
+                    except Exception as e:  # noqa: BLE001
+                        _log_swallowed("single_test.py", e)
                         pass
                     print("[SFT-PERF-DBG] 落盘失败: %r" % (_de,), flush=True)
             _tv = np.asarray(_k_cc["turnover"], dtype=np.float64)
@@ -2592,3 +2624,18 @@ def _sft_exit_curves(*, _exits, df, e, exit_cols, exit_out, exit_specs, exit_thr
         if not _items:
             exit_out["error"] = "没有可用的离场因子（表达式为空或重复）"
 
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 为什么不用裸 `logger.debug(...)` ✗：本文件**没有 logger**（`metrics.py` / `single_test.py` ✓），
+      而别处已出现过"logger 在 Linux 上为 None"的情况 ✓（2.9.26 事故 ✗：直接把静默改成了崩溃 ✓）。
+    ⚠ 也不用 `except: pass` ✗ —— 那正是"静默"，而这里用 `contextlib.suppress` ✓：
+      明确声明"日志失败也无所谓"✓，不会被静默债务棘轮算成新债 ✓。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

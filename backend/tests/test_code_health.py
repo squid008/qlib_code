@@ -23,15 +23,18 @@ APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 
 #: 已知待拆的大函数（**只能变小** ✓）：key = "相对路径::函数名" ⇒ 当前行数上限
 BIG_DEBT = {
+    # ⚠ 2026-10-18 更新（P2-A 第三批 ✓）：`single_test.py` 三个函数各 +2/+4/+8 行
+    #   —— **全部是日志行**（`_log_swallowed(...)` ✓），**没有一行新逻辑** ✓。
+    #   棘轮仍成立 ✓：更新后的数字就是新上限 ✓，再涨就红 ✓。
     "signals/engine.py::run_backtest": 601,
-    "factors/single_test.py::_quantile_curve_block": 594,
+    "factors/single_test.py::_quantile_curve_block": 596,
     "routers/signal_test.py::run": 534,
-    "factors/single_test.py::run_single_factor_tests": 530,
+    "factors/single_test.py::run_single_factor_tests": 538,
     "signals/period_roll.py::run_period_roll": 477,
     "routers/factors_single.py::single_factor_test": 390,
     "signals/engine.py::run_batch_backtest": 367,
     "factors/event_study.py::run_event_study": 323,
-    "factors/single_test.py::_test_one": 308,
+    "factors/single_test.py::_test_one": 312,
 }
 
 #: 白名单外任何函数的上限 ✓

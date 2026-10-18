@@ -19,10 +19,11 @@ APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 
 #: 基线（2026-10-18 实测 ✓）。**只能调小** ✓ —— 每收一批就改这个数字 ✓。
 #: 163 → 149（`expr_cache` 13 ✓ + `task_store` 8 ✓ + `error_policy` 3 ✓）
-#: → **130**（`engine/artifacts.py` 12→0 ✓、`engine/resource.py` 7→0 ✓）
-#: ⚠ `engine/metrics.py`（8 处）**这一批没改成** ✗ —— 脚本把 logger 插进了 docstring ⇒ 语法错 ✓
-#:   ⇒ 已回退 ✓，下批用"AST 定插入点"重做 ✓。
-SILENT_BASELINE = 130
+#: → 130（`engine/artifacts.py` 22 ✓、`engine/resource.py` 9 ✓）
+#: → **107**（`engine/metrics.py` 14 ✓ + `factors/single_test.py` 32 ✓）
+#: ⚠ 这一批把 helper 从 `_dbg` 改名成 `_log_swallowed` ✗→✓ —— 因为 `single_test.py` 里
+#:   **已有一个局部变量叫 `_dbg`** ✓（`QLIB_SFT_TOPK_DEBUG` 开关 ✓）⇒ ruff `F823` ✓。
+SILENT_BASELINE = 107
 
 _SILENT_NODES = (ast.Pass, ast.Continue, ast.Break, ast.Expr)
 #: ⚠ `swallow` 必须算"有痕迹" ✓ —— 它**就是**本项目的留痕通路 ✓

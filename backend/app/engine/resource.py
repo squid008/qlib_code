@@ -73,7 +73,7 @@ def _sys_mem_info():
         ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
         return int(stat.ullTotalPhys), int(stat.ullAvailPhys)
     except Exception as e:
-        _dbg("resource.py", e)
+        _log_swallowed("resource.py", e)
         pass
 
     try:
@@ -88,7 +88,7 @@ def _sys_mem_info():
             if total:
                 return total, (avail or total)
     except Exception as e:
-        _dbg("resource.py", e)
+        _log_swallowed("resource.py", e)
         pass
 
     # 兜底：给一个保守默认（8GB 总量 / 6GB 可用）
@@ -205,7 +205,7 @@ def start_peak_sampler(interval: float = 2.0):
     try:
         import psutil
     except Exception as e:  # noqa: BLE001
-        _dbg("resource.py", e)
+        _log_swallowed("resource.py", e)
         return None
     stop_flag = threading.Event()
     state = {"peak_gb": 0.0, "active_at_peak": 1, "samples": 0}
@@ -214,7 +214,7 @@ def start_peak_sampler(interval: float = 2.0):
         try:
             me = psutil.Process(os.getpid())
         except Exception as e:  # noqa: BLE001
-            _dbg("resource.py", e)
+            _log_swallowed("resource.py", e)
             return
         while not stop_flag.is_set():
             try:
@@ -223,7 +223,7 @@ def start_peak_sampler(interval: float = 2.0):
                     try:
                         total += ch.memory_info().rss
                     except Exception as e:  # noqa: BLE001
-                        _dbg("resource.py", e)
+                        _log_swallowed("resource.py", e)
                         pass
                 gb = total / 1024 ** 3
                 if gb > state["peak_gb"]:
@@ -231,7 +231,7 @@ def start_peak_sampler(interval: float = 2.0):
                     state["active_at_peak"] = max(1, _active_jobs)
                 state["samples"] += 1
             except Exception as e:  # noqa: BLE001
-                _dbg("resource.py", e)
+                _log_swallowed("resource.py", e)
                 pass
             stop_flag.wait(interval)
 
@@ -453,7 +453,7 @@ def _patch_loky_nowin() -> None:
         _loky_patched = True
         _log().info("loky 子进程 CreateProcess 已加 CREATE_NO_WINDOW（免弹黑色命令行窗口）")
     except Exception as e:
-        _dbg("resource.py", e)
+        _log_swallowed("resource.py", e)
         pass
 
 
@@ -475,10 +475,10 @@ def _apply_kernels(jobs: int) -> None:
                 from .patches.serial_load import install_serial_load
                 install_serial_load()
             except Exception as e:
-                _dbg("resource.py", e)
+                _log_swallowed("resource.py", e)
                 pass
     except Exception as e:
-        _dbg("resource.py", e)
+        _log_swallowed("resource.py", e)
         pass
 
 
@@ -507,7 +507,7 @@ def apply_active_jobs() -> None:
         _apply_kernels(jobs)
 
 
-def _dbg(where, exc):
+def _log_swallowed(where, exc):
     """**留痕兜底** ✓（P2-A ✓ 2026-10-18）—— 吞异常后写一行 debug 日志。
 
     ⚠ 为什么不用裸 `logger.debug(...)` ✗：本文件（以及 `metrics.py`）的 `logger`

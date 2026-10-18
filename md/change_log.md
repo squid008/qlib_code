@@ -3,6 +3,30 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.28] - 2026-10-18
+
+### Changed（**P2-A 第三批：`engine/metrics.py` + `factors/single_test.py`** ✓ —— 静默 **130 → 107**）
+
+- 收掉 **46 处**静默捕获 ✓（只加一行 debug 日志 ✓，**控制流一个字没改** ✓）：
+  · `engine/metrics.py` **14 处** ✓ —— 它负责从 mlruns / artifacts 里**捞指标** ✓；
+    捞不到时静默 ⇒ 界面显示"无数据"但日志查不到原因 ✗（这次事故「净值曲线少一条」就是这类 ✓）；
+  · `factors/single_test.py` **32 处** ✓ —— 统计路径上的可选项失败（缓存、可选列、快照 ✓）
+    全静默 ⇒ 数字少了也没人知道 ✗。
+- 两个文件**原本都没有 logger** ✗ ⇒ 沿用 2.9.27 的模式：在**文件末尾**追加受保护的
+  `_log_swallowed(where, exc)` ✓（内部 `globals().get("logger") or logging.getLogger(...)` ✓ +
+  `contextlib.suppress` ✓ ⇒ **logger 为 None / 日志自身失败都不会抛** ✓）。
+- **★ 第 8 个坑（ruff `F823` 抓的 ✓）**：helper 原本叫 `_dbg` ✗ —— 而 `single_test.py` **L1895
+  本来就有一个局部变量叫 `_dbg`** ✓（`os.environ.get("QLIB_SFT_TOPK_DEBUG") == "1"` 的开关 ✓）
+  ⇒ Python 判定整个函数里 `_dbg` 是**局部变量** ✗ ⇒ 我插的调用成"引用未赋值局部变量" ✓
+  （`F823 Local variable '_dbg' referenced before assignment` ✓，`py_compile` 都过 ✗，只有 ruff 抓到 ✓）。
+  ⇒ 把我方 helper 改名 **`_log_swallowed`** ✓（**不改**业务那个开关 ✓），4 个文件 + 回归守门测试同步 ✓。
+  ⚠ 教训：**新加的 helper 名字要先 grep 一遍** ✗ —— 尤其 `_dbg`/`_log`/`_t` 这种短名 ✓。
+- **棘轮同步更新** ✓：`test_code_health.py` 里三个函数各 +2/+4/+8 行 ✓（**全是日志行** ✓，
+  没有一行新逻辑 ✓）；`test_except_ratchet.py` 基线 130 → **107** ✓。
+- **校验** ✓：`py_compile` ✓ ｜ `ruff` **0 错误** ✓ ｜ 全量 **1063 passed** ✓ ｜ CI ✓。
+- **剩余静默 107 处**，按集中度下一批：`factors/panel_expr.py` 9 ｜ `engine/qlib_engine.py` 8 ｜
+  `factors/market_stat.py` 7 ｜ `routers/factors_single.py` 6 ｜ `engine/charts.py` 5 ✓。
+
 ## [2.9.27] - 2026-10-18
 
 ### Fixed（2.9.26 把"静默"改成了"**更响的崩溃**" ✗→✓ —— CI 抓的，本地完全看不出来）
