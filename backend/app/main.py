@@ -166,6 +166,27 @@ def create_app() -> FastAPI:
                      request.method, request.url.path, exc, traceback.format_exc())
         return JSONResponse(status_code=500, content={"detail": f"服务内部错误: {exc}"})
 
+    # ★★ v2.9.23（用户 2026-10-18 ✓）：**启动时也跑一次存储治理** ✗→✓
+    #   原先只在「每次回测结束」时清 ✓ ⇒ 只要不跑回测，缓存就一路涨 ✗
+    #   （实测 `feature_cache` 已 3.59GB > 配额 2GB ✓ —— 逻辑没坏，只是**没到时候** ✓）。
+    #   ⇒ 启动时补一次 ✓，且**放后台线程**（⚠ 必须在事件循环外的普通线程 ✓，
+    #     因为治理要遍历几万个文件、几秒钟 ✓ —— 阻塞启动会让前端以为"后端没起来"✗）。
+    def _bg_storage_cleanup():
+        try:
+            from .engine.storage_cleanup import cleanup_storage
+
+            st = cleanup_storage(force=True)      # force ✓：绕过节流（30 分钟 ✓）
+            logger.info("[storage] 启动治理完成：%s", st)
+        except Exception as _e:                   # noqa: BLE001 —— 治理失败不许影响启动 ✗
+            logger.warning("[storage] 启动治理失败（已忽略）：%r", _e)
+
+    try:
+        import threading
+
+        threading.Thread(target=_bg_storage_cleanup, name="storage-cleanup", daemon=True).start()
+    except Exception as _e:                       # noqa: BLE001
+        logger.warning("[storage] 启动治理线程起不来（已忽略）：%r", _e)
+
     return app
 
 

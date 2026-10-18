@@ -29,6 +29,16 @@ _ARTIFACTS_GB = float(os.environ.get("QLIB_ARTIFACTS_GB", "30.0"))
 _ARTIFACTS_KEEP = int(os.environ.get("QLIB_ARTIFACTS_KEEP", "300"))
 # 单个文件超过该体积才纳入"精简"（连同 `segment_*/` 一起删；json/png 等轻量记录始终保留）
 _ARTIFACTS_SLIM_MB = float(os.environ.get("QLIB_ARTIFACTS_SLIM_MB", "5.0"))
+
+# ★★ v2.9.23（用户 2026-10-18 ✓）：**`mlruns` 也纳入配额** ✗→✓ ——
+#   原先治理只覆盖 `workdir/artifacts`（30GB ✓）与 `workdir/feature_cache`（2GB ✓），
+#   而 **`backend/mlruns` 完全没人管** ✗（实测 2.32GB / 9,650 文件，全是每次回测的
+#   `pred.pkl` / `label.pkl` ✓）。它**又不能当垃圾删** ✗ —— `services/metrics.py`
+#   仍会去 `mlruns/*/*/artifacts/...` 兜底读 `report_normal` / `indicators` ✓。
+#   ⇒ 按**容量配额 + 整 run 目录淘汰**治理 ✓，并**保护最近 3 天**（用户 2026-10-18 指定 ✓）
+#     —— 刚跑完的 run 一定还在 ✓，只有老 run 才会被回收 ✓。
+_MLRUNS_GB = float(os.environ.get("QLIB_MLRUNS_GB", "5.0"))
+_MLRUNS_PROTECT_DAYS = float(os.environ.get("QLIB_MLRUNS_PROTECT_DAYS", "3.0"))
 _ACTIVE_WINDOW_SEC = 24 * 3600  # 目录有文件在近 1 天写入 → 视为活跃任务，不删
 _THROTTLE_SEC = 30 * 60
 
@@ -258,6 +268,70 @@ def _clean_artifacts(root: str, detail: bool = False):
     return stat if detail else stat["removed"]
 
 
+def _clean_mlruns(root: str, detail: bool = False):
+    """**mlruns 配额回收**（★ v2.9.23，2026-10-18 ✓）—— 返回删除的 run 数（detail ⇒ dict）。
+
+    为什么按"**整个 run 目录**"删（而不是挑文件 ✗）：
+      MLflow 的一个 run 目录里 `meta.yaml` / `metrics/` / `artifacts/` 是**一整套** ✓，
+      删一半会留下"能列出、读不出来"的坏 run ✗ ⇒ 要么整删、要么不动 ✓。
+
+    ⚠ 保护规则（两条，都是"宁可不删"✓）：
+      ① **最近 `_MLRUNS_PROTECT_DAYS` 天**（默认 3 ✓，用户指定）内有写入的 run ⇒ **不动** ✓；
+      ② 顶层非 run 结构（`meta.yaml` / `.trash` / 实验级文件 ✓）⇒ **不碰** ✓
+         （只处理 `<exp>/<run>/` 这种两层目录 ✓）。
+    只有"总量 > `_MLRUNS_GB`"才动手 ✓，且**从最旧删到不超配额为止** ✓，每次写日志 ✓。
+    """
+    stat = {"runs": 0, "removed": 0, "freed_mb": 0.0, "total_mb": 0.0,
+            "quota_gb": _MLRUNS_GB, "protect_days": _MLRUNS_PROTECT_DAYS, "kept": 0}
+    if not os.path.isdir(root):
+        return stat if detail else 0
+    now = time.time()
+    protect_sec = _MLRUNS_PROTECT_DAYS * 86400.0
+    runs = []          # [(size, latest, path, protected)]
+    total = 0
+    try:
+        exps = os.listdir(root)
+    except OSError:
+        return stat if detail else 0
+    for exp in exps:
+        ed = os.path.join(root, exp)
+        if not os.path.isdir(ed):
+            continue
+        try:
+            subs = os.listdir(ed)
+        except OSError:
+            continue
+        for run in subs:
+            rd = os.path.join(ed, run)
+            if not os.path.isdir(rd):
+                continue
+            try:
+                size, latest = _dir_recursive_stat(rd)
+            except OSError:
+                continue
+            total += size
+            runs.append([size, latest, rd, latest >= now - protect_sec])
+    quota = _MLRUNS_GB * 1024 ** 3
+    stat["runs"] = len(runs)
+    if total > quota:
+        # 只从**未受保护**的里删，最旧优先 ✓
+        queue = sorted([r for r in runs if not r[3]], key=lambda x: x[1])
+        for size, _latest, rd, _p in queue:
+            if total <= quota:
+                break
+            real = _dir_total(rd)
+            _rmtree(rd)
+            total = max(0, total - real)
+            stat["removed"] += 1
+            stat["freed_mb"] = round(stat["freed_mb"] + real / 1024 ** 2, 1)
+            _log().warning("mlruns 治理：已删除旧 run %s，释放 %.1fMB（保留最近 %.0f 天 ✓）",
+                           os.path.basename(os.path.dirname(rd)) + "/" + os.path.basename(rd),
+                           real / 1024 ** 2, _MLRUNS_PROTECT_DAYS)
+    stat["kept"] = stat["runs"] - stat["removed"]
+    stat["total_mb"] = round(max(0, total) / 1024 ** 2, 1)
+    return stat if detail else stat["removed"]
+
+
 def _rmtree(path: str) -> None:
     import shutil
 
@@ -416,6 +490,23 @@ def cleanup_storage(work_dir: str | None = None, force: bool = False) -> dict:
                 a["quota_gb"], a["keep"])
     except Exception:
         stat["artifacts_removed"] = -1
+    try:
+        # ★★ v2.9.23（用户 2026-10-18 ✓）：mlruns 也纳入治理 ✓
+        #   ⚠ 它在 `workdir` 的**上一层**（`backend/mlruns` ✓，`metrics.py` 的兜底读取路径 ✓）
+        m = _clean_mlruns(os.path.abspath(os.path.join(wd, "..", "mlruns")), detail=True)
+        stat["mlruns_removed"] = m["removed"]
+        stat["mlruns_freed_mb"] = m["freed_mb"]
+        stat["mlruns_total_mb"] = m["total_mb"]
+        stat["mlruns_kept"] = m["kept"]
+        stat["mlruns_runs"] = m["runs"]
+        if m["removed"]:
+            _log().warning(
+                "mlruns 治理汇总：删除 %d 个旧 run、释放 %.1fMB；当前 %d 个 run / %.1fMB"
+                "（配额 %.1fGB，保护最近 %.0f 天 ✓）",
+                m["removed"], m["freed_mb"], m["kept"], m["total_mb"],
+                m["quota_gb"], m["protect_days"])
+    except Exception:
+        stat["mlruns_removed"] = -1
     try:
         db = os.path.join(wd, "mlflow.db")
         stat["mlflow_db_mb"] = round(os.path.getsize(db) / 1024 ** 2, 1) if os.path.exists(db) else 0.0

@@ -3,6 +3,40 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.23] - 2026-10-18
+
+### Changed（存储治理补齐两块：**`mlruns` 纳入配额** ✓ ＋ **启动时也清一次** ✓）
+
+- **先纠正一处我说错的话** ✗：上一轮我把 `backend/mlruns`（2.32GB）说成"没人管的大件"✓ ——
+  **"没人管"这句是对的** ✓（治理只覆盖 `workdir/artifacts` 30GB 与 `workdir/feature_cache` 2GB ✓），
+  但我没先查已有策略就下结论 ✗ ⇒ 已核实：**历史回测产物（`artifacts`）确实有完整策略** ✓
+  （30GB 配额 + 300 条兜底 + 活跃保护 + **先精简后整删** + 每次写日志 ✓），
+  界面上那句「2.55GB / 30GB（43 个），暂无回收风险」就是它算的 ✓（实测 2.55GB / 43 个，一模一样 ✓）。
+- **A：`mlruns` 纳入配额** ✓（`app/engine/storage_cleanup.py::_clean_mlruns`）：
+  · 配额 **5 GB**（`QLIB_MLRUNS_GB` ✓）+ **保护最近 3 天**（`QLIB_MLRUNS_PROTECT_DAYS`，
+    **用户 2026-10-18 指定"保护最近 3 天"** ✓）；
+  · **按整个 run 目录删** ✓（`<exp>/<run>/` ✓）—— MLflow 一个 run 的 `meta.yaml`/`metrics/`/`artifacts/`
+    是一整套 ✓，删一半会留下"能列出、读不出来"的坏 run ✗；
+  · **只碰两层目录** ✓（`meta.yaml` / `.trash` / 实验级文件**一个不动** ✗）；
+  · ⚠ 为什么**不能**直接删它：`services/metrics.py` 仍会去 `mlruns/*/*/artifacts/...` 兜底读
+    `report_normal` / `indicators` ✓ ⇒ 必须"**配额 + 保护期**"，不能当垃圾清 ✗。
+- **B：启动时也跑一次治理** ✓（`main.py::create_app` 尾部）：
+  原先只在"**每次回测结束**"时清 ✗ ⇒ 只要不跑回测就一路涨 ✓
+  （实测 `feature_cache` **3.59GB > 配额 2GB** ✗ —— 逻辑没错，只是"没到时候"✓）。
+  现在启动时补一次 ✓，且**放后台 daemon 线程**（遍历几万文件要几秒 ✓，阻塞启动会让前端以为后端没起来 ✗）。
+- **C：立刻执行一次** ✓（就是这次 C 步 ✓）：
+  ```
+  清理前：feature_cache 3.59GB ｜ artifacts 2.55GB ｜ mlruns 2.32GB
+  治理后：feature_cache 1.73GB ✓（删 11 个旧缓存，释放 ~1.86GB ✓）
+          artifacts 2.55GB（0 删 ✓ 远低于 30GB ✓）｜ mlruns 2.32GB（873 个 run，< 5GB 配额 ⇒ 按规则不删 ✓）
+  ```
+  ⚠ 想让它也瘦下来就把 `QLIB_MLRUNS_GB` 调小（例如 1.0 ⇒ 会把最老的那批 run 删到 1GB 以内 ✓）。
+- **测试** ✓：`tests/test_storage_cleanup_mlruns.py` **5 条** —— 受保护期不删 ✓ ｜ 超配额从最旧删 ✓ ｜
+  **只碰两层目录** ✓（`meta.yaml` / `.trash` 不动 ✓）｜ 未超配额一个不删 ✓ ｜ 目录不存在无副作用 ✓。
+  ✗ 其中一条断言是我写错被抓的 ✓：8KB 释放量四舍五入成 `0.0MB` ⇒ 断言 `freed_mb > 0` 失败 ✓
+  ⇒ 用例体积改成 512KB ✓（这类"太小的数据测不出东西"很常见 ✓）。
+- **校验** ✓：`py_compile` ✓ ｜ `ruff` ✓ ｜ 全量 **1041 passed** ✓（1036 + 5 ✓）｜ CI ✓。
+
 ## [2.9.22] - 2026-10-18
 
 ### Added（**P1-C-1：公式面板结果跨任务磁盘缓存** ✓ ＋ **三重自动清理** ✓）
