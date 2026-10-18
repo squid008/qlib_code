@@ -70,3 +70,10 @@ jobs:
 
       - name: TypeScript 类型检查
         run: npx tsc --noEmit -p tsconfig.json
+
+      # ★ v2.9.17（2026-10-18 ✓）：**前端单测**接进 CI ✓
+      #   首个用例集 = `sftLogic`（结论判定 / 预测周期解析 / K 档 / 导出表头 ✓ 11 条 ✓）。
+      #   ⚠ vitest 版本要跟着 vite 走 ✗：项目 vite 5 ⇒ **vitest 2.1.x** ✓（5.x 会报
+      #     `ERR_PACKAGE_PATH_NOT_EXPORTED ./module-runner` ✓，实测过 ✓）。
+      - name: 前端单测（vitest）
+        run: npm test

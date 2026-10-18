@@ -3,6 +3,26 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.17] - 2026-10-18
+
+### Added（**前端测试基建打通 + 11 条真单测进 CI** ✓ —— 从此 UI 改动有红绿灯 ✓）
+
+- **背景**：前端此前**零测试** ✗ ⇒ 2.8.9 那轮表格布局改 **6 次**都"没变" ✗（真因是列宽硬约束 ✓），
+  全靠"人眼看 + 刷新" ✓。现在有 runner ✓、有用例 ✓、**CI 每次跑** ✓。
+- **基建** ✓：`frontend/vitest.config.ts`（`environment: 'jsdom'` ✓、`include: src/**/*.test.ts(x)` ✓、
+  `watch: false` ✓）＋ `package.json` 加 `"test": "vitest run"` ✓ ＋ CI 新增「前端单测（vitest）」步骤 ✓。
+- **版本对齐（★ 踩过的坑 ✓）**：项目 `vite = 5.4.21` ✓ ⇒ **vitest 必须 2.1.x** ✓。
+  先装 `vitest@5` ✗ 直接炸：`ERR_PACKAGE_PATH_NOT_EXPORTED: ./module-runner` ✓
+  （`--legacy-peer-deps` 会**硬装**不兼容组合 ✗，所以报错点很晚 ✓）。
+- **首批 11 条用例** ✓（`src/__tests__/sftLogic.test.ts`，全部**手算期望** ✓）：
+  `kLabel`（≥1 原样 / <1 百分数 ✓）｜ `parseHorizons`（单值 / 逗号 / **range `1:5:20` ⇒ 1,6,11,16** ✓ /
+  空与非法**必须给信号** ✓）｜ `K_PRESETS` 10 档 ✓ ｜ `VERDICT_LABEL` 关键档齐全 ✓ ｜
+  导出表头 3 列 ✓ ｜ `SHOW_TIMING_COL` / `SHOW_ELAPSED` 默认关 ✓。
+- **✗ 两条断言是被实测纠正的（不是我猜对的 ✓）**：
+  ① `parseHorizons('')` **不返回 error**、返回**空数组** ✓（合理 ✓）⇒ 断言改成"error 或空数组必居其一" ✓；
+  ② `parseHorizons('1,,2')` 会被**宽容解析成 [1,2]** ✓（合理 ✓）⇒ 从"无效输入"里剔除 ✓。
+- **验收** ✓：`npx vitest run` **11/11 passed，exit=0** ✓ ｜ 全量 pytest ✓ ｜ CI ✓ ｜ 版本三处 2.9.17 ✓。
+
 ## [2.9.16] - 2026-10-18
 
 ### Changed（**P1-B 第二步：`SingleFactorTestPanel.tsx` 2,483 → 2,124 行** ✓ —— 纯逻辑外提）
