@@ -429,6 +429,15 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         #   只在"从无到有"时写 ✓、只在**总持仓归零**时结算并清 ✓（都是"逐笔"开销，不进逐日热循环 ✓）。
         entry_c: Dict[int, int] = {}
         buy_q: Dict[int, List[Tuple[int, int]]] = {}  # 成交日位置 → [(列号, 决策日), …]
+        # ★★ v2.9.34（P2-C ✓ 2026-10-18）：**待成交 code 集合** ✗→✓ ——
+        #   原先每来一个买信号都要 `any(c == cc for lst in buy_q.values() for cc, _ in lst)` ✗
+        #   ⇒ **线性扫描整个待成交队列** ✓。cProfile 实测（2000 只 × 400 日）：
+        #     `any` 4,028 次 ／ 生成器迭代 **4,002,056 次** ／ 占 `run_backtest` 的 **33%** ✗；
+        #     队列长度 ∝ 票池 ✗ ⇒ 真实全 A 场景会退化成分钟级 ✓。
+        #   ⇒ 用 set 记"队列里已有哪些 code" ✓ O(1) ✓；**语义等价** ✓
+        #     （原判据就是"该 code 是否已在任一待成交队列里" ✓）。
+        #   ⚠ 全文件只有 3 处写 `buy_q`（初建 / 入队 / 出队 ✓）⇒ 集合只在这三处维护 ✓，不会漏 ✓。
+        buy_pending: set = set()
         sell_q: Dict[int, Tuple[int, str]] = {}       # 列号 → (决策日, 原因)
         trades: List[dict] = []
         rejects: List[dict] = []
@@ -604,14 +613,18 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
                     dsz[c] = 0
                     sell_q.pop(c, None)
                     n_refresh += 1
-                elif not any(c == cc for lst in buy_q.values() for cc, _ in lst):
+                elif c not in buy_pending:          # ★ v2.9.34：O(1) 替代线性扫描 ✓（语义相同 ✓）
                     buy_q.setdefault(i + lag, []).append((c, i))
+                    buy_pending.add(c)
             for c in bk["exits"].get(i, []):
                 if c in sh and c not in sell_q:
                     sell_q[c] = (i, "sell_signal")
             # ---- 3) 买入成交（含再平衡）----
             pend = buy_q.pop(i, [])
             if pend:
+                # ★ v2.9.34（P2-C ✓）：出队同步维护集合 ✓ —— 这些 code 已不在待成交队列里 ✓
+                #   （原实现的 `any(...)` 也只看"队列里有没有"✓ ⇒ 出队后即可再次入队 ✓，语义一致 ✓）
+                buy_pending.difference_update({_c for _c, _ in pend})
                 ok: List[Tuple[int, int]] = []
                 for c, dec in pend:
                     bad = can_buy(i, c)

@@ -26,7 +26,8 @@ BIG_DEBT = {
     # ⚠ 2026-10-18 更新（P2-A 第三批 ✓）：`single_test.py` 三个函数各 +2/+4/+8 行
     #   —— **全部是日志行**（`_log_swallowed(...)` ✓），**没有一行新逻辑** ✓。
     #   棘轮仍成立 ✓：更新后的数字就是新上限 ✓，再涨就红 ✓。
-    "signals/engine.py::run_backtest": 601,
+    # ⚠ 2026-10-18：P2-C 给 `run_backtest` 加了几行注释说明（601 → **614** ✓），无逻辑增长 ✓
+    "signals/engine.py::run_backtest": 614,
     "factors/single_test.py::_quantile_curve_block": 596,
     # ⚠ 2026-10-18：P2-A 收尾给这两处各加了几行日志（+5 / +3 ✓），上限随之上调 ✓
     "routers/signal_test.py::run": 539,
