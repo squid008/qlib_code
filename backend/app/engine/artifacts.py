@@ -57,7 +57,8 @@ def _extract_model_artifacts(model, dataset, req: BacktestRequest, seg_label: st
             cols = handler.get_cols("feature")
             if cols:
                 artifacts["feature_names"] = [str(c) for c in cols]
-    except Exception:
+    except Exception as e:
+        logger.debug("[吞] artifacts.py: %r", e)
         pass
 
     # 2) 线性模型：系数 + 截距 = 完整线性公式
@@ -110,7 +111,8 @@ def _extract_model_artifacts(model, dataset, req: BacktestRequest, seg_label: st
                 try:
                     if hasattr(booster, "num_trees"):
                         artifacts["model_info"]["num_trees"] = int(booster.num_trees())
-                except Exception:
+                except Exception as e:
+                    logger.debug("[吞] artifacts.py: %r", e)
                     pass
             if params:
                 safe = {}
@@ -123,7 +125,8 @@ def _extract_model_artifacts(model, dataset, req: BacktestRequest, seg_label: st
             artifacts["feature_importance"] = _extract_feature_importance(
                 model, booster, feature_names=artifacts.get("feature_names")
             )
-        except Exception:
+        except Exception as e:
+            logger.debug("[吞] artifacts.py: %r", e)
             pass
 
     return artifacts
@@ -143,19 +146,22 @@ def _extract_feature_importance(model, booster, feature_names=None):
         if hasattr(model, "get_feature_importance"):
             try:
                 fi = model.get_feature_importance()
-            except Exception:
+            except Exception as e:
+                logger.debug("[吞] artifacts.py: %r", e)
                 fi = None
         # 2) XGBoost Booster：get_score()
         if fi is None and booster is not None and hasattr(booster, "get_score"):
             try:
                 fi = booster.get_score()
-            except Exception:
+            except Exception as e:
+                logger.debug("[吞] artifacts.py: %r", e)
                 fi = None
         # 3) LightGBM Booster：feature_importance()
         if fi is None and booster is not None and hasattr(booster, "feature_importance"):
             try:
                 fi = booster.feature_importance(importance_type="gain")
-            except Exception:
+            except Exception as e:
+                logger.debug("[吞] artifacts.py: %r", e)
                 fi = None
         if fi is None:
             return None
@@ -192,7 +198,8 @@ def _extract_feature_importance(model, booster, feature_names=None):
 
         items = sorted(items, key=lambda t: t[1], reverse=True)
         return [{"feature": _real_name(k), "importance": round(v, 4)} for k, v in items]
-    except Exception:
+    except Exception as e:
+        logger.debug("[吞] artifacts.py: %r", e)
         return None
 
 
@@ -255,7 +262,8 @@ def _read_train_feature_names(task_id: str, seg_no=None) -> Optional[list]:
     try:
         from ..config import WORK_DIR
         artifacts_root = os.path.join(WORK_DIR, "artifacts")
-    except Exception:
+    except Exception as e:
+        logger.debug("[吞] artifacts.py: %r", e)
         artifacts_root = os.path.join(os.path.abspath("."), "artifacts")
     dirs = glob.glob(os.path.join(artifacts_root, "*_" + task_id))
     if not dirs:
@@ -274,7 +282,8 @@ def _read_train_feature_names(task_id: str, seg_no=None) -> Optional[list]:
                     d = json.load(f)
                 if d.get("feature_names"):
                     return d["feature_names"]
-            except Exception:
+            except Exception as e:
+                logger.debug("[吞] artifacts.py: %r", e)
                 continue
     return None
 
@@ -287,7 +296,8 @@ def _dataset_feature_names(dataset) -> Optional[list]:
             cols = handler.get_cols("feature")
             if cols:
                 return [str(c) for c in cols]
-    except Exception:
+    except Exception as e:
+        logger.debug("[吞] artifacts.py: %r", e)
         pass
     return None
 
@@ -298,7 +308,8 @@ def _find_artifact_base(task_id: str) -> Optional[str]:
     try:
         from ..config import WORK_DIR
         artifacts_root = os.path.join(WORK_DIR, "artifacts")
-    except Exception:                                      # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[吞] artifacts.py: %r", e)
         artifacts_root = os.path.join(os.path.abspath("."), "artifacts")
     dirs = glob.glob(os.path.join(artifacts_root, "*_" + task_id))
     if not dirs:
@@ -315,7 +326,8 @@ def _current_train_semantics() -> str:
     try:
         from .qlib_engine import TRAIN_SEMANTICS
         return str(TRAIN_SEMANTICS)
-    except Exception:                                      # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[吞] artifacts.py: %r", e)
         return "unknown"
 
 
@@ -361,7 +373,8 @@ def _read_train_semantics(task_id: str, seg_no=None) -> Optional[str]:
                 v = d.get("train_semantics")
                 if v:
                     return str(v)
-            except Exception:                              # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[吞] artifacts.py: %r", e)
                 continue
     return None
 
@@ -442,7 +455,8 @@ def _task_has_segment_models(task_id: str) -> bool:
     try:
         from ..config import WORK_DIR
         artifacts_root = os.path.join(WORK_DIR, "artifacts")
-    except Exception:
+    except Exception as e:
+        logger.debug("[吞] artifacts.py: %r", e)
         artifacts_root = os.path.join(os.path.abspath("."), "artifacts")
     dirs = glob.glob(os.path.join(artifacts_root, "*_" + task_id))
     if not dirs:
@@ -463,7 +477,8 @@ def _load_model_object(task_id: str, model_name: str, seg_no=None):
     try:
         from ..config import WORK_DIR
         artifacts_root = os.path.join(WORK_DIR, "artifacts")
-    except Exception:
+    except Exception as e:
+        logger.debug("[吞] artifacts.py: %r", e)
         artifacts_root = os.path.join(os.path.abspath("."), "artifacts")
 
     # 定位该任务的 artifacts 目录
@@ -484,7 +499,8 @@ def _load_model_object(task_id: str, model_name: str, seg_no=None):
             try:
                 with open(cp, "rb") as f:
                     return pickle.load(f)
-            except Exception:
+            except Exception as e:
+                logger.debug("[吞] artifacts.py: %r", e)
                 continue
     return None
 
@@ -546,7 +562,8 @@ def _assign_backtest_seq(dir_path: str):
                             v = int(json.load(f).get("seq", 0))
                         if v > max_seq:
                             max_seq = v
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("[吞] artifacts.py: %r", e)
                         pass
         new_seq = max_seq + 1
         try:
@@ -578,7 +595,8 @@ def _save_compose_attr(dir_path: str, seg_label, info: dict) -> None:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f) or {}
-            except Exception:                     # 旧文件损坏 ⇒ 重建（旁路记录，不值得失败）
+            except Exception as e:  # 旧文件损坏 ⇒ 重建（旁路记录，不值得失败）
+                logger.debug("[吞] artifacts.py: %r", e)
                 data = {}
         segs = dict(data.get("segments") or {})
         segs[str(seg_label or "段1")] = info
@@ -661,7 +679,8 @@ def _save_train_signature(dir_path: str, req) -> None:
             )
             if out.returncode == 0:
                 return out.stdout.strip()
-        except Exception:
+        except Exception as e:
+            logger.debug("[吞] artifacts.py: %r", e)
             pass
         return "unknown"
 
@@ -677,7 +696,8 @@ def _save_train_signature(dir_path: str, req) -> None:
                         mtimes.append(os.path.getmtime(p))
             if mtimes:
                 return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(max(mtimes)))
-        except Exception:
+        except Exception as e:
+            logger.debug("[吞] artifacts.py: %r", e)
             pass
         return "unknown"
 
@@ -687,12 +707,14 @@ def _save_train_signature(dir_path: str, req) -> None:
             try:
                 m = __import__(mod)
                 deps[mod] = getattr(m, "__version__", "unknown")
-            except Exception:
+            except Exception as e:
+                logger.debug("[吞] artifacts.py: %r", e)
                 pass
         try:
             import qlib
             deps["qlib"] = getattr(qlib, "__version__", getattr(qlib, "__file__", "unknown"))
-        except Exception:
+        except Exception as e:
+            logger.debug("[吞] artifacts.py: %r", e)
             pass
         return deps
 

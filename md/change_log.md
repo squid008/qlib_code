@@ -3,6 +3,25 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.26] - 2026-10-18
+
+### Changed（**P2-A 第二批：`engine/` 层静默捕获** ✓ —— 静默 **149 → 130**）
+
+- 收掉两个文件的**静默捕获** ✓（只加一行 debug 日志 ✓，**控制流一个字没改** ✗→✓）：
+  · `engine/artifacts.py` **22 处** ✓ —— 它管"历史产物读写"✓，静默失败的直接后果就是
+    用户看到**「产物丢了」** ✗（列表里少了一条，日志里查不到原因 ✓）；
+  · `engine/resource.py` **9 处** ✓ —— 资源探测失败 ⇒ 并发上限算错 ⇒ 任务莫名排队 ✗。
+- **静默总数 149 → 130** ✓（−19）；棘轮基线同步调小 ✓。
+- **✗ `engine/metrics.py` 这一批没改成（已回退 ✓）**：我的脚本靠"前 60 行里最后一个 import"
+  定位插入点 ✗ ⇒ 在 `metrics.py` 里**插进了 docstring 中间** ⇒ `SyntaxError: invalid character '✓'` ✓
+  ⇒ 立刻 `git checkout` 回退 ✓（只丢它那 14 处 ✓，另外两个文件不受影响 ✓）。
+  ⚠ 教训：**往文件里插代码必须用 AST 定位**（`tree.body` 里最后一个 import/expr 的 `end_lineno` ✓），
+  凭"扫前 N 行找 import"迟早插进多行字符串 ✗ —— 这已经是同一天第 2 次被"字符串/缩进"问题咬 ✓。
+- **校验** ✓：`py_compile` ✓ ｜ `ruff` ✓ ｜ 全量 **1061 passed** ✓ ｜ CI ✓。
+- **下一批（按集中度 ✓）**：`factors/single_test.py` 16 处 ✗ ｜ `factors/panel_expr.py` 9 ｜
+  `engine/metrics.py` 8（用 AST 插入法重做 ✓）｜ `engine/qlib_engine.py` 8 ｜
+  `factors/market_stat.py` 7 ｜ `routers/factors_single.py` 6。
+
 ## [2.9.25] - 2026-10-18
 
 ### Added（**P2-A：异常分级** ✓ —— 先量、再给工具、最后上棘轮 ✓）
