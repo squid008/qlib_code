@@ -3,6 +3,21 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.21] - 2026-10-18
+
+### Fixed（CI 的 vitest 仍在起步阶段崩 ✗→✓：`environment: jsdom` ⇒ `node`）
+
+- **2.9.20 换 `pool: 'forks'` 之后** ✓：CI 依旧红 ✗，但现象一模一样 ✓
+  （`TypeError: ... (reading 'bind')` ✓、`Duration 398ms` ✓、**collect 0ms / 0 个用例** ✓）
+  ⇒ 说明崩在**环境初始化**，还没到"跑用例"那一步 ✓（换池自然无效 ✗）。
+- **判断** ✓：CI（Linux + Node 20）上 **jsdom 环境装不起来** ✗；而本地 Windows 同一份代码全绿 ✓。
+- **改法** ✓：`vitest.config.ts` 的 `environment` 改成 **`node`** ✓ ——
+  现有 11 条用例全是 `sftLogic` 的**纯函数** ✓，根本不需要 DOM ✓。
+  ⚠ 并在配置里写死一条 TODO ✓：**要写组件级用例（render/点击/表格列宽）时必须换回 `jsdom`** ✓，
+  届时得升 Node 或给 jsdom 钉一个 CI 能跑的版本 ✓（它报错会很明确，不会静默 ✗）。
+- **教训** ✓：诊断要看**它停在哪**（`collect 0ms` = 收集阶段之前 ✓）而不是照着报错猜 ✗ ——
+  我 2.9.20 直接按"线程池"猜 ✗，白花一轮 ✓。
+
 ## [2.9.20] - 2026-10-18
 
 ### Fixed（CI 的 vitest 起不来 ✗→✓：**默认线程池在 Linux runner 上崩** ⇒ 换 `forks` 进程池）

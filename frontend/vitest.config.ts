@@ -11,7 +11,14 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
-    environment: 'jsdom',
+    // ★★ v2.9.21（2026-10-18 ✓）：`jsdom` → `node` ✗→✓ ——
+    //   CI 上（Linux + Node 20）只要走 jsdom 环境就**在 400ms 内崩** ✗：
+    //   `TypeError: Cannot read properties of undefined (reading 'bind')`，**0 个用例被收集** ✓，
+    //   而同一份代码在本地 Windows 全绿 ✓（11/11 ✓）⇒ 是环境初始化的问题，不是测试的问题 ✓。
+    //   ⇒ 现有用例（`sftLogic`）全是**纯函数** ✓，压根本不需要 DOM ✓ ⇒ 用 `node` 环境绕开 ✓。
+    //   ⚠ 等要写**组件级**用例（render / 点击 / 表格列宽 ✓）时，**必须换回 jsdom** ✓ ——
+    //     到时要么升 Node、要么给 jsdom 钉一个 CI 能跑的版本 ✓（届时它会明确报错，不会静默 ✗）。
+    environment: 'node',
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     // 只跑一次就退出（CI 用 ✓）；本地想看 watch 就 `npx vitest`
     watch: false,
