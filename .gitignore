@@ -88,3 +88,6 @@ backend/workdir/formulas/*.json.bak*
 
 # 任何就地备份（*.bak-<时间>）都不入库 ✓（2026-10-18 起 ✓）
 *.bak-*
+
+# 任务状态落盘（★ v2.9.18 P1-C-2 ✓）—— 运行时产物，**永不入库** ✗
+backend/workdir/tasks/

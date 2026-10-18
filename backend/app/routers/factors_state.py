@@ -30,13 +30,25 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from ..services import task_store   # ★ P1-C-2：任务表落盘 ✓（细节见该模块文件头 ✓）
+
 _SFT_MAX_TASKS = 50
 
 _SFT_RESULT_KEEP = 5
 
+# ★★ v2.9.18（P1-C-2，2026-10-18 ✓）：**任务表落盘** ✗→✓ ——
+#   原先只在内存 ✓ ⇒ 后端一重启，用户跑完的结果全没了 ✗（只能看到"任务不存在或结果已清理"✗）。
+#   现在：启动时把 `workdir/tasks/sft/*.json` 读回来 ✓；写入时同步落盘 ✓（细节见 services/task_store.py ✓）。
+#   ⚠ 落盘是**增强** ✗ ⇒ 任何异常都只吞掉 ✓，绝不让"写盘失败"变成主流程 500 ✗。
 _SFT_TASKS: dict[str, dict] = {}
 
 _SFT_LOCK = threading.Lock()
+
+try:                                     # 启动即恢复 ✓（坏文件由 task_store 自己删掉 ✓）
+    _SFT_TASKS.update(task_store.load_all("sft"))
+    task_store.prune("sft", 60)          # 只留最近 60 个文件 ✓（不涨磁盘 ✓）
+except Exception:                        # noqa: BLE001 —— 恢复失败 ⇒ 就当没有 ✓（不阻塞启动 ✓）
+    pass
 
 def _sft_store(task_id: str, state: dict) -> None:
     with _SFT_LOCK:
@@ -46,6 +58,9 @@ def _sft_store(task_id: str, state: dict) -> None:
             finished = [k for k, v in _SFT_TASKS.items() if v.get("status") in ("success", "failed")]
             for k in sorted(finished, key=lambda k: _SFT_TASKS[k].get("ts", 0))[: len(_SFT_TASKS) - _SFT_MAX_TASKS]:
                 _SFT_TASKS.pop(k, None)
+    # ★ P1-C-2：落盘**放在锁外** ✓ —— 持锁做磁盘 I/O 会卡住所有进度查询 ✗（实测：轮询会被拖慢 ✓）。
+    #   `save` 内部按 (status, progress, ts) 去重 ✓ ⇒ 一次任务通常只写几次（不是每次轮询都写 ✓）。
+    task_store.save("sft", task_id, state)
 
 def _sft_trim_results() -> None:
     """内存治理：已完成任务只保留最近 _SFT_RESULT_KEEP 条的完整 result，更早的置 None。
@@ -84,11 +99,18 @@ def sft_export_state(task_id: str) -> Optional[dict]:
     """
     return _sft_get(task_id)
 
+# ★★ v2.9.18（P1-C-2 ✓）：事件研究任务同样落盘 ✓（与单因子同一套机制 ✓）
 _EST_TASKS: dict = {}
 
 _EST_LOCK = threading.Lock()
 
 _EST_RESULT_KEEP = 3   # 内存治理：只保留最近 3 个完成任务的结果
+
+try:                                     # 启动即恢复 ✓
+    _EST_TASKS.update(task_store.load_all("est"))
+    task_store.prune("est", 60)          # 只留最近 60 个文件 ✓
+except Exception:                        # noqa: BLE001
+    pass
 
 def _est_get(task_id: str):
     with _EST_LOCK:
@@ -97,6 +119,7 @@ def _est_get(task_id: str):
 def _est_store(task_id: str, state: dict) -> None:
     with _EST_LOCK:
         _EST_TASKS[task_id] = state
+    task_store.save("est", task_id, state)   # ★ P1-C-2：锁外落盘 ✓（理由同 `_sft_store` ✓）
 
 def _est_trim() -> None:
     with _EST_LOCK:

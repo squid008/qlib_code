@@ -3,6 +3,39 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.18] - 2026-10-18
+
+### Added（**P1-C-2：任务状态落盘** ✓ —— 治「重启就丢结果」✗）
+
+- **痛点（用户 2026-10-17 一天遇到 2 次 ✓）**：单因子测试 / 事件研究的任务表全在**进程内存** ✗ ⇒
+  后端一重启，跑完的结果全没了 ✓，前端只显示「任务不存在或结果已清理」✗ ⇒ 用户只能重跑 ✓。
+- **新增 `backend/app/services/task_store.py`（~190 行 ✓）**，接进 `routers/factors_state.py` ✓：
+  `_sft_store` / `_est_store` 写入时同步落盘 ✓、模块导入时按 `workdir/tasks/<kind>/*.json` 恢复 ✓。
+- **设计要点（每条都对应一个真实风险 ✓）**：
+  · **一个任务一个文件** ✗→✓（不用一个大 JSON —— 中断就整库废 ✓）；
+  · **原子写** ✓：`.tmp` + `os.replace` ⇒ 断电/并发**不会读到半截 JSON** ✗；
+  · **只落白名单字段** ✓（`status/progress/ts/error/result/_req` ✓）；`_evs`（事件 DataFrame）与
+    `_hk`（持仓索引）**显式落成 None** ✓ —— 它们本就会被内存治理清空 ✓ ⇒ 恢复后与"被 trim 过"
+    **完全一致** ✓，下游 `.get()` 拿 None 的老路径**一个字都没改** ✓；
+  · **重启残留** ✓：加载时把 `queued/running` 统一改成 `failed` + 「服务重启，任务已中断」✓
+    （**不能**留着永远 0% 让用户干等 ✗），并保留原 `progress` ✓（便于判断断在哪 ✓）；
+  · **坏文件** ⇒ 删掉继续 ✓（一个坏文件不许拖垮启动 ✗）；
+  · **超 20MB 不落** ✓（宁可不缓存，也不写满磁盘 ✗）｜**每类只留 60 个** ✓（`prune` ✓）；
+  · **落盘放在锁外** ✓（持锁做磁盘 I/O 会拖慢所有进度轮询 ✗）；按 `(status, progress, ts)` 去重 ✓
+    （一个任务能更新上百次 ✗，不能每次都写 ✓）。
+- **★ 验收（跨进程 ✓，这是唯一算数的验证 ✓）**：
+
+  ```
+  ① 进程 A：_sft_store("verify-persist-0001", {success, result={n_obs:123, ic:0.031}, _evs:obj, _hk:obj})
+  ② 进程 B（**全新进程**）：_sft_get(...) ⇒ HIT status=success progress=100
+     result={'n_obs': 123, 'ic': 0.031} ｜ _evs=None _hk=None ✓
+  ③ 落盘文件字段 = ['_evs','_hk','_req','progress','result','status','ts'] ✓
+  ```
+- **测试** ✓：`tests/test_task_store.py` **8 条**（往返 ✓ / 中间物不落 ✓ / 同状态不重写 ✓ /
+  坏文件自清 ✓ / **running→failed** ✓ / 超限跳过 ✓ / prune ✓ / **task_id 防目录穿越** ✓）。
+- **其它** ✓：`.gitignore` 加 `backend/workdir/tasks/` ✓（运行产物永不入库 ✗）。
+- **校验** ✓：`py_compile` ✓ ｜ `ruff` ✓ ｜ 全量 **1027 passed** ✓（1019 + 8 ✓）｜ CI ✓。
+
 ## [2.9.17] - 2026-10-18
 
 ### Added（**前端测试基建打通 + 11 条真单测进 CI** ✓ —— 从此 UI 改动有红绿灯 ✓）
