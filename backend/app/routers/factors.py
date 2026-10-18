@@ -763,64 +763,33 @@ class SingleFactorTestRequest(BaseModel):
 
 # ---------- 单因子测试异步任务：POST 提交返回 task_id，GET 轮询进度/结果 ----------
 # 进度存储为进程内内存 dict（本地单用户工具，无需持久化）；任务完成后保留最近 _SFT_MAX_TASKS 条。
-_SFT_MAX_TASKS = 50
+from .factors_state import (  # noqa: E402  ★ P1-A-2：状态层已抽到 factors_state ✓
+    _SFT_MAX_TASKS, _SFT_RESULT_KEEP, _SFT_TASKS, _SFT_LOCK,
+    _sft_store, _sft_trim_results, _sft_get, est_export_state,
+    sft_export_state, _EST_TASKS, _EST_LOCK, _EST_RESULT_KEEP,
+    _est_get, _est_store, _est_trim, _UNTRIG_CACHE,
+    _UNTRIG_LOCK, _UNTRIG_CAP, _NAV_PANEL_CACHE, _NAV_PANEL_LOCK,
+    _NAV_BT_CACHE, _NAV_BT_LOCK, _NAV_BT_CAP, _NAV_BT_STASH,
+    _NAV_BT_STASH_CAP, _PR_BT_STASH, _PR_BT_CAP, _pr_key,
+    pr_bt_stash_put, pr_bt_stash_get, clear_nav_caches, _nav_stash_key,
+    nav_bt_stash_get, _NAV_REQ_SEQ, _NAV_REQ_LOCK, _NAV_REQ_KEEP,
+    _NavCancelled, _ev_fingerprint, _nav_req_key, _nav_req_begin,
+    _nav_req_current, _NAV_CANCEL, _NAV_CANCEL_MAX, _nav_bt_key,
+    _nav_cache_key, _nav_panel_cached,
+)
 # 内存治理：任务列表最多保留 _SFT_MAX_TASKS 条元信息；但完整 result（items 含全部因子的
 # 大 dict）只保留最近 _SFT_RESULT_KEEP 个已完成任务，更早的 result 置 None 释放长驻内存
 # （此前每条成功任务都完整驻留，多测几次单因子后 result 总量可占数百 MB，导致进程内存持续高位）。
-_SFT_RESULT_KEEP = 5
-_SFT_TASKS: dict[str, dict] = {}
-_SFT_LOCK = threading.Lock()
 
 
-def _sft_store(task_id: str, state: dict) -> None:
-    with _SFT_LOCK:
-        _SFT_TASKS[task_id] = state
-        if len(_SFT_TASKS) > _SFT_MAX_TASKS:
-            # 只清理已结束任务里最旧的，保留运行中的
-            finished = [k for k, v in _SFT_TASKS.items() if v.get("status") in ("success", "failed")]
-            for k in sorted(finished, key=lambda k: _SFT_TASKS[k].get("ts", 0))[: len(_SFT_TASKS) - _SFT_MAX_TASKS]:
-                _SFT_TASKS.pop(k, None)
 
 
-def _sft_trim_results() -> None:
-    """内存治理：已完成任务只保留最近 _SFT_RESULT_KEEP 条的完整 result，更早的置 None。
-
-    ⚠ v1.19.61：**同时释放 `_evs`**（0/1 因子的触发明细）—— 它是给"净值曲线"复用的事件表，
-      一个任务可能有几万行；只清 `result` 不清它，跑几十次后内存白占（而净值端点里那条
-      "按表达式在最近任务里找回事件"的兜底只扫最近几个任务，清掉更早的正好）。
-    """
-    with _SFT_LOCK:
-        finished = sorted(
-            (k for k, v in _SFT_TASKS.items() if v.get("status") in ("success", "failed")),
-            key=lambda k: _SFT_TASKS[k].get("ts", 0),
-            reverse=True,
-        )
-        for k in finished[_SFT_RESULT_KEEP:]:
-            if _SFT_TASKS[k].get("result") is not None:
-                _SFT_TASKS[k]["result"] = None
-            if _SFT_TASKS[k].get("_evs") is not None:
-                _SFT_TASKS[k]["_evs"] = None
-            if _SFT_TASKS[k].get("_hk") is not None:      # v2.1.0：每期持仓索引同策略释放 ✓
-                _SFT_TASKS[k]["_hk"] = None
 
 
-def _sft_get(task_id: str):
-    with _SFT_LOCK:
-        return _SFT_TASKS.get(task_id)
 
 
-def est_export_state(task_id: str) -> Optional[dict]:
-    """**导出模块读取独立「事件研究」任务状态的唯一入口**（与 `sft_export_state` 对称 ✓）。"""
-    return _est_get(task_id)
 
 
-def sft_export_state(task_id: str) -> Optional[dict]:
-    """**导出模块读取单因子测试任务状态的唯一入口**（结果 / `_hk` 持仓索引 / `_req` 参数 ✓）。
-
-    ⚠ 为什么走函数、而不是让导出路由直接摸 `_SFT_TASKS`：那张表是**本模块的内部结构**
-      （键名会变、还带锁 ✓）⇒ 集中一处暴露，将来调整结构只动这里 ✓。
-    """
-    return _sft_get(task_id)
 
 
 def _json_safe(o):
@@ -1427,31 +1396,12 @@ class EventStudyRequest(BaseModel):
     warmup_days: Optional[int] = None
 
 
-_EST_TASKS: dict = {}
-_EST_LOCK = threading.Lock()
-_EST_RESULT_KEEP = 3   # 内存治理：只保留最近 3 个完成任务的结果
 
 
-def _est_get(task_id: str):
-    with _EST_LOCK:
-        return _EST_TASKS.get(task_id)
 
 
-def _est_store(task_id: str, state: dict) -> None:
-    with _EST_LOCK:
-        _EST_TASKS[task_id] = state
 
 
-def _est_trim() -> None:
-    with _EST_LOCK:
-        finished = sorted(
-            (k for k, v in _EST_TASKS.items() if v.get("status") in ("success", "failed")),
-            key=lambda k: _EST_TASKS[k].get("ts", 0),
-            reverse=True,
-        )
-        for k in finished[_EST_RESULT_KEEP:]:
-            if _EST_TASKS[k].get("result") is not None:
-                _EST_TASKS[k]["result"] = None
 
 
 @router.post("/event-study", summary="事件研究（0/1 信号触发后收益分布，异步提交）")
@@ -1583,9 +1533,6 @@ def event_study(req: EventStudyRequest):
 #   本函数产出一条**与超额曲线同源**的净值曲线 ✓：每日把「全池 − 当日触发股」等权持有一天的收益累积 ✓
 #   （收盘对收盘 ✓、无成本 ✓ —— 与策略曲线的口径差异在曲线名里注明 ✓）。
 #   缓存 ✓：key = (universe, 起止, 复权, 整分, 价字段, 事件数) ✓，容量 4 ✓（同一任务反复改 k 只算一次 ✓）。
-_UNTRIG_CACHE: dict = {}
-_UNTRIG_LOCK = threading.Lock()
-_UNTRIG_CAP = 4
 
 
 def _untrig_nav_series(state: dict, ev, start: str, end: str, hold: int = 1) -> List[tuple]:
@@ -1729,8 +1676,6 @@ class EventNavRequest(BaseModel):
 #   ⚠ 这是"治本（C）"的第 1 步；第 2 步（把每日估值/持仓市值向量化）改动在
 #     `signals/engine.run_backtest` 内，必须带**新旧对拍**（成交/被拒/净值逐位一致）才敢上 ✓。
 # ---------------------------------------------------------------------------
-_NAV_PANEL_CACHE: dict = {}
-_NAV_PANEL_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # 回测结果缓存（v1.20.0；用户 2026-09-18：「事件研究里净值曲线（两种方案 + 基准）计算很慢」）
@@ -1743,9 +1688,6 @@ _NAV_PANEL_LOCK = threading.Lock()
 #   ⚠ key **必须含事件指纹**（同一批 codes 但触发集合不同 ⇒ 结果不同 ✗）。
 #   ⚠ `BtResult` 只读复用（调用方不改 ✓）⇒ 直接返回同一对象 ✓ 省一次深拷贝 ✓。
 # ---------------------------------------------------------------------------
-_NAV_BT_CACHE: dict = {}
-_NAV_BT_LOCK = threading.Lock()
-_NAV_BT_CAP = 4
 
 # ---------------------------------------------------------------------------
 # 「净值曲线那次回测」的**导出旁路**（v2.1.0；用户 2026-10-11 要"事件研究导出也要每期持仓"✓）
@@ -1757,8 +1699,6 @@ _NAV_BT_CAP = 4
 #   导出端点先调同一个端点（命中缓存 ⇒ 秒回 ✓）再按同一个键取 `bt` ✓ —— 两侧**同一份实现** ✓。
 #   ⚠ 键里必须含 task/factor/k/cost/capital（不同参数是不同回测 ✗）；容量 4、FIFO ✓。
 # ---------------------------------------------------------------------------
-_NAV_BT_STASH: dict = {}
-_NAV_BT_STASH_CAP = 4
 
 # ---------------------------------------------------------------------------
 # ★★ v2.8.8b（用户 2026-10-16 ✓）：**「每期全仓滚动」成交明细**的登记（导出「调仓记录」用 ✓）
@@ -1770,81 +1710,18 @@ _NAV_BT_STASH_CAP = 4
 #   键 = (任务, 因子表达式, 周期, 离场下标 ✓ —— `-1` = "对照（不离场）"那一条 ✓)；
 #   ⚠ 键里**必须含离场下标**（每条离场卖的东西不一样 ✗）；容量 8、FIFO ✓；
 #   ⚠ 切数据集要清（T3 纪律 ✓，见 `clear_nav_caches` ✓）。
-_PR_BT_STASH: dict = {}
-_PR_BT_CAP = 8
 
 
-def _pr_key(task_id, factor_key, horizon, ei) -> tuple:
-    return (str(task_id or ""), str(factor_key or ""), int(horizon or 0),
-            -1 if ei is None else int(ei))
 
 
-def pr_bt_stash_put(task_id, row: dict, item: Optional[dict], with_exit: bool,
-                    ei: int, bt) -> None:
-    """登记"这次每期全仓滚动回测"的成交明细（**导出专用** ✓，绝不进响应 ✗）。
-
-    ⚠ **周期必须取 `row["horizon"]`** ✓（不是 `item["horizon"]` ✗）—— 2026-10-16 第一版写成
-      `item` 的 ⇒ 存进去是 `0`、导出侧按 `row` 的 `60` 去取 ⇒ **键对不上、调仓记录整页空白** ✗✓
-      （冒烟当场抓到 ✓）。**存取两侧必须用同一个来源** ✓，本函数与 `export_xlsx` 那边都是 `row` ✓。
-    """
-    try:
-        key = _pr_key(task_id, (row or {}).get("expression"), (row or {}).get("horizon"),
-                      (int(ei) if with_exit else None))
-        with _NAV_BT_LOCK:
-            _PR_BT_STASH.pop(key, None)
-            _PR_BT_STASH[key] = {
-                "trades": getattr(bt, "trades", None),
-                "diag": dict(getattr(bt, "diag", None) or {}),
-                "stats": ((getattr(bt, "stats", None) or {}).get("period_roll") or {}),
-            }
-            while len(_PR_BT_STASH) > _PR_BT_CAP:
-                _PR_BT_STASH.pop(next(iter(_PR_BT_STASH)))
-    except Exception:                                  # noqa: BLE001 —— 登记失败**绝不能影响回测** ✓
-        pass
 
 
-def pr_bt_stash_get(task_id, factor_key, horizon, ei):
-    """导出侧按**同一键**取回（取不到 ⇒ None ⇒ 导出如实写"没有这一页" ✓，不假装 ✓）。"""
-    with _NAV_BT_LOCK:
-        return _PR_BT_STASH.get(_pr_key(task_id, factor_key, horizon, ei))
 
 
-def clear_nav_caches() -> None:
-    """★ T3（审计 ④ / v2.8.7，用户 2026-10-16 已拍 ✓）：切数据集时清本模块的**进程级缓存** ✓。
-
-    为什么必须暴露出来 ✗：这三块缓存都按 **codes/区间(/k/cost)** 寻址 ✓，**不含数据集标识** ✗
-    ⇒ 切到另一套数据集后，同样的 codes/区间会**命中旧数据的面板/回测** ✗✓
-    （"看着切了、其实没切" —— 与 `panel_expr` / `feature_cache` 那几处同一类坑 ✓）。
-    由 `services/datasets.clear_caches()` 调用 ✓（那边**失败会抛错** ✗，不再假成功 ✓）。
-    """
-    with _NAV_PANEL_LOCK:
-        _NAV_PANEL_CACHE.clear()
-    with _NAV_BT_LOCK:
-        _NAV_BT_CACHE.clear()
-        _NAV_BT_STASH.clear()
-        _PR_BT_STASH.clear()          # ★ v2.8.8b：离场/对照的成交明细（键里也没有数据集 ✗）
 
 
-def _nav_stash_key(task_id: str, factor_id: Optional[str], hold_days: int,
-                   cost: float, capital: float) -> tuple:
-    return (str(task_id or ""), str(factor_id or ""), int(hold_days), float(cost), float(capital))
 
 
-def nav_bt_stash_get(task_id: str, factor_id: Optional[str], hold_days: int,
-                     cost: float, capital: float):
-    """导出用：取回 `/event-study/nav` **刚算过的那次**结果（含 `bt` / `signals` / 输入参数 ✓）。
-
-    ★ v2.1.4：登记的东西从"只有 `bt`"扩成**"`bt` + 输入"** ✗→✓ —— 因为导出（XLSX）的意义
-      是"把面板这次回测**原样搬走**"：信号（触发日/代码 ✓）、`fill`、`strict_limit`、
-      `rebal_band`、`capital`、`cost`、`hold_days` 全都要跟着走 ✓，否则回灌方"看起来一样、
-      结果不一样" ✗（用户 2026-10-11 报的就是这个：面板 `t1_open` + 触发日信号 + 死区 0，
-      而文件里被我写成了 `t1_close` + **成交日**信号 + 界面死区 ⇒ 四个输入全不同 ✗）。
-
-    返回 `{"bt":…, "signals":DataFrame, "fill":…, "strict_limit":…, "rebal_band":…, …}`；没有 ⇒ None ✓。
-    ⚠ 调用方应**先调用一次** `event_study_nav(...)`（命中缓存 ⇒ 秒回 ✓）再取 ⇒ 保证有值 ✓。
-    """
-    with _NAV_BT_LOCK:
-        return _NAV_BT_STASH.get(_nav_stash_key(task_id, factor_id, hold_days, cost, capital))
 
 # ---------------------------------------------------------------------------
 # 取消源（v1.20.5；用户 2026-09-18：「先把取消源接通」✓）
@@ -1858,108 +1735,28 @@ def nav_bt_stash_get(task_id: str, factor_id: Optional[str], hold_days: int,
 # ⚠ 用**回测指纹**而不是任务 id：改 k 时 `_nav_bt_key` 里 k 不同 ⇒ **不会互相取消** ✗
 #   ⇒ 所以这里额外**只按事件指纹分组**（见 `_nav_req_key` ✓），同一批事件下"最新那次 k 才算数" ✓。
 # ---------------------------------------------------------------------------
-_NAV_REQ_SEQ: dict = {}
-_NAV_REQ_LOCK = threading.Lock()
-_NAV_REQ_KEEP = 32
 
 
-class _NavCancelled(Exception):
-    """同事件指纹下已有更新的请求 ⇒ 本次在途回测立即中止（由 `cancel_cb` 抛出）✓。"""
 
 
-def _ev_fingerprint(ev) -> int:
-    """**事件集合的内容指纹** ✓（v2.8.2 按审计 #3 修 ✓）。
-
-    ⚠ 原来两处缓存键都只用「条数 + 首末触发日」代表一组事件 ✗ ——
-      股票池相同、触发数相同、首末触发日相同的**两组不同信号**会算出同一个键 ⇒
-      回测结果被**错误复用**（净值直接搬错的那份 ✓）。这里按 (code, dt) 逐行哈希 ✓，
-      向量化（pandas hash ✓）⇒ 十万级事件也在毫秒量级 ✓。
-    同时保留条数/首末日（便于人眼核对 ✓），内容指纹负责"**不同信号必然不同键**" ✓。
-    """
-    try:
-        cols = [c for c in ("code", "dt") if c in getattr(ev, "columns", [])]
-        if not cols:
-            return 0
-        h = pd.util.hash_pandas_object(ev[cols], index=False).to_numpy(dtype=np.uint64)
-        return int(h.sum()) if h.size else 0
-    except Exception:                                             # noqa: BLE001
-        # 指纹算不出来 ⇒ 退回 0（等于旧行为 ✓）—— 宁可少命中缓存（重算一次 ✗ 慢一点 ✓），
-        # 也**绝不能**因为指纹异常就误命中别人的结果 ✓。
-        return 0
 
 
-def _nav_req_key(codes, ev, start, end):
-    """取消分组键：**只含事件与区间**（不含 k/cost ✓ ⇒ 同批事件下"最新的 k 才算数" ✓）。
-
-    ⚠ v2.8.2：这里也要**事件内容指纹** ✗→✓ —— 否则两组不同信号会被当成"同一批"，互相取消 ✗
-      （表现为点开曲线偶尔莫名 409/重算 ✓）。
-    """
-    return (len(codes), hash(tuple(codes)), str(start), str(end),
-            len(ev), str(ev["dt"].iloc[0]), str(ev["dt"].iloc[-1]), _ev_fingerprint(ev))
 
 
-def _nav_req_begin(key) -> int:
-    with _NAV_REQ_LOCK:
-        _NAV_REQ_SEQ[key] = _NAV_REQ_SEQ.get(key, 0) + 1
-        while len(_NAV_REQ_SEQ) > _NAV_REQ_KEEP:      # 防字典无限增长 ✓
-            _NAV_REQ_SEQ.pop(next(iter(_NAV_REQ_SEQ)))
-        return _NAV_REQ_SEQ[key]
 
 
-def _nav_req_current(key) -> int:
-    with _NAV_REQ_LOCK:
-        return _NAV_REQ_SEQ.get(key, 0)
 
 
 # ⚠ v1.20.15（用户 2026-09-18：「关弹窗即取消」✓）：前端**卸载弹窗**时会调
 #   `POST /event-study/nav/cancel` ✓ ⇒ 这里记下 task_id ✓；在途回测的 `cancel_cb`
 #   每次检查命中即抛 ⇒ **关掉弹窗后后端立刻停算** ✓（此前是"自己跑完为止、没人收结果"✗，
 #   大公式一次白烧几十秒 ✓）。
-_NAV_CANCEL: set = set()
-_NAV_CANCEL_MAX = 64
 
 
-def _nav_bt_key(codes, ev, start, end, k, cost, capital, modes, fill: str = "t1_open",
-                max_positions: int = 0):
-    # ★ v2.1.65：**`fill` 必须进回测缓存键** ✗→✓ —— 否则面板从"次日开盘"切到"次日收盘"时
-    #   会**命中同一份缓存** ✗ ⇒ 净值不动 ⇒ 用户看到"两个数一模一样" ✗✓（就是这个现象 ✓）。
-    # ★★ v2.8.2（**审计 #3** ✓）：**事件内容指纹**也必须进键 ✗→✓ —— 原来只用
-    #   「条数 + 首末触发日」代表一组事件 ✗（连 `hash(ev.code)` 都没有 ✓）⇒ 同股票池 +
-    #   同触发数 + 同首末触发日的两组不同信号会命中同一份 `BtResult` ✗（净值直接搬错 ✓）。
-    # ★★ v2.9.3：`max_positions` 也必须进键 ✗→✓ —— 否则改了上限会**命中旧缓存** ✗
-    #   ⇒ 净值纹丝不动 ⇒ 又是一个"选了没生效" ✓（本项目最贵的一类 bug ✓）。
-    return (len(codes), hash(tuple(codes)), str(start), str(end),
-            len(ev), str(ev["dt"].iloc[0]), str(ev["dt"].iloc[-1]), _ev_fingerprint(ev),
-            int(k), float(cost), float(capital), tuple(modes), str(fill),
-            int(max_positions or 0))
 
 
-def _nav_cache_key(codes, start, end, strict: bool = True):
-    return (len(codes), hash(tuple(codes)), str(start), str(end), bool(strict))
 
 
-def _nav_panel_cached(codes, start, end, *, strict: bool = True):
-    """取「价格面板 + 涨跌停标注」，按 (codes, 区间, strict) 缓存（见上方说明，v1.19.93）。"""
-    from ..signals.pricing import fill_limits, load_price_panel
-
-    key = _nav_cache_key(codes, start, end, strict)
-    with _NAV_PANEL_LOCK:
-        hit = _NAV_PANEL_CACHE.get(key)
-    if hit is not None:
-        return hit, True
-    # ⚠ 必须与端点原调用一致：`need_open=True`（回测要开盘价 ✓）
-    panel = load_price_panel(codes, start, end, need_open=True)
-    if panel is None or "CLOSE" not in panel:
-        return panel, False
-    panel = fill_limits(panel, strict=strict)
-    with _NAV_PANEL_LOCK:
-        # ⚠ v1.20.0：原为 `clear()` **只留 1 条** ✗ ⇒ 换个因子/池（或先点 K=5 再点 K=20 触发
-        #   不同 codes 集合）就整段重算（全A 面板 ≈12s ✓）⇒ 改为**容量 2 的 LRU**：一块
-        #   5000×4000 的宽表面板是数百 MB 量级 ✓，容 2 条即可覆盖"来回切两个池/因子"的常见操作 ✓。
-        while len(_NAV_PANEL_CACHE) >= 2:
-            _NAV_PANEL_CACHE.pop(next(iter(_NAV_PANEL_CACHE)))
-        _NAV_PANEL_CACHE[key] = panel
-    return panel, False
 
 
 class EventNavCancelRequest(BaseModel):

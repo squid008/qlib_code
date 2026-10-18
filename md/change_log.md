@@ -3,6 +3,29 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.12] - 2026-10-18
+
+### Changed（**P1-A-2 第一半：状态层抽成 `routers/factors_state.py`** ✓ —— 拆分的"前置解耦" ✓）
+
+- **为什么必须这一步**（2.9.11 的结论 ✓）：事件研究组（~825 行 ✓）看似可整块搬 ✗，
+  但区间里**夹着** `_PR_BT_STASH` / `pr_bt_stash_put` / `clear_nav_caches` ✓
+  —— 那是**单因子测试组在用**的状态 ✗ ⇒ 整块搬 ⇒ **循环依赖** ✗。
+  ⇒ 先把"状态"独立 ✓，两组端点才能各自 import 它 ✓。
+- **搬走 46 个模块级名字 / 217 行** ✓ → 新模块 **`routers/factors_state.py`（294 行 ✓）**：
+  · 单因子任务表 `_SFT_*` + 存取（`_sft_store/_sft_trim_results/_sft_get` ✓）；
+  · 事件研究任务表 `_EST_*` + 存取（`_est_get/_est_store/_est_trim` ✓）；
+  · 参照线缓存 `_UNTRIG_*` ✓；净值曲线三类缓存 `_NAV_PANEL_*` / `_NAV_BT_*`（含台账 stash ✓）；
+  · 每期滚动台账 `_PR_BT_*` + `pr_bt_stash_put/get` ✓；`clear_nav_caches` ✓；
+  · 取消语义 `_NAV_REQ_*` / `_NavCancelled` / `_NAV_CANCEL` ✓ + 键函数 `_ev_fingerprint` /
+    `_nav_bt_key` / `_nav_cache_key` / `_nav_panel_cached` ✓。
+- **原处只留一行 import** ✓（`from .factors_state import (...)` ✓）⇒ `factors.py` 里所有函数
+  **照旧按名字引用** ✓（模块全局在调用时解析 ✓ ⇒ **调用点零改动** ✓，与 2.9.7 的 `matching.py` 同一招 ✓）。
+- `routers/factors.py` **2,259 → 2,056 行** ✓（累计 2,489 → 2,056，**−433 行** ✓）。
+- **验收** ✓：`py_compile` ✓ ｜ `ruff` ✓ ｜ **1009 passed** ✓（行为零变化 ✓）｜ CI ✓ ｜ 后端重启 ✓。
+- **P1-A-2 第二半（下一步）** ✓：把**单因子测试组**（~1,380 行）与**事件研究组**（~825 行）
+  各自搬成 `factors_single.py` / `factors_event.py` ✓（此时它们已只依赖 `factors_state` ✓）
+  ⇒ `factors.py` 剩目录类 ~300 行 ✓。
+
 ## [2.9.11] - 2026-10-18
 
 ### Changed（**P1-A 第一刀：`routers/factors.py` 拆出「公式库组」** ✓ ＋ 拆不动的部分给出证据 ✓）
