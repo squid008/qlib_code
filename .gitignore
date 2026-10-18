@@ -85,3 +85,6 @@ backend/workdir/formulas/*.bak*
 cov.json
 htmlcov/
 backend/workdir/formulas/*.json.bak*
+
+# 任何就地备份（*.bak-<时间>）都不入库 ✓（2026-10-18 起 ✓）
+*.bak-*

@@ -26,109 +26,26 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-LOT_DEFAULT = 100
-# ★ v2.1.16（用户 2026-10-11："手续费最小5块加上不就行了" ✓）：
-#   A 股券商佣金有**最低 5 元/笔**的下限 ✓ —— 对小额单（例如每期等权重建时的零碎 trim ✓）
-#   影响巨大，不加的话"逐笔微调"几乎免费 ✗，与实盘差很远 ✓。
-#   ⚠ 这是**唯一**的费用计算入口（`_fee_of` ✓）：资金路径（买卖扣款/回款）与
-#   成交明细（`_trades_frame` 的 fee 列）必须走同一处 ✓，否则"明细与资金不一致" ✗。
-MIN_FEE = 5.0
-
-
-LOT_KCB = 200                     # ★ v2.1.17：科创板（688/689）**整手 200 股** ✓
-
-
-def _lot_of(code: str, lot_default: int = LOT_DEFAULT) -> int:
-    """该**标的**的整手股数 ✓：科创板 688/689 ⇒ 200 股，其余用 `lot_default`（默认 100 ✓）。
-
-    ⚠ 用户 2026-10-11："咱们本来不就有小于 100 股、科创板小于 200 股拒绝买吗" ——
-      实际上引擎原来只有 `LOT_DEFAULT = 100` ✗（`codes.py` 里的 `688` 只是**号段识别** ✓），
-      所以 688 的票一直按 100 股整手在买 ✗ ⇒ 这里补齐 ✓。
-    代码形态三种都要认（引擎内部是 `SH688001` 这种 ✓）：`SH688001` / `688001.SH` / `688001` ✓。
-    """
-    s = str(code).strip().upper()
-    if "." in s:                                   # 688001.SH
-        s = s.split(".")[0]
-    elif len(s) > 6 and s[:2] in ("SH", "SZ", "BJ"):
-        s = s[2:]                                  # SH688001
-    return LOT_KCB if s.startswith(("688", "689")) else int(lot_default)
-
-
-def _fee_of(amount: float, half: float) -> float:
-    """单笔手续费 = `max(成交额 × 单边费率, 最低 5 元)` ✓（`half` = 往返费率的一半 ✓）。
-
-    ⚠ `half <= 0`（界面的「**无成本**」档）⇒ **费用恒为 0** ✓ —— 否则"最低佣金 5 元"会凭空
-      出现在"无成本"档里 ✗（那这一档就不再是无成本了 ✗；实测冻结基准 `k5_cost0` 当场抓到 ✓）。
-    """
-    if half <= 0:
-        return 0.0
-    fee = amount * half
-    return fee if fee > MIN_FEE else MIN_FEE
-
-
-def _fit_lots(budget: float, px: float, lot: int, half: float, cash: float) -> int:
-    """在**现金**约束下取"买得起的最大手数" ✓（v2.8.3，**审计 #9** ✓）。
-
-    为什么单独收敛成一个函数：三处买入（`cash_even` / `event_even` 的新买与补低配 /
-    `period_roll._buy`）原来各写一份**估算** ✗ —— 都用「成交额 ×(1+半费)」估费，
-    而真实费用是 `max(成交额×half, **最低 5 元**)`（`_fee_of` ✓）⇒ **小额单被 5 元那一段顶破**
-    ⇒ 现金被花成**负数** ✗（审计实测：`event_even` 到 −3216.71 元，`period_roll`/`cash_even`
-    也有小额负值 ✓）。用户 2026-10-16 拍板：「**肯定不能出现负数**」✓。
-
-    · `budget` = 这笔**打算花多少**（元 ✓；含不含费由调用方决定 ✓）；
-    · 先按 `budget / px` 取整到手数 ✓，再用**真实费用**逐步回退到"买得起"为止 ✓；
-    · 返回 0 ⇒ 调用方按 `no_cash` 拒单 ✓（语义与原来一致 ✓）。
-    ⚠ 正常路径（钱够）**一位数字都不变** ✓ —— 只有原本会透支的买单被缩量 ✓。
-    """
-    if px != px or px <= 0 or int(lot) <= 0:          # NaN / 非正价 / 非正手数 ⇒ 不买 ✓
-        return 0
-    _lot = int(lot)
-    q = int(max(0.0, float(budget)) / float(px) / _lot) * _lot
-    while q > 0 and q * px + _fee_of(q * px, half) > cash + 1e-9:
-        q -= _lot
-    return int(q)
-
-
-def _fit_real_lots(px_raw: float, px_adj: float, lot: int, half: float, cash: float,
-                   budget: Optional[float] = None) -> Tuple[float, int]:
-    """按**真实股数的一手**取整 ✓（v2.8.4，**审计 #8** ✓）—— 返回 `(q_adj, n_real)`。
-
-    **为什么必须按真实股数**：A 股"一手"是**真实 100 股**（科创板 200 ✓ ⇒ `lot` 由调用方按标的给 ✓），
-      而引擎内部持仓记的是**复权单位** ✗ ⇒ 老写法 `int(预算/复权价/lot)*lot` 取的是"**复权单位**的整手"
-      ✗ ⇒ 真实股数 = `q/f` 常常不是整手 ✗（用户 2026-10-16 举的例：现金 685、真实价 10、复权价 6
-      ⇒ 老代码买"100 复权单位"= 600 元 = **60 真实股**（0.6 手 ✗）；正解是**买不起一手就不买** ✓
-      —— 一手真实成本 100×10 = 1000 元 > 685 ✓）。
-
-    算法（用户自己提的就是这个 ✓）：
-      ① 在**真实价**上求最大整手：`n = max{ n | n×px_raw + fee(n×px_raw) ≤ cash }`（`n` 是 `lot` 的倍数 ✓，
-         含**最低 5 元佣金** ✓ —— 见 `_fit_lots` ✓）；
-      ② 折回复权单位：`q_adj = n × px_raw / px_adj` ✓（⇒ `q_adj×px_adj = n×px_raw` ⇒ **金额一分不差** ✓
-          ⇒ 收益率不受影响 ✓，变的只是取整粒度 ✓）。
-
-    ⚠ `px_adj == px_raw`（**不复权**模式 ✓）⇒ **逐位退化成老行为** ✓（那套数字完全不动 ✓）。
-    ⚠ 反方向也要知道（**默认后复权** f≥1 时 ✓）：老代码会因为"复权价更贵"而**少买甚至买不到** ✗
-      （实测：现金 1010、真实 10、复权 20 ⇒ 老代码买 **0**（要 2000 元 ✗）、正解买 **100 真实股** ✓）。
-    """
-    if px_raw != px_raw or px_adj != px_adj or px_raw <= 0 or px_adj <= 0:
-        return 0.0, 0
-    _budget = float(cash) if budget is None else min(float(budget), float(cash))
-    n = _fit_lots(_budget, float(px_raw), lot, half, cash)
-    if n <= 0:
-        return 0.0, 0
-    return float(n) * float(px_raw) / float(px_adj), int(n)
-
-
-_FILL_LAG = {"t_close": 0, "t1_open": 1, "t1_close": 1}          # 决策日 → 成交日
-_FILL_PRICE = {"t_close": "close", "t1_open": "open", "t1_close": "close"}
-
-REJECT_TEXT = {
-    "limit_up": "涨停买不进", "limit_up_open": "开盘一字涨停买不进",
-    "limit_down": "跌停卖不出（顺延）", "limit_down_open": "开盘一字跌停卖不出（顺延）",
-    "suspended": "停牌", "no_cash": "资金不足", "no_price": "该日无行情",
-    # ★★ v2.9.3（用户 2026-10-17 ✓）：**已达最大同时持仓数** ⇒ 该信号不建仓 ✓
-    #   （不静默丢弃 ✗ —— 导出/被拒明细里能数出"信号被上限挡掉多少次" ✓）
-    "max_positions": "已达最大同时持仓数（本次信号未建仓）",
-}
+# ---------------------------------------------------------------------------
+# ★★ v2.9.7（P0-B，2026-10-18 ✓）：**撮合原子已抽到 `signals/matching.py`** ✗→✓
+#
+# 抽走的是「手数 / 费用 / 现金约束 / 拒单文案 / 成交时点表」✓ —— 它们原先住在本文件里，
+# 而 `period_roll.py` **反向 import 整个 engine** 就为了拿这几个纯函数 ✗（依赖方向错 ✓）。
+#
+# ⚠ 这里保留**旧名字别名** ✓：全仓库有几十处 `from .engine import _fee_of` 之类，
+#   别名让它们**零改动**继续工作 ✓；新代码应直接用 `from ..signals.matching import ...` ✓。
+# ⚠ 费用**只有一处**实现（`matching.fee_of` ✓）—— 资金路径与成交明细必须同源 ✓，
+#   否则"明细与账对不上" ✗（v2.1.16 定下的纪律 ✓）。
+# ---------------------------------------------------------------------------
+from .matching import (                       # noqa: E402（保持原文件结构：常量区之后 ✓）
+    FILL_LAG as _FILL_LAG,
+    FILL_PRICE as _FILL_PRICE,
+    LOT_DEFAULT, LOT_KCB, MIN_FEE, REJECT_TEXT,
+    fee_of as _fee_of,
+    fit_lots as _fit_lots,
+    fit_real_lots as _fit_real_lots,
+    lot_of as _lot_of,
+)
 
 
 def _split_mode(spec: str) -> Tuple[str, Optional[float], str]:

@@ -34,9 +34,11 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from .engine import (LOT_DEFAULT, REJECT_TEXT, BtResult, _FILL_LAG, _FILL_PRICE, _fee_of,
-                     _fit_lots, _fit_real_lots, _limit_ctx, _lot_of, _perf, _prepare,
-                     _trades_frame)
+from .matching import (LOT_DEFAULT, REJECT_TEXT, FILL_LAG as _FILL_LAG,
+                       FILL_PRICE as _FILL_PRICE, fee_of as _fee_of,
+                       fit_lots as _fit_lots, fit_real_lots as _fit_real_lots,
+                       lot_of as _lot_of)
+from .engine import BtResult, _limit_ctx, _perf, _prepare, _trades_frame
 
 MODE = "period_roll"
 _LABEL = "每期全仓滚动（调仓日按当期名单等权重建）"
