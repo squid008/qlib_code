@@ -117,7 +117,8 @@ def block_mask(key: str, codes: Sequence[str], cal: pd.DatetimeIndex) -> np.ndar
                 lo = int(np.searchsorted(cal_vals, np.datetime64(s, "D"), side="left"))
                 hi = (n_d - 1) if not e else int(np.searchsorted(
                     cal_vals, np.datetime64(e, "D"), side="right")) - 1
-            except Exception:
+            except Exception as e:
+                _log_swallowed("market_stat.py", e)
                 continue
             if hi >= lo:
                 mask[lo:hi + 1, j] = True
@@ -173,13 +174,15 @@ def specs_from_text(text: str) -> List[Spec]:
     for m in _RE_INSUM.finditer(src):
         try:
             out.append(Spec(m.group(1), m.group(2), int(m.group(3)), int(m.group(4))))
-        except Exception:
+        except Exception as e:
+            _log_swallowed("market_stat.py", e)
             continue
     known = {s.field for s in out}
     for m in _RE_BLOCK.finditer(src):
         try:
             s = Spec(m.group(1))
-        except Exception:
+        except Exception as e:
+            _log_swallowed("market_stat.py", e)
             continue
         if s.field not in known:
             out.append(s)
@@ -195,7 +198,8 @@ def discover_specs(extra_texts: Optional[Iterable[str]] = None) -> List[Spec]:
     try:
         from ..services.custom_formulas import list_custom_formulas
         texts += [(it.get("text") or "") for it in list_custom_formulas()]
-    except Exception:
+    except Exception as e:
+        _log_swallowed("market_stat.py", e)
         pass
     texts += [t for t in (extra_texts or []) if t]
     seen: Dict[str, Spec] = {}
@@ -245,12 +249,14 @@ def formula_fingerprints(specs: Optional[Sequence[Spec]] = None) -> Dict[str, st
     out: Dict[str, str] = {}
     try:
         todo = list(specs if specs is not None else discover_specs())
-    except Exception:                                # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("market_stat.py", e)
         return out
     for name in sorted({sp.formula for sp in todo if sp.formula}):
         try:
             expr = formula_expression(name)
-        except Exception:                            # noqa: BLE001  公式没了 ⇒ 由别的检查报 ✓
+        except Exception as e:  # noqa: BLE001  公式没了 ⇒ 由别的检查报 ✓
+            _log_swallowed("market_stat.py", e)
             continue
         out[str(name)] = hashlib.md5(expr.encode("utf-8")).hexdigest()[:12]
     return out
@@ -266,7 +272,8 @@ def stale_formula_names() -> List[str]:
     try:
         with open(market_meta_path(), "r", encoding="utf-8") as f:
             stored = (json.load(f) or {}).get("formula_fingerprints") or {}
-    except Exception:                                # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("market_stat.py", e)
         return []
     if not stored:
         return []
@@ -294,7 +301,8 @@ def materialize_impact(name: str) -> List[str]:
         return []
     try:
         specs = list(discover_specs())          # 扫公式库现推（meta 缺失也能答 ✓）
-    except Exception:                            # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("market_stat.py", e)
         return []
     # ★ v1.20.89：**必须做指纹比对**（用户 2026-10-09：「我改回原样就不要报这个提示了
     #   （刚才我改 0 也提示了）」✓）—— 只判"被引用"是**误报** ✗：改回原样后正文与物化时
@@ -315,7 +323,8 @@ def materialize_impact(name: str) -> List[str]:
     import hashlib                                   # noqa: PLC0415
     try:
         now = hashlib.md5(formula_expression(specs[0].formula).encode("utf-8")).hexdigest()[:12]
-    except Exception:                                # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("market_stat.py", e)
         return []
     if now == old:                                   # ★ 改回原样 ⇒ 指纹吻合 ⇒ **不提示** ✓
         return []
@@ -328,7 +337,8 @@ def materialized_fields() -> set:
     try:
         with open(market_meta_path(), "r", encoding="utf-8") as f:
             meta = json.load(f) or {}
-    except Exception:                                # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("market_stat.py", e)
         return set()
     return {str(d.get("field") or "") for d in (meta.get("specs") or []) if d.get("field")}
 
@@ -358,7 +368,8 @@ def _stored_fingerprints() -> Dict[str, str]:
     try:
         with open(market_meta_path(), "r", encoding="utf-8") as f:
             return (json.load(f) or {}).get("formula_fingerprints") or {}
-    except Exception:                                # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("market_stat.py", e)
         return {}
 
 
@@ -373,7 +384,8 @@ def market_meta_state_live() -> Dict:
         if stale:
             st.update({"ok": False, "state": "stale_formula",
                        "stale_formulas": stale, "message": stale_message(stale)})
-    except Exception:                            # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("market_stat.py", e)
         pass
     return st
 
@@ -416,7 +428,8 @@ def compute_field_inline(field: str) -> Optional[pd.Series]:
                             int(d.get("out_index") or 1), int(d.get("calc_type") or 0))
                 break
         start = str(meta.get("start_time") or start)
-    except Exception:                                # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("market_stat.py", e)
         spec = None
     if spec is None:                                 # meta 缺失 ⇒ 退一步：扫公式库现推规格 ✓
         for sp in discover_specs():
@@ -444,7 +457,8 @@ def compute_field_inline(field: str) -> Optional[pd.Series]:
         out = pd.Series(np.asarray(values, dtype=float), index=cal)
         _INLINE_CACHE[field] = out
         return out
-    except Exception:                                # noqa: BLE001  退路失败 ⇒ 让告警照旧出声 ✓
+    except Exception as e:  # noqa: BLE001  退路失败 ⇒ 让告警照旧出声 ✓
+        _log_swallowed("market_stat.py", e)
         return None
 
 
@@ -629,7 +643,8 @@ def write_market_meta(payload: Dict) -> None:
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("market_stat.py", e)
         pass
 
 
@@ -657,3 +672,18 @@ def market_meta_state() -> Dict:
     except Exception as e:                                          # noqa: BLE001
         info.update({"ok": False, "state": "error", "message": "横向统计口径戳检查失败：%r" % (e,)})
     return info
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 本文件**没有 logger** ⇒ 这里惰性取 `logging.getLogger(__name__)` ✓；
+      且全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗
+      （2.9.26 事故：把"静默"改成"崩溃" ✓，比不改更糟 ✗）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

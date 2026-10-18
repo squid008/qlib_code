@@ -3,6 +3,25 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.30] - 2026-10-18
+
+### Changed（**P2-A 第五批：`market_stat` + `charts` + `pricing`** ✓ —— 静默 **90 → 74**）
+
+- 收掉 **30 处**静默捕获 ✓（只加一行 debug 日志 ✓，**控制流未变** ✓）：
+  · `factors/market_stat.py` **15 处** ✓ —— 市场统计（涨跌分布 / 情绪指标 ✓）：
+    某日某板块取不到数据就静默 ⇒ **图上少一截**但没人知道为什么 ✗；
+  · `engine/charts.py` **7 处** ✓ —— 出图（净值曲线 / 回撤 ✓）：画失败静默 ⇒
+    用户只看到"图没了"✗，日志里查不到原因 ✓；
+  · `signals/pricing.py` **8 处** ✓ —— 成交价推导：取不到某档价格静默落回默认 ✗
+    ⇒ **回测数字会变但没人报** ✓（正是最贵的一类 ✗）。
+- 三个文件**都没有 logger** ✗、`_log_swallowed` 均未占用 ✓（执行前先 grep ✓，2.9.28 的 `F823` 教训 ✓）
+  ⇒ 沿用"**EOF 追加受保护 helper** + 只加一行日志"的成熟模式 ✓。
+- **棘轮**：`test_except_ratchet.py` 基线 90 → **74** ✓。
+- **校验** ✓：`py_compile` ✓ ｜ `ruff` **0 错误** ✓ ｜ 全量 **1063 passed** ✓ ｜ CI ✓。
+- **静默债务进度** ✓：**163 → 74（−55%）** ✓；剩余：`routers/factors_single.py` 6 ｜
+  `artifacts_service.py` 4 ｜ `data_cache.py` 3 ｜ `feature_cache.py` 3 ｜ `routers/backtest.py` 3 ｜
+  `routers/factors_event.py` 3 ✓。
+
 ## [2.9.29] - 2026-10-18
 
 ### Changed（**P2-A 第四批：`panel_expr.py` + `qlib_engine.py`** ✓ —— 静默 **107 → 90**）

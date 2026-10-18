@@ -23,7 +23,7 @@ APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
 #: → **107**（`engine/metrics.py` 14 ✓ + `factors/single_test.py` 32 ✓）
 #: ⚠ 这一批把 helper 从 `_dbg` 改名成 `_log_swallowed` ✗→✓ —— 因为 `single_test.py` 里
 #:   **已有一个局部变量叫 `_dbg`** ✓（`QLIB_SFT_TOPK_DEBUG` 开关 ✓）⇒ ruff `F823` ✓。
-SILENT_BASELINE = 90
+SILENT_BASELINE = 74
 
 _SILENT_NODES = (ast.Pass, ast.Continue, ast.Break, ast.Expr)
 #: ⚠ `swallow` 必须算"有痕迹" ✓ —— 它**就是**本项目的留痕通路 ✓

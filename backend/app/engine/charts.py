@@ -26,7 +26,8 @@ def _save_curve_snapshot(dir_path: str, req: BacktestRequest, result: BacktestRe
         plt.rcParams["axes.unicode_minus"] = False
         try:
             plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
-        except Exception:
+        except Exception as e:
+            _log_swallowed("charts.py", e)
             pass
 
         if not dir_path:
@@ -68,7 +69,8 @@ def _save_curve_snapshot(dir_path: str, req: BacktestRequest, result: BacktestRe
         try:
             train_start_date = _add_period(req.start_date, -req.train_win, req.train_unit)
             train_label = f"{req.train_win}{req.train_unit[0]} ({train_start_date} ~ {req.start_date})"
-        except Exception:
+        except Exception as e:
+            _log_swallowed("charts.py", e)
             train_label = f"{req.train_win}{req.train_unit[0]}"
         try:
             test_end_date = _add_period(req.start_date, req.test_win, req.test_unit)
@@ -76,7 +78,8 @@ def _save_curve_snapshot(dir_path: str, req: BacktestRequest, result: BacktestRe
             if test_end_date > req.end_date:
                 test_end_date = req.end_date
             test_label = f"{req.test_win}{req.test_unit[0]} ({req.start_date} ~ {test_end_date})"
-        except Exception:
+        except Exception as e:
+            _log_swallowed("charts.py", e)
             test_label = f"{req.test_win}{req.test_unit[0]}"
 
         params_text = {
@@ -158,7 +161,8 @@ def _save_curve_snapshot(dir_path: str, req: BacktestRequest, result: BacktestRe
 
             fig.savefig(os.path.join(dir_path, "summary.png"), dpi=100, bbox_inches="tight")
             plt.close(fig)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("charts.py", e)
             pass
 
         # ---------- 兼容：单独曲线图 ----------
@@ -180,7 +184,8 @@ def _save_curve_snapshot(dir_path: str, req: BacktestRequest, result: BacktestRe
             fig.tight_layout()
             fig.savefig(os.path.join(dir_path, "nav_curve.png"), dpi=100)
             plt.close(fig)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("charts.py", e)
             pass
 
         # ---------- 兼容：单独参数图 ----------
@@ -203,7 +208,24 @@ def _save_curve_snapshot(dir_path: str, req: BacktestRequest, result: BacktestRe
             fig2.tight_layout()
             fig2.savefig(os.path.join(dir_path, "params_snapshot.png"), dpi=100)
             plt.close(fig2)
-        except Exception:
+        except Exception as e:
+            _log_swallowed("charts.py", e)
             pass
-    except Exception:
+    except Exception as e:
+        _log_swallowed("charts.py", e)
         pass
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 本文件**没有 logger** ⇒ 这里惰性取 `logging.getLogger(__name__)` ✓；
+      且全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗
+      （2.9.26 事故：把"静默"改成"崩溃" ✓，比不改更糟 ✗）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

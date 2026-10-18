@@ -30,7 +30,8 @@ def _src_fp() -> str:
     try:
         from app.engine.code_fp import code_fingerprint
         return code_fingerprint("app/signals/pricing.py", "app/engine/feature_cache.py")
-    except Exception:                                              # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _log_swallowed("pricing.py", e)
         return "na"
 
 
@@ -72,7 +73,8 @@ def resolve_universe(universe: str, start: str, end: str) -> List[str]:
     try:
         insts = D.list_instruments(D.instruments(market=str(universe or "all")),
                                    start_time=start, end_time=end, as_list=True)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("pricing.py", e)
         return []
     # ★★ v2.1.60：**与单因子测试面板同口径** ✗→✓（用户 2026-10-12，根因实测 ✓）
     #   事件研究的「基准（未触发组）」池在本函数取列 ✓，而单因子测试是 `single_test.py:117`
@@ -100,7 +102,8 @@ def _wide(pdf: pd.DataFrame, name: str, ffill: bool = True) -> Optional[pd.DataF
         s = pdf[name]
         lvl = s.index.names.index("instrument")
         w = s.unstack(level=lvl).sort_index()
-    except Exception:
+    except Exception as e:
+        _log_swallowed("pricing.py", e)
         return None
     w.index = pd.DatetimeIndex(w.index)
     return w.ffill() if ffill else w
@@ -150,14 +153,16 @@ def load_price_panel(codes: Sequence[str], start: str, end: str,
                                  extra="signals|v1|%s|src=%s"
                                        % ("open" if need_open else "noopen", _src_fp()))
         pdf = _load_cache(cache_path)
-    except Exception:
+    except Exception as e:
+        _log_swallowed("pricing.py", e)
         cache_path = None
     if pdf is None:
         pdf = panel_features(all_codes, fields, start, end, cancel_cb=cancelled, warmup_days=0)
         if pdf is not None and len(pdf) and cache_path:
             try:
                 _save_cache(cache_path, pdf)
-            except Exception:
+            except Exception as e:
+                _log_swallowed("pricing.py", e)
                 pass                                   # 缓存写失败不影响主流程
     if pdf is None or not len(pdf):
         return {}
@@ -248,7 +253,8 @@ def load_close_wide(codes: Sequence[str], start: str, end: str,
     try:
         from app.engine.feature_cache import _data_version
         h.update(("|dv=%s" % _data_version()).encode("utf-8"))
-    except Exception:
+    except Exception as e:
+        _log_swallowed("pricing.py", e)
         pass
     path = os.path.join(_pool_wide_cache_dir(), h.hexdigest()[:32] + ".pkl")
     if os.path.exists(path):
@@ -257,7 +263,8 @@ def load_close_wide(codes: Sequence[str], start: str, end: str,
                 w = pickle.load(f)
             if isinstance(w, pd.DataFrame) and len(w):
                 return w
-        except Exception:                                  # 坏缓存当未命中
+        except Exception as e:  # 坏缓存当未命中
+            _log_swallowed("pricing.py", e)
             pass
     pdf = panel_features(want, [(_px, "PX")], start, end, warmup_days=0)
     if pdf is None or not len(pdf):
@@ -271,7 +278,8 @@ def load_close_wide(codes: Sequence[str], start: str, end: str,
         with open(tmp, "wb") as f:
             pickle.dump(w, f, protocol=pickle.HIGHEST_PROTOCOL)
         os.replace(tmp, path)                              # 原子替换
-    except Exception:
+    except Exception as e:
+        _log_swallowed("pricing.py", e)
         pass
     return w
 
@@ -310,3 +318,18 @@ def load_bench_wide(codes: Sequence[str], start: str, end: str, cancelled=None) 
 
     _ensure_init()
     return load_bench_close([str(c) for c in codes], start, end, cancelled)
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 本文件**没有 logger** ⇒ 这里惰性取 `logging.getLogger(__name__)` ✓；
+      且全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗
+      （2.9.26 事故：把"静默"改成"崩溃" ✓，比不改更糟 ✗）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
