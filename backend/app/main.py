@@ -17,7 +17,8 @@ from fastapi.responses import JSONResponse
 
 from . import config, __version__
 from .logger import get_logger
-from .routers import backtest, data, datasets, export_xlsx, factors, signal_test
+from .routers import (backtest, data, datasets, export_xlsx, factors, factors_formulas,
+                      signal_test)
 
 logger = get_logger(__name__)
 
@@ -112,6 +113,10 @@ def create_app() -> FastAPI:
     app.include_router(data.router)
     app.include_router(datasets.router)
     app.include_router(factors.router)
+    # ★ v2.9.11（P1-A ✓ 2026-10-18）：**公式库组**从 `factors.py` 拆出 ✓
+    #   ⚠ 它自带 `prefix="/api/factors"` ✓ ⇒ **对外 URL 一个字都没变** ✓
+    #   （守门：`tests/test_routers_smoke.py` 断言这些路径必须存在 ✓）。
+    app.include_router(factors_formulas.router)
     app.include_router(export_xlsx.router)      # v2.1.0：XLSX 导出（沿 /api/factors/export/*）
     app.include_router(signal_test.router)
 

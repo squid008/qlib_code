@@ -3,6 +3,33 @@
 本项目所有重要变更记录于此，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（后端 `backend/app/__init__.py` 定义，前端标题栏显示）。
 
+## [2.9.11] - 2026-10-18
+
+### Changed（**P1-A 第一刀：`routers/factors.py` 拆出「公式库组」** ✓ ＋ 拆不动的部分给出证据 ✓）
+
+- `factors.py` **2,489 行** ✗（全仓第二长 ✓，51 条 API 里它一家管一半 ✗）⇒ 按域拆分第一步 ✓：
+  · 新模块 **`routers/factors_formulas.py`**（**229 行** ✓）搬走**最自足的一组** ✓：
+    3 个请求模型（`TranslateRequest` / `CustomFormulaBody` / `PinFormulaBody` ✓）+ 4 个私有 helper
+    （`_formula_library` / `_compile_formula_or_400` / `_dup_conflict` / `_market_impact_warning` ✓）
+    + **9 个端点**（`/translate`、`/custom-formulas` CRUD+pin、`/operators`、`/datasets`、`/catalog` ✓）；
+  · `factors.py` **2,489 → 2,259 行** ✓；搬走后剩余代码对被搬名字**零引用** ✓（脚本内置断言 ✓）。
+- **⚠ URL 一个字都没变** ✓ —— 新模块**自带** `APIRouter(prefix="/api/factors")` ✓，
+  `main.py` 只多 include 一个 router ✓ ⇒ **实测 openapi：51 路径 / 54 操作，与改动前完全一致** ✓✓
+  （`tests/test_routers_smoke.py` 的"关键路径必须存在"就是这条的守门 ✓）。
+- **✗ 踩到的坑（第 6 个 ✓）**：`main.py` 里 `include_router` 那几行**在函数内、有 4 空格缩进** ✗，
+  我用**无缩进的文本**去替换 ⇒ 插入的 4 行落在第 0 列 ⇒ **`IndentationError`** ✓（py_compile 当场抓到 ✓）。
+  ⇒ 教训：**改缩进敏感的代码块，先读上下文确认层级** ✓，别拿 strip 过的片段直接替换 ✗。
+- **✗ 第 7 个坑**：拆完 **6 个测试红** ✓ —— `test_custom_formula_dup.py` 用
+  `from app.routers import factors as fr` **别名** ✓ 去 monkeypatch `_compile_formula_or_400` ✗
+  ⇒ 代码搬走后 patch **打空** ✓（不是功能坏 ✓）。⇒ 改成指向 `factors_formulas` ✓ 后 **1009 passed** ✓。
+  ⚠ 通用教训：**拆模块必须同步改"按模块名 monkeypatch"的测试** ✓（这类失败长得像功能 bug ✗，其实是测试耦合 ✓）。
+- **★ 为什么只拆这一刀（有证据 ✓）**：事件研究组（L1,638~L2,489 ≈ 825 行 ✓）看似可整块搬 ✗，
+  但区间里夹着 `_PR_BT_STASH` / `pr_bt_stash_put` / `clear_nav_caches` 等
+  **被"单因子测试"组用**的模块级状态 ✗ ⇒ **整块搬会造循环依赖** ✗。
+  ⇒ 正确的下一刀必须先抽 **`routers/factors_state.py`**（所有 `_SFT_*` / `_EST_*` / `_NAV_*` / `_UNTRIG_*`
+  缓存与锁 + 存取 helper ✓），再搬端点 ✓ —— 这是 **P1-A-2** ✓。
+- **验收** ✓：`py_compile` ✓ ｜ `ruff` ✓ ｜ **1009 passed** ✓ ｜ **openapi 51/54 不变** ✓ ｜ CI ✓ ｜ 后端重启 ✓。
+
 ## [2.9.10] - 2026-10-18
 
 ### Changed（**P0-C-3：`run_single_factor_tests` 713 → 530 行** ✓ ＋ 机械外提的**天花板**已探到 ✗）

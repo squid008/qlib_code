@@ -99,7 +99,10 @@ class TestFindLiveByName:
 
 def _stub_router(monkeypatch, dup):
     """把路由层的编译/落盘/查库都换成桩 ✓（本文件只测**冲突契约**，不测编译 ✓）。"""
-    from app.routers import factors as fr
+    # ★ v2.9.11（P1-A ✓ 2026-10-18）：公式库端点已拆到 `factors_formulas` ✓
+    #   （`_compile_formula_or_400` / `_dup_conflict` 都跟着搬走了 ✓）
+    #   ⇒ 这里必须指向**新模块**，否则 monkeypatch 打在旧模块上 ⇒ 点数不到 ✗（实测 6 个用例红 ✓）。
+    from app.routers import factors_formulas as fr
 
     class _T:
         name = "IS_GOLD_PIT"
@@ -151,7 +154,10 @@ class TestCreateConflict:
 
 
 def fr_default() -> bool:
-    from app.routers import factors as fr
+    # ★ v2.9.11（P1-A ✓ 2026-10-18）：公式库端点已拆到 `factors_formulas` ✓
+    #   （`_compile_formula_or_400` / `_dup_conflict` 都跟着搬走了 ✓）
+    #   ⇒ 这里必须指向**新模块**，否则 monkeypatch 打在旧模块上 ⇒ 点数不到 ✗（实测 6 个用例红 ✓）。
+    from app.routers import factors_formulas as fr
     return fr.CustomFormulaBody(formula="x").allow_duplicate
 
 
