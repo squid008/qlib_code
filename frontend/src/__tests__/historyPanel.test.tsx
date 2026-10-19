@@ -32,7 +32,18 @@ const ITEM = {
   is_task_running: false,
 }
 
-const listMock = vi.fn(async () => ({ items: [ITEM], retention: null }))
+//: ★ 第二条刻意做成"**未完成**"✓ —— `续测` 只在 `!has_result && !is_task_running` 时渲染 ✓
+//  （实测：判定写在 L340 ✓，我第一次只放了一条 `has_result: true` 的行 ⇒ 按钮根本不出现 ✗）
+const ITEM_TODO = {
+  ...ITEM,
+  task_id: 'T-BBB',
+  dir_name: '20240102_BBB',
+  seq: 2,
+  has_result: false,
+  has_artifacts: true,      // 有模型产物 ⇒ 「查看」仍可用 ✓
+}
+
+const listMock = vi.fn(async () => ({ items: [ITEM, ITEM_TODO], retention: null }))
 // ⚠ 参数名写成 `_id` ✓ —— `vi.fn(async () => …)` 再传参会报 TS2554 ✓（实测抓到 ✓）
 const delMock = vi.fn(async (_id: string) => undefined)
 
@@ -89,15 +100,27 @@ describe('HistoryPanel', () => {
     expect(onViewResult).toHaveBeenCalledWith('T-AAA')
   })
 
-  it('⭐「续测」按钮只在传入 `onResume` 时渲染（否则整列少一个按钮 ✓）', async () => {
-    // ⚠ 没能测"点了续测传哪个 id" ✗：实际渲染还要看快照里的任务状态（`failed/cancelled` 才出 ✓），
-    //   而我这轮的 mock 快照没有状态字段 ⇒ 按钮根本不出现 ✓（诚实记一笔 ✓，没假装测到 ✗）。
-    const withResume = btn(await mount({ onResume: () => {} }), '续测')
-    const without = btn(await mount({ onResume: undefined }), '续测')
-    expect(without).toBeUndefined()
-    // 断言"有 onResume 时它可能被状态闸门挡住"是**可接受**的 ✓ —— 这里只要求：
-    // 不传 onResume 一定不渲染 ✓（这条本身就是一处真实的行为契约 ✓）
-    expect(withResume === undefined || withResume instanceof HTMLElement).toBe(true)
+  it('⭐「续测」只对"未完成"行出现，点击 ⇒ onResume(该行 task_id) 且按钮**立刻消失**', async () => {
+    const onResume = vi.fn()
+    const el = await mount({ onResume })
+    // 只有"未完成"的行有它 ✓（`T-BBB` ✓），已完成的行没有 ✓
+    const all = Array.from(el.querySelectorAll('button')) as HTMLButtonElement[]
+    expect(all.filter((b) => (b.textContent || '').trim() === '续测')).toHaveLength(1)
+    expect(el.textContent).toContain('未完成')
+
+    await act(async () => {
+      btn(el, '续测')!.click()
+    })
+    // 传的是**未完成那一行**的 task_id ✓（传成别人的 = 写进别人的产物目录 ✗）
+    expect(onResume).toHaveBeenCalledWith('T-BBB')
+    // 乐观更新：点完立刻消失 ✓（不等后端刷新 ✓）
+    expect(btn(el, '续测')).toBeUndefined()
+  })
+
+  it('不传 `onResume` 时不留续测按钮（也不留"未完成"旁的空位）', async () => {
+    const el = await mount({ onResume: undefined })
+    expect(btn(el, '续测')).toBeUndefined()
+    expect(el.textContent).toContain('未完成')     // 标签本身还在 ✓
   })
 
   it('⭐「删除」先弹页内确认，**不立即调用** deleteBacktest', async () => {
