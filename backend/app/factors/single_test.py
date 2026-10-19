@@ -207,7 +207,14 @@ def _decile_matrix(dms: dict) -> Optional[pd.DataFrame]:
     """
     if not dms or len(dms) < 2:
         return None
-    mat = pd.DataFrame({int(q): dm for q, dm in dms.items()}).sort_index().dropna()
+    # ★ 2026-10-19：`sort_index()` 只排**行（日期）** ✗ —— docstring 写的是"**列 = 组号升序**" ✓，
+    #   而实测传入乱序 dict 时列顺序会保持原样（`[1, 0]`）✗ ⇒ 补 `sort_index(axis=1)` ✓。
+    #   ⚠ 影响面：`_quantile_curves` 的 `groups[]` 顺序（展示用 ✓）—— 数值口径不变 ✓
+    #     （best/worst 由 `idxmax/idxmin` 定 ✓，与列顺序无关 ✓）。
+    mat = (pd.DataFrame({int(q): dm for q, dm in dms.items()})
+           .sort_index()                    # 行：日期升序 ✓
+           .sort_index(axis=1)              # 列：组号升序 ✓（docstring 的承诺 ✓）
+           .dropna())
     # ⚠ 必须显式转 float64：面板 `LABEL` 是 **float32**，`Series.cumsum()` 会在 float32 上
     #   逐步累积（1211 步、量级 ~1e-2 ⇒ 误差可达 1e-4，且与 `topk_curves` 的 float64 路径
     #   **不一致**）。统一转 float64 后两条路径逐位相同（实测自检②当场抓到）。
