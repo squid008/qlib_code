@@ -63,7 +63,15 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # ★★ v2.9.40（2026-10-19 ✓）：20 → **22** ✗→✓
+          #   为什么：2.9.21 查清 CI（Linux + Node 20）上**只要走 jsdom 就崩** ✗
+          #   （`TypeError: ... (reading 'bind')` ✓、0 个用例被收集 ✓），而本地
+          #   **Node 24** 正常 ✓ ⇒ 高度怀疑 Node 版本与 jsdom 30 不兼容 ✗。
+          #   ⇒ 升到 **22（LTS）** ✓，并用 `src/__tests__/dom_probe.test.tsx`（逐文件开 jsdom ✓）
+          #     当探针验证 ✓ —— 探针绿 = jsdom 可用 = 可以开始写**交互级**组件测试 ✓。
+          #   ⚠ 若探针仍红 ✗：说明光升 Node 不够 ⇒ 钉 jsdom 版本或换 `happy-dom` ✓
+          #     （**不要**再动全局 `environment` ✗ —— 它是 `node`，纯函数用例跑得更快 ✓）。
+          node-version: 22
 
       - name: 安装依赖
         # ★★ v2.9.19（2026-10-18 ✓）：`npm ci` → `npm install --legacy-peer-deps` ✗→✓
