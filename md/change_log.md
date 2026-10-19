@@ -39,6 +39,29 @@
 
 ---
 
+## [2.9.62] - 2026-10-19
+
+### Test（**C 项第三步：`_build_port_config` 10 条** ✓ —— 回测数字的直接来源 ✓）
+
+- 新增 `tests/test_qlib_engine_port_config.py`（**10 条 ✓，6.7s ✓**）。三份 qlib_engine 用例合计
+  覆盖该模块 **21.8%** ✓（154/706 语句 ✓；v2.9.60 的 13.6% → 17.7% → 21.8% ✓）。
+- **为什么这块最该钉** ✓：它把"界面上填的东西"翻译成 qlib 的 `exchange_kwargs` ✓ ——
+  **手续费/滑点/最低手续费/每手股数/涨跌停/成交价基准** 全在这里落位 ✓。
+  漏传或传错一个键，回测照样跑完 ✓、界面照样出图 ✓，只是**数字悄悄变了** ✗（和默认超参同一类风险 ✓）。
+- 断言：`open_cost/close_cost/impact_cost/min_cost/trade_unit/limit_threshold/price_adjust`
+  **逐个落位** ✓；`volume_threshold=None` 必须是 **`None`** ✓（不是 0 ✗：0 = 一笔都不成交 ✗）、
+  传 0.25 ⇒ `{"all": ("current", "0.25 * $volume")}` ✓。
+- **三个"不许吞"的分支** ✓：
+  · `exclude_st=True` 但本机**没有 `is_st` 标签** ⇒ **必须抛** ✓，且文案含 **`dump_states.py`** ✓
+    （静默忽略 = 用户以为剔除了 ST、其实没有 ✗）；
+  · 没有 `limit_up/down` 标签 ⇒ **不订阅但不抛** ✓（自动降级到"昨收×板块幅度"倒推 ✓）；
+  · `avg_co/avg_ohlc` ⇒ `deal_price` 必须**改成 `close`** ✓ + `avg_mode` 传真实模式 ✓ +
+    订阅 `$open/$high/$low` ✓（否则 qlib 初始化就报错 ✗）；而 `close/open/vwap` **不许带 `avg_mode`** ✓。
+- **`$factor` 任何配置下都必须订阅** ✓（复权还原的前提 ✓，漏了 ⇒ 真实价算错 ✗）。
+- 另钉：`strategy` = `PeriodicTopKStrategy` ✓（`topk_ratio` 非空即按比例选股 ✓、`rebalance_base` 透传 ✓）、
+  `exchange` = `BoardAwareExchange` ✓、`executor` = `SimulatorExecutor` ✓。
+- **校验** ✓：10 passed ✓（合计 36 ✓）｜ `ruff` **0 错误** ✓ ｜ CI ✓。
+
 ## [2.9.61] - 2026-10-19
 
 ### Test（**C 项第二步：配置装配 12 条** ✓ —— 把"可复现性"和"留空=默认"钉死 ✓）
