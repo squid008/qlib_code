@@ -45,6 +45,8 @@ import ModelParamsForm from './components/ModelParamsForm'
 import TaskStatusPanel from './components/TaskStatusPanel'
 // ★ v2.9.41（P1-B ✓ 2026-10-19）：`App.tsx` 拆出的第一块 —— 日截面剔除（三布尔 + 一回调 ✓）
 import DayExclusions from './components/DayExclusions'
+// ★ v2.9.42：第二块 —— 硬规则闸门（三个数值字段 ✓，`''⇒null` 的转换收在组件内 ✓）
+import HardRuleGate from './components/HardRuleGate'
 
 export default function App() {
   // ★★ v2.1.68（用户 2026-10-12："你把面板参数股票池默认改成全A，结束日期改成 2026-01-31，
@@ -1606,36 +1608,15 @@ export default function App() {
               信号后处理 <span className="font-normal text-slate-400">（默认全部关闭=复现旧行为）</span>
             </h3>
             <div>
-              {/* 硬规则闸门（确定性过滤） */}
-              <div className="mt-2">
-                <span className="text-sm text-slate-500">硬规则闸门：只允许满足以下条件的股票进入候选（留空=不限）</span>
-                <div className="mt-1 flex flex-wrap gap-x-5 gap-y-2">
-                  <label className="block">
-                    <span className="text-sm text-slate-500">市值下限(亿)</span>
-                    <input
-                      type="number" min={0} className="mt-1 w-28 border rounded px-2 py-1"
-                      value={(form.hard_filters as any)?.min_mktcap_bn ?? ''}
-                      onChange={(e) => setHard('min_mktcap_bn', e.target.value === '' ? null : Number(e.target.value))}
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-sm text-slate-500">市值上限(亿)</span>
-                    <input
-                      type="number" min={0} className="mt-1 w-28 border rounded px-2 py-1"
-                      value={(form.hard_filters as any)?.max_mktcap_bn ?? ''}
-                      onChange={(e) => setHard('max_mktcap_bn', e.target.value === '' ? null : Number(e.target.value))}
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-sm text-slate-500">股价下限(元)</span>
-                    <input
-                      type="number" min={0} step={0.01} className="mt-1 w-28 border rounded px-2 py-1"
-                      value={(form.hard_filters as any)?.min_price ?? ''}
-                      onChange={(e) => setHard('min_price', e.target.value === '' ? null : Number(e.target.value))}
-                    />
-                  </label>
-                </div>
-              </div>
+              {/* 硬规则闸门（确定性过滤）★ v2.9.42：已拆成 `<HardRuleGate>` ✓
+                  —— 三个数值字段的 `''⇒null` 转换收在组件里 ✓（`0` 会被后端当成"市值必须为 0"✗）
+                  守门用例见 `src/__tests__/hardRuleGate.test.tsx` ✓ */}
+              <HardRuleGate
+                minMktcapBn={(form.hard_filters as any)?.min_mktcap_bn ?? null}
+                maxMktcapBn={(form.hard_filters as any)?.max_mktcap_bn ?? null}
+                minPrice={(form.hard_filters as any)?.min_price ?? null}
+                onChange={(k, v) => setHard(k, v)}
+              />
               {/* Meta-Gate 概率风控 */}
               <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
                 <label className="flex items-center gap-1.5 text-sm cursor-pointer"
