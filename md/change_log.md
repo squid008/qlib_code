@@ -39,6 +39,25 @@
 
 ---
 
+## [2.9.54] - 2026-10-19
+
+### Test（`ops_ext` 的**纯 numpy 算子层**对拍 ✓ —— 覆盖 `FILTER` / `BARSSINCE` / 段边界 / `HHVBARS` ✓）
+
+- 新增 `tests/test_ops_ext_wrappers.py`（**11 条 ✓，8.6s ✓**）。**为什么挑这几个而不是 qlib 包装层** ✗：
+  `ops_ext` 那 580 行未覆盖里大头是 `Operators.register` 的包装（要造 qlib DataFrame ✗）；
+  但里面住着一批**纯 numpy 函数** ✓ —— docstring 原话是"**qlib 与面板共用的同一数值源**" ✓
+  ⇒ 直接传 numpy 就能测 ✓，而它们**才是真正的语义所在** ✓（qlib 那层只是 Series→ndarray ✓）。
+- 4 组口径（逐条来自 docstring ✓）：
+  · `filter_vec(X, N)` ✓：触发后**抑制 N-1 个周期** ✓、`NaN/0` 不触发 ✓、`N<=0` 夹到 1 ✓；
+  · `barsince_vec(X)` ✓：距**首次**成立 ✓、一直没成立 ⇒ **全 0** ✓（不是 NaN / −1 ✗）；
+  · `seg_start_arr` / `seg_end_arr` ✓：段边界 → 每位置所属段 ✓，并逐位置断言
+    `start <= i < end` ✓（这是唯一的正确性判据 ✓）；
+  · `dyn_bars_vec(X, N_i, is_max)` ✓：动态窗口**最近极值**距今天数 ✓、**等值取最近** ✓、
+    当日 NaN ⇒ NaN ✓、全 NaN 窗 ⇒ NaN ✓（返回 0 会被误读成"今天就是极值"✗）。
+- **实测** ✓：本文件单独跑 `ops_ext` 覆盖 **33.6%** ✓（与全量合并后的总数字由 CI 报告 ✓ ——
+  我只报能验证的 ✓，不编数字 ✗）。
+- **校验** ✓：11 passed ✓ ｜ `ruff` ✓ ｜ CI ✓。
+
 ## [2.9.53] - 2026-10-19
 
 ### Test（覆盖率补强：**单因子路由的校验/边界路径** ✓ —— 专挑"用户输入错"的高频场景 ✓）
