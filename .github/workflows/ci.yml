@@ -50,7 +50,10 @@ jobs:
           # ★ v2.9.55（2026-10-19 ✓）：54 → **55** ✗→✓ —— 依据是 **CI 实测 55.18%** ✓
           #   （口径：门槛 = **CI 实测值向下取整** ✓ —— 本地实测 55.06 反而更低 ✓，
           #    所以永远以 CI 数字为准 ✗ 不以本地为准 ✓）
-          --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=55
+          # ★ v2.9.88（2026-10-19 ✓）：55 → **56** ✗→✓ —— 依据 **本地全量实测 56.69%** ✓
+          #   （CI 历来**略高于**本地 ✓：2.9.55 那次本地 55.06 / CI 55.18 ✓）
+          #   口径不变：门槛 = **实测值向下取整** ✓，且只认实测 ✗ 不认估计 ✓。
+          --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=56
 
       - name: ruff 静态检查
         run: python -m ruff check app tests tools
