@@ -49,6 +49,8 @@ import DayExclusions from './components/DayExclusions'
 import HardRuleGate from './components/HardRuleGate'
 // ★ v2.9.43：第三块 —— Meta-Gate 概率风控（10 个 props ✓，搜索态收在组件内 ✓）
 import MetaGatePanel from './components/MetaGatePanel'
+// ★ v2.9.44：第四刀 —— 交易设置里的「资金与口径」3 个字段（成交价基准 5 档 / 复权 3 档 ✓）
+import TradingBasics from './components/TradingBasics'
 
 export default function App() {
   // ★★ v2.1.68（用户 2026-10-12："你把面板参数股票池默认改成全A，结束日期改成 2026-01-31，
@@ -1464,44 +1466,16 @@ export default function App() {
               交易设置
             </h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <label className="block">
-                <span className="text-sm text-slate-500">起始总资产(万元)</span>
-                <input
-                  type="number"
-                  step="100"
-                  className="mt-1 w-full border rounded px-2 py-1"
-                  value={capitalWan}
-                  onChange={(e) => setCapitalWan(Number(e.target.value))}
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-sm text-slate-500">成交价基准</span>
-                <select
-                  className="mt-1 w-full border rounded px-2 py-1"
-                  value={form.deal_price}
-                  onChange={(e) => update('deal_price', e.target.value)}
-                >
-                  <option value="close">收盘价</option>
-                  <option value="open">开盘价</option>
-                  <option value="vwap">均价(成交量加权)</option>
-                  <option value="avg_co">均价(开盘+收盘)/2</option>
-                  <option value="avg_ohlc">均价(开收高低)/4</option>
-                </select>
-              </label>
-
-              <label className="block" title="前复权与后复权在比率类因子/收益率上数学等价（仅价格绝对值不同）">
-                <span className="text-sm text-slate-500">复权方式</span>
-                <select
-                  className="mt-1 w-full border rounded px-2 py-1"
-                  value={form.price_adjust || 'none'}
-                  onChange={(e) => update('price_adjust', e.target.value)}
-                >
-                  <option value="none">不复权</option>
-                  <option value="forward">前复权</option>
-                  <option value="backward">后复权</option>
-                </select>
-              </label>
+              {/* ★ v2.9.44：资金与口径（3 字段 ✓）已拆成 `<TradingBasics>` ✓
+                  —— 「交易设置」10 个字段里最独立的一组 ✓；`<></>` 片段保证 grid 布局不变 ✓ */}
+              <TradingBasics
+                capitalWan={capitalWan}
+                dealPrice={form.deal_price}
+                priceAdjust={form.price_adjust}
+                onCapitalWan={(v) => setCapitalWan(v)}
+                onDealPrice={(v) => update('deal_price', v)}
+                onPriceAdjust={(v) => update('price_adjust', v)}
+              />
 
               <label className="block">
                 <span className="text-sm text-slate-500">买入手续费(%)</span>
