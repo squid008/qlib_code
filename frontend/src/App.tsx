@@ -53,6 +53,8 @@ import MetaGatePanel from './components/MetaGatePanel'
 import TradingBasics from './components/TradingBasics'
 // ★ v2.9.45：第五刀 —— 费用与滑点（**百分数↔比率**换算收在组件内 ✓）
 import CostSettings from './components/CostSettings'
+// ★ v2.9.46：第六刀 —— 成交约束（成交量限制 / 涨跌停限制 / 每手股数 ✓）
+import ExecutionLimits, { LIMIT_THRESHOLD_ON } from './components/ExecutionLimits'
 
 export default function App() {
   // ★★ v2.1.68（用户 2026-10-12："你把面板参数股票池默认改成全A，结束日期改成 2026-01-31，
@@ -1490,48 +1492,17 @@ export default function App() {
                 onMinCost={(v) => update('min_cost', v)}
               />
 
-              <label className="block">
-                <span className="text-sm text-slate-500">成交量限制(比例)</span>
-                <input
-                  type="number"
-                  step="0.05"
-                  className="mt-1 w-full border rounded px-2 py-1"
-                  value={form.volume_threshold ?? ''}
-                  onChange={(e) =>
-                    update(
-                      'volume_threshold',
-                      e.target.value === '' ? null : Number(e.target.value),
-                    )
-                  }
-                />
-              </label>
+              {/* ★ v2.9.46：成交约束（3 字段 ✓）已拆成 `<ExecutionLimits>` ✓
+                  —— `limit_threshold` 的魔法值 `0.1` 收成 `LIMIT_THRESHOLD_ON` 单点定义 ✓ */}
+              <ExecutionLimits
+                volumeThreshold={form.volume_threshold}
+                limitEnabled={form.limit_threshold != null}
+                tradeUnit={form.trade_unit}
+                onVolumeThreshold={(v) => update('volume_threshold', v)}
+                onLimitEnabled={(on) => update('limit_threshold', on ? LIMIT_THRESHOLD_ON : null)}
+                onTradeUnit={(v) => update('trade_unit', v)}
+              />
 
-              <div className="block">
-                <span className="text-sm text-slate-500">涨跌停限制</span>
-                <label
-                  className="mt-1 flex items-center gap-1.5 text-sm cursor-pointer border rounded px-2 h-[35px] bg-white dark:bg-slate-900"
-                  title="自动识别：主板 10%、创业/科创 20%、北交 30%；数据有交易所涨跌停价标签时直接按标签（ST 5%/退市整理 10% 也自动正确）。取消=不设涨跌停（理想成交）"
-                >
-                  <input
-                    type="checkbox"
-                    checked={form.limit_threshold != null}
-                    onChange={(e) => update('limit_threshold', e.target.checked ? 0.1 : null)}
-                  />
-                  <span>封板不可交易</span>
-                </label>
-              </div>
-
-              <label className="block">
-                <span className="text-sm text-slate-500">每手股数</span>
-                <input
-                  type="number"
-                  className="mt-1 w-full border rounded px-2 py-1"
-                  value={form.trade_unit ?? ''}
-                  onChange={(e) =>
-                    update('trade_unit', e.target.value === '' ? null : Number(e.target.value))
-                  }
-                />
-              </label>
             </div>
 
             {/* 日截面剔除（★ v2.9.41：已拆成 `<DayExclusions>` ✓ —— 三个布尔 + 一个回调 ✓，
