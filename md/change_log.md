@@ -39,6 +39,29 @@
 
 ---
 
+## [2.9.67] - 2026-10-19
+
+### Changed（**`PanelEvaluator` 拆分第二步：`FieldResolver`** ✓ —— 类 **340 → 230 行** ✓）
+
+- **先做归属分析再动手** ✓（v2.9.66 后的实测矩阵 ✓）：
+  `_field_cache` 只被 `field` 用 ✓；`_layout` / `_req_lo` / `_req_hi` 只被 `field` + `_chip_or_bin` 用 ✓
+  ⇒ 这 4 个状态**天然属于这一组** ✓（不是共享缓存 ✗）。方法合计 **119 行** ✓。
+- 新增 **`FieldResolver`（154 行 ✓，含 4 个方法的原样源码 ✓）**：`field` ✓ / `_chip_or_bin` ✓ /
+  `_chip_field` ✓ + 它们独占的缓存 ✓。`_full` / `_layout` / `_req_*` 仍由
+  `PanelEvaluator.__init__` 算（`_union_layout` ✓）**按值传入** ✓ —— 不重复计算 ✗、口径一字未改 ✓。
+- **兼容** ✓：`PanelEvaluator.field(...)` 保留**委托** ✓（`chip_store.py` 与多个测试在用 ✓）；
+  构造参数**全有默认值** ✓ ⇒ 只想借字段解析的地方可以 `FieldResolver(field_cache=..., read_start=...)` ✓。
+- **按「方案 1」改了 2 处测试** ✓（`tests/test_chip_field.py`）：原来用
+  `object.__new__(PanelEvaluator)` + 手动塞属性 ✗（注释写着"只借用字段解析，不读盘"✓）——
+  那是"**造半个求值器**"✗，拆分后必然断 ✗，而且它本来也不是被测物 ✓
+  ⇒ 改成直接构造 `FieldResolver(...)` ✓（更贴近被测物 ✓）。
+- **棘轮**：`PanelEvaluator` **340 → 230 行** ✓；`panel_expr.py` 文件 2,542 → **2,592** ✗
+  ⇒ 上限按实情调整到 **2,600** ✓ —— ⚠ 这是该棘轮**第一次向上调整** ✗，理由写在代码里 ✓：
+  **两个类同处一文件必然增加脚手架** ✓，而**真正的复杂度指标（类大小）是下降的** ✓（340 → 230）；
+  若将来把 `FieldResolver` 搬去独立模块 ✓，这个数字**必须立刻降回来** ✓。
+- **校验** ✓：`compileall` **0** ✓ ｜ `ruff` **0 错误** ✓ ｜
+  `test_chip_field` + `test_count_semantics` + `test_import_all` **101 passed** ✓ ｜ CI ✓。
+
 ## [2.9.66] - 2026-10-19
 
 ### Changed（**`PanelEvaluator` 拆分第一步** ✓ —— 类 **590 → 340 行** ✓）
