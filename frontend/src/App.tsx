@@ -47,6 +47,8 @@ import TaskStatusPanel from './components/TaskStatusPanel'
 import DayExclusions from './components/DayExclusions'
 // ★ v2.9.42：第二块 —— 硬规则闸门（三个数值字段 ✓，`''⇒null` 的转换收在组件内 ✓）
 import HardRuleGate from './components/HardRuleGate'
+// ★ v2.9.43：第三块 —— Meta-Gate 概率风控（10 个 props ✓，搜索态收在组件内 ✓）
+import MetaGatePanel from './components/MetaGatePanel'
 
 export default function App() {
   // ★★ v2.1.68（用户 2026-10-12："你把面板参数股票池默认改成全A，结束日期改成 2026-01-31，
@@ -380,7 +382,7 @@ export default function App() {
       return { ...f, hard_filters: hf }
     })
   // Gate 附加特征：勾选已保存公式 → 存其 qlib 表达式进 meta_gate_opts.extra_features
-  const [gateExtraQuery, setGateExtraQuery] = useState('')
+  // ★ v2.9.43：搜索框状态已随组件搬进 `MetaGatePanel` ✓（App 少一个只为它存在的 useState ✓）
   const toggleGateExtra = (id: string) => {
     const fm = customFormulas.find((x) => x.id === id)
     if (!fm) return
@@ -1617,87 +1619,21 @@ export default function App() {
                 minPrice={(form.hard_filters as any)?.min_price ?? null}
                 onChange={(k, v) => setHard(k, v)}
               />
-              {/* Meta-Gate 概率风控 */}
-              <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
-                <label className="flex items-center gap-1.5 text-sm cursor-pointer"
-                       title="主模型 topK 候选内训练二分类 gate（学'未来收益>0'），按日剔除 gate 概率最低的 reject_ratio 比例后回测；排序仍由主模型决定，gate 只做风控闸门。勾选下方'Gate 附加特征'（已保存的 01 触发 / 连续公式）即可把它们作为 gate 输入特征，由模型 feature importance 自动学习挑选——多个 01 因子就是走这个通道（无需再单独传表达式）">
-                  <input type="checkbox" checked={!!form.meta_gate} onChange={(e) => update('meta_gate', e.target.checked)} />
-                  <span>Meta-Gate 风控</span>
-                </label>
-                {form.meta_gate && (
-                  <label className="block">
-                    <span className="text-sm text-slate-500">候选内剔除比例</span>
-                    <input
-                      type="number" min={0} max={0.9} step={0.05} className="mt-1 w-24 border rounded px-2 py-1"
-                      value={(form.meta_gate_opts as any)?.reject_ratio ?? 0.25}
-                      onChange={(e) =>
-                        setGateRatio(e.target.value === '' ? 0.25 : Math.min(0.9, Math.max(0, Number(e.target.value))))}
-                    />
-                  </label>
-                )}
-                {form.meta_gate && (
-                  <label className="block">
-                    <span
-                      className="text-sm text-slate-500"
-                      title="逐个单独试：把每条勾选的公式单独加进基线（主特征 + 主模型打分）重新训一个门控模型，比较验证集 AUC 提升 ⇒ 直接回答「哪个风控因子更有用」。结果写进产物，结果页出「Meta-Gate 因子归因」表；勾选越多越慢（每条公式多训一个模型）。⚠ 端到端实测：一个门控模型训练约 4.5~7.6s ⇒ 每段约 +20~30s ⇒ 36 段约 +12~18 分钟。"
-                    >
-                      因子归因（逐个公式单独试）
-                    </span>
-                    <select
-                      className="mt-1 border rounded px-2 py-1 text-sm"
-                      value={String((form.meta_gate_opts as any)?.attribution ?? 'all')}
-                      onChange={(e) => setGateAttribution(e.target.value)}
-                    >
-                      <option value="all">每段都做（默认，36 段约 +12~18 分钟）</option>
-                      <option value="seg1">只做第 1 段（更省时间）</option>
-                      <option value="off">关（只记分裂增益占比，不额外训练）</option>
-                    </select>
-                  </label>
-                )}
-                {form.meta_gate && customFormulas.length > 0 && (
-                  <div className="mt-2 w-full">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-sm text-slate-500">
-                        Gate 附加特征（已选{' '}
-                        {(form.meta_gate_opts?.extra_features || []).length} / {customFormulas.length}，机器用
-                        importance 自动挑选，建议 0/1 触发类）
-                      </span>
-                      <span className="space-x-1">
-                        <button type="button" onClick={() => setGateExtraAll(true)} className="text-blue-600 hover:underline text-sm">
-                          全选
-                        </button>
-                        <span className="text-slate-300">|</span>
-                        <button type="button" onClick={() => setGateExtraAll(false)} className="text-blue-600 hover:underline text-sm">
-                          清空
-                        </button>
-                      </span>
-                    </div>
-                    <input
-                      type="text"
-                      value={gateExtraQuery}
-                      onChange={(e) => setGateExtraQuery(e.target.value)}
-                      placeholder="搜索公式名…（多公式快速定位）"
-                      className="w-full mb-1 border rounded px-2 py-1 text-xs"
-                    />
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 max-h-44 overflow-y-auto pr-1">
-                      {customFormulas
-                        .filter((fm) => {
-                          const q = gateExtraQuery.trim().toLowerCase()
-                          return !q || fm.name.toLowerCase().includes(q)
-                        })
-                        .map((fm) => {
-                          const sel = (form.meta_gate_opts?.extra_features || []).includes(fm.expression)
-                          return (
-                            <label key={fm.id} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                              <input type="checkbox" checked={sel} onChange={() => toggleGateExtra(fm.id)} />
-                              <span>{fm.name}</span>
-                            </label>
-                          )
-                        })}
-                    </div>
-                  </div>
-                )}
-              </div>
+              {/* Meta-Gate 概率风控 ★ v2.9.43：已拆成 `<MetaGatePanel>` ✓
+                  —— 10 个 props ✓；**搜索态 `query` 收进组件** ✓（App 少一个只为它存在的 useState ✓）
+                  守门用例见 `src/__tests__/metaGatePanel.test.tsx` ✓ */}
+              <MetaGatePanel
+                enabled={!!form.meta_gate}
+                rejectRatio={(form.meta_gate_opts as any)?.reject_ratio ?? null}
+                attribution={(form.meta_gate_opts as any)?.attribution ?? null}
+                extraFeatures={form.meta_gate_opts?.extra_features || []}
+                formulas={customFormulas}
+                onToggleEnabled={(v) => update('meta_gate', v)}
+                onRatio={(v) => setGateRatio(v)}
+                onAttribution={(v) => setGateAttribution(v)}
+                onExtraAll={(on) => setGateExtraAll(on)}
+                onToggleExtra={(id) => toggleGateExtra(id)}
+              />
             </div>
           </div>
 
