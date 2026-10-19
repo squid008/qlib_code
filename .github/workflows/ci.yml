@@ -47,7 +47,10 @@ jobs:
         #   ⚠ 改这个数字必须同时写进 md/change_log.md ✓（否则下一个人不知道为什么是 54 ✗）
         run: >-
           python -m pytest tests -m "not datareq" -q
-          --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=54
+          # ★ v2.9.55（2026-10-19 ✓）：54 → **55** ✗→✓ —— 依据是 **CI 实测 55.18%** ✓
+          #   （口径：门槛 = **CI 实测值向下取整** ✓ —— 本地实测 55.06 反而更低 ✓，
+          #    所以永远以 CI 数字为准 ✗ 不以本地为准 ✓）
+          --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=55
 
       - name: ruff 静态检查
         run: python -m ruff check app tests tools
