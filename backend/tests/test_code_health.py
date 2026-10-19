@@ -55,7 +55,10 @@ BIG_FILES = {
     # ★ v2.9.56：搬出 `chip_turn.py`（109 行 ✓）⇒ panel_expr 2,909 → 2,803 ✓ 上限 2810 ✓
     # ★ v2.9.57：再搬出 `seg_ops.py`（315 行 ✓ 分段/滚动算子 + 两个段缓存 ✓）
     #   ⇒ panel_expr → **2,533** ✓ 上限 → **2545** ✓（棘轮只许变小 ✓）
-    "factors/panel_expr.py": 2545,
+    # ★ v2.9.66：`PanelEvaluator._apply`（257 行 ✓ 不用 self ✓）提成模块级 `_apply_node` ✓
+    #   ⇒ 类 **590 → 340 行** ✓；文件本身 2,533 → 2,542（只是把注释挪了个位置 ✓）
+    #   ⇒ 上限 2,545 → **2,542** ✓（棘轮只许变小 ✓）
+    "factors/panel_expr.py": 2542,
     "factors/ops_ext.py": 2200,
     "engine/qlib_engine.py": 1560,
     # ⚠ 2026-10-18：P2-A 第六批给路由层加日志 ⇒ `factors_single.py` 1233 → 1254 ✓（上限 1260 ✓）

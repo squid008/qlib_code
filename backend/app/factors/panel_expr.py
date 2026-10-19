@@ -1065,6 +1065,269 @@ def _align(a: pd.Series, b: pd.Series):
 
 
 
+# ★ 2026-10-19 拆分 ✓：原 `PanelEvaluator._apply` → 模块级 `_apply_node`（**算子分派** ✓ 257 行 ✓）。
+#   留在本文件：它 15 个自由名是本文件模块级 ✗ ⇒ 搬去新模块会**循环 import** ✗。
+def _apply_node(op: str, args, sr: bool, active=None, ev=None) -> Optional[pd.Series]:
+    if op == "Ref":
+        s, k = args[0], int(args[1])
+        if s is None:
+            raise ValueError("Ref 首参不能是常量")
+        # active 行集上普通 shift：SR 时 active 已剔停牌 → 语义正确
+        return _ref(s, k, sr=False)
+    if op in _ROLL_FUNC:
+        s, N = args[0], int(args[1])
+        if s is None:
+            raise ValueError(f"{op} 首参不能是常量")
+        # SR 时 active 已剔停牌 → 普通滚动即可（无需 _valid_rolling 二次剔除）
+        return _roll(s, _ROLL_FUNC[op], N, sr=False)
+    if op in ("EMA", "EMA_TDX"):
+        s, N = args[0], args[1]
+        if s is None:
+            raise ValueError(f"{op} 首参不能是常量")
+        # EMA 非固定窗口（指数递归），逐股 ewm（sr=True 时 active 已是压缩序列）
+        return _ema(s, float(N), tdx=(op == "EMA_TDX"), sr=sr)
+    if op == "SMA":
+        s, N, M = args[0], args[1], args[2]
+        if s is None:
+            raise ValueError("SMA 首参不能是常量")
+        return _sma(s, float(N), float(M), sr=sr)
+    if op == "BARSCOUNT":
+        # 自数据起点累计有效交易日（BARSCOUNT($close)）；面板与 qlib 同从各自
+        # read_start 起点累计 → 对齐。逐股内核 _bars_count_seg。
+        s = args[0]
+        if s is None:
+            raise ValueError("BARSCOUNT 首参不能是常量")
+        from . import ops_ext
+
+        return _by_group(s, None, _bars_count_seg,
+                         lambda v, w, ss, se: ops_ext.bars_count_seg(v, w, ss, se))
+    if op == "BARSSINCE":
+        # 距首次成立周期数（不限窗口）。面板与 qlib 共用 ops_ext.barsince_vec。
+        s = args[0]
+        if s is None:
+            raise ValueError("BARSSINCE 首参不能是常量")
+        from . import ops_ext
+
+        return _by_group(s, None, lambda v: ops_ext.barsince_vec(v),
+                         lambda v, w, ss, se: ops_ext.barsince_vec_seg(v, w, ss, se))
+    if op == "FILTER":
+        # 信号抑制：成立输出 1 后 N-1 周期抑制重复。面板与 qlib 共用 ops_ext.filter_vec。
+        s, N = args[0], args[1]
+        if s is None:
+            raise ValueError("FILTER 首参不能是常量")
+        from . import ops_ext
+
+        return _by_group(s, None, lambda v: ops_ext.filter_vec(v, int(N)),
+                         lambda v, w, ss, se: ops_ext.filter_vec_seg(v, w, ss, se))
+    if op == "TRUNC":
+        # 向零截断取整（np.trunc；3.7→3、-3.7→-3），NaN 保持
+        s = args[0]
+        if s is None:
+            raise ValueError("TRUNC 参数不能是常量")
+        return np.trunc(s)
+    if op == "BETWEEN":
+        # BETWEEN(X,A,B)：X∈[min(A,B), max(A,B)] → 1 否则 0；X NaN 保持 NaN
+        x, a, b = args
+        tpl = x if isinstance(x, pd.Series) else (a if isinstance(a, pd.Series) else b)
+        x = _as_series(x, tpl)
+        a = _as_series(a, tpl)
+        b = _as_series(b, tpl)
+        a, b = _align(a, b)
+        lo = a.where(a <= b, b)
+        hi = a.where(a >= b, b)
+        out = ((x >= lo) & (x <= hi)).astype(np.float64)
+        if x.isna().any():
+            out = out.mask(x.isna())
+        return out
+    if op in ("IdxMax", "IdxMin", "Rank", "Slope", "Rsquare", "Resi", "Quantile"):
+        # Alpha158 窗口类：逐股复刻 qlib Rolling 语义（min_periods=1），面板与 qlib 同源
+        s = args[0]
+        if s is None:
+            raise ValueError(f"{op} 首参不能是常量")
+        N = int(args[1])
+        q = args[2] if op == "Quantile" else None
+        return _by_group(s, None, lambda v: _seg_window_op(op, v, N, q))
+    if op == "Corr":
+        # Alpha158 相关：两序列逐股 rolling corr + std≈0 置 NaN（同 qlib Corr）
+        a, b = args[0], args[1]
+        N = int(args[2])
+        if not isinstance(a, pd.Series) or not isinstance(b, pd.Series):
+            raise ValueError("Corr 两参数须为序列")
+        a, b = _align(a, b)
+        return _corr_pair_panel(a, b, N)
+    if op in _BIN_ELEM or op in _BIN_CMP:
+        a, b = args
+        # ---- numpy 快路（v1.18.29）----
+        # 三条等价改动（17 组含 NaN 对拍逐位一致）：
+        #  ① 常量操作数**不再经 _as_series 物化成整列**：广播一列常量要写 ~2.8MB
+        #     （实测 0.85ms/次；大公式单轮约 950 个常量操作数 ≈ 0.8s），而 ufunc 对
+        #     标量广播零成本。v1.18.25 只对 Power 的标量指数做了这一步，此处覆盖
+        #     add/sub/mul/div/Greater/Less 与全部比较算子。
+        #  ② Greater/Less 的 `a.where(a >= b, b)` 要过两遍 Series 比较 + 掩码写回
+        #     （实测 1.65ms → np.where 0.88ms）。
+        #  ③ 比较算子走 ufunc，省掉一次 pandas 结果包装。
+        # NaN 语义与 pandas 一致：where 对 NaN 比较得 False → 取 b，np.where 同。
+        # ⚠ **不能**用 np.maximum/np.minimum —— 它们传播 NaN，而此处语义是
+        #   「a 为 NaN 时取 b」。
+        a_is_s = isinstance(a, pd.Series)
+        b_is_s = isinstance(b, pd.Series)
+        if (a_is_s or b_is_s) and (a_is_s or _is_num_scalar(a)) \
+                and (b_is_s or _is_num_scalar(b)):
+            fn = _BIN_ELEM[op] if op in _BIN_ELEM else _BIN_CMP[op]
+            if fn == "pow" and a_is_s and not b_is_s:
+                # **「Series ** 标量」保留 pandas 路径**（即 v1.18.25~v1.18.28 的行为）：
+                # numpy 对「ndarray ** 标量」启用**快速标量幂**（x**2 → x*x、x**0.5 → sqrt），
+                # `np.power(ndarray, 标量)` 则走通用数组内循环，两者在特殊值上不同 ——
+                # 实测 `(-inf) ** 0.5`：前者（含 Series/pandas 路径） = nan，后者 = inf。
+                # Log(0) 会产出 -inf，故这是真实语义漂移，必须避开。
+                # 该路径本身已够快（且不必再物化常量列），v1.18.25 起的快照已覆盖。
+                # 注意「标量 ** Series」（常量在左）旧行为本就是数组路径（指数是数组，
+                # numpy 不启用标量快速幂），故仍走下面的 numpy 快路。
+                return np.power(a, b)
+            if a_is_s and b_is_s:
+                a2, b2 = _align(a, b)
+                idx = a2.index
+                av, bv = a2.to_numpy(), b2.to_numpy()
+            elif a_is_s:
+                # 常量在右：保持标量，交给 ufunc 广播（等价于原 _as_series 的整列广播）
+                idx, av, bv = a.index, a.to_numpy(), b
+            else:
+                idx, av, bv = b.index, a, b.to_numpy()
+            with np.errstate(all="ignore"):
+                if fn == "max":
+                    vals = np.where(av >= bv, av, bv)
+                elif fn == "min":
+                    vals = np.where(av <= bv, av, bv)
+                else:
+                    vals = _NUM_UFUNC[fn](av, bv)
+            if op in _BIN_CMP:
+                vals = vals.astype(np.float64, copy=False)
+            return pd.Series(vals, index=idx)
+        # ---- pandas 兜底（非常量非 Series 的入参；行为与改动前完全一致）----
+        # ★ v2.1.28：**两侧都是标量**（例如 `Sub(0,Log(0))`：用户写 `-log(x)` 而 `x`
+        #   不是带 `$` 的字段 ⇒ 被当常量 0 ⇒ `Log(0)` 是标量 ✓）时直接算标量 ✓ ——
+        #   否则 `_as_series` 会去取 `template.index` ⇒
+        #   `'numpy.float64' object has no attribute 'index'` ✗（实测踩到 ✓，
+        #   且报错完全看不出"是字段少写了 $" ✗）。
+        if not isinstance(a, pd.Series) and not isinstance(b, pd.Series):
+            _af, _bf = np.float64(a), np.float64(b)
+            with np.errstate(all="ignore"):
+                if op in _BIN_ELEM:
+                    _fn = _BIN_ELEM[op]
+                    if _fn == "add":
+                        return _af + _bf
+                    if _fn == "sub":
+                        return _af - _bf
+                    if _fn == "mul":
+                        return _af * _bf
+                    if _fn == "div":
+                        return _af / _bf
+                    if _fn == "pow":
+                        return _af ** _bf
+                    if _fn == "max":
+                        return max(_af, _bf)
+                    if _fn == "min":
+                        return min(_af, _bf)
+                if op in _BIN_CMP:
+                    return np.float64(1.0 if _NUM_UFUNC[_BIN_CMP[op]](_af, _bf) else 0.0)
+        template = a if isinstance(a, pd.Series) else b
+        # 常量右操作数（如 Power(x, 2) 的指数 2）：单独留下标量形态。
+        # 若被 _as_series 广播成整列数组，np.power 会走「数组指数」的逐元素通用 pow，
+        # 丢掉 numpy/glibc 对**标量指数**的特化（实测 42000 行：0.899ms → 0.059ms，15×）。
+        # 仅 b 是标量时 template 必为 a，故 _align 后 b 与 a 同 index，取标量无对齐损失。
+        b_scalar = b if (np.isscalar(b) and not isinstance(b, (str, bytes))) else None
+        a = _as_series(a, template)
+        b = _as_series(b, template)
+        a, b = _align(a, b)
+        if op in _BIN_ELEM:
+            fn = _BIN_ELEM[op]
+            if fn in ("add", "sub", "mul", "div"):
+                return getattr(a, fn)(b)
+            if fn == "pow":
+                return np.power(a, b if b_scalar is None else b_scalar)
+            if fn == "max":
+                return a.where(a >= b, b)
+            if fn == "min":
+                return a.where(a <= b, b)
+        return getattr(a, _BIN_CMP[op])(b).astype(np.float64)
+    if op in _UNARY:
+        s = args[0]
+        if s is None:
+            raise ValueError(f"{op} 参数不能是常量")
+        fn = _UNARY[op]
+        if fn == "abs":
+            return s.abs()
+        if fn == "sqrt":
+            return np.sqrt(s)
+        if fn == "log":
+            return np.log(s)
+        if fn == "exp":
+            # v1.20.34：EXP(X)=e^X —— 整块面板一次 `np.exp`（numpy C 实现 ✓），
+            # 与 Sqrt/Log 同一路径 ⇒ **单因子测试不会因它变慢** ✓；
+            # 溢出（输入过大 ⇒ inf）由前端/后端既有清洗（CleanInf）处理 ✓。
+            with np.errstate(all="ignore"):
+                return np.exp(s)
+        if fn == "neg":
+            return -s
+        if fn == "sign":
+            return np.sign(s)
+    if op == "If":
+        cond, a, b = args
+        if isinstance(cond, (int, float)) or cond is None:
+            cond = _as_series(cond, a if isinstance(a, pd.Series) else b)
+        if not isinstance(a, pd.Series):
+            a = _as_series(a, cond)
+        if not isinstance(b, pd.Series):
+            b = _as_series(b, cond)
+        a, b = _align(a, b)
+        return a.where(cond.astype(bool), b)
+    if op == "ROUND":
+        # ROUND(x, ndigits)：真实价按分取整（np.round 半进偶；对整分价格与 qlib
+        # ops_ext.ROUND 一致——真实价 ≈ 分整数，无 0.5 边界）
+        s = args[0]
+        nd = int(args[1]) if len(args) > 1 and args[1] is not None else 0
+        if not isinstance(s, pd.Series):
+            raise ValueError("ROUND 首参不能是常量")
+        return np.round(s, nd)
+    if op == "And" or op == "Or":
+        a, b = args
+        tpl = a if isinstance(a, pd.Series) else b
+        a = _as_series(a, tpl)
+        b = _as_series(b, tpl)
+        # numpy 直落：pandas 的 `(a != 0) & (b != 0)` 要过两次 Series 比较（各含一次
+        # 包装）+ 一次 Series 级逻辑运算 + astype（实测 3.68ms → 2.33ms）。
+        # ⚠ NaN 语义有**两处**不同来源，不能一概而论：
+        #   · 原始 NaN 经 fillna(0) → 判 False；
+        #   · _align 新引入的缺失行仍是 NaN，而 pandas 里 `NaN != 0` 为 **True**。
+        # 故 fillna 必须在 _align **之前**。同 index（面板常态：字段都被 field() 对齐
+        # 到同一 _full）时无缺失行，fillna(0) 可安全挪到 numpy 侧，省掉两次 pandas
+        # fillna（约 2.9ms/次）；下标不同时严格按「先 fillna 再 align」的原顺序走。
+        # （对拍实测：若一概用 numpy 的 `(v != 0) & ~isnan(v)`，会在 union 路径上
+        #   产生 525/75 处差异。）
+        if a.index is b.index or a.index.equals(b.index):
+            idx = a.index
+            av = a.to_numpy(dtype=np.float64)
+            bv = b.to_numpy(dtype=np.float64)
+            av = np.where(np.isnan(av), 0.0, av)
+            bv = np.where(np.isnan(bv), 0.0, bv)
+        else:
+            a, b = _align(a.fillna(0.0), b.fillna(0.0))
+            idx = a.index
+            av = a.to_numpy(dtype=np.float64)
+            bv = b.to_numpy(dtype=np.float64)
+        ma = av != 0
+        mb = bv != 0
+        m = (ma & mb) if op == "And" else (ma | mb)
+        return pd.Series(m.astype(np.float64), index=idx)
+    if op in ("BARSLAST", "BARSSINCEN", "HHVBARS", "LLVBARS",
+              "DYN_REF", "DYN_MIN", "DYN_MAX", "DYN_SUM", "DYN_COUNT", "DYN_MEAN",
+              "DYN_HHVBARS", "DYN_LLVBARS"):
+        # ⚠ 这里原本写的是 `self` ✗ —— 搬成模块级函数后它不再存在 ✓（ruff F821 当场抓到 ✓）
+        #   ⇒ 显式传 `ev`（就是那个 PanelEvaluator 实例 ✓，动态窗口算子需要它取日历/价格 ✓）。
+        return _panel_dyn(op, args, ev)
+    raise ValueError(f"panel_expr 不支持算子 {op}")
+
+
 class PanelEvaluator:
     """在一整块面板上求值；节点缓存消除公共子式重复计算。
 
@@ -1369,263 +1632,9 @@ class PanelEvaluator:
                 self._node_bytes -= _series_mem_bytes(_v)
         return out
 
-    def _apply(self, op: str, args, sr: bool, active=None) -> Optional[pd.Series]:
-        if op == "Ref":
-            s, k = args[0], int(args[1])
-            if s is None:
-                raise ValueError("Ref 首参不能是常量")
-            # active 行集上普通 shift：SR 时 active 已剔停牌 → 语义正确
-            return _ref(s, k, sr=False)
-        if op in _ROLL_FUNC:
-            s, N = args[0], int(args[1])
-            if s is None:
-                raise ValueError(f"{op} 首参不能是常量")
-            # SR 时 active 已剔停牌 → 普通滚动即可（无需 _valid_rolling 二次剔除）
-            return _roll(s, _ROLL_FUNC[op], N, sr=False)
-        if op in ("EMA", "EMA_TDX"):
-            s, N = args[0], args[1]
-            if s is None:
-                raise ValueError(f"{op} 首参不能是常量")
-            # EMA 非固定窗口（指数递归），逐股 ewm（sr=True 时 active 已是压缩序列）
-            return _ema(s, float(N), tdx=(op == "EMA_TDX"), sr=sr)
-        if op == "SMA":
-            s, N, M = args[0], args[1], args[2]
-            if s is None:
-                raise ValueError("SMA 首参不能是常量")
-            return _sma(s, float(N), float(M), sr=sr)
-        if op == "BARSCOUNT":
-            # 自数据起点累计有效交易日（BARSCOUNT($close)）；面板与 qlib 同从各自
-            # read_start 起点累计 → 对齐。逐股内核 _bars_count_seg。
-            s = args[0]
-            if s is None:
-                raise ValueError("BARSCOUNT 首参不能是常量")
-            from . import ops_ext
-
-            return _by_group(s, None, _bars_count_seg,
-                             lambda v, w, ss, se: ops_ext.bars_count_seg(v, w, ss, se))
-        if op == "BARSSINCE":
-            # 距首次成立周期数（不限窗口）。面板与 qlib 共用 ops_ext.barsince_vec。
-            s = args[0]
-            if s is None:
-                raise ValueError("BARSSINCE 首参不能是常量")
-            from . import ops_ext
-
-            return _by_group(s, None, lambda v: ops_ext.barsince_vec(v),
-                             lambda v, w, ss, se: ops_ext.barsince_vec_seg(v, w, ss, se))
-        if op == "FILTER":
-            # 信号抑制：成立输出 1 后 N-1 周期抑制重复。面板与 qlib 共用 ops_ext.filter_vec。
-            s, N = args[0], args[1]
-            if s is None:
-                raise ValueError("FILTER 首参不能是常量")
-            from . import ops_ext
-
-            return _by_group(s, None, lambda v: ops_ext.filter_vec(v, int(N)),
-                             lambda v, w, ss, se: ops_ext.filter_vec_seg(v, w, ss, se))
-        if op == "TRUNC":
-            # 向零截断取整（np.trunc；3.7→3、-3.7→-3），NaN 保持
-            s = args[0]
-            if s is None:
-                raise ValueError("TRUNC 参数不能是常量")
-            return np.trunc(s)
-        if op == "BETWEEN":
-            # BETWEEN(X,A,B)：X∈[min(A,B), max(A,B)] → 1 否则 0；X NaN 保持 NaN
-            x, a, b = args
-            tpl = x if isinstance(x, pd.Series) else (a if isinstance(a, pd.Series) else b)
-            x = _as_series(x, tpl)
-            a = _as_series(a, tpl)
-            b = _as_series(b, tpl)
-            a, b = _align(a, b)
-            lo = a.where(a <= b, b)
-            hi = a.where(a >= b, b)
-            out = ((x >= lo) & (x <= hi)).astype(np.float64)
-            if x.isna().any():
-                out = out.mask(x.isna())
-            return out
-        if op in ("IdxMax", "IdxMin", "Rank", "Slope", "Rsquare", "Resi", "Quantile"):
-            # Alpha158 窗口类：逐股复刻 qlib Rolling 语义（min_periods=1），面板与 qlib 同源
-            s = args[0]
-            if s is None:
-                raise ValueError(f"{op} 首参不能是常量")
-            N = int(args[1])
-            q = args[2] if op == "Quantile" else None
-            return _by_group(s, None, lambda v: _seg_window_op(op, v, N, q))
-        if op == "Corr":
-            # Alpha158 相关：两序列逐股 rolling corr + std≈0 置 NaN（同 qlib Corr）
-            a, b = args[0], args[1]
-            N = int(args[2])
-            if not isinstance(a, pd.Series) or not isinstance(b, pd.Series):
-                raise ValueError("Corr 两参数须为序列")
-            a, b = _align(a, b)
-            return _corr_pair_panel(a, b, N)
-        if op in _BIN_ELEM or op in _BIN_CMP:
-            a, b = args
-            # ---- numpy 快路（v1.18.29）----
-            # 三条等价改动（17 组含 NaN 对拍逐位一致）：
-            #  ① 常量操作数**不再经 _as_series 物化成整列**：广播一列常量要写 ~2.8MB
-            #     （实测 0.85ms/次；大公式单轮约 950 个常量操作数 ≈ 0.8s），而 ufunc 对
-            #     标量广播零成本。v1.18.25 只对 Power 的标量指数做了这一步，此处覆盖
-            #     add/sub/mul/div/Greater/Less 与全部比较算子。
-            #  ② Greater/Less 的 `a.where(a >= b, b)` 要过两遍 Series 比较 + 掩码写回
-            #     （实测 1.65ms → np.where 0.88ms）。
-            #  ③ 比较算子走 ufunc，省掉一次 pandas 结果包装。
-            # NaN 语义与 pandas 一致：where 对 NaN 比较得 False → 取 b，np.where 同。
-            # ⚠ **不能**用 np.maximum/np.minimum —— 它们传播 NaN，而此处语义是
-            #   「a 为 NaN 时取 b」。
-            a_is_s = isinstance(a, pd.Series)
-            b_is_s = isinstance(b, pd.Series)
-            if (a_is_s or b_is_s) and (a_is_s or _is_num_scalar(a)) \
-                    and (b_is_s or _is_num_scalar(b)):
-                fn = _BIN_ELEM[op] if op in _BIN_ELEM else _BIN_CMP[op]
-                if fn == "pow" and a_is_s and not b_is_s:
-                    # **「Series ** 标量」保留 pandas 路径**（即 v1.18.25~v1.18.28 的行为）：
-                    # numpy 对「ndarray ** 标量」启用**快速标量幂**（x**2 → x*x、x**0.5 → sqrt），
-                    # `np.power(ndarray, 标量)` 则走通用数组内循环，两者在特殊值上不同 ——
-                    # 实测 `(-inf) ** 0.5`：前者（含 Series/pandas 路径） = nan，后者 = inf。
-                    # Log(0) 会产出 -inf，故这是真实语义漂移，必须避开。
-                    # 该路径本身已够快（且不必再物化常量列），v1.18.25 起的快照已覆盖。
-                    # 注意「标量 ** Series」（常量在左）旧行为本就是数组路径（指数是数组，
-                    # numpy 不启用标量快速幂），故仍走下面的 numpy 快路。
-                    return np.power(a, b)
-                if a_is_s and b_is_s:
-                    a2, b2 = _align(a, b)
-                    idx = a2.index
-                    av, bv = a2.to_numpy(), b2.to_numpy()
-                elif a_is_s:
-                    # 常量在右：保持标量，交给 ufunc 广播（等价于原 _as_series 的整列广播）
-                    idx, av, bv = a.index, a.to_numpy(), b
-                else:
-                    idx, av, bv = b.index, a, b.to_numpy()
-                with np.errstate(all="ignore"):
-                    if fn == "max":
-                        vals = np.where(av >= bv, av, bv)
-                    elif fn == "min":
-                        vals = np.where(av <= bv, av, bv)
-                    else:
-                        vals = _NUM_UFUNC[fn](av, bv)
-                if op in _BIN_CMP:
-                    vals = vals.astype(np.float64, copy=False)
-                return pd.Series(vals, index=idx)
-            # ---- pandas 兜底（非常量非 Series 的入参；行为与改动前完全一致）----
-            # ★ v2.1.28：**两侧都是标量**（例如 `Sub(0,Log(0))`：用户写 `-log(x)` 而 `x`
-            #   不是带 `$` 的字段 ⇒ 被当常量 0 ⇒ `Log(0)` 是标量 ✓）时直接算标量 ✓ ——
-            #   否则 `_as_series` 会去取 `template.index` ⇒
-            #   `'numpy.float64' object has no attribute 'index'` ✗（实测踩到 ✓，
-            #   且报错完全看不出"是字段少写了 $" ✗）。
-            if not isinstance(a, pd.Series) and not isinstance(b, pd.Series):
-                _af, _bf = np.float64(a), np.float64(b)
-                with np.errstate(all="ignore"):
-                    if op in _BIN_ELEM:
-                        _fn = _BIN_ELEM[op]
-                        if _fn == "add":
-                            return _af + _bf
-                        if _fn == "sub":
-                            return _af - _bf
-                        if _fn == "mul":
-                            return _af * _bf
-                        if _fn == "div":
-                            return _af / _bf
-                        if _fn == "pow":
-                            return _af ** _bf
-                        if _fn == "max":
-                            return max(_af, _bf)
-                        if _fn == "min":
-                            return min(_af, _bf)
-                    if op in _BIN_CMP:
-                        return np.float64(1.0 if _NUM_UFUNC[_BIN_CMP[op]](_af, _bf) else 0.0)
-            template = a if isinstance(a, pd.Series) else b
-            # 常量右操作数（如 Power(x, 2) 的指数 2）：单独留下标量形态。
-            # 若被 _as_series 广播成整列数组，np.power 会走「数组指数」的逐元素通用 pow，
-            # 丢掉 numpy/glibc 对**标量指数**的特化（实测 42000 行：0.899ms → 0.059ms，15×）。
-            # 仅 b 是标量时 template 必为 a，故 _align 后 b 与 a 同 index，取标量无对齐损失。
-            b_scalar = b if (np.isscalar(b) and not isinstance(b, (str, bytes))) else None
-            a = _as_series(a, template)
-            b = _as_series(b, template)
-            a, b = _align(a, b)
-            if op in _BIN_ELEM:
-                fn = _BIN_ELEM[op]
-                if fn in ("add", "sub", "mul", "div"):
-                    return getattr(a, fn)(b)
-                if fn == "pow":
-                    return np.power(a, b if b_scalar is None else b_scalar)
-                if fn == "max":
-                    return a.where(a >= b, b)
-                if fn == "min":
-                    return a.where(a <= b, b)
-            return getattr(a, _BIN_CMP[op])(b).astype(np.float64)
-        if op in _UNARY:
-            s = args[0]
-            if s is None:
-                raise ValueError(f"{op} 参数不能是常量")
-            fn = _UNARY[op]
-            if fn == "abs":
-                return s.abs()
-            if fn == "sqrt":
-                return np.sqrt(s)
-            if fn == "log":
-                return np.log(s)
-            if fn == "exp":
-                # v1.20.34：EXP(X)=e^X —— 整块面板一次 `np.exp`（numpy C 实现 ✓），
-                # 与 Sqrt/Log 同一路径 ⇒ **单因子测试不会因它变慢** ✓；
-                # 溢出（输入过大 ⇒ inf）由前端/后端既有清洗（CleanInf）处理 ✓。
-                with np.errstate(all="ignore"):
-                    return np.exp(s)
-            if fn == "neg":
-                return -s
-            if fn == "sign":
-                return np.sign(s)
-        if op == "If":
-            cond, a, b = args
-            if isinstance(cond, (int, float)) or cond is None:
-                cond = _as_series(cond, a if isinstance(a, pd.Series) else b)
-            if not isinstance(a, pd.Series):
-                a = _as_series(a, cond)
-            if not isinstance(b, pd.Series):
-                b = _as_series(b, cond)
-            a, b = _align(a, b)
-            return a.where(cond.astype(bool), b)
-        if op == "ROUND":
-            # ROUND(x, ndigits)：真实价按分取整（np.round 半进偶；对整分价格与 qlib
-            # ops_ext.ROUND 一致——真实价 ≈ 分整数，无 0.5 边界）
-            s = args[0]
-            nd = int(args[1]) if len(args) > 1 and args[1] is not None else 0
-            if not isinstance(s, pd.Series):
-                raise ValueError("ROUND 首参不能是常量")
-            return np.round(s, nd)
-        if op == "And" or op == "Or":
-            a, b = args
-            tpl = a if isinstance(a, pd.Series) else b
-            a = _as_series(a, tpl)
-            b = _as_series(b, tpl)
-            # numpy 直落：pandas 的 `(a != 0) & (b != 0)` 要过两次 Series 比较（各含一次
-            # 包装）+ 一次 Series 级逻辑运算 + astype（实测 3.68ms → 2.33ms）。
-            # ⚠ NaN 语义有**两处**不同来源，不能一概而论：
-            #   · 原始 NaN 经 fillna(0) → 判 False；
-            #   · _align 新引入的缺失行仍是 NaN，而 pandas 里 `NaN != 0` 为 **True**。
-            # 故 fillna 必须在 _align **之前**。同 index（面板常态：字段都被 field() 对齐
-            # 到同一 _full）时无缺失行，fillna(0) 可安全挪到 numpy 侧，省掉两次 pandas
-            # fillna（约 2.9ms/次）；下标不同时严格按「先 fillna 再 align」的原顺序走。
-            # （对拍实测：若一概用 numpy 的 `(v != 0) & ~isnan(v)`，会在 union 路径上
-            #   产生 525/75 处差异。）
-            if a.index is b.index or a.index.equals(b.index):
-                idx = a.index
-                av = a.to_numpy(dtype=np.float64)
-                bv = b.to_numpy(dtype=np.float64)
-                av = np.where(np.isnan(av), 0.0, av)
-                bv = np.where(np.isnan(bv), 0.0, bv)
-            else:
-                a, b = _align(a.fillna(0.0), b.fillna(0.0))
-                idx = a.index
-                av = a.to_numpy(dtype=np.float64)
-                bv = b.to_numpy(dtype=np.float64)
-            ma = av != 0
-            mb = bv != 0
-            m = (ma & mb) if op == "And" else (ma | mb)
-            return pd.Series(m.astype(np.float64), index=idx)
-        if op in ("BARSLAST", "BARSSINCEN", "HHVBARS", "LLVBARS",
-                  "DYN_REF", "DYN_MIN", "DYN_MAX", "DYN_SUM", "DYN_COUNT", "DYN_MEAN",
-                  "DYN_HHVBARS", "DYN_LLVBARS"):
-            return _panel_dyn(op, args, self)
-        raise ValueError(f"panel_expr 不支持算子 {op}")
+    def _apply(self, op: str, args, sr: bool, active=None):
+        """委托到模块级 `_apply_node` ✓（★ 2026-10-19 拆分 ✓；测试有 3 处直接调它 ✓）。"""
+        return _apply_node(op, args, sr, active, ev=self)
 
     def eval_expr(self, expr: str) -> pd.Series:
         # 内存（v1.18.1）：节点缓存按"单个表达式"为界清理——多公式共用同一 evaluator

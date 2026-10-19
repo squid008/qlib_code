@@ -39,6 +39,33 @@
 
 ---
 
+## [2.9.66] - 2026-10-19
+
+### Changed（**`PanelEvaluator` 拆分第一步** ✓ —— 类 **590 → 340 行** ✓）
+
+- **先测量再动手** ✓：用 AST 把 `PanelEvaluator` 的 10 个方法逐个量了行数与「是否用 `self`」✓ ——
+  结果一边倒：**`_apply` 一个人 257 行**（占类 **43%** ✗），其余 9 个方法合计 333 行 ✓。
+- **改法** ✓：`_apply`（**算子分派** ✓）提成**同文件的模块级函数** `_apply_node(...)` ✓ ——
+  · 类里保留 **3 行委托** ✓（`tests/test_count_semantics.py` 有 3 处直接 `ev._apply(...)` ✓ 不能断 ✗）；
+  · **为什么留在本文件而不是新建模块** ✗：它有 15 个自由名是**本文件模块级**
+    （`_BIN_CMP` / `_ROLL_FUNC` / `_roll` / `_ref` / `_align` / `_sma` / `_ema` / `_panel_dyn` / … ✓）
+    ⇒ 搬去新文件要反过来 `from .panel_expr import …` ⇒ **循环 import** ✗（本项目踩过 ✓）。
+    这一步的价值是：**类瘦了 250 行** ✓、分派逻辑成了**独立函数** ✓，
+    将来要把"分派 + 它的依赖"整体搬走时，边界已经现成了 ✓。
+- **★ 我自己的分析漏了一处** ✗：脚本只找 `self.xxx`（属性访问 ✓）⇒ 得出"完全不用 self"✗，
+  但 `_apply` 里有一句 `_panel_dyn(op, args, self)`（**裸 `self` 当参数传** ✓）
+  ⇒ 提成模块级后 `ruff F821: Undefined name 'self'` 当场抓到 ✓
+  ⇒ 改成显式 `ev=None` 参数 ✓、委托处传 `ev=self` ✓。
+  ⚠ 教训：判"方法是否用 self"必须**同时看 `Name(id='self')` 与 `Attribute(value=self)`** ✗。
+- **棘轮** ✓：`test_code_health` 里 `panel_expr.py` 上限 2,545 → **2,542** ✓
+  （文件 2,533 → 2,542 ✓，多出来的 9 行是把注释挪了个位置 ✓ —— 第一版写完是 2,550 ✗，
+  **没有去抬上限** ✗ 而是把新增注释压短 ✓，让棘轮继续成立 ✓）。
+- **校验** ✓：`compileall` **0** ✓ ｜ `ruff` **0 错误** ✓ ｜
+  `test_code_health` + `test_count_semantics` + `test_import_all` **103 passed** ✓ ｜ CI ✓。
+- **下一步（同一工程继续）** ✓：`eval`(66) / `_chip_field`(53) / `field`(38) 是剩下的大块 ✓，
+  但它们**都紧绑状态**（`_node_cache` / `_field_cache` / `_active_cache` … ✓）⇒
+  下一步应当先决定"哪些缓存归谁" ✓，再动手 ✓（不能像这次一样"纯搬" ✗）。
+
 ## [2.9.65] - 2026-10-19
 
 ### Test（撮合引擎**随机配置 fuzz** 25 条 ✓ —— 固定种子 12 组，只守不变量 ✓）
