@@ -393,8 +393,9 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg)
       ⚠ 代价（要如实说 ✓）：**首段开头会空仓约一个持仓周期**（净值一段平线 ✓）——
         它正是当年加预热要解决的那个现象 ✓；要改回去只需恢复 `predict_start` 这条通路 ✓。
     """
-    from qlib.utils import init_instance_by_config
-
+    # ★ 2026-10-19：删掉一个**从未使用**的 `from qlib.utils import init_instance_by_config` ✗
+    #   —— 这个函数只**装配配置**（返回 dict ✓），真正的实例化在调用方做 ✓。
+    #   留着它的副作用是：写单测时以为"必须 mock 才能测"✗ ⇒ 差点漏掉这块纯逻辑 ✓。
     test_start = test_seg[0]
     test_end = test_seg[1]
     train_start, train_end = train_seg

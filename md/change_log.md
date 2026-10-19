@@ -39,6 +39,34 @@
 
 ---
 
+## [2.9.63] - 2026-10-19
+
+### Test（**C 项第四步：`_build_dataset` 13 条** ✓ ＋ 删掉一处死 import ✗→✓）
+
+- **先记一个发现** ✓：`_build_dataset`（130 行 ✓）里有一句
+  `from qlib.utils import init_instance_by_config` **从未被使用** ✗ —— 这个函数只**装配配置**
+  （返回 dict ✓），实例化在调用方做 ✓。留着它的副作用是**误导**：我一开始以为"必须 mock 才能测"✗，
+  差点漏掉这块纯逻辑 ✓。⇒ 已删除并注明原因 ✓。
+- 新增 `tests/test_qlib_engine_dataset.py`（**13 条 ✓，5.9s ✓**）。四份 `qlib_engine` 用例合计
+  覆盖该模块 **28.5%** ✓（201/705 语句 ✓；13.6% → 17.7% → 21.8% → **28.5%** ✓）。
+- **三条"回测结果会被悄悄改掉"的口径** ✓：
+  · **handler 选择优先级** ✓：`mixed` ⇒ `MixedHandler` ✓ > 有公式 ⇒ `FormulaHandler` ✓（只认 formulas、
+    **不写 fields** ✓）> `alpha360` ⇒ `SelectedAlpha360` ✓ > 默认 `SelectedAlpha158` ✓；
+  · **`selected_features=[]` = 真的一个都不要** ✓（v1.20.67，用户 2026-09-24 确认 ✓）：
+    旧写法 `if req.selected_features` 把 `[]` 当"没传"⇒ 落回**该特征集全量** ✗
+    （实测：取消勾选全部 A158 后模型仍用 562 列 ✗）；
+    而"空特征 + 无公式"⇒ **必须抛人话错** ✓（零特征会让训练/预测失败且报错难懂 ✗）；
+  · **独立验证集** ✓（v1.20.46 审计 ✔）：`valid` 取训练窗最后 ~20% ✓ 且 `train` 末端**早于** `valid` 起点 ✓
+    （原先 `valid == train` ✗ ⇒ LightGBM 的 `early_stopping` 在**训练集自身**上做 ⇒ 模型选择失真 ✗）；
+    训练窗 <27 天 ⇒ **退回 `valid == train`** ✓（宁可退化也别让 LightGBM 训不出来 ✓）。
+- 还钉住：`test` 段**从 `test_start` 起、无 `predict_start`** ✓（v2.8.3 用户拍板"首日空仓"✓）、
+  `label_horizon` 默认 2 ✓、`handler` 起点往前留 10 天 ✓、`universe` 池名透传 ✓
+  （修「全期并集」未来函数 ✓）、`price_adjust` 默认 `none` ✓。
+- **✗ 三处是我自己写错、被测试当场抓出 ✓**：① 断言消息里嵌了 ASCII 双引号 ⇒ **SyntaxError**
+  （今天第 2 次 ✗，已改用「」✓）；② 拿默认 `Alpha158` 测"空数组透传"⇒ 撞上守卫抛错 ✗
+  （`[]` 只在 `mixed` 分支原样落位 ✓）；③ 公式分支**根本不写** `fields` ✓，不该断言 `== []` ✓。
+- **校验** ✓：`ruff` **0 错误** ✓ ｜ 49 passed ✓ ｜ CI ✓。
+
 ## [2.9.62] - 2026-10-19
 
 ### Test（**C 项第三步：`_build_port_config` 10 条** ✓ —— 回测数字的直接来源 ✓）
