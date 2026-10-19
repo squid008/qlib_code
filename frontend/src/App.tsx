@@ -55,6 +55,8 @@ import TradingBasics from './components/TradingBasics'
 import CostSettings from './components/CostSettings'
 // ★ v2.9.46：第六刀 —— 成交约束（成交量限制 / 涨跌停限制 / 每手股数 ✓）
 import ExecutionLimits, { LIMIT_THRESHOLD_ON } from './components/ExecutionLimits'
+// ★ v2.9.47：第七刀 —— 训练/测试划分（滚动训练 ✓，5 值 + 1 回调 ✓）
+import TrainTestSplit from './components/TrainTestSplit'
 
 export default function App() {
   // ★★ v2.1.68（用户 2026-10-12："你把面板参数股票池默认改成全A，结束日期改成 2026-01-31，
@@ -1552,87 +1554,17 @@ export default function App() {
             </div>
           </div>
 
-          {/* 训练/测试划分（滚动训练） */}
-          <div className="mt-5 pt-4 border-t border-slate-200 dark:border-slate-700">
-            <h3 className="text-sm font-semibold text-slate-600 dark:text-slate-300 mb-3">
-              训练/测试划分
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <label className="block">
-                <span className="text-sm text-slate-500">划分方式</span>
-                <select
-                  className="mt-1 w-full border rounded px-2 py-1"
-                  value={form.split_mode}
-                  onChange={(e) => update('split_mode', e.target.value)}
-                >
-                  <option value="single">一次性训练（回测前窗口训练）</option>
-                  <option value="custom">自定义滚动训练（每周期重训）</option>
-                </select>
-              </label>
-
-              {form.split_mode === 'custom' && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  <div>
-                    <span className="text-sm text-slate-500">训练窗口</span>
-                    <input
-                      type="number"
-                      min={1}
-                      className="mt-1 w-full border rounded px-2 py-1"
-                      value={form.train_win}
-                      onChange={(e) => update('train_win', Number(e.target.value))}
-                    />
-                  </div>
-                  <div>
-                    <span className="text-sm text-slate-500">训练单位</span>
-                    <select
-                      className="mt-1 w-full border rounded px-2 py-1"
-                      value={form.train_unit}
-                      onChange={(e) => update('train_unit', e.target.value)}
-                    >
-                      <option value="day">天</option>
-                      <option value="week">周</option>
-                      <option value="month">月</option>
-                    </select>
-                  </div>
-                  <div>
-                    <span className="text-sm text-slate-500">测试窗口</span>
-                    <input
-                      type="number"
-                      min={1}
-                      className="mt-1 w-full border rounded px-2 py-1"
-                      value={form.test_win}
-                      onChange={(e) => update('test_win', Number(e.target.value))}
-                    />
-                  </div>
-                  <div>
-                    <span className="text-sm text-slate-500">测试单位</span>
-                    <select
-                      className="mt-1 w-full border rounded px-2 py-1"
-                      value={form.test_unit}
-                      onChange={(e) => update('test_unit', e.target.value)}
-                    >
-                      <option value="day">天</option>
-                      <option value="week">周</option>
-                      <option value="month">月</option>
-                    </select>
-                  </div>
-                </div>
-              )}
-            </div>
-            {form.split_mode === 'custom' && (
-              <>
-                <p className="mt-2 text-xs text-slate-400">
-                  滚动训练：每个测试窗口开始时，用「测试窗口起点往前 N 单位」的最新数据重新训练模型，
-                  再预测并回测该测试窗口。各段账户资金连续，净值曲线无缝衔接。训练集只使用当时已发生的数据，
-                  避免未来数据泄漏。
-                </p>
-                <p className="mt-1 text-xs text-slate-400">
-                  滚动模式下信号后处理（硬规则闸门 / Meta-Gate 风控）可用：会在每个测试段用
-                  「该段训练窗」重新训练门控模型后应用（与主模型同段重训），而非一次性模型套全程。
-                </p>
-              </>
-            )}
-          </div>
+          {/* 训练/测试划分（滚动训练）★ v2.9.47：已拆成 `<TrainTestSplit>` ✓
+              —— 5 个状态值 + 1 个回调 ✓；两段"防未来数据泄漏"的说明原文搬过去 ✓
+              守门用例见 `src/__tests__/trainTestSplit.test.tsx` ✓ */}
+          <TrainTestSplit
+            splitMode={form.split_mode}
+            trainWin={form.train_win}
+            trainUnit={form.train_unit}
+            testWin={form.test_win}
+            testUnit={form.test_unit}
+            onChange={(k, v) => update(k, v)}
+          />
 
           <div className="mt-4 flex items-center gap-4">
             <button
