@@ -137,7 +137,9 @@ def test_recalc_button_precedes_dilution_warning():
 
 @pytest.mark.parametrize("path,cap", [
     (PANEL, 2150),
-    (APP, 2100),
+    # ★ v2.9.41（2026-10-19 ✓）：拆出 `DayExclusions` 后 App **2,048 → 2,032** ⇒ 上限收紧到 2040 ✓
+    #   ⚠ 棘轮只许**变小** ✗ —— 下刀拆完记得一起调 ✓。
+    (APP, 2040),
     (MODAL, 1600),
 ])
 def test_component_size_ratchet(path, cap):

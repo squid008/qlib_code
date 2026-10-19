@@ -94,3 +94,6 @@ backend/workdir/tasks/
 
 # 公式面板结果缓存（★ v2.9.22 P1-C-1 ✓）—— 运行时产物，**永不入库** ✗
 backend/workdir/expr_cache/
+
+# vitest 的 json 报告（测试产物 ✓ 永不入库 ✗）
+frontend/vt.json

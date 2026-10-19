@@ -43,6 +43,8 @@ import SignalTestPanel from './components/SignalTestPanel'
 import DateInput, { type DateInputHandle, isValidDateStr } from './components/DateInput'
 import ModelParamsForm from './components/ModelParamsForm'
 import TaskStatusPanel from './components/TaskStatusPanel'
+// ★ v2.9.41（P1-B ✓ 2026-10-19）：`App.tsx` 拆出的第一块 —— 日截面剔除（三布尔 + 一回调 ✓）
+import DayExclusions from './components/DayExclusions'
 
 export default function App() {
   // ★★ v2.1.68（用户 2026-10-12："你把面板参数股票池默认改成全A，结束日期改成 2026-01-31，
@@ -1584,32 +1586,14 @@ export default function App() {
               </label>
             </div>
 
-            {/* 日截面剔除（调仓当日状态判定，无未来函数；与单因子测试"剔除ST(T+1)/创/科"同口径，
-                但回测以调仓当日为准） */}
-            <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
-              <span className="text-sm text-slate-500">日截面剔除：</span>
-              <label
-                className="flex items-center gap-1.5 text-sm cursor-pointer"
-                title="调仓当日处于 ST/*ST/退市整理的股票不买入（模型打分时直接剔除，已持有的也会随调仓卖出）"
-              >
-                <input type="checkbox" checked={!!form.exclude_st} onChange={(e) => update('exclude_st', e.target.checked)} />
-                <span>剔除ST/退市</span>
-              </label>
-              <label
-                className="flex items-center gap-1.5 text-sm cursor-pointer"
-                title="剔除创业板（SZ30 号段，20% 涨跌幅），全程不参与选股"
-              >
-                <input type="checkbox" checked={!!form.exclude_stock_gem} onChange={(e) => update('exclude_stock_gem', e.target.checked)} />
-                <span>剔除创业板</span>
-              </label>
-              <label
-                className="flex items-center gap-1.5 text-sm cursor-pointer"
-                title="剔除科创板（SH688，20% 涨跌幅），全程不参与选股"
-              >
-                <input type="checkbox" checked={!!form.exclude_stock_kcb} onChange={(e) => update('exclude_stock_kcb', e.target.checked)} />
-                <span>剔除科创板</span>
-              </label>
-            </div>
+            {/* 日截面剔除（★ v2.9.41：已拆成 `<DayExclusions>` ✓ —— 三个布尔 + 一个回调 ✓，
+                JSX 与文案原样搬过去 ✓；守门用例见 `src/__tests__/dayExclusions.test.tsx` ✓） */}
+            <DayExclusions
+              excludeSt={!!form.exclude_st}
+              excludeGem={!!form.exclude_stock_gem}
+              excludeKcb={!!form.exclude_stock_kcb}
+              onToggle={(k, v) => update(k, v)}
+            />
 
             <p className="mt-2 text-xs text-slate-400">
               提示：成交量限制填 0.25 表示单笔成交不超过当日成交量的 25%；留空表示不限量（理想成交）。
