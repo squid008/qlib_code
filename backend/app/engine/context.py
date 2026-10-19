@@ -13,6 +13,20 @@ from typing import Optional
 
 import contextvars
 
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
+
+
 _progress_cb: contextvars.ContextVar = contextvars.ContextVar("_progress_cb", default=None)
 _artifact_dir: contextvars.ContextVar = contextvars.ContextVar("_artifact_dir", default=None)
 _cancel_check: contextvars.ContextVar = contextvars.ContextVar("_cancel_check", default=None)
@@ -104,17 +118,3 @@ def heartbeat(suffix: str = ""):
 def reset_progress():
     """任务开始时重置本任务的最大进度记录（使新任务从头累计，不继承旧值）。"""
     _max_progress.set(0.0)
-
-
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
-      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)

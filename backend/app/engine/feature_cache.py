@@ -27,7 +27,6 @@ import pandas as pd
 
 from qlib.data.dataset.loader import QlibDataLoader
 
-
 def _log_swallowed(where, exc):
     """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
 
@@ -424,3 +423,4 @@ class CachedQlibDataLoader(QlibDataLoader):
                 _save_cache(path, df)
             out[grp] = df
         return self._apply_pool_filter(pd.concat(out, axis=1))
+

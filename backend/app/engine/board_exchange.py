@@ -24,6 +24,20 @@ from qlib.backtest.exchange import Exchange
 from .limits import mark_limit_down, mark_limit_up
 from .adjust import normalize_mode
 
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
+
+
 #: 冲击成本的**倍数封顶**（v2.8.5 ✓）：本单金额 / 当日成交额 的上限 ✓
 IMPACT_RATIO_CAP = 1.0
 
@@ -259,17 +273,3 @@ class BoardAwareExchange(Exchange):
         except Exception as e:
             _log_swallowed("board_exchange.py", e)
             return pd.Series(False, index=ids)
-
-
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
-      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)

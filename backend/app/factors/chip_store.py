@@ -41,6 +41,20 @@ import pandas as pd
 
 from .panel_expr import _CHIP_BASE_FIELDS, PanelEvaluator, _calendar, chip_turn_of
 
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
+
+
 # 默认物化清单（覆盖用户公式用到的档位；要更多档位加进这个元组即可）
 DEFAULT_FIELDS = ("chip_cost_5", "chip_cost_30", "chip_cost_75", "chip_cost_95",
                   "chip_win_close", "chip_win_high", "chip_win_low")
@@ -266,17 +280,3 @@ def materialize(codes: Sequence[str], start_time: str, end_time: str,
         "turn_meta": dict(getattr(ev, "_chip_turn_meta", {}) or {}),
     })
     return out
-
-
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
-      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)

@@ -46,6 +46,21 @@ from .parser.codegen import (
     BLOCK_KEYS, INSUM_CALC_TYPES, block_key, blocksetnum_field, formula_key, insum_field,
 )
 
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 本文件**没有 logger** ⇒ 这里惰性取 `logging.getLogger(__name__)` ✓；
+      且全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗
+      （2.9.26 事故：把"静默"改成"崩溃" ✓，比不改更糟 ✗）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
+
+
 # 口径语义版本：改板块口径 / 聚合方式 / 字段命名 ⇒ **必须递增**并重跑物化
 MARKET_SEMANTICS = "1.0.0"
 MARKET_META_NAME = "_market_meta.json"
@@ -672,18 +687,3 @@ def market_meta_state() -> Dict:
     except Exception as e:                                          # noqa: BLE001
         info.update({"ok": False, "state": "error", "message": "横向统计口径戳检查失败：%r" % (e,)})
     return info
-
-
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ 本文件**没有 logger** ⇒ 这里惰性取 `logging.getLogger(__name__)` ✓；
-      且全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗
-      （2.9.26 事故：把"静默"改成"崩溃" ✓，比不改更糟 ✗）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)

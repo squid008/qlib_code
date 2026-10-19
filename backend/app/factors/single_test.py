@@ -39,6 +39,22 @@ from .event_study import build_event_stats, compute_baseline_curves
 #   「预计算列（交给面板、任意字段/算子都能用 ✓）+ 骨架（回测逐日代入 ✓）」，见 factors/exit_rules.py ✓
 from .exit_rules import split_entry_rule, uses_entry
 
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 为什么不用裸 `logger.debug(...)` ✗：本文件**没有 logger**（`metrics.py` / `single_test.py` ✓），
+      而别处已出现过"logger 在 Linux 上为 None"的情况 ✓（2.9.26 事故 ✗：直接把静默改成了崩溃 ✓）。
+    ⚠ 也不用 `except: pass` ✗ —— 那正是"静默"，而这里用 `contextlib.suppress` ✓：
+      明确声明"日志失败也无所谓"✓，不会被静默债务棘轮算成新债 ✓。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
+
+
 
 def _inst_codes(s: pd.DataFrame) -> pd.Series:
     """每行样本的 instrument 代码（大写，如 SZ300001/SH688001/BJ430047）；单标的（无 instrument 层）返回空串。
@@ -2625,19 +2641,3 @@ def _sft_exit_curves(*, _exits, df, e, exit_cols, exit_out, exit_specs, exit_thr
                                      if _items[0].get("error") else None))
         if not _items:
             exit_out["error"] = "没有可用的离场因子（表达式为空或重复）"
-
-
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ 为什么不用裸 `logger.debug(...)` ✗：本文件**没有 logger**（`metrics.py` / `single_test.py` ✓），
-      而别处已出现过"logger 在 Linux 上为 None"的情况 ✓（2.9.26 事故 ✗：直接把静默改成了崩溃 ✓）。
-    ⚠ 也不用 `except: pass` ✗ —— 那正是"静默"，而这里用 `contextlib.suppress` ✓：
-      明确声明"日志失败也无所谓"✓，不会被静默债务棘轮算成新债 ✓。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)

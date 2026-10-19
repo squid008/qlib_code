@@ -19,6 +19,21 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 本文件**没有 logger** ⇒ 这里惰性取 `logging.getLogger(__name__)` ✓；
+      且全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗
+      （2.9.26 事故：把"静默"改成"崩溃" ✓，比不改更糟 ✗）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
+
+
 def _src_fp() -> str:
     """取价链路的**源码指纹**（v2.1.61 ✓）—— 拼进磁盘缓存 key ✓（改口径 ⇒ 自动失效 ✓）。
 
@@ -318,18 +333,3 @@ def load_bench_wide(codes: Sequence[str], start: str, end: str, cancelled=None) 
 
     _ensure_init()
     return load_bench_close([str(c) for c in codes], start, end, cancelled)
-
-
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ 本文件**没有 logger** ⇒ 这里惰性取 `logging.getLogger(__name__)` ✓；
-      且全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗
-      （2.9.26 事故：把"静默"改成"崩溃" ✓，比不改更糟 ✗）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)

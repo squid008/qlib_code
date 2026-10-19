@@ -18,6 +18,21 @@ from ..models.backtest import BacktestRequest, BacktestTask, TaskIdResponse
 from .. import config
 from ..services import artifacts_service
 
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 本模块**没有模块级 logger** ✗（`factors_single` 是内联 `get_logger("factors")` 用法 ✓）
+      ⇒ 这里用 `logging.getLogger(__name__)` ✓（= `app.routers.xxx` ✓，能与其它日志一起看 ✓）。
+    ⚠ 全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
+
+
 router = APIRouter(prefix="/api", tags=["backtest"])
 
 
@@ -258,18 +273,3 @@ def delete_backtest(task_id: str):
     except artifacts_service.ArtifactNotFoundError as e:
         raise _map_artifact_error(e)
     return {"status": "deleted", "task_id": task_id, "dir": dir_name}
-
-
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ 本模块**没有模块级 logger** ✗（`factors_single` 是内联 `get_logger("factors")` 用法 ✓）
-      ⇒ 这里用 `logging.getLogger(__name__)` ✓（= `app.routers.xxx` ✓，能与其它日志一起看 ✓）。
-    ⚠ 全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)

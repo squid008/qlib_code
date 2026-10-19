@@ -36,6 +36,22 @@ from .lexer import LexerError
 from .parser import parse_formula, ParseError
 from .semantic import SemanticError, resolve_vars, inline_variables
 
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A 收尾 ✓）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 三条硬约束（都是踩过的坑 ✓）：
+      ① `logger` 名字各文件不同（`logger` / `_LOGGER` / 都没有 ✓）⇒ 全兜住 ✓；
+      ② 有的模块 `logger` 在 **Linux 上是 None** ✗（Windows-only 初始化 ✓）⇒ 不能用 `logger.xxx` ✓；
+      ③ 日志自身失败**绝不许抛** ✗ ⇒ 全程 `contextlib.suppress` ✓（2.9.26 的教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
+
+
 # `参数 K=1, N=20;` 声明行（整行；可写"参数"/"PARAM"/"PARAMS"，大小写不敏感）
 _PARAM_LINE_RE = re.compile(r"^[ \t]*(?:参数|PARAMS?)[ \t]*([^;]*);[ \t]*$",
                             re.IGNORECASE | re.MULTILINE)
@@ -232,19 +248,3 @@ def expand_calls(formula: Formula, library: Dict[str, str],
 
 __all__ = ["extract_params", "parse_param_expr", "build_library", "expand_calls",
            "apply_param_defaults", "MAX_DEPTH"]
-
-
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A 收尾 ✓）—— 吞异常后写一行 debug 日志。
-
-    ⚠ 三条硬约束（都是踩过的坑 ✓）：
-      ① `logger` 名字各文件不同（`logger` / `_LOGGER` / 都没有 ✓）⇒ 全兜住 ✓；
-      ② 有的模块 `logger` 在 **Linux 上是 None** ✗（Windows-only 初始化 ✓）⇒ 不能用 `logger.xxx` ✓；
-      ③ 日志自身失败**绝不许抛** ✗ ⇒ 全程 `contextlib.suppress` ✓（2.9.26 的教训 ✓）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)

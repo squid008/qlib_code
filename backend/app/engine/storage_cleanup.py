@@ -23,6 +23,22 @@ import os
 import threading
 import time
 
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A 收尾 ✓）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 三条硬约束（都是踩过的坑 ✓）：
+      ① `logger` 名字各文件不同（`logger` / `_LOGGER` / 都没有 ✓）⇒ 全兜住 ✓；
+      ② 有的模块 `logger` 在 **Linux 上是 None** ✗（Windows-only 初始化 ✓）⇒ 不能用 `logger.xxx` ✓；
+      ③ 日志自身失败**绝不许抛** ✗ ⇒ 全程 `contextlib.suppress` ✓（2.9.26 的教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
+
+
 _FEATURE_CACHE_GB = float(os.environ.get("QLIB_FEATURE_CACHE_GB", "2.0"))
 # v1.19.12：artifacts 由「固定保留 40 个」改为**容量配额优先 + 条数兜底**（详见 _clean_artifacts）。
 _ARTIFACTS_GB = float(os.environ.get("QLIB_ARTIFACTS_GB", "30.0"))
@@ -526,19 +542,3 @@ def cleanup_storage(work_dir: str | None = None, force: bool = False) -> dict:
     except Exception:
         stat["mlflow_db_mb"] = None
     return stat
-
-
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A 收尾 ✓）—— 吞异常后写一行 debug 日志。
-
-    ⚠ 三条硬约束（都是踩过的坑 ✓）：
-      ① `logger` 名字各文件不同（`logger` / `_LOGGER` / 都没有 ✓）⇒ 全兜住 ✓；
-      ② 有的模块 `logger` 在 **Linux 上是 None** ✗（Windows-only 初始化 ✓）⇒ 不能用 `logger.xxx` ✓；
-      ③ 日志自身失败**绝不许抛** ✗ ⇒ 全程 `contextlib.suppress` ✓（2.9.26 的教训 ✓）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)

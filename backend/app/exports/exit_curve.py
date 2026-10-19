@@ -25,6 +25,20 @@ from typing import Any, Dict, List, Optional
 
 from . import xl
 
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
+
+    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
+      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)
+
+
 SHEET_SHOT = "曲线截图"                  # 第 1 页（用户指定：第一页是截图 ✓）
 COL_SHOT = 10                            # 第 1 页用到的列数（分区标题/说明块合并到这一列 ✓）
 TRADE_HEADERS = ["日期", "代码", "方向", "股数", "价格", "金额", "费用", "原因"]
@@ -175,17 +189,3 @@ def trade_rows(st: Optional[dict]) -> List[List[Any]]:
             _log_swallowed("exit_curve.py", e)
             continue
     return out
-
-
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
-      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)
