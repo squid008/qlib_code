@@ -57,6 +57,8 @@ import CostSettings from './components/CostSettings'
 import ExecutionLimits, { LIMIT_THRESHOLD_ON } from './components/ExecutionLimits'
 // ★ v2.9.47：第七刀 —— 训练/测试划分（滚动训练 ✓，5 值 + 1 回调 ✓）
 import TrainTestSplit from './components/TrainTestSplit'
+// ★ v2.9.48：任务卡片动作（逻辑抽离 ✓，第一次可单测 ✓）
+import { useTaskActions } from './hooks/useTaskActions'
 
 export default function App() {
   // ★★ v2.1.68（用户 2026-10-12："你把面板参数股票池默认改成全A，结束日期改成 2026-01-31，
@@ -762,6 +764,19 @@ export default function App() {
   }
 
   // 断点续跑：从"未完成"的滚动回测继续（后端复用源 artifacts 目录，跳过已完成段）
+  // ★ v2.9.48（P1-B ✓ 2026-10-19）：任务卡片的四个动作（刷新清理 / 全部取消 / 单个取消 /
+  //   强制停止）抽成 `useTaskActions` ✓ —— 它们只跟状态和 API 有关、与 JSX 无关 ✓
+  //   ⇒ App 少了 78 行内联处理函数 ✓，并且这四个动作**第一次有了单测** ✓
+  const taskActions = useTaskActions({
+    tasks,
+    setTasks,
+    setError,
+    clearedTaskIdsRef,
+    persistCleared,
+    setClearedTaskIds,
+    cancelBacktest,
+    forceCancelBacktest,
+  })
   const handleResume = async (taskId: string) => {
     setError('')
     try {
@@ -1600,84 +1615,7 @@ export default function App() {
                 {tasks.length > 0 && (
           <TaskStatusPanel
             tasks={tasks}
-            onRefresh={() => {
-              const removed = tasks.filter(
-                (t) =>
-                  t.status === 'success' ||
-                  t.status === 'failed' ||
-                  t.status === 'cancelled',
-              )
-              const next = new Set(clearedTaskIdsRef.current)
-              removed.forEach((t) => next.add(t.task_id))
-              setClearedTaskIds(next)
-              persistCleared(next)
-              setTasks((prev) =>
-                prev.filter(
-                  (t) =>
-                    t.status === 'running' ||
-                    t.status === 'pending' ||
-                    t.status === 'cancelling',
-                ),
-              )
-            }}
-            onCancelAll={async () => {
-              const active = tasks.filter(
-                (t) => t.status === 'running' || t.status === 'pending' || t.status === 'cancelling',
-              )
-              await Promise.all(
-                active.map(async (t) => {
-                  try {
-                    await cancelBacktest(t.task_id)
-                  } catch {
-                    /* 单个失败不阻塞其他 */
-                  }
-                }),
-              )
-              // 乐观更新：立即把全部任务标记为 cancelling（后端已受理，不依赖轮询才显示）
-              setTasks((prev) =>
-                prev.map((t) =>
-                  t.status === 'running' || t.status === 'pending'
-                    ? { ...t, status: 'cancelling' as const, message: '正在取消...' }
-                    : t,
-                ),
-              )
-            }}
-            onCancelOne={async (taskId) => {
-              try {
-                await cancelBacktest(taskId)
-              } catch {
-                /* 单个任务取消失败不阻塞其他 */
-              }
-              // 乐观更新：立即标记该任务为 cancelling（后端已受理，马上有反馈）
-              setTasks((prev) =>
-                prev.map((t) =>
-                  t.task_id === taskId && t.status !== 'cancelling'
-                    ? { ...t, status: 'cancelling' as const, message: '正在取消...' }
-                    : t,
-                ),
-              )
-            }}
-            onForceCancel={async (taskId) => {
-              // 强制停止（v1.19.35）：普通取消无效时（卡在 joblib/loky 取数里，CPU/磁盘都为 0）
-              // ⇒ 后端杀掉该进程的取数 worker，任务收尾为「已强制停止」。
-              try {
-                const r = await forceCancelBacktest(taskId)
-                setTasks((prev) =>
-                  prev.map((t) =>
-                    t.task_id === taskId
-                      ? { ...t, status: 'cancelling' as const, message: '强制停止中（正在终止取数进程）...' }
-                      : t,
-                  ),
-                )
-                setError(
-                  r.killed_workers.length
-                    ? ''
-                    : '已强制停止：未发现活动的取数进程（可能已自行结束），任务已直接标记为已停止',
-                )
-              } catch (e) {
-                setError(`强制停止失败：${e instanceof Error ? e.message : String(e)}`)
-              }
-            }}
+            {...taskActions}
             onResume={handleResume}
             onSelectTask={handleSelectTask}
             selectedTaskId={task?.task_id ?? null}
