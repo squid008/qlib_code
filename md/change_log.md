@@ -39,6 +39,33 @@
 
 ---
 
+## [2.9.57] - 2026-10-19
+
+### Changed（**A 项第二刀：`panel_expr.py` 拆出 `seg_ops.py`** ✓ —— 2,803 → **2,533 行** ✓）
+
+- **怎么挑的** ✓：对三组候选各算了一遍**外部依赖** ✓——
+  「数据读取与缓存」组要 **13 个**外部名字 ✗（还牵扯 `_merged_meta` / `_put_bin_cache` 链式 ✓）；
+  「EMA/树扩展」组要 `PanelEvaluator` ✗（就是那个还没拆的大类 ✓）；
+  「**分段/滚动算子**」组的**传递闭包只有 11 个** ✓ —— 额外只有 `np` / `pd` / `contextlib` ✓
+  ⇒ **完全自包含** ✓ ⇒ 先搬它 ✓。
+- 新模块 **`factors/seg_ops.py`（315 行 ✓）**：`_seg_roll` / `_seg_roll_vanherk`（van Herk–Gil–Werman
+  滑窗极值 ✓）/ `_seg_window_op` / `_segment_bnd` / `_by_group` / `_seg_arrays` / `_seg_grid`
+  ＋ 两个**段缓存** `_SEG_CACHE` / `_SEG_RC_CACHE` ✓。`panel_expr` **2,803 → 2,533 行** ✓。
+- **★ 两个坑（都是这次实测抓的 ✓）**：
+  ① 依赖分析脚本**漏认注解赋值**（`_SEG_CACHE: "dict" = {}` 是 `AnnAssign` ✗，我只扫了 `Assign` ✓）
+     ⇒ 搬完立刻 **F821 ×8** ✓ ⇒ 只好再补一轮 ✓（**教训：分析"模块级定义"必须同时认 `Assign` 和 `AnnAssign`** ✗）；
+  ② 那两个缓存是**两边共用**的 ✓（`reset_caches()` 要清它们 ✓）⇒ 定义**归 `seg_ops`** ✓、
+     `panel_expr` 改为 import 引用 ✓ —— 实测 `panel_expr._SEG_CACHE is seg_ops._SEG_CACHE` ✓
+     **同一个 dict** ✓ ⇒ `reset_caches()` 的 `.clear()` 跨模块照样有效 ✓（这条专门验了一遍 ✓）。
+- **兼容性** ✓：`panel_expr` 用 `from .seg_ops import …` **显式引回** ✓（不是 `import *` ✗）；
+  `chip_turn` 的再导出仍然可用 ✓。
+- **棘轮** ✓：`panel_expr` 上限 2810 → **2545** ✓。
+- **校验** ✓：`compileall` **0** ✓ ｜ `ruff` **0 错误** ✓ ｜ **全量导入 82/82** ✓ ｜
+  seg/panel_expr/chip 相关 **68 passed** ✓ ｜ CI ✓。
+- **A 项进度** ✓：`panel_expr` **2,909 → 2,533**（−13% ✓）；已拆出 `chip_turn`(143) ＋ `seg_ops`(315) ✓。
+  下一刀候选：`_ema_apply_series` / `_tree_ext_days` / `_panel_dyn`（要拖 `_ROLL_FUNC` / `_dyn_kernel` ✓
+  且与 `PanelEvaluator` 有耦合 ✗）⇒ 或直接啃 `PanelEvaluator`（~1,000 行 ✗ 最危险 ✓ 放最后 ✓）。
+
 ## [2.9.56] - 2026-10-19
 
 ### Changed（**A 项开工：`panel_expr.py` 拆出 `chip_turn.py`** ✓ —— 2,909 → **2,803 行** ✓）
