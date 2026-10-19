@@ -51,6 +51,8 @@ import HardRuleGate from './components/HardRuleGate'
 import MetaGatePanel from './components/MetaGatePanel'
 // ★ v2.9.44：第四刀 —— 交易设置里的「资金与口径」3 个字段（成交价基准 5 档 / 复权 3 档 ✓）
 import TradingBasics from './components/TradingBasics'
+// ★ v2.9.45：第五刀 —— 费用与滑点（**百分数↔比率**换算收在组件内 ✓）
+import CostSettings from './components/CostSettings'
 
 export default function App() {
   // ★★ v2.1.68（用户 2026-10-12："你把面板参数股票池默认改成全A，结束日期改成 2026-01-31，
@@ -1477,48 +1479,16 @@ export default function App() {
                 onPriceAdjust={(v) => update('price_adjust', v)}
               />
 
-              <label className="block">
-                <span className="text-sm text-slate-500">买入手续费(%)</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  className="mt-1 w-full border rounded px-2 py-1"
-                  value={form.open_cost * 100}
-                  onChange={(e) => update('open_cost', Number(e.target.value) / 100)}
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-sm text-slate-500">卖出手续费(%)</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  className="mt-1 w-full border rounded px-2 py-1"
-                  value={form.close_cost * 100}
-                  onChange={(e) => update('close_cost', Number(e.target.value) / 100)}
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-sm text-slate-500">滑点/冲击成本(%)</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  className="mt-1 w-full border rounded px-2 py-1"
-                  value={form.impact_cost * 100}
-                  onChange={(e) => update('impact_cost', Number(e.target.value) / 100)}
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-sm text-slate-500">最低手续费(元)</span>
-                <input
-                  type="number"
-                  className="mt-1 w-full border rounded px-2 py-1"
-                  value={form.min_cost}
-                  onChange={(e) => update('min_cost', Number(e.target.value))}
-                />
-              </label>
+              {/* ★ v2.9.45：费用与滑点（4 字段 ✓）已拆成 `<CostSettings>` ✓
+                  —— **百分数 ↔ 比率**的换算收在组件里 ✓（写反 = 手续费差 100 倍 ✗） */}
+              <CostSettings
+                openCost={form.open_cost}
+                closeCost={form.close_cost}
+                impactCost={form.impact_cost}
+                minCost={form.min_cost}
+                onCost={(k, ratio) => update(k, ratio)}
+                onMinCost={(v) => update('min_cost', v)}
+              />
 
               <label className="block">
                 <span className="text-sm text-slate-500">成交量限制(比例)</span>

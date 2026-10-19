@@ -140,8 +140,9 @@ def test_recalc_button_precedes_dilution_warning():
     # ★ v2.9.41/42/43（2026-10-19 ✓）：拆出 `DayExclusions` + `HardRuleGate` + `MetaGatePanel`
     #   后 App **2,048 → 1,949** ✓ ⇒ 上限 2100 → 2040 → 2020 → **1960** ✓
     #   ⚠ 棘轮只许变小 ✗ —— 下刀拆完记得一起调 ✓
-    # ★ v2.9.44：再拆 `TradingBasics` ⇒ App **1,949 → 1,923** ✓ 上限 1960 → **1930** ✓
-    (APP, 1930),
+    # ★ v2.9.44：再拆 `TradingBasics` ⇒ App **1,949 → 1,923** ✓ 上限 1960 → 1930 ✓
+    # ★ v2.9.45：再拆 `CostSettings` ⇒ App **1,923 → 1,893** ✓ 上限 1930 → **1900** ✓
+    (APP, 1900),
     (MODAL, 1600),
 ])
 def test_component_size_ratchet(path, cap):
