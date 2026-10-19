@@ -314,15 +314,23 @@ def fill_limits(panel: Dict[str, pd.DataFrame], strict: bool = True) -> Dict[str
     if raw is None:
         return panel
     prev = raw.shift(1)
+    # ★ 2026-10-19 修：**只补缺的那一侧** ✓ —— 原来循环里无条件写两列 ✗，
+    #   于是"数据源只给了 LIMIT_UP、缺 LIMIT_DOWN"时，**已有的那侧会被推算值覆盖** ✗
+    #   （若标签是 ST 的 5%，会被改成 10% ⇒ 判涨停结果全错 ✓，与 docstring
+    #   "有标签时一律用标签" 直接矛盾 ✗）。实测由 `test_only_missing_side_is_filled` 抓出 ✓。
+    _has_up = "LIMIT_UP" in panel
+    _has_dn = "LIMIT_DOWN" in panel
+    if not _has_up:
+        panel["LIMIT_UP"] = pd.DataFrame(index=raw.index)
+    if not _has_dn:
+        panel["LIMIT_DOWN"] = pd.DataFrame(index=raw.index)
     for code in raw.columns:
         r = float(limit_ratio(code, 0.10))
         up, dn = prev[code] * (1.0 + r), prev[code] * (1.0 - r)
-        if "LIMIT_UP" not in panel:
-            panel["LIMIT_UP"] = pd.DataFrame(index=raw.index)
-        if "LIMIT_DOWN" not in panel:
-            panel["LIMIT_DOWN"] = pd.DataFrame(index=raw.index)
-        panel["LIMIT_UP"][code] = np.round(up, 2)
-        panel["LIMIT_DOWN"][code] = np.round(dn, 2)
+        if not _has_up:
+            panel["LIMIT_UP"][code] = np.round(up, 2)
+        if not _has_dn:
+            panel["LIMIT_DOWN"][code] = np.round(dn, 2)
     panel["_limits_inferred"] = pd.DataFrame()
     return panel
 
