@@ -39,6 +39,39 @@
 
 ---
 
+## [2.9.40] - 2026-10-19
+
+### Test（**jsdom 救回来了 ⇒ 本仓库第一批真 DOM 交互测试** ✓ —— 拆 `App.tsx` 的前置条件解除 ✓）
+
+- **根因确认** ✓：CI 的 **Node 20** 与 `jsdom 30` 不兼容 ✗（2.9.21 那个
+  `TypeError: ... (reading 'bind')`、0 个用例被收集 ✓；本机 Node 24 从来没事 ✓）。
+- **改法（两步 ✓）**：
+  · CI `node-version: 20 → **22**`（LTS ✓）；
+  · 新增 **`src/__tests__/dom_probe.test.tsx`**（**逐文件**开 jsdom ✓，
+    用 `// @vitest-environment jsdom` ✓）当**探针** ✓ —— 全局仍是 `environment: 'node'` ✓
+    （纯函数用例跑得更快 ✓），只有需要 DOM 的文件才开 ✓。
+  ⇒ **CI = success** ✓：探针绿 = jsdom 可用 ✓（这条比"再猜一轮"可靠得多 ✓）。
+- **第一批交互测试** ✓：`src/__tests__/modelParamsForm.test.tsx`（**6 条 ✓**）——
+  `ModelParamsForm` 是纯 props 组件 ✓，测的都是真会犯的错：
+  · **字段集按模型走** ✓（LightGBM 有 `num_leaves` ✓；XGBoost 有 `min_child_weight`、**无** `num_leaves` ✓
+    —— 传错参数会让训练报错或被静默忽略 ✗）；
+  · **改输入真的回调** ✓：`onUpdate(key, 原始字符串)` ✓（`learning_rate → '0.05'` ✓；
+    **清空也要回调** ✓ —— 空串表达"用默认值"✓，被吞掉就等于清不掉 ✗）；
+  · **值回填** ✓（`modelParams={seed: 42}` ⇒ 输入框显示 `42` ✓，否则"复用历史参数"是假的 ✗）；
+  · **未知模型返回 null** ✓（Linear 无树参数 ✓，绝不能渲一排空输入框 ✗）。
+- **✗ 踩了两个坑（都写进测试文件头 ✓）**：
+  ① **`@testing-library/react` v16 的 peer 是 `@testing-library/dom`** ✗，而 lockfile 是
+     `--legacy-peer-deps` 装的 ⇒ 那个包**没进** ✓ ⇒ `Cannot find module` ✓、**0 个用例被收集** ✗
+     ⇒ **不再往用户机器加安装步骤** ✗：改用 **`react-dom/client` + `act` + 原生 value setter** ✓
+     （React 只听 `input` 事件 ✓，直接赋 `el.value` 它收不到 ✗ —— 最经典的坑 ✓）；
+  ② 断言**范围过宽** ✗：XGBoost 的**提示文案**里本来写着"无 num_leaves"✓ ⇒ 拿整段
+     `textContent` 判"不含 num_leaves"必然误报 ✓ ⇒ 改成**逐输入框读它自己的 `<label>`** ✓。
+- **前端测试** ✓：11 → **24 条**（`sftLogic` 11 ✓ ＋ `metricCards` 5 ✓ ＋ `dom_probe` 2 ✓ ＋
+  `modelParamsForm` 6 ✓，4 个文件 ✓）。
+- **校验** ✓：`npx vitest run` **24/24 exit=0** ✓ ｜ `tsc -b` **0 错误** ✓ ｜ CI ✓。
+- **解锁** ✓：**交互级用例现在可写了** ⇒ `App.tsx`(2,048 ✗) 的拆分母块（`KpiCards` /
+  表单区 / 图表区 ✓）可以边拆边加"点了会怎样"的断言 ✓（P1-B 剩余从此可做 ✓）。
+
 ## [2.9.39] - 2026-10-19
 
 ### Test（**组件级渲染安全网** ✓ —— 用 `renderToStaticMarkup` **绕开 jsdom** ✗→✓）
