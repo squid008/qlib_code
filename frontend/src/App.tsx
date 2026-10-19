@@ -59,6 +59,8 @@ import ExecutionLimits, { LIMIT_THRESHOLD_ON } from './components/ExecutionLimit
 import TrainTestSplit from './components/TrainTestSplit'
 // ★ v2.9.48：任务卡片动作（逻辑抽离 ✓，第一次可单测 ✓）
 import { useTaskActions } from './hooks/useTaskActions'
+// ★ v2.9.49：结果区展示态推导（纯函数 ✓，含 v1.19.39 / v1.19.74 两条 bugfix 规则 ✓）
+import { resolveResultView } from './logic/backtestView'
 
 export default function App() {
   // ★★ v2.1.68（用户 2026-10-12："你把面板参数股票池默认改成全A，结束日期改成 2026-01-31，
@@ -1624,34 +1626,16 @@ export default function App() {
 
         {/* 结果：实时任务成功 或 历史查看（有 result 或仅有模型产物都渲染）；
             滚动训练运行中展示"已跑段"的部分结果（实时刷新） */}
-        {(((task?.result && task.status === 'success') || viewResult?.result) ||
-          viewArtifacts || (task?.status === 'running' && task.partial_result?.nav?.length) ||
-          viewResult?.partial_result?.nav?.length) && (() => {
-          // ⚠ 用**实时任务列表**判定"是否还在跑"，而不是 viewResult 里那份点击时抓的快照（v1.19.39 修 BUG）：
-          //   用户点「取消」后任务进入 cancelling，再点「刷新」会把已结束的任务从 tasks 里移除，
-          //   但 viewResult 仍是旧快照（status='running'）⇒ 文案一直显示"⏳ 滚动训练进行中"，
-          //   用户以为没取消掉。改为：实时列表里有就按它的状态，没有（已被刷新清掉/任务已结束）⇒ 视为已停止。
-          const partialTaskId = viewResult?.task_id ?? task?.task_id ?? null
-          const livePartialTask = tasks.find((t) => t.task_id === partialTaskId) ?? null
-          const partialStatus = livePartialTask?.status ?? 'cancelled'
-          // 归因表要跟"正在显示结果的那个任务"对齐（v1.19.74）：上面 partialTaskId 是 viewResult 优先，
-          // 而结果/产物是"实时成功任务优先"⇒ 两者不一致时表格会来自另一个任务（用户 2026-09-16 就因此
-          // 看到"未在公式库中找到的因子"—— 那其实是我验证用的临时公式那次）。
-          const shownTaskId = task?.status === 'success'
-            ? task.task_id
-            : (viewResult?.task_id ?? task?.task_id ?? null)
-          const shownStatus = tasks.find((t) => t.task_id === shownTaskId)?.status
-          const shownRunning = shownStatus === 'running' || shownStatus === 'pending'
-          const partialRunning = partialStatus === 'running' || partialStatus === 'pending'
-          const r = (task?.status === 'success' ? task.result : viewResult?.result) || null
-          // ★ v1.20.50：只要"当前展示的是某个实时任务"就用它的产物 ✓（原先限定 `success` ✗ ⇒
-          //   运行中点任务卡片永远看不到训练产物 ✓）；没有实时任务时才用历史查看的那份 ✓。
-          const a = (task ? (artifacts ?? viewArtifacts) : viewArtifacts) || null
-          // 运行中：实时任务 partial；查看历史：viewResult 携带的 partial（任务已停止但保留已跑段）
-          const partial =
-            task?.status === 'running'
-              ? task.partial_result
-              : (viewResult?.partial_result ?? null)
+        {/* ★ v2.9.49：展示态推导已抽成**纯函数** `resolveResultView` ✓（`src/logic/backtestView.ts` ✓）
+            —— 里面那两条规则（实时列表判状态 ✓ v1.19.39 / 归因表对齐任务 ✓ v1.19.74）
+            现在有单测钉住了 ✓；守门见 `src/__tests__/backtestView.test.ts` ✓ */}
+        {(() => {
+          const _v = resolveResultView({ task, tasks, viewResult, viewArtifacts, artifacts })
+          if (!_v.shouldRender) return null
+          const {
+            partialStatus, shownTaskId, shownRunning, partialRunning,
+            r, a, partial,
+          } = _v
           return (
             <>
               {r ? (

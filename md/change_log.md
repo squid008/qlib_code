@@ -39,6 +39,33 @@
 
 ---
 
+## [2.9.49] - 2026-10-19
+
+### Changed（**P1-B 第九刀：结果区展示态抽成纯函数** ✓ —— 把两条 bugfix 变成断言 ✓）
+
+- 新增 **`src/logic/backtestView.ts`（~140 行 ✓）**：`resolveResultView({task, tasks, viewResult,
+  viewArtifacts, artifacts})` ⇒ 一次算出 `r` / `a` / `partial` / `partialStatus` / `shownTaskId` /
+  `shouldRender` ✓。`App.tsx` **1,734 → 1,718 行** ✓（**累计 2,048 → 1,718，−16.1%** ✓），
+  棘轮 `App ≤ 1745` → **≤ 1730** ✓。
+- **★ 抽它的真正理由：那 20 行里埋着两条线上 bugfix** ✗ —— 写在注释里没人记得 ✓，写成断言才会一直守着 ✓：
+  · **v1.19.39**：partial 状态**必须查实时任务列表** ✓ —— `viewResult` 是点击那刻的**快照** ✗，
+    用户取消后它还写着 `running` ⇒ 界面一直显示「⏳ 滚动训练进行中」，用户以为没取消掉 ✗；
+    ⇒ 规则：实时列表有就按它 ✓，没有（已被刷新清掉/已结束）**一律视为 `cancelled`** ✓。
+  · **v1.19.74**：归因表要跟"正在显示结果的任务"对齐 ✓ —— `partialTaskId` 是 `viewResult` 优先 ✓，
+    而结果/产物是"实时成功任务优先" ✓ ⇒ 不一致时表格来自另一个任务 ✗
+    （用户 2026-09-16 因此看到"未在公式库中找到的因子"✓）；⇒ `shownTaskId` **成功任务优先** ✓。
+  · 另含 **v1.20.50** 的产物选择规则 ✓（有实时任务用它的产物 ✓，没有才用历史那份 ✓）。
+- **配套 `backtestView.test.ts` 8 条 ✓**（纯函数 ✓ 无 DOM ✓，跑得飞快 ✓）：
+  成功任务 ✓ ｜ **快照说 running 但列表已无 ⇒ cancelled** ✓ ｜ 列表里确实 running ⇒ running ✓ ｜
+  **A 成功 + B 历史查看 ⇒ shownTaskId=A 而 partialTaskId=B** ✓ ｜ 产物优先级 ✓ ｜
+  partial 来源 ✓ ｜ shouldRender 三种触发 ✓ ｜ **空 `nav` 不算"有部分结果"** ✓（避免渲染一张空图 ✗）。
+- **✗ 两个类型坑**：`PartialLike.nav` 写成 `unknown[]` ✗ 而真实类型是 `NavPoint[] | null`
+  ⇒ `BacktestTask` **不可赋值**（TS2322 ✓）；改成 `| null` 后，`partial` 的字段又被原样传给
+  `NavChart`/`LayerChart`/`ICChart` ⇒ 又炸 ✓ ⇒ 最终 `r` / `a` / `partial` 用**显式 `any`** ✓
+  （注释写明：**真正的类型安全由子组件的 props 把关** ✓，在这里窄化只会逼 `App` 写三处重复断言 ✗）。
+- **前端测试** ✓：69 → **77 条**（13 个文件 ✓）。
+- **校验** ✓：`npm test` **77/77 exit=0** ✓ ｜ `tsc -b` **0 错误** ✓ ｜ 结构断言 ✓ ｜ CI ✓。
+
 ## [2.9.48] - 2026-10-19
 
 ### Changed（**P1-B 第八刀：`useTaskActions` hook** ✓ —— 这次抽的是**逻辑**，不是 JSX ✓）

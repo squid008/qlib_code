@@ -145,8 +145,10 @@ def test_recalc_button_precedes_dilution_warning():
     # ★ v2.9.46：再拆 `ExecutionLimits`（交易设置三组齐了 ✓）⇒ App **1,893 → 1,864** ✓ 上限 1875 ✓
     # ★ v2.9.47：再拆 `TrainTestSplit`（滚动训练 ✓）⇒ App **1,864 → 1,796** ✓ 上限 1805 ✓
     # ★ v2.9.48：任务卡片动作抽成 `useTaskActions` hook（**逻辑**而非 JSX ✓）
-    #   ⇒ App **1,796 → 1,734** ✓ 上限 → **1745** ✓
-    (APP, 1745),
+    #   ⇒ App **1,796 → 1,734** ✓ 上限 1745 ✓
+    # ★ v2.9.49：结果区展示态推导抽成纯函数 `resolveResultView` ✓
+    #   ⇒ App **1,734 → 1,718** ✓ 上限 → **1730** ✓
+    (APP, 1730),
     (MODAL, 1600),
 ])
 def test_component_size_ratchet(path, cap):
