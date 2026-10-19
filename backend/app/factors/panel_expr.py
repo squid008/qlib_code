@@ -1328,37 +1328,63 @@ def _apply_node(op: str, args, sr: bool, active=None, ev=None) -> Optional[pd.Se
     raise ValueError(f"panel_expr 不支持算子 {op}")
 
 
-class FieldResolver:
-    """字段解析（★ v2.9.67，2026-10-19 ✓ —— 从 `PanelEvaluator` 拆出的**第二个子对象** ✓）。
+class PanelEvaluator:
+    """在一整块面板上求值；节点缓存消除公共子式重复计算。
 
-    ## 为什么是它（归属矩阵实测 ✓，不是凭感觉 ✗）
-
-    `_field_cache` 只被 `field` 用 ✓；`_layout` / `_req_lo` / `_req_hi` 只被
-    `field` + `_chip_or_bin` 用 ✓ ⇒ 这 4 个状态**天然属于这一组** ✓（不是共享缓存 ✗）。
-    方法合计 **119 行** ✓，搬走后 `PanelEvaluator` 从 340 → ~225 行 ✓。
-
-    ## 口径一个字没改 ✓
-
-    三个方法**原样**搬过来 ✓（含注释里那些"为什么"✓）；`_full` / `_layout` / `_req_*`
-    仍由 `PanelEvaluator.__init__` 算好（`_union_layout` ✓）**按值传入** ✓ —— 不重复计算 ✗。
-
-    ## 兼容
-
-    · `PanelEvaluator.field(...)` 保留**委托** ✓（`chip_store.py` 与多个测试在用 ✓）；
-    · 构造参数**全都有默认值** ✓ ⇒ 只想借用字段解析的用例可以
-      `FieldResolver(field_cache=..., read_start=...)` ✓，不必造半个求值器 ✓。
+    SR 上下文模型（对齐 qlib 2026-09-09 实证）：SR 语义 = 剔停牌(NaN)行后在
+    "有效行压缩序列"上计算窗口/移位/算术，结果 scatter 回全日历（停牌日 NaN）。
+    由于 _sr_wrap_expr 会把因子表达式的所有叶子字段包 SR，含 SR 的整棵表达式
+    都在压缩序列上求值：eval 用 active（当前行集合）驱动——
+      sr=True  → active = 各股 close 非 NaN 的有效行（剔停牌）；
+      sr=False → active = 全日历（label/base/tag 等，停牌日保留前值语义）。
+    压缩序列上 shift/rolling 天然按剔除后的连续行序，与 qlib 一致。
     """
 
-    def __init__(self, full=None, layout=None, req_lo=None, req_hi=None,
-                 field_cache=None, read_start=None):
-        self._full = full
-        self._layout = layout
-        self._req_lo = req_lo
-        self._req_hi = req_hi
-        #: 字段缓存（外部可注入 ✓ —— 测试就是这么构造缓存命中路径的 ✓）
-        self._field_cache: Dict[str, pd.Series] = {} if field_cache is None else field_cache
-        #: 读盘起点（`field` 的 bin 读取用 ✓）
-        self.read_start = read_start
+    def __init__(self, instruments, start_time, end_time, union_fields=("close",),
+                 read_start=None):
+        self.instruments = list(instruments)
+        self.start_time = start_time
+        self.end_time = end_time
+        # 读盘起点：默认=逻辑起点；传入 read_start（更早）时字段读取/滚动从前移起点
+        # 开始（预热窗口），输出仍由 panel_features reindex 回 [start_time, end_time]。
+        self.read_start = read_start or start_time
+        self._union_fields = tuple(dict.fromkeys(union_fields))
+        # v1.18.31：一次拿到 (并集 index, 各股行区间 layout, 请求日历区间) —— 字段加载
+        # 由此改为「按位铺值」（`_load_field_on`），免掉每字段一次的 MultiIndex 构造 +
+        # sort_index + reindex(_full)（实测 ~80ms/字段）
+        (self._full, self._layout,
+         self._req_lo, self._req_hi) = _union_layout(
+            instruments, self.read_start, end_time, self._union_fields)
+        self._active_cache: Dict[bool, pd.MultiIndex] = {}
+        # v1.18.38：active 相对 _full 的**位置数组**（仅 sr=True 且确有剔除时有值）——
+        # 供 `eval` 的 field 节点用「位置 gather」替代「标签 reindex」（见 eval 处注释）
+        self._active_pos: Dict[bool, Optional[np.ndarray]] = {}
+        self._field_cache: Dict[str, pd.Series] = {}
+        self._node_cache: "OrderedDict[Tuple[object, bool], pd.Series]" = OrderedDict()
+        self._node_bytes = 0  # 节点缓存已记账字节（配合 LRU 上限）
+
+    def _active_index(self, sr: bool) -> pd.MultiIndex:
+        """当前行集合：sr=True → close 有效行压缩序列；sr=False → 全日历。"""
+        key = bool(sr)
+        if key in self._active_cache:
+            return self._active_cache[key]
+        if not sr:
+            self._active_cache[key] = self._full
+            self._active_pos[key] = None
+            return self._full
+        close_full = self.field("$close")  # 全历（自身非 NaN=有效）
+        nmask = close_full.notna()
+        ma = nmask.to_numpy()
+        if ma.all():
+            # 全部有效：active 与 _full **取值相同** → 直接复用同一对象（下游只按值使用），
+            # 好处是 `eval` 里可用 `is` 短路、且 `_seg_arrays` 缓存也能命中同一份
+            self._active_cache[key] = self._full
+            self._active_pos[key] = None
+            return self._full
+        active = close_full[nmask].index
+        self._active_cache[key] = active
+        self._active_pos[key] = np.flatnonzero(ma)
+        return active
 
     # ---- 字段 ----
     def field(self, name: str) -> pd.Series:
@@ -1482,82 +1508,6 @@ class FieldResolver:
         st = wide.stack()                              # (日期, 股票) → 标签对齐回面板顺序
         st.index = st.index.set_names([names[ld], names[li]])
         return st.reorder_levels(names).reindex(c.index)
-
-
-class PanelEvaluator:
-    """在一整块面板上求值；节点缓存消除公共子式重复计算。
-
-    SR 上下文模型（对齐 qlib 2026-09-09 实证）：SR 语义 = 剔停牌(NaN)行后在
-    "有效行压缩序列"上计算窗口/移位/算术，结果 scatter 回全日历（停牌日 NaN）。
-    由于 _sr_wrap_expr 会把因子表达式的所有叶子字段包 SR，含 SR 的整棵表达式
-    都在压缩序列上求值：eval 用 active（当前行集合）驱动——
-      sr=True  → active = 各股 close 非 NaN 的有效行（剔停牌）；
-      sr=False → active = 全日历（label/base/tag 等，停牌日保留前值语义）。
-    压缩序列上 shift/rolling 天然按剔除后的连续行序，与 qlib 一致。
-    """
-
-    def __init__(self, instruments, start_time, end_time, union_fields=("close",),
-                 read_start=None):
-        self.instruments = list(instruments)
-        self.start_time = start_time
-        self.end_time = end_time
-        # 读盘起点：默认=逻辑起点；传入 read_start（更早）时字段读取/滚动从前移起点
-        # 开始（预热窗口），输出仍由 panel_features reindex 回 [start_time, end_time]。
-        self.read_start = read_start or start_time
-        self._union_fields = tuple(dict.fromkeys(union_fields))
-        # v1.18.31：一次拿到 (并集 index, 各股行区间 layout, 请求日历区间) —— 字段加载
-        # 由此改为「按位铺值」（`_load_field_on`），免掉每字段一次的 MultiIndex 构造 +
-        # sort_index + reindex(_full)（实测 ~80ms/字段）
-        (self._full, self._layout,
-         self._req_lo, self._req_hi) = _union_layout(
-            instruments, self.read_start, end_time, self._union_fields)
-        self._active_cache: Dict[bool, pd.MultiIndex] = {}
-        # v1.18.38：active 相对 _full 的**位置数组**（仅 sr=True 且确有剔除时有值）——
-        # 供 `eval` 的 field 节点用「位置 gather」替代「标签 reindex」（见 eval 处注释）
-        self._active_pos: Dict[bool, Optional[np.ndarray]] = {}
-        # ★ v2.9.67：字段解析（`field` / `_chip_or_bin` / `_chip_field` + 它们独占的缓存 ✓）
-        #   独立成 `FieldResolver` ✓；`_full` / `_layout` / `_req_*` 已在上文算好 ⇒ 按值传入 ✓。
-        self._fx = FieldResolver(self._full, self._layout, self._req_lo, self._req_hi,
-                                 read_start=self.read_start)
-        self._node_cache: "OrderedDict[Tuple[object, bool], pd.Series]" = OrderedDict()
-        self._node_bytes = 0  # 节点缓存已记账字节（配合 LRU 上限）
-
-    # ---- 以下三个是**兼容壳** ✓（★ v2.9.67：实现在 `FieldResolver` ✓）
-    #      `field`：`chip_store.py` 与多个测试直接调 ✓；`_chip_or_bin` / `_chip_field`：测试调 ✓。
-    def field(self, name: str) -> pd.Series:
-        return self._fx.field(name)
-
-    def _chip_or_bin(self, name: str) -> pd.Series:
-        return self._fx._chip_or_bin(name)
-
-    def _chip_field(self, name: str) -> pd.Series:
-        return self._fx._chip_field(name)
-
-    def _active_index(self, sr: bool) -> pd.MultiIndex:
-        """当前行集合：sr=True → close 有效行压缩序列；sr=False → 全日历。"""
-        key = bool(sr)
-        if key in self._active_cache:
-            return self._active_cache[key]
-        if not sr:
-            self._active_cache[key] = self._full
-            self._active_pos[key] = None
-            return self._full
-        close_full = self.field("$close")  # 全历（自身非 NaN=有效）
-        nmask = close_full.notna()
-        ma = nmask.to_numpy()
-        if ma.all():
-            # 全部有效：active 与 _full **取值相同** → 直接复用同一对象（下游只按值使用），
-            # 好处是 `eval` 里可用 `is` 短路、且 `_seg_arrays` 缓存也能命中同一份
-            self._active_cache[key] = self._full
-            self._active_pos[key] = None
-            return self._full
-        active = close_full[nmask].index
-        self._active_cache[key] = active
-        self._active_pos[key] = np.flatnonzero(ma)
-        return active
-
-
-
 
     # ---- 递推组（v2.4.0，用户 2026-10-15 定稿 ✓；内核在 factors/recursion.py ✓）----
     def _recur_out(self, node, sr: bool, active) -> pd.Series:

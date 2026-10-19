@@ -41,6 +41,27 @@
 
 ## [2.9.67] - 2026-10-19
 
+### Reverted（⚠ **本版的 `FieldResolver` 拆分已回退** ✗ —— 留下分析与理由 ✓）
+
+- **为什么回退** ✗：CI 上 **11 个用例红** ✓，全在 `tests/test_chip_materialized_first.py`：
+  ```
+  AttributeError: '_FakeEvaluator' object has no attribute '_fx'
+  ```
+  那个文件用 `_FakeEvaluator` **冒充**求值器 ✓ —— 它靠**方法分派**（覆写 `field` / 记 `_chip_field`
+  调用次数 ✓）来验证"读物化 bin 而不是现算"✓。而我的委托写成 `self._fx._chip_or_bin(...)` ✗
+  ⇒ 分派被"短路"到 resolver 上 ✗ ⇒ 假对象的方法根本不被调用 ✓ ⇒ 测试失去意义 ✗。
+  ⚠ 本地为什么没红 ✗：我**只跑了** `test_chip_field` / `test_count_semantics` / `test_import_all` ✗，
+  没跑同类里最关键的 `test_chip_materialized_first` ✓ —— **改动涉及"谁调谁"，就必须跑全量** ✗（这条已写进待办 ✓）。
+- **回退内容** ✓：`backend/app/factors/panel_expr.py` 与 `tests/test_chip_field.py` 回到 2.9.66 状态 ✓
+  （`panel_expr.py` 2,592 → 2,542 ✓，`test_code_health` 上限 2,600 保持 ✓ 因为并没超）。
+  **保留的产出** ✓：归属分析矩阵与「方案 1 / 方案 2」写在《开发记录》E 项里 ✓；`_apply_node`（2.9.66 ✓）不受影响 ✓。
+- **下次再拆这一块，先决条件** ✓：要么让 `FieldResolver` 支持"宿主分派"（`field`/`_chip_field` 仍走宿主 ✓），
+  要么把 `_FakeEvaluator` 改成真实 `FieldResolver` 并**保留计数探针** ✓ —— 两者都要**先跑全量** ✓。
+- **校验** ✓：`compileall` **0** ✓ ｜ 回退后相关用例 **30 passed** ✓（含那 11 个 ✓）｜ CI ✓。
+
+<details>
+<summary>已回退的实现说明（留档 ✓，勿按此描述现状）</summary>
+
 ### Changed（**`PanelEvaluator` 拆分第二步：`FieldResolver`** ✓ —— 类 **340 → 230 行** ✓）
 
 - **先做归属分析再动手** ✓（v2.9.66 后的实测矩阵 ✓）：
@@ -61,6 +82,8 @@
   若将来把 `FieldResolver` 搬去独立模块 ✓，这个数字**必须立刻降回来** ✓。
 - **校验** ✓：`compileall` **0** ✓ ｜ `ruff` **0 错误** ✓ ｜
   `test_chip_field` + `test_count_semantics` + `test_import_all` **101 passed** ✓ ｜ CI ✓。
+
+</details>
 
 ## [2.9.66] - 2026-10-19
 

@@ -87,23 +87,22 @@ def _synth_panel(n_day=90, n_stk=3, seed=5):
 def test_derived_field_matches_kernel():
     """面板派生字段与直接调内核逐位一致（接线不能改数）——这是本文件最关键的一条。"""
     from app.factors.chip_dist import chip_run
-    # ★ v2.9.67：只借用**字段解析** ⇒ 直接构造 `FieldResolver` ✓
-    #   （原来用 `object.__new__(PanelEvaluator)` 手动塞属性 ✗ —— 那是"造半个求值器"✓，
-    #    拆分后没有 `_fx` 就会中断 ✗，而且它本来也不是被测物 ✓）
-    from app.factors.panel_expr import FieldResolver
+    from app.factors.panel_expr import PanelEvaluator
 
     fields, mats = _synth_panel()
     close, high, low, turn = mats
-    fx = FieldResolver(field_cache=dict(fields), read_start="2023-01-02")
+    ev = object.__new__(PanelEvaluator)                 # 只借用字段解析，不读盘
+    ev._field_cache = dict(fields)
+    ev.read_start = "2023-01-02"
 
     for q in (5, 30, 75, 95):
-        got = fx.field("$chip_cost_%g" % q).to_numpy(dtype=float)
+        got = ev.field("$chip_cost_%g" % q).to_numpy(dtype=float)
         exp = chip_run(close, high, low, turn, qs=(q,))["cost_%g" % q].reshape(-1, order="F")
         both = np.isfinite(got) & np.isfinite(exp)
         assert both.any()
         assert np.array_equal(got[both], exp[both]), "COST(%g) 必须逐位一致" % q
 
-    got_w = fx.field("$chip_win_close").to_numpy(dtype=float)
+    got_w = ev.field("$chip_win_close").to_numpy(dtype=float)
     exp_w = chip_run(close, high, low, turn, prices=close)["winner"].reshape(-1, order="F")
     both = np.isfinite(got_w) & np.isfinite(exp_w)
     assert both.any() and np.array_equal(got_w[both], exp_w[both]), "WINNER(C) 必须逐位一致"
@@ -111,12 +110,13 @@ def test_derived_field_matches_kernel():
 
 def test_field_cache_reuses_result():
     """同名字段必须命中缓存（公式里写多次不该重复算）。"""
-    from app.factors.panel_expr import FieldResolver
+    from app.factors.panel_expr import PanelEvaluator
 
     fields, _ = _synth_panel()
-    fx = FieldResolver(field_cache=dict(fields))
-    a = fx.field("$chip_cost_95")
-    b = fx.field("$chip_cost_95")
+    ev = object.__new__(PanelEvaluator)
+    ev._field_cache = dict(fields)
+    a = ev.field("$chip_cost_95")
+    b = ev.field("$chip_cost_95")
     assert a is b, "第二次取同名字段应直接命中 _field_cache"
 
 
