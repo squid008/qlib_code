@@ -128,6 +128,43 @@ describe('resolveResultView（纯逻辑）', () => {
     expect(empty.partial).toBeNull()
   })
 
+  it('⭐ 历史回测表格的**两个位置**：内部 / 外部，互斥且不自相矛盾', () => {
+    // ① 有完整结果、没有 partial ⇒ 表格画在**结果区内部** ✓，外部不画 ✓
+    const full = resolveResultView({
+      task: t('A', 'success', { result: { nav: NAV } }),
+      tasks: [t('A', 'success')], viewResult: null, viewArtifacts: null, artifacts: null,
+    })
+    expect(full.showHistoryInResult).toBe(true)
+    expect(full.showHistoryStandalone).toBe(false)
+
+    // ② 运行中且有 partial ⇒ **内部不画**（partial 图占了位置 ✓，再画一份会重复 ✗），
+    //    但**外部仍画** ✓ —— 因为此时还没有"结果"，用户仍需要历史表格去看/续测别的任务 ✓
+    //    （⚠ 我第一版断言"两处都不画"是错的 ✗，与原来的行为不符 ✓ —— 断言把它抓出来了 ✓）
+    const running = resolveResultView({
+      task: t('A', 'running', { partial_result: { nav: NAV } }),
+      tasks: [t('A', 'running')], viewResult: null, viewArtifacts: null, artifacts: null,
+    })
+    expect(running.showHistoryInResult).toBe(false)
+    expect(running.showHistoryStandalone).toBe(true)
+
+    // ③ 查看"未完成但已跑段"的历史任务 ⇒ 仍画在**内部** ✓（便于续测/看其他任务 ✓）
+    const viewing = resolveResultView({
+      task: null, tasks: [],
+      viewResult: { task_id: 'B', partial_result: { nav: NAV } },
+      viewArtifacts: null, artifacts: null,
+    })
+    expect(viewing.showHistoryInResult).toBe(true)
+  })
+
+  it('⭐ 既无结果也无产物 ⇒ 结果区不渲染，但历史表格**要单独渲染**（用于复用旧参数 ✓）', () => {
+    const v = resolveResultView({
+      task: null, tasks: [], viewResult: null, viewArtifacts: null, artifacts: null,
+    })
+    expect(v.shouldRender).toBe(false)
+    expect(v.showHistoryStandalone).toBe(true)
+    expect(v.showHistoryInResult).toBe(true)      // 它本来也在"内部"逻辑里为真 ✓（但外层不渲染 ⇒ 不会重复 ✓）
+  })
+
   it('空 partial.nav 不算"有部分结果"（避免渲染一张空图 ✗）', () => {
     const v = resolveResultView({
       task: t('A', 'running', { partial_result: { nav: [] } }),

@@ -1158,6 +1158,24 @@ export default function App() {
     await submitAndRun(form, (capitalWan || 0) * 10000)
   }
 
+  // ★ v2.9.50（P1-B ✓ 2026-10-19）：历史回测面板的 props —— **两处渲染共用这一份** ✗→✓
+  //   原来同一个 `<HistoryPanel>` 在 JSX 里被抄了两遍（各 6 个 props ✗）
+  //   ⇒ 下次给面板加 prop 时漏改一处，就会出现"两处行为不一致"✗（这类漂移最难查 ✓）。
+  //   ⚠ 必须放在**所有 handler 定义之后** ✓ —— 放到前面会因 `const` 的 TDZ 直接运行时报错 ✗
+  //     （我第一次就插在了 `handleResume` 之前 ✓）。
+  const historyProps = {
+    onUseParams: handleUseParams,
+    onReuseBacktest: handleReuseBacktest,
+    onResume: handleResume,
+    onViewResult: handleViewResult,
+    refreshKey: historyRefreshKey,
+    capacity,
+  }
+  // ★ v2.9.50：展示态**在组件体里算一次** ✓（原来是写在 JSX 里的 IIFE ✓）——
+  //   "结果区内部"与"结果区外部"两处判断从此用**同一个结果** ✓，
+  //   不会再出现"里面说该渲染、外面说不用"的自我矛盾 ✗。
+  const view = resolveResultView({ task, tasks, viewResult, viewArtifacts, artifacts })
+
   return (
     <div className="min-h-screen">
       <header className="bg-slate-900 text-white py-4 px-6 shadow">
@@ -1629,13 +1647,11 @@ export default function App() {
         {/* ★ v2.9.49：展示态推导已抽成**纯函数** `resolveResultView` ✓（`src/logic/backtestView.ts` ✓）
             —— 里面那两条规则（实时列表判状态 ✓ v1.19.39 / 归因表对齐任务 ✓ v1.19.74）
             现在有单测钉住了 ✓；守门见 `src/__tests__/backtestView.test.ts` ✓ */}
-        {(() => {
-          const _v = resolveResultView({ task, tasks, viewResult, viewArtifacts, artifacts })
-          if (!_v.shouldRender) return null
+        {view.shouldRender && (() => {
           const {
             partialStatus, shownTaskId, shownRunning, partialRunning,
-            r, a, partial,
-          } = _v
+            r, a, partial, showHistoryInResult,
+          } = view
           return (
             <>
               {r ? (
@@ -1686,32 +1702,14 @@ export default function App() {
               )}
               {/* 历史回测（复现模式）放在训练产物与调仓记录之间；运行中 partial 时走下方独立块，避免重复。
                   查看"未完成但已跑段"的历史任务时也显示历史表格，便于继续续测/查看其他任务 */}
-              {(!partial || viewResult?.partial_result) && (
-                <HistoryPanel
-                  onUseParams={handleUseParams}
-                  onReuseBacktest={handleReuseBacktest}
-                  onResume={handleResume}
-                  onViewResult={handleViewResult}
-                  refreshKey={historyRefreshKey}
-                  capacity={capacity}
-                />
-              )}
+              {showHistoryInResult && <HistoryPanel {...historyProps} />}
               {r?.trades && r.trades.length > 0 && <TradeLog trades={r.trades} />}
             </>
           )
         })()}
 
         {/* 既无结果也无模型产物时，历史回测仍显示（用于直接复用参数） */}
-        {(!((task?.result && task.status === 'success') || viewResult?.result) && !viewArtifacts) && (
-          <HistoryPanel
-                        onUseParams={handleUseParams}
-                        onReuseBacktest={handleReuseBacktest}
-                        onResume={handleResume}
-                        onViewResult={handleViewResult}
-                        refreshKey={historyRefreshKey}
-                        capacity={capacity}
-                      />
-        )}
+        {view.showHistoryStandalone && <HistoryPanel {...historyProps} />}
       </main>
     </div>
   )

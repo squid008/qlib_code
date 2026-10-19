@@ -77,6 +77,10 @@ export interface ResultView {
   partial: any
   /** 结果区是否该渲染 ✓（完整结果 / 产物 / 有任何 nav 的 partial ✓） */
   shouldRender: boolean
+  /** 结果区**内部**是否再渲染一次「历史回测」表格 ✓（有 partial 且没有可续看的历史 ⇒ 不重复 ✓） */
+  showHistoryInResult: boolean
+  /** 结果区**外**是否单独渲染「历史回测」表格 ✓（既无结果也无产物时 ✓，用于直接复用参数 ✓） */
+  showHistoryStandalone: boolean
 }
 
 const RUNNING_STATES = ['running', 'pending']
@@ -121,8 +125,19 @@ export function resolveResultView(input: ResultViewInput): ResultView {
     hasPartialNav,
   )
 
+  // ⚠ 下面两条决定「历史回测」表格出现在**哪里** ✓（它原来在 `App.tsx` 里被抄了两遍 ✗）：
+  //   ① 结果区内部 ✓：有 partial 且**不是**"可查看的历史 partial" ⇒ 不重复渲染 ✓
+  //      （查看历史未完成任务时，历史表格本来就在下面 ✓，再渲染一份会看到两条一样的 ✓）；
+  //   ② 结果区外部 ✓：**既无结果也无产物**时才单独渲染 ✓（用于"直接复用旧参数"✓）。
+  //   两条都只在**纯函数**里算 ✓ ⇒ 可以单测 ✓（以前只能靠肉眼对两处 ✗）。
+  const showHistoryInResult = !partial || Boolean(viewResult?.partial_result)
+  const noResultNoArtifacts = !(
+    ((task?.result && task.status === 'success') || viewResult?.result) || viewArtifacts
+  )
+  const showHistoryStandalone = noResultNoArtifacts
+
   return {
     partialTaskId, partialStatus, shownTaskId, shownRunning, partialRunning,
-    r, a, partial, shouldRender,
+    r, a, partial, shouldRender, showHistoryInResult, showHistoryStandalone,
   }
 }
