@@ -1026,7 +1026,8 @@ def single_factor_test(req: SingleFactorTestRequest):
                             done_set.add(h)
                     state["done_n"] = len(done_set)
                     state["running_h"] = []
-            except FactorTestCancelled:
+            except FactorTestCancelled as _e:
+                _log_swallowed('factors_single.py', _e)
                 pass  # 终态由主线程统一收尾
             except Exception as e:
                 import traceback

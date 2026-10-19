@@ -1233,6 +1233,7 @@ def run_single_factor_tests(
                 exit_specs.append({"skel": _rule.skel, "pre_cols": _cols,
                                    "pre_exprs": list(_rule.pre_exprs)})
             except Exception as _err:                 # noqa: BLE001
+                _log_swallowed('single_test.py', _err)
                 exit_specs.append({"error": "%s" % _err})
             exit_cols.append(None)
             continue
@@ -2283,7 +2284,8 @@ def _quantile_curve_block(*, _REBAL, _dec_p, _dts, _med, _qbest, _rkcol, _side, 
         for _x in (topk_list or []):
             try:
                 _v = float(_x)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as _e:
+                _log_swallowed('single_test.py', _e)
                 continue
             if not (_v > 0):
                 continue

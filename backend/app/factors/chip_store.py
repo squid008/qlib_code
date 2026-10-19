@@ -220,7 +220,8 @@ def materialize(codes: Sequence[str], start_time: str, end_time: str,
         for inst in codes:
             try:
                 sub = series.xs(inst, level="instrument")
-            except KeyError:
+            except KeyError as _e:
+                _log_swallowed('chip_store.py', _e)
                 continue
             if not len(sub):
                 continue

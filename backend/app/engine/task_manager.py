@@ -41,7 +41,8 @@ def current_max_concurrent() -> int:
     if env:
         try:
             return max(1, int(env))
-        except ValueError:
+        except ValueError as _e:
+            _log_swallowed('task_manager.py', _e)
             pass
     return max(1, resource.max_concurrent())
 
@@ -341,7 +342,8 @@ class TaskManager:
             result = qlib_engine.run_backtest(req, work_dir=self._work_dir, task_id=task_id)
             if not self._finish(task_id, "success", "完成", result=result):
                 logger.warning("回测任务 %s 已被强制停止，忽略其完成结果", task_id)
-        except TaskCancelledError:
+        except TaskCancelledError as _e:
+            _log_swallowed('task_manager.py', _e)
             self._finish(task_id, "cancelled", "已停止")
         except Exception as e:
             if task_id in self._forced or _is_pool_killed_error(e):
@@ -460,7 +462,8 @@ class TaskManager:
         if env:
             try:
                 reserve = max(0, int(env))
-            except ValueError:
+            except ValueError as _e:
+                _log_swallowed('task_manager.py', _e)
                 pass
         return max(1, self.current_limit() - reserve)
 

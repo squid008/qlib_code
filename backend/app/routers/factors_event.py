@@ -159,9 +159,11 @@ def event_study(req: EventStudyRequest):
                 state["cached"] = res.get("cached")
                 state.update(status="success", progress=100.0, message="事件研究完成",
                              result=_json_safe(res), ts=time.time())
-        except FactorTestCancelled:
+        except FactorTestCancelled as _e:
+            _log_swallowed('factors_event.py', _e)
             state.update(status="cancelled", progress=100.0, message="已取消", ts=time.time())
         except Exception as e:  # noqa: BLE001
+            _log_swallowed('factors_event.py', e)
             state.update(status="failed", progress=100.0, message=f"事件研究失败: {e}",
                          error=str(e), ts=time.time())
         finally:

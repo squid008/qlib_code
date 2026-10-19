@@ -181,7 +181,8 @@ def effective_task_memory_gb() -> float:
     if env:
         try:
             return max(0.1, float(env))
-        except ValueError:
+        except ValueError as _e:
+            _log_swallowed('resource.py', _e)
             pass
     m = measured_task_memory_gb()
     if m > 0:
@@ -333,7 +334,8 @@ def task_jobs_for_active(active: int) -> int:
     if env:
         try:
             return max(1, int(env))
-        except ValueError:
+        except ValueError as _e:
+            _log_swallowed('resource.py', _e)
             pass
     return max(1, cpu_logical() // max(1, active))
 

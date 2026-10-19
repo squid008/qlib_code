@@ -82,7 +82,8 @@ def decode_bytes(raw: bytes) -> tuple:
     for enc in ("utf-8-sig", "utf-8", "gbk", "gb18030"):
         try:
             return raw.decode(enc), enc
-        except UnicodeDecodeError:
+        except UnicodeDecodeError as _e:
+            _log_swallowed('base.py', _e)
             continue
     return raw.decode("utf-8", errors="replace"), "utf-8(replace)"
 
@@ -258,3 +259,19 @@ def parse_csv(raw, filename: str = "") -> ParseResult:
     res.stats["had_header"] = bool(had_header)
     res.stats["filename"] = filename
     return res
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A 收尾 ✓）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 三条硬约束（都是踩过的坑 ✓）：
+      ① `logger` 名字各文件不同（`logger` / `_LOGGER` / 都没有 ✓）⇒ 全兜住 ✓；
+      ② 有的模块 `logger` 在 **Linux 上是 None** ✗（Windows-only 初始化 ✓）⇒ 不能用 `logger.xxx` ✓；
+      ③ 日志自身失败**绝不许抛** ✗ ⇒ 全程 `contextlib.suppress` ✓（2.9.26 的教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

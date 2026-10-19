@@ -119,7 +119,8 @@ def build_library(texts: List[str]) -> Dict[str, str]:
             if len(f.outputs) != 1:
                 continue
             lib[str(f.outputs[0].name).upper()] = t
-        except (LexerError, ParseError, SemanticError):
+        except (LexerError, ParseError, SemanticError) as _e:
+            _log_swallowed('macros.py', _e)
             continue
     return lib
 
@@ -231,3 +232,19 @@ def expand_calls(formula: Formula, library: Dict[str, str],
 
 __all__ = ["extract_params", "parse_param_expr", "build_library", "expand_calls",
            "apply_param_defaults", "MAX_DEPTH"]
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A 收尾 ✓）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 三条硬约束（都是踩过的坑 ✓）：
+      ① `logger` 名字各文件不同（`logger` / `_LOGGER` / 都没有 ✓）⇒ 全兜住 ✓；
+      ② 有的模块 `logger` 在 **Linux 上是 None** ✗（Windows-only 初始化 ✓）⇒ 不能用 `logger.xxx` ✓；
+      ③ 日志自身失败**绝不许抛** ✗ ⇒ 全程 `contextlib.suppress` ✓（2.9.26 的教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

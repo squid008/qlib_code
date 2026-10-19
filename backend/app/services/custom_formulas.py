@@ -119,7 +119,8 @@ def _install_id() -> str:
             v = (f.read() or "").strip()
         if v:
             return _sanitize(v)
-    except OSError:
+    except OSError as _e:
+        _log_swallowed('custom_formulas.py', _e)
         pass
     v = "u-" + uuid.uuid4().hex[:8]
     try:
@@ -128,7 +129,8 @@ def _install_id() -> str:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(v + "\n")
         os.replace(tmp, p)          # 原子替换 ✓（并发首启时双方各写一个随机值，后写者胜，无害 ✓）
-    except OSError:
+    except OSError as _e:
+        _log_swallowed('custom_formulas.py', _e)
         pass
     return v
 
@@ -173,7 +175,8 @@ def _sources() -> List[Tuple[str, List[dict], int]]:
             if os.path.abspath(p) == os.path.abspath(_MY_FILE):
                 continue
             others.append((p, _read_items(p), 0))
-    except OSError:
+    except OSError as _e:
+        _log_swallowed('custom_formulas.py', _e)
         pass
     legacy = [(os.path.abspath(_CUSTOM_FORMULAS_PATH), _read_items(_CUSTOM_FORMULAS_PATH), 1)]
     return mine + others + legacy

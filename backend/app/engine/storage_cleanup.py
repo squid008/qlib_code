@@ -84,9 +84,11 @@ def _dir_size_and_bytes(root: str):
                 if os.path.isfile(p):
                     total += st.st_size
                     files.append((p, st.st_mtime))
-            except OSError:
+            except OSError as _e:
+                _log_swallowed('storage_cleanup.py', _e)
                 pass
-    except OSError:
+    except OSError as _e:
+        _log_swallowed('storage_cleanup.py', _e)
         pass
     return total, files
 
@@ -101,9 +103,11 @@ def _dir_total(root: str) -> int:
             for n in names:
                 try:
                     total += os.path.getsize(os.path.join(dirpath, n))
-                except OSError:
+                except OSError as _e:
+                    _log_swallowed('storage_cleanup.py', _e)
                     pass
-    except OSError:
+    except OSError as _e:
+        _log_swallowed('storage_cleanup.py', _e)
         pass
     return total
 
@@ -119,7 +123,8 @@ def _clean_feature_cache(root: str) -> int:
         try:
             if os.path.isfile(p):
                 files.append((p, os.path.getmtime(p)))
-        except OSError:
+        except OSError as _e:
+            _log_swallowed('storage_cleanup.py', _e)
             pass
     total = _dir_total(root)
     if total <= limit or not files:
@@ -134,7 +139,8 @@ def _clean_feature_cache(root: str) -> int:
             os.remove(p)
             total -= size
             removed += 1
-        except OSError:
+        except OSError as _e:
+            _log_swallowed('storage_cleanup.py', _e)
             pass
     return removed
 
@@ -152,7 +158,8 @@ def _dir_recursive_stat(root: str):
         for n in names:
             try:
                 st = os.stat(os.path.join(dirpath, n))
-            except OSError:
+            except OSError as _e:
+                _log_swallowed('storage_cleanup.py', _e)
                 continue
             total += st.st_size
             if st.st_mtime > latest:
@@ -187,7 +194,8 @@ def _slim_task_dir(d: str) -> int:
                     and os.path.getsize(p) > slim_bytes):
                 freed += os.path.getsize(p)
                 os.remove(p)
-        except OSError:
+        except OSError as _e:
+            _log_swallowed('storage_cleanup.py', _e)
             pass
     try:
         marker = os.path.join(d, ".slimmed")
@@ -195,7 +203,8 @@ def _slim_task_dir(d: str) -> int:
             f.write("slimmed_at=%s\nfreed_bytes=%d\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), freed))
         stamp = latest or time.time()
         os.utime(marker, (stamp, stamp))
-    except OSError:
+    except OSError as _e:
+        _log_swallowed('storage_cleanup.py', _e)
         pass
     return freed
 
@@ -261,7 +270,8 @@ def _clean_artifacts(root: str, detail: bool = False):
             need_removals -= 1
             _log().warning("产物治理：已删除旧任务目录 %s，释放 %.1fMB",
                            os.path.basename(d), real / 1024 ** 2)
-        except OSError:
+        except OSError as _e:
+            _log_swallowed('storage_cleanup.py', _e)
             pass
     stat["kept"] = len([x for x in infos if os.path.isdir(x[0])])
     stat["total_mb"] = round(max(0, total_bytes) / 1024 ** 2, 1)
@@ -299,7 +309,8 @@ def _clean_mlruns(root: str, detail: bool = False):
             continue
         try:
             subs = os.listdir(ed)
-        except OSError:
+        except OSError as _e:
+            _log_swallowed('storage_cleanup.py', _e)
             continue
         for run in subs:
             rd = os.path.join(ed, run)
@@ -307,7 +318,8 @@ def _clean_mlruns(root: str, detail: bool = False):
                 continue
             try:
                 size, latest = _dir_recursive_stat(rd)
-            except OSError:
+            except OSError as _e:
+                _log_swallowed('storage_cleanup.py', _e)
                 continue
             total += size
             runs.append([size, latest, rd, latest >= now - protect_sec])
@@ -361,7 +373,8 @@ def _dir_scan(d: str):
         for n in names:
             try:
                 st = os.stat(os.path.join(dirpath, n))
-            except OSError:
+            except OSError as _e:
+                _log_swallowed('storage_cleanup.py', _e)
                 continue
             total += st.st_size
             if st.st_mtime > latest:
@@ -513,3 +526,19 @@ def cleanup_storage(work_dir: str | None = None, force: bool = False) -> dict:
     except Exception:
         stat["mlflow_db_mb"] = None
     return stat
+
+
+def _log_swallowed(where, exc):
+    """**留痕兜底** ✓（P2-A 收尾 ✓）—— 吞异常后写一行 debug 日志。
+
+    ⚠ 三条硬约束（都是踩过的坑 ✓）：
+      ① `logger` 名字各文件不同（`logger` / `_LOGGER` / 都没有 ✓）⇒ 全兜住 ✓；
+      ② 有的模块 `logger` 在 **Linux 上是 None** ✗（Windows-only 初始化 ✓）⇒ 不能用 `logger.xxx` ✓；
+      ③ 日志自身失败**绝不许抛** ✗ ⇒ 全程 `contextlib.suppress` ✓（2.9.26 的教训 ✓）。
+    """
+    import contextlib
+    import logging as _logging
+
+    with contextlib.suppress(Exception):
+        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+        lg.debug("[吞] %s: %r", where, exc)

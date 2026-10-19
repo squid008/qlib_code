@@ -102,7 +102,8 @@ def _extract_model_artifacts(model, dataset, req: BacktestRequest, seg_label: st
                     try:
                         # LightGBM 支持 num_iteration；XGBoost 的 save_model 只接受 fname
                         booster.save_model(tmp.name, num_iteration=None)
-                    except TypeError:
+                    except TypeError as _e:
+                        _log_swallowed('artifacts.py', _e)
                         booster.save_model(tmp.name)
                     with open(tmp.name, "r", encoding="utf-8", errors="ignore") as f:
                         artifacts["model_file"] = f.read()

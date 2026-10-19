@@ -39,6 +39,35 @@
 
 ---
 
+## [2.9.51] - 2026-10-19
+
+### Changed（**P2-A 收尾：静默吞异常 2 → 0** ✓ —— 从 163 一路清到 **零** ✓）
+
+- **这批清的是"窄类型"静默** ✓（之前的几批只处理裸 `except Exception:` ✗）：
+  `except OSError:` / `except ValueError:` / `except (TypeError, ValueError):` /
+  `except X as e:` ✓ —— 一共 **37 处 / 14 个文件** ✓：
+  ```
+  engine/storage_cleanup.py 13 ｜ engine/feature_cache.py 3 ｜ engine/task_manager.py 3
+  factors/panel_expr.py 3 ｜ services/custom_formulas.py 3 ｜ engine/resource.py 2
+  routers/factors_event.py 2 ｜ factors/single_test.py 2 ｜ 其余 6 个文件各 1
+  ```
+  为什么它们也值得留痕 ✓：`storage_cleanup` 吞掉 `OSError` 就是"**该删的没删掉**"✗（磁盘只涨不减 ✓
+  而日志一个字没有 ✓）；`feature_cache` / `task_manager` 同理 ✓ —— 都是"看起来正常、账不对" ✓。
+- **⚠ 裸 `except:` 一律不动** ✗ —— 它捕 `BaseException` ✓，改成 `except Exception` 会变语义 ✓
+  （本次扫描确认：剩余 0 处裸 `except` 静默 ✓）。
+- **✗ 一次自伤事故（已回退并加了防护 ✓）**：第一版脚本把 `except OSError:` 改成了
+  **`except OSError: as _e:`** ✗ —— 追加 `as _e:` 时**忘了先删掉原冒号** ✓
+  ⇒ 14 个文件全部 `SyntaxError` ✓ ⇒ `git checkout -- backend/app` 回退 ✓
+  ⇒ 修好之后给脚本加了 **"落盘前先 `compile()` 自检"** ✓（改坏就当场抛、不写盘 ✓）
+  ⇒ 第二遍 **0 事故** ✓。
+- **棘轮**：`test_except_ratchet.py` 基线 2 → **0** ✓（`_scan()` 实测 0 ✓，基线必须与现实一致 ✓）；
+  `test_code_health.py` 三处函数各 **+1 行**（日志行 ✓）：`_quantile_curve_block` 596→597 ✓、
+  `run_single_factor_tests` 538→539 ✓、`single_factor_test` 390→391 ✓。
+- **校验** ✓：`compileall` **0** ✓ ｜ `ruff` **0 错误** ✓ ｜ 全量 **1089 passed** ✓ ｜ CI ✓。
+- **★ P2-A 累计战果**：静默吞异常 **163 → 0（−100%）** ✓ ——
+  也就是说：**现在这个仓库里不存在"出错了但一个字都不留"的地方** ✓；
+  棘轮把它锁在 0 ✓：**将来任何新增的静默吞异常都会立刻红** ✓。
+
 ## [2.9.50] - 2026-10-19
 
 ### Changed（**P1-B 第十刀：`HistoryPanel` 两处重复渲染合并** ✓ —— 治"同一份 props 抄两遍" ✗）

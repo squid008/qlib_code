@@ -39,7 +39,8 @@ def _auto_cache_limit_gb() -> float:
     if env:
         try:
             return max(0.25, float(env))
-        except ValueError:
+        except ValueError as _e:
+            _log_swallowed('data_cache.py', _e)
             pass
     try:
         from . import resource

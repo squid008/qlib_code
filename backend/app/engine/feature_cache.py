@@ -311,7 +311,8 @@ def _prune_cache(max_bytes=None, max_age_days=None, max_files=None):
             p = os.path.join(_CACHE_DIR, fn)
             try:
                 st = os.stat(p)
-            except OSError:
+            except OSError as _e:
+                _log_swallowed('feature_cache.py', _e)
                 continue
             items.append((st.st_mtime, st.st_size, p))
         items.sort()                       # 旧的在前
@@ -323,7 +324,8 @@ def _prune_cache(max_bytes=None, max_age_days=None, max_files=None):
                     try:
                         os.remove(p)
                         removed += 1
-                    except OSError:
+                    except OSError as _e:
+                        _log_swallowed('feature_cache.py', _e)
                         pass
         alive = [(m, s, p) for (m, s, p) in items if os.path.exists(p)]
         total = sum(s for _, s, _ in alive)
@@ -333,7 +335,8 @@ def _prune_cache(max_bytes=None, max_age_days=None, max_files=None):
                 os.remove(p)
                 removed += 1
                 total -= size
-            except OSError:
+            except OSError as _e:
+                _log_swallowed('feature_cache.py', _e)
                 pass
         return (removed, total)
     except Exception as e:

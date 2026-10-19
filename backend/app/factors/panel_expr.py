@@ -532,7 +532,8 @@ def _dir_meta(inst: str):
             for ent in it:
                 try:
                     stt = ent.stat()
-                except OSError:
+                except OSError as _e:
+                    _log_swallowed('panel_expr.py', _e)
                     continue
                 info[ent.name] = (stt.st_mtime_ns, stt.st_size)
     except OSError:
@@ -2341,7 +2342,8 @@ def _warm_days(exprs) -> int:
                 for g in m.groups():
                     if g is not None:
                         max_k = max(max_k, abs(int(g)))
-            except ValueError:
+            except ValueError as _e:
+                _log_swallowed('panel_expr.py', _e)
                 pass
         if "SR(" in e:
             max_k = max(max_k, 250)
@@ -2433,7 +2435,8 @@ def _expr_ext_days(expr: str) -> int:
         for m in re.finditer(r"(?:EMA|EMA_TDX)\([^,]+,\s*([\d.]+)", str(expr)):
             try:
                 n = float(m.group(1))
-            except ValueError:
+            except ValueError as _e:
+                _log_swallowed('panel_expr.py', _e)
                 continue
             if n >= 1:
                 need = max(need, int(n) - 1)
