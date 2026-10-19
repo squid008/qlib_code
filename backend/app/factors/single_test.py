@@ -68,7 +68,13 @@ def _inst_codes(s: pd.DataFrame) -> pd.Series:
         lev = s.index.get_level_values(0)
         codes, uniques = pd.factorize(lev, sort=False)
         ups = np.asarray([str(u).upper() for u in uniques], dtype=object)
-        vals = ups[codes] if codes.size else np.empty(0, dtype=object)
+        if codes.size:
+            # ★ 2026-10-19 修：`pd.factorize` 对缺失值返回 **-1** ✗，直接 `ups[codes]` 会
+            #   索引到**最后一个** uniques ⇒ NaN 行被当成"某只真实股票"✗（注释承诺的是 'NAN' ✓）。
+            #   ⇒ 先按 -1 遮罩，再取 `'NAN'` ✓（与老写法 `astype(str).str.upper()` 逐元素等价 ✓）。
+            vals = np.where(codes >= 0, ups[np.maximum(codes, 0)], "NAN")
+        else:
+            vals = np.empty(0, dtype=object)
         return pd.Series(vals, index=s.index)
     return pd.Series([""] * len(s), index=s.index)
 
