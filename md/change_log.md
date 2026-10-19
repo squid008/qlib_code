@@ -39,6 +39,28 @@
 
 ---
 
+## [2.9.56] - 2026-10-19
+
+### Changed（**A 项开工：`panel_expr.py` 拆出 `chip_turn.py`** ✓ —— 2,909 → **2,803 行** ✓）
+
+- **为什么先挑这一块** ✓（`panel_expr.py` 是全仓最大文件 ✗ 2,909 行 / 71 个顶层函数 ✓）：
+  用脚本量了冠军组 `chip_turn_of`(72) + `_chip_turn_proxy`(36) + `_CHIP_BASE_FIELDS` 的**自由变量** ✓
+  ⇒ **只依赖 `numpy`** ✓（外加一个日志兜底 ✓）⇒ 搬出去不需要任何别的内部符号 ✓，
+  是"最内聚、动它最安全"的第一刀 ✓（其余各组都交叉引用几十个内部名字 ✗）。
+- 新增 **`factors/chip_turn.py`（143 行 ✓）**：三个名字**源码一字未改** ✓（含注释里的口径说明 ✓）。
+  `panel_expr.py` **2,909 → 2,803 行** ✓；`test_code_health` 的文件上限 2950 → **2810** ✓。
+- **兼容性** ✓：`panel_expr` 里**显式再导出**三个名字 ✓（`from .chip_turn import …` ✓，
+  **不是** `import *` ✗ —— 2.9.13 那次星号覆盖 `router` 的教训 ✓）；
+  实测 `from app.factors.panel_expr import chip_turn_of` 与 `from app.factors.chip_turn import …`
+  **是同一个函数对象** ✓ ⇒ `chip_store.py` 等外部调用方**一个字都不用改** ✓。
+- **✗ 一个坑**：`-> "pd.Series"` 是**字符串注解** ✗，ruff 仍会解析名字 ⇒ 新模块缺 `import pandas as pd`
+  就是 **F821 ×2** ✓（`py_compile` 完全看不出来 ✗）⇒ 补上并注明原因 ✓。
+- **校验** ✓：`compileall` **0** ✓ ｜ `ruff` **0 错误** ✓ ｜ **全量导入 82/82** ✓ ｜
+  chip/panel_expr/ops_ext/single_test 相关 **109 passed** ✓ ｜ 导入守门 + 代码体检 **93 passed** ✓ ｜ CI ✓。
+- **下一步（A 项继续）** ✓：下一块候选是「**数据读取与缓存**」组
+  （`_read_field_bin` / `_field_bin_meta` / `_dir_meta` / `load_field_series` / `clear_bin_cache` /
+  `reset_caches` ✓ ~230 行 ✓）—— 它同样对外有引用 ✓，届时要一并改 `datasets.py` 的 import ✓。
+
 ## [2.9.55] - 2026-10-19
 
 ### Changed（**覆盖率门槛 54 → 55** ✓ ＋ **把待办账理清** ✓）
