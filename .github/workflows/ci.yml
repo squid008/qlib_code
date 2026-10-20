@@ -30,13 +30,26 @@ jobs:
           cache: pip
 
       - name: 安装 Python 依赖 + qlib（上游源码）
+        # ★ v2.10.23（2026-10-20 ✓）：**从"裸装"改成"声明 + 锁定"** ✗→✓
+        #   原来是一串 `pip install numpy scipy pandas ...`（**没有版本** ✗）
+        #   ⇒ 上游一升级，CI 会先红在"某个测试莫名其妙失败"✗，而不是"依赖不对"✗（排查成本极高 ✓）。
+        #   现在：`requirements.txt`（声明）+ `requirements-dev.txt`（测试/检查工具）
+        #        + `-c constraints.txt`（**精确版本** ✓，由本机实测通过的版本导出 ✓）。
+        #   ⚠ 升级依赖请**单独一个 commit 只改 constraints.txt** ✓
+        #     ⇒ "哪次升级导致变红"一眼可见 ✓。
         run: |
           python -m pip install --upgrade pip
-          pip install numpy scipy pandas lightgbm joblib h5py pyarrow \
-            fastapi "uvicorn[standard]" pydantic pydantic-settings python-multipart pyyaml tqdm cython ruff pytest pytest-cov mypy \
-            openpyxl xlrd
+          pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
           git clone --depth 1 https://github.com/microsoft/qlib "$HOME/qlib"
+          # qlib 上游源码是**已知的不可控项** ✓（它自己会拉依赖 ✓），故不锁 ✓
           pip install -e "$HOME/qlib"
+
+      - name: 依赖漏洞扫描（pip-audit）
+        # ★ v2.10.23 新增 ✓：只扫**我们声明的直接依赖** ✓（`-r requirements.txt` ✓）
+        #   挡住"带已知 CVE 的版本一路绿灯上线"✗ —— 这类问题不会让任何测试变红 ✓。
+        # ⚠ 扫出来的修法：**只改 `constraints.txt` 升到已修版本** ✓（单独 commit ✓），
+        #   不要在 CI 里加 `--ignore-vuln` 糊过去 ✗。
+        run: python -m pip_audit -r requirements.txt --progress-spinner off
 
       - name: mypy 类型检查（★ 关键切片，v2.10.4）
         # ★ 2026-10-20：第二件事「类型检查」的第一道闸 ✓
@@ -108,8 +121,13 @@ jobs:
       #   首个用例集 = `sftLogic`（结论判定 / 预测周期解析 / K 档 / 导出表头 ✓ 11 条 ✓）。
       #   ⚠ vitest 版本要跟着 vite 走 ✗：项目 vite 5 ⇒ **vitest 2.1.x** ✓（5.x 会报
       #     `ERR_PACKAGE_PATH_NOT_EXPORTED ./module-runner` ✓，实测过 ✓）。
-      - name: 前端单测（vitest）
-        run: npm test
+      - name: 前端单测 + 覆盖率（vitest）
+        # ★ v2.10.23（2026-10-20 ✓）：`npm test` → `npm run test:cov` ✗→✓
+        #   前端 181 条用例此前**完全不知道覆盖了哪些组件** ✗（后端有 61.83% + 门槛 ✓，
+        #   前端是最后一块黑箱 ✓）⇒ 现在**采集并打印** ✓。
+        # ⚠ 本轮**不设门槛** ✓（先拿真实数字 ✓，下一版按"实测值向下取整"设 thresholds ✓）——
+        #   凭感觉设一个数，闸门要么一上线就红 ✗、要么松到没意义 ✗。
+        run: npm run test:cov
 
   # ★ v2.10.5（2026-10-20 ✓）：三件事里的第 ③ 件 —— **E2E 冒烟骨架** ✓
   #

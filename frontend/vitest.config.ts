@@ -29,5 +29,22 @@ export default defineConfig({
     //   代价：启动稍慢（本项目 11 条用例、~0.5s ✓ 可忽略 ✓）。
     pool: 'forks',
     poolOptions: { forks: { singleFork: true } },
+
+    // ★ v2.10.23（2026-10-20 ✓）：**前端覆盖率采集** ✗→✓
+    //
+    // 为什么现在才加：前端已有 181 条用例 ✓，但**覆盖了哪些组件完全未知** ✗ ——
+    //   这是整个工程里最后一个"黑箱"✓（后端有 61.83% 与门槛 61 ✓，前端什么都不知道 ✗）。
+    //
+    // ⚠ 本轮**只采集、先不设门槛** ✓（两步法，与后端当初一样 ✓）：
+    //   先让 CI 跑一次拿到**真实数字** ✓，下一版再按"实测值向下取整"设 thresholds ✓ ——
+    //   凭感觉设一个数会让闸门一上线就红 ✗（或者松到没有意义 ✗）。
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'text-summary'],
+      // 只算 `src/` ✓；测试自身与 e2e 不算 ✓（否则自己给自己加分 ✗）
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: ['src/**/*.test.{ts,tsx}', 'src/**/__tests__/**', 'src/main.tsx', 'src/vite-env.d.ts'],
+      // thresholds: {}   ← 下一版按 CI 实测值填 ✓
+    },
   },
 })

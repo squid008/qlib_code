@@ -24,6 +24,44 @@
 
 ---
 
+## [2.10.23] - 2026-10-20
+
+### Added（**三件工程化补强** ✓ —— 把两个「6 分档」拉起来 ✓）
+
+**① 前端覆盖率采集（第一步：只测不卡 ✓）**
+- 之前前端有 **181 条用例**但**完全不知道覆盖了哪些组件** ✗ —— 这是工程里最后一块黑箱 ✓
+  （后端有 61.83% + 门槛 61 ✓，前端什么都没有 ✗）。
+- 加了 `@vitest/coverage-v8@^2.1.9`（与 vitest **2.1.9** 对齐 ✓）+ `npm run test:cov` ✓ +
+  `vitest.config.ts` 的 `coverage`（`include: src/**` ✓，排除测试自身与 `main.tsx` ✓ ——
+  否则等于自己给自己加分 ✗）。
+- **⚠ 本轮只采集、不设门槛** ✓（与后端当初同一套**两步法** ✓）：先让 CI 报出真实数字 ✓，
+  下一版再按「实测值向下取整」设 `thresholds` ✓ ——
+  凭感觉设一个数，闸门要么**一上线就红** ✗、要么**松到没意义** ✗。
+- ⚠ 本地无法验证这条 ✓：`npm install @vitest/coverage-v8` 在这个环境里**反复被 10 秒探测打断** ✗
+  ⇒ 覆盖率包由 **CI 安装** ✓，本地只验证了 `tsc -b` ✓ 与 `npm test`（181 条 ✓）不受影响 ✓。
+
+**② 依赖漏洞扫描进 CI（阻断式 ✓）**
+- 新增 step `python -m pip_audit -r requirements.txt` ✓ —— 挡住"**带已知 CVE 的版本一路绿灯上线**"✗
+  （这类问题**不会让任何测试变红** ✓）。
+- ⚠ 规矩写进注释 ✓：扫出来只**改 `constraints.txt` 升到已修版本**（单独 commit ✓），
+  **不许**在 CI 里加 `--ignore-vuln` 糊过去 ✗。
+
+**③ 依赖锁定：从"裸装"到"声明 + 锁定"**
+- 新增 `backend/constraints.txt` ✓（**全部 `==`**，由**本机实测通过的版本**导出 ✓：
+  fastapi 0.141.1 / pydantic 2.13.4 / numpy 2.2.6 / pandas 2.3.3 / pyarrow 25.0.1 /
+  lightgbm 4.7.0 / matplotlib 3.10.9 / openpyxl 3.1.5 / xlrd 2.0.2 … ✓）。
+- 新增 `backend/requirements-dev.txt` ✓（pytest / pytest-cov / ruff / mypy / **pip-audit** / matplotlib ✓）
+  —— 运行时不必装测试框架 ✓。
+- **CI 安装改成** `pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt` ✓
+  （原来是一串**没有版本**的 `pip install numpy scipy pandas ...` ✗ ⇒ 上游一升级，CI 会先红在
+  "某个测试莫名其妙失败"✗ 而不是"依赖不对"✗ —— 这个坑项目里已经踩过两次 ✓）。
+- **顺手补一个漏声明的依赖** ✓：`python-multipart` 一直在 CI 的列表里 ✓、却没写进
+  `requirements.txt` ✗ ⇒ 换台机器装就 `ModuleNotFoundError` ✓（与当年 `openpyxl` 那次同一个形状 ✓）。
+- ⚠ 规矩 ✓：**升级依赖 = 单独一个 commit 只改 `constraints.txt`** ✓ ⇒ "哪次升级导致变红"一眼可见 ✓。
+
+- **校验** ✓：`tsc -b` **0 错误** ✓ ｜ `npm test` **181 passed** ✓ ｜ `ruff` **0** ✓ ｜
+  版本 + 体检 14 passed ✓ ｜ CI（含新 audit 与前端覆盖率 step ✓）。
+
 ## [2.10.22] - 2026-10-20
 
 ### Test + Chore（**C′ 收尾** ✓ —— 剔除分支终于被**断言**住 ✓；`single_test` 52.4% 定档 ✓）

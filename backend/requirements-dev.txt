@@ -1,0 +1,22 @@
+# 开发/CI 专用依赖（★ v2.10.23，2026-10-20 ✓）
+#
+# 与 `requirements.txt`（运行所需的 Web 依赖 ✓）分开 ✓：
+#   · 运行时不装测试框架与类型检查器 ✓（镜像更干净 ✓）；
+#   · CI 与本地都按 `-c constraints.txt` 装 ✓ ⇒ 版本一致 ✓。
+#
+# 安装：
+#   pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+
+# 测试
+pytest>=8
+pytest-cov>=5
+
+# 静态检查（CI 三道闸门里的两道 ✓）
+ruff>=0.6
+mypy>=1.10
+
+# 依赖漏洞扫描（★ v2.10.23 新加 ✓ —— 见 .github/workflows/ci.yml 的 audit 步骤 ✓）
+pip-audit>=2.7
+
+# 图表（`engine/charts.py` 生成 PNG 快照要用 ✓，CI 里也必须装 ✓）
+matplotlib>=3.8

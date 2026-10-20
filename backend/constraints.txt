@@ -1,0 +1,42 @@
+# 依赖锁定（★ v2.10.23，2026-10-20 ✓）
+#
+# 用法：`pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt`
+#       ⇒ **版本被钉死** ✓，CI 与本机装的是同一套 ✓。
+#
+# 为什么需要它（真实教训 ✓）：
+#   · 之前 CI 是 `pip install numpy scipy pandas lightgbm ...` **裸装** ✓（无版本 ✓）
+#     ⇒ 上游哪天把 `pandas` 提到 3.x、`numpy` 提到 2.5 ✓，CI 会先红在"某个测试莫名其妙失败"✗，
+#     而不是红在"依赖不对"✗ —— 排查成本极高 ✓（项目里已经出现过两次这类"上游漂移"✓）。
+#   · `requirements.txt` 里只有 `>=` **没有上限** ✗ ⇒ 同一个 commit 在两个时间点装出两套环境 ✗
+#     ⇒ "CI 绿了但我这儿红"（或反过来）无法自证 ✓。
+#
+# 规矩 ✓：
+#   · 这份文件 **只放 `==` 精确版本** ✓，由**本机实测通过的版本**导出 ✓（不凭喜好写 ✓）；
+#   · 升级依赖要**单独一个 commit** ✓（只改这里 ✓），这样"哪次升级导致变红"一目了然 ✓；
+#   · 与 qlib 上游相关的那部分**不在**这里 ✓（qlib 仍按 CI 注释装上游源码 ✓ —— 那是已知的
+#     不可控项 ✓，见 md/开发记录.md 的说明 ✓）。
+#
+# 导出方式（下次同步时重跑 ✓）：
+#   python -m pip list --format=freeze | findstr /R "^fastapi== ^pandas=="    ← 只挑本清单涉及的 ✓
+
+Cython==3.2.9
+fastapi==0.141.1
+h5py==3.16.0
+joblib==1.5.3
+lightgbm==4.7.0
+matplotlib==3.10.9
+mypy==2.4.0
+numpy==2.2.6
+openpyxl==3.1.5
+pandas==2.3.3
+pyarrow==25.0.1
+pydantic==2.13.4
+pydantic-settings==2.15.0
+pytest==9.1.1
+pytest-cov==7.1.0
+PyYAML==6.0.3
+ruff==0.16.6
+scipy==1.15.3
+tqdm==4.70.0
+uvicorn==0.52.4
+xlrd==2.0.2
