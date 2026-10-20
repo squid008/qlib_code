@@ -59,11 +59,13 @@ jobs:
         #
         # 门槛口径（保留历史，供下次调数字时对照 ✓）：
         #   · v2.9.6 起设门槛（54）✓；v2.9.55 → 55 ✓；v2.9.88 → 56 ✓；v2.10.17 → 60 ✓
-        #   · 规则：**门槛 = 实测值向下取整** ✓，每期只许上调（ratchet ✓）；
-        #   · 改这个数字必须同时写进 `md/change_log.md` ✓（否则下一个人不知道为什么是 60 ✗）；
-        #   · 本次修好后**第一次真正生效** ✓ —— 若 CPython/依赖版本变化导致掉点，
-        #     先看日志里的 `TOTAL`（现在会真的打印了 ✓）再决定调不调 ✓。
-        run: python -m pytest tests -m "not datareq" -q --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=60
+        #   · **v2.10.19 → 61** ✓ —— 依据：闸门修好后**第一次读到 CI 自己的数字**
+        #     `TOTAL 18996 7363 61.24%`（1543 passed / 4 skipped ✓）⇒ 按口径取整 = **61** ✓。
+        #   · 规则：**门槛 = 实测值向下取整** ✓，且优先用 **CI 实测** ✓（本地 61.50 / CI 61.24 ✓
+        #     —— 两者差 0.26pp ✓，说明过去"CI 略高"的说法**不总成立** ✗ ⇒ 只认 CI 数 ✓）；
+        #   · 改这个数字必须同时写进 `md/change_log.md` ✓（否则下一个人不知道为什么是 61 ✗）；
+        #   · 若 CPython/依赖版本变化导致掉点，先看日志里的 `TOTAL` ✓（现在会真的打印 ✓）再决定调不调 ✓。
+        run: python -m pytest tests -m "not datareq" -q --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=61
 
       - name: ruff 静态检查
         run: python -m ruff check app tests tools
