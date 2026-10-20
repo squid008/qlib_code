@@ -62,7 +62,13 @@ jobs:
           # ★ v2.9.88（2026-10-19 ✓）：55 → **56** ✗→✓ —— 依据 **本地全量实测 56.69%** ✓
           #   （CI 历来**略高于**本地 ✓：2.9.55 那次本地 55.06 / CI 55.18 ✓）
           #   口径不变：门槛 = **实测值向下取整** ✓，且只认实测 ✗ 不认估计 ✓。
-          --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=56
+          # ★ v2.10.17（2026-10-20 ✓）：56 → **60** ✗→✓
+          #   依据 **本地全量实测 61.50%** ✓（18,996 语句 / 1553 passed ✓）。
+          #   ⚠ 按口径"门槛 = 实测值向下取整"应该是 **61** ✓，但这次**故意压到 60** ✓：
+          #     `gh run view --log` 里**看不到 `TOTAL`** 行 ✗ ⇒ **CI 实测取不到** ✓ ⇒
+          #     只用本地数时**宁可保守一档** ✓（本地 61.50 / CI 历来略高 ✓ ⇒ 60 有 1.5pp 余量 ✓）。
+          #     等哪天能稳定读到 CI 数字（例如让 CI 把 TOTAL 写进 summary ✓），再抬到 61 ✓。
+          --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=60
 
       - name: ruff 静态检查
         run: python -m ruff check app tests tools
