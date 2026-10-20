@@ -97,3 +97,7 @@ backend/workdir/expr_cache/
 
 # vitest 的 json 报告（测试产物 ✓ 永不入库 ✗）
 frontend/vt.json
+
+# Playwright（★ v2.10.5 E2E）—— trace / 截图 / HTML 报告都是**失败时的产物** ✓ 永不入库 ✗
+frontend/test-results/
+frontend/playwright-report/

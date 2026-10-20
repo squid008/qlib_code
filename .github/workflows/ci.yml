@@ -107,3 +107,46 @@ jobs:
       #     `ERR_PACKAGE_PATH_NOT_EXPORTED ./module-runner` ✓，实测过 ✓）。
       - name: 前端单测（vitest）
         run: npm test
+
+  # ★ v2.10.5（2026-10-20 ✓）：三件事里的第 ③ 件 —— **E2E 冒烟骨架** ✓
+  #
+  # 为什么单开一个 job ✗→✓：
+  #   · 要下 Chromium（`playwright install --with-deps` 约 1~2 分钟 ✓）✗ 不该拖慢单测 job ✓；
+  #   · E2E 天生比单测**慢且更易受环境影响** ✓ ⇒ 单独失败时一眼看得出是"集成层"而不是"逻辑层" ✓。
+  #
+  # 断言范围（写在 `frontend/e2e/smoke.spec.ts` 文件头 ✓）：
+  #   真实浏览器跑通整棵 React 树 ✓ + **零未捕获异常** ✓ + 顶栏版本号 ✓；
+  #   ⚠ **不做**"提交回测 → 等结果"那条全链路 ✗（需要真后端 + 真数据 + 分钟级等待 ✓，下一轮 ✓）。
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: frontend
+        # 与 frontend job 同一套 flag ✓（否则 peer 依赖会让 lockfile 与安装结果不一致 ✗）
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+
+      - name: 安装 Chromium（仅 chromium ✓，不下 firefox/webkit ✗）
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: E2E 冒烟
+        working-directory: frontend
+        run: npm run test:e2e
+
+      - name: 失败时上传 trace / 截图（只有失败才有 ✓）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          retention-days: 7
