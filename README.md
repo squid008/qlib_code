@@ -108,6 +108,9 @@ qlib_code/
 # ── 后端（cd backend）───────────────────────────────────────────
 python -m mypy                                   # 类型检查：配置里列的 18 个文件必须 0 错误
 python -m pytest tests -m "not datareq" -q       # 纯逻辑用例（无行情数据时也能跑 ✓）
+                                                 # ⚠ 里面含**相对性能门**（tests/test_perf_relative.py ✓）：
+                                                 #   向量化算子必须显著快于朴素实现 ✓，
+                                                 #   谁把它改回 for 循环，这里立刻红 ✓（比值 != 绝对耗时 ✓）
 python -m ruff check app tests tools             # 静态检查
 python -m pip_audit -r requirements.txt          # 依赖漏洞（CI 里是阻断式）
 
