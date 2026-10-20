@@ -24,6 +24,30 @@
 
 ---
 
+## [2.10.3] - 2026-10-20
+
+### Test（`_apply_node` **其余分支** 14 条 ✓ —— `panel_expr` 三份合计 **30.05% → 34.48%** ✓）
+
+- 接着上一轮继续扫分支 ✓（`ROUND / BARSCOUNT / BARSSINCEN / HHVBARS / LLVBARS / And / Or /
+  IdxMax / IdxMin / Rank / Quantile / Corr / Slope / Resi / Rsquare` ✓）。
+- **断言策略：只钉性质，不猜实现** ✓ —— 上一轮已经因为"猜语义"红过好几次 ✗
+  （`FILTER`/`Count`/`Greater`/`MA` 都不符合我的预期 ✓），所以这一批只断言**必然成立的性质**：
+  · **有界** ✓：`HHVBARS/LLVBARS ∈ [1, N]` ✓、`IdxMax/IdxMin ∈ [1, N]` ✓、
+    `Rank ∈ (0, 1]` ✓、`Quantile` 落在样本 `[min, max]` 内 ✓；
+  · **是 0/1 信号** ✓（`And`/`Or` ✓），且 `And` 的交集**不多于**任一单条件 ✓；
+  · **不抛、形状对、无 `inf`** ✓（`Corr/Slope/Resi/Rsquare` 一族 ✓）。
+- **⭐ 三条被实测纠正的签名/口径**（都写进注释 ✓，下次不用再猜 ✗）：
+  1. `IdxMax/IdxMin/Rank/Slope/Rsquare/Resi` 都是 **`(序列, N)`** ✓ —— 少给 N 直接
+     `IndexError: list index out of range` ✗；`Quantile` 是 **`(序列, N, q)`** ✓ —— 少给 N
+     `TypeError: cannot convert the series to int` ✗；
+  2. **`IdxMax/IdxMin` 返回 1-based**（`1..N` ✓），不是 0-based ✗（与 qlib 口径一致 ✓）；
+  3. **`Rank` 返回归一化排名**（`1 / 0.5 / 0.333` ✓ 落在 `(0,1]` ✓），不是名次整数 ✗。
+- **✗ 一个必须写清的边界** ✓：这一批**没有**钉住这些算子的**精确数值语义** ✗（只钉形状与性质 ✓）。
+  文件头已注明 ✓ —— 不假装测了 ✗。要钉精确值，得先逐个通读实现 ✓（本轮不做 ✓）。
+- **实测** ✓：`test_panel_expr_ops` + `test_panel_expr_eval` + `test_panel_expr_eval_more`
+  三份合计覆盖该模块 **30.05% → 34.48%** ✓（1,421 语句 ✓），**57 passed** ✓。
+- **校验** ✓：14 passed（3.4 秒 ✓）｜ `ruff` **0 错误** ✓ ｜ CI ✓。
+
 ## [2.10.2] - 2026-10-20
 
 ### Test（**合成面板跑真求值 25 条** ✓ —— `panel_expr` 两份合计覆盖 **14.14% → 30.05%** ✓）
