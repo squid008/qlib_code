@@ -44,7 +44,14 @@ export default defineConfig({
       // 只算 `src/` ✓；测试自身与 e2e 不算 ✓（否则自己给自己加分 ✗）
       include: ['src/**/*.{ts,tsx}'],
       exclude: ['src/**/*.test.{ts,tsx}', 'src/**/__tests__/**', 'src/main.tsx', 'src/vite-env.d.ts'],
-      // thresholds: {}   ← 下一版按 CI 实测值填 ✓
+      // ★ v2.10.25：按 **CI 实测值向下取整** 设门槛 ✓（首次 CI 报 17.9% ⇒ **17** ✓）
+      //   ⚠ 只卡 `statements` 与 `lines` ✓ —— `branches`(87.8) / `functions`(67.4) 受 v8 采样口径影响更大 ✓，
+      //     且本项目**纯逻辑模块高度覆盖、组件几乎为零** ✓ ⇒ 分支数天然偏高 ✗，
+      //     一上来卡分支会让闸门"看起来很严、其实只拦无关紧要的东西"✗。
+      //   ⚠ **17.9% 这个数字很难看，但它是真的** ✓ —— 181 条用例几乎全在 `src/*.ts` 纯逻辑与
+      //     表单组件上 ✓，`SignalTestPanel`(1.5k) / `SingleFactorTestPanel`(2.1k) / 各 Modal 基本为零 ✗。
+      //     闸门的价值是**不许更差** ✓（ratchet ✓），提升需要另开"组件级测试"的回合 ✓。
+      thresholds: { statements: 17, lines: 17 },
     },
   },
 })
