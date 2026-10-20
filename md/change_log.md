@@ -24,6 +24,23 @@
 
 ---
 
+## [2.10.38] - 2026-10-20
+
+### Changed（**前端覆盖率门槛 34 → 37** ✓ —— 两个中等件又换 **+2.5pp** ✓）
+
+- CI 实测 ✓：`All files | 37.31 | 73.38 | 39.47 | 37.31` ⇒ 门槛取整 = **37** ✓（原 34 ✓）。
+- **累计答卷** ✓：前端覆盖率 **17.9% → 37.31%**（**+19.4pp** ✓），用例 **181 → 226 条 / 35 文件** ✓。
+- **已攻下的组件（按贡献）** ✓：
+  · 巨型件 4 个各 4~8 条骨架 ✓：`SingleFactorTestPanel`(2124) + `SignalTestPanel`(1520)
+    + `EventStudyModal`(1512) + `TopkCurveModal`(1157) ✓；
+  · 中等件 ✓：`FormulaEditor`(561) + `ExitCurveModal`(315) + `NavChart`… ✓；
+  · 图表件从 0 到 84~92% ✓：`LayerChart` / `ICChart` ✓。
+- **⚠ 剩下的都不便宜了** ✗（如实说）：要继续往上，只能做**巨型组件主链路**
+  （提交 / 轮询 / 取消 / 导出 / `defaultK` ✓）—— 那些**必须先读准**
+  `EventStudyResult` / `SingleFactorTestResult` 的四层嵌套类型 ✓；
+  或者去打 `ZoomableLineChart`(577) / `GateAttribution`(390) `ModelArtifacts`(368) 这几个 ✓。
+- **校验** ✓：CI（新门槛 37 ✓ 生效）｜ `npx vitest run` **226 passed** ✓ ｜ `tsc -b` 0 ✓。
+
 ## [2.10.37] - 2026-10-20
 
 ### Test（**`FormulaEditor` 5 条 + `ExitCurveModal` 3 条** ✓ —— 两个中等件一次做完 ✓）

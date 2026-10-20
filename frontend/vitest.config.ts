@@ -73,7 +73,9 @@ export default defineConfig({
       //   至此**三个前端巨型组件全部有骨架** ✓（2124 + 1520 + 1512 行 ✓），
       //   每个只花 4 条用例 ✓ —— 这条"打开/关闭/不该发请求/空数据不崩"的套路，
       //   是这一段把覆盖率从 17.9% 推到 34.8% 的**主要杠杆** ✓。
-      thresholds: { statements: 34, lines: 34 },
+      // ★ v2.10.38：**34 → 37** ✓（CI 实测 **37.31%** ✓ 取整 37 ✓）
+      //   `FormulaEditor`(561) + `ExitCurveModal`(315) 两个中等件共 8 条 ⇒ +2.5pp ✓。
+      thresholds: { statements: 37, lines: 37 },
     },
   },
 })
