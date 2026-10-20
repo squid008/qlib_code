@@ -75,7 +75,9 @@ export default defineConfig({
       //   是这一段把覆盖率从 17.9% 推到 34.8% 的**主要杠杆** ✓。
       // ★ v2.10.38：**34 → 37** ✓（CI 实测 **37.31%** ✓ 取整 37 ✓）
       //   `FormulaEditor`(561) + `ExitCurveModal`(315) 两个中等件共 8 条 ⇒ +2.5pp ✓。
-      thresholds: { statements: 37, lines: 37 },
+      // ★ v2.10.40：**37 → 39** ✓（CI 实测 **39.23%** ✓ 取整 39 ✓）
+      //   `ModelArtifacts`(368) + `GateAttribution`(390) 各 3 条 ⇒ +1.9pp ✓。
+      thresholds: { statements: 39, lines: 39 },
     },
   },
 })
