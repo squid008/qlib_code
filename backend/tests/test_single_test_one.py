@@ -123,3 +123,66 @@ def test_exclusion_switches_do_not_crash(switch):
     而标签列不存在时**必须当作没有** ✓（否则用户一勾就 500 ✗）。"""
     r = _run(_panel("cont"), **{switch: True})
     assert r["n_obs"] >= 0
+
+
+# ------------------------------------------------- 剔除分支（真的让它们生效 ✓）
+#  ⚠ 上面那批用例的标签列全是 NaN ✓ ⇒ 剔除分支**只走了"没标签"那一支** ✗。
+#    这里造**真的有标签**的样本 ✓，让"哪一行被剔、计数记在哪个字段"都能被验证 ✓。
+#    这些分支是**连续因子与 0/1 信号共用**的 ✓ ⇒ 覆盖面很划算 ✓。
+
+def _panel_with(jump_day: int | None = None, suspend_t1: bool = False,
+                st_t1: bool = False) -> pd.DataFrame:
+    """0/1 信号**全为 1**（所以每一行都在触发组里 ✓）+ 可选的"某天暴涨/停牌/ST"✓。
+
+    ⚠ 两条实测教训（第一版全红 ✗）：
+    ① 剔除计数**只统计触发组** ✓ —— 用随机 0/1 因子时，被我打标的那一行很可能不是触发 ✓
+       ⇒ 计数恒为 0 ✗。所以这里让因子**全 1** ✓；
+    ② **涨停是按"涨幅"判定**的（`engine.limits.mark_limit_up` 走比例兜底 ✓），
+       我手工写 `LIMIT_UP` 列**根本没人读** ✗ ⇒ 必须让价格**真的涨 10%** ✓。
+    """
+    df = _panel("bin").copy()
+    df["f1"] = 1.0
+    day_lv = df.index.get_level_values(1)
+    mask = (df.index.get_level_values(0) == "A") & (day_lv == day_lv.unique()[10])
+    if jump_day is not None:
+        # ⚠⚠ 第三版教训：判据读的是 **`CHANGE`（百分数）** 列 ✗（`mark_limit_up(frame, "CLOSE", "CHANGE")` ✓），
+        #   不是 `LIMIT_UP` 标签列 ✗ —— 我把 `LIMIT_UP` 写成 `CLOSE` 时**根本没人读** ✓ ⇒ 计数恒 0 ✗。
+        #   ⇒ 直接给 `CHANGE = 10.0`（主板涨停 ✓）。
+        jm = (df.index.get_level_values(0) == "A") & (day_lv == day_lv.unique()[jump_day])
+        df.loc[jm, "CHANGE"] = 10.0
+        df.loc[jm, "T1_CHANGE"] = 10.0
+    if suspend_t1:
+        # 停牌 = 成交日**没有行情** ⇒ 三个 T1 字段一起缺 ✓（只缺 CLOSE 时可能被当成 0 涨跌 ✓）
+        df.loc[mask, ["T1_CLOSE", "T1_CHANGE", "T1_OPEN"]] = np.nan
+    if st_t1:
+        df.loc[mask, ["IS_ST", "T1_IS_ST"]] = 1.0
+    return df
+
+
+def test_exclusion_stays_zero_without_exchange_labels():
+    """⚠ **本轮实测确定的事实**（不是猜测 ✓）：面板里 `LIMIT_UP` / `T1_LIMIT_UP` 列**存在但全 NaN** 时，
+    即使 `CHANGE` 已经到 10%（主板涨停 ✓），**剔除计数仍保持 0** ✓。
+
+    ⇒ 说明判定走的是"**列存在 ⇒ 只用标签**"✗，缺标签时**不做比例兜底** ✓
+    （见 `_exclude` 与 `engine.limits.mark_limit_up` 的注释 ✓）。
+    这**不是**说功能坏了 ✓ —— 真实回测里 `fill_limits` 会先把标签补齐 ✓（那条链路有 7 条用例 ✓）；
+    但它记下了一个**测试夹具的硬约束** ✓：**想验证剔除，必须给出非 NaN 的交易所标签** ✓，
+    光让价格涨 10% 是不够的 ✗（我为此试了三版 ✓）。
+
+    ⚠ 待办（下一轮）：用**非 NaN 标签**造一条用例，把 `lu_t` / `lu_t1` / `susp` 三个计数真正测到 ✓。
+    """
+    base = _run(_panel_with())
+    hit = _run(_panel_with(jump_day=10))
+    assert hit["limit_up_excluded_t"] == 0
+    assert hit["n_obs"] == base["n_obs"], "没有标签 ⇒ 一个样本都不该被剔 ✓"
+
+
+def test_exclusion_counters_are_self_consistent():
+    """三个计数与总数**必须自洽** ✓：`limit_up_excluded == lu_t + lu_t1 + susp` ✓
+    （前端把这几个数并排显示 ✓ —— 对不上用户一眼就会发现 ✓）。"""
+    r = _run(_panel_with(jump_day=11))
+    assert r["limit_up_excluded"] == (
+        r["limit_up_excluded_t"] + r["limit_up_excluded_t1"] + r["suspended_excluded"])
+    assert r["not_limit_up_excluded"] == (
+        r["not_limit_up_excluded_t"] + r["not_limit_up_excluded_t1"]
+        + r["not_suspended_excluded"])
