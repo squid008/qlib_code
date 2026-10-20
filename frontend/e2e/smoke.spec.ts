@@ -23,11 +23,19 @@ import { FE_VERSION } from '../src/version'
  * 不是"前后端联调通了" ✗ —— 后者是下一轮的全链路 E2E ✓。
  */
 
+// ⚠ 只 stub **首屏会打**的这几个 ✓，**不要**用 catch-all 兜 `{}` ✗ ——
+//   实测：`{}` 缺 `datasets`/`items` 等字段 ⇒ App 渲染时 TypeError ✗ ⇒ 两条用例全红 ✓
+//   （"为了防 500 而返回空对象"反而把页面弄崩 ✓，这是很典型的一步走错 ✗）。
+//   未列出的 `/api/*` 会落到 vite 代理 ✓ ⇒ CI 里得到 500 ✗ ⇒ 只是一条
+//   `Failed to load resource` 的 console 提示 ✓，**不影响渲染** ✓（下面已过滤 ✓）。
 const STUBS: Array<[string, unknown]> = [
   ['**/api/version*', { version: FE_VERSION, fe_version: FE_VERSION }],
   ['**/api/datasets*', { active: 'cn_data', datasets: [] }],
   ['**/api/backtests*', { items: [], retention: null }],
   ['**/api/factors*', { items: [] }],
+  ['**/api/health*', { status: 'ok' }],
+  ['**/api/tasks*', { items: [], task: null }],
+  ['**/api/models*', { items: [] }],
 ]
 
 test.beforeEach(async ({ page }) => {
@@ -43,7 +51,14 @@ test('首屏能渲染、顶栏有版本号、无未捕获异常', async ({ page 
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(String(e)))
   page.on('console', (m) => {
-    if (m.type() === 'error') errors.push('console.error: ' + m.text())
+    if (m.type() !== 'error') return
+    const text = m.text()
+    // ★ 2026-10-20（CI 实测 ✗→✓）：**"加载资源失败"不是代码 bug** ✗
+    //   它是浏览器对 4xx/5xx 的**网络提示** ✓，和我们 stub 的响应形状无关 ✓；
+    //   把它算进"未捕获异常"会让这条断言变成"代理配置检查"✗，与初衷不符 ✓。
+    //   ⇒ 只排除这一类 ✓（其余 `console.error` 仍然算 ✓ —— 真错误不能放过 ✗）。
+    if (text.includes('Failed to load resource')) return
+    errors.push('console.error: ' + text)
   })
 
   await page.goto('/')
