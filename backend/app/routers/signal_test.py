@@ -266,7 +266,30 @@ def options() -> Dict:
 @router.post("/parse", summary="只解析 CSV（上传后立刻给出识别结果与诊断）")
 def parse_only(req: SignalTestRequest) -> Dict:
     t0 = time.perf_counter()
-    res = parse_csv(_raw_of(req), req.filename)
+    # ⚠ `_raw_of` 可能抛 **HTTPException(400)** ✓（坏 base64）—— 那是**要透传**的 ✓，
+    #   所以它留在 `try` 外面 ✓；只把 `parse_csv` 包起来 ✓。
+    raw = _raw_of(req)
+    try:
+        res = parse_csv(raw, req.filename)
+    except Exception as e:  # noqa: BLE001
+        # ★ v2.10.43（2026-10-21 ✗→✓ 实测抓到）：`parse_csv` 对**二进制内容**会
+        #   `raise ValueError("这不是文本文件（含二进制内容）…")` ✓ —— 那条消息写得很好 ✓，
+        #   但**没有任何人接住它** ✗ ⇒ 端点直接 **500** ✓ ⇒ 用户看到"服务器错误"✗，
+        #   而不是"你这文件是加密 xlsx / 传错了" ✓（这条诊断本来就是给人看的 ✓）。
+        #   实测触发方式：上传含 `\x00\x01` 的内容 ✓（加密 xlsx / 损坏文件都是这个形状 ✓）。
+        _log_swallowed("routers/signal_test.py:parse_only", e)
+        return {
+            "ok": False,
+            "mode": req.kind or "",
+            "encoding": "",
+            "sep": "",
+            "headers": [],
+            "stats": {},
+            "issues": [str(e)],
+            "origin": None,
+            "aligned": None,
+            "elapsed": round(time.perf_counter() - t0, 3),
+        }
     if req.kind:
         res.kind = req.kind
     out = {"ok": bool(res.ok), "mode": res.kind, "encoding": res.encoding,
