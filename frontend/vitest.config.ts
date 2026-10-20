@@ -51,7 +51,12 @@ export default defineConfig({
       //   ⚠ **17.9% 这个数字很难看，但它是真的** ✓ —— 181 条用例几乎全在 `src/*.ts` 纯逻辑与
       //     表单组件上 ✓，`SignalTestPanel`(1.5k) / `SingleFactorTestPanel`(2.1k) / 各 Modal 基本为零 ✗。
       //     闸门的价值是**不许更差** ✓（ratchet ✓），提升需要另开"组件级测试"的回合 ✓。
-      thresholds: { statements: 17, lines: 17 },
+      // ★ v2.10.27：**17 → 20** ✓（CI 实测 **20.49%** ✓ 取整 20 ✓）
+      //   涨的 2.6pp 全部来自 v2.10.26 的两个图表组件：
+      //   `ICChart.tsx` **0 → 92.25%** ✓、`LayerChart.tsx` **0 → 84.44%** ✓（各 9/5 条用例 ✓）
+      //   ⇒ 这条曲线说明一件事：**前端覆盖率不是"摊薄"型指标** ✓ ——
+      //     抓一个零测试的大组件，比给十个已有测试的小文件加断言划算得多 ✓。
+      thresholds: { statements: 20, lines: 20 },
     },
   },
 })

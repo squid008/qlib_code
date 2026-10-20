@@ -14,4 +14,4 @@
  *   ④ `md/change_log.md` 追加该版本小节（Keep a Changelog ✓）。
  *   —— ①/②/③ 由 `backend/tests/test_version_sync.py` 守着（漏同步 CI 直接红 ✓）。
  */
-export const FE_VERSION = '2.10.26'
+export const FE_VERSION = '2.10.27'
