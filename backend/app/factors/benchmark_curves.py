@@ -148,7 +148,12 @@ def period_return_cums(close: pd.DataFrame, reb_dates, horizon: int,
         last_px = float(sarr[_fin[-1]]) if _fin.size else float("nan")
         # v1.18.47：同时给**算术累加**与**复利累乘**两条（前端默认显示复利，与组合曲线同口径）；
         # 缺失语义两者完全一致。
-        cums, cums_cmp = [], []
+        # ★ 2026-10-20（mypy `var-annotated` + 6 条 `arg-type`）：这两个列表是**混装**的 ✓ ——
+        #   缺价的期塞 `None`（前端据此**断线**✓），正常期塞 `float` ✓ ⇒ 空 list 不标注时
+        #   mypy 会按第一次 `append(float)` 推成 `list[float]` ✗ ⇒ 后面 `append(None)` 全红 ✓。
+        #   标成裸 `list`（= `list[Any]` ✓）**只改注解** ✓，语义一字未动 ✓。
+        cums: list = []
+        cums_cmp: list = []
         cum, navc = 0.0, 1.0
         n_partial = 0            # 用「最后价兜底」的期数（= 末期持有窗口不足 h 个交易日）
         # v1.18.48：逐日盯市净值（与组合同构：期内 [T+1, T+h] 走指数逐日、期末由期收益推进）

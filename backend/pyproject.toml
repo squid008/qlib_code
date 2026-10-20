@@ -71,6 +71,7 @@ files = [
     "app/factors/parser/lexer.py",
     "app/factors/parser/parser.py",
     # ★ v2.10.14（2026-10-20）：`services/` 与 `datasource/` 的一圈 ✓（12 → 17 个文件 ✓）
+    "app/factors/benchmark_curves.py",
     "app/services/error_policy.py",
     "app/services/expr_cache.py",
     "app/services/custom_formulas.py",

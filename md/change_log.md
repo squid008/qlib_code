@@ -24,6 +24,21 @@
 
 ---
 
+## [2.10.15] - 2026-10-20
+
+### Changed（**mypy 闸门 17 → 18 个文件** ✓ —— `factors/benchmark_curves.py` 一次清掉 8 条 ✓）
+
+- 这个模块的 8 条错误**同一个根因** ✓：`cums, cums_cmp = [], []` ✓ 之后既 `append(None)` ✓
+  （缺价的期 ⇒ 前端**断线** ✓）又 `append(float)` ✓ ⇒ 空 list 不标注时，mypy 按第一次
+  `append(float)` 推成 `list[float]` ✗ ⇒ 后面 6 处 `append(None)` 全报 `arg-type` ✓
+  （外加 2 条 `var-annotated` ✓）。
+  ⇒ 标成裸 `list`（= `list[Any]` ✓）**只改注解，语义一字未动** ✓。
+- **⚠ `factors/parser/codegen.py` 仍未收** ✗（8 条 ✓）：那几条**不是注解问题** ——
+  `"Expr" has no attribute "value"` ✓、`Cannot call function of unknown type` ✓、
+  以及 `998~1026` 行同一变量先装 `str` 又装 `float/int` ✗ ⇒ 都要先读懂那段代码生成的数据流 ✓
+  （改错会**生成错公式**✗，而公式错只会体现为"因子值不对"✓）⇒ 单独一轮 ✓，不硬塞 ✗。
+- **校验** ✓：`mypy` **0 errors（18 files）** ✓ ｜ `ruff` **0** ✓ ｜ 相关回归（benchmark/curve）**56 passed** ✓ ｜ CI ✓。
+
 ## [2.10.14] - 2026-10-20
 
 ### Changed（**mypy 闸门扩到 17 个文件** ✓ —— `services/` 与 `datasource/` 各一圈 ✓）
