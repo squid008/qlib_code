@@ -84,12 +84,24 @@ test('点「开始回测」⇒ 真的发出创建请求（且无未捕获异常�
   )
   await start.click()
   const req = await created
-  expect(req.postDataJSON(), '创建请求必须带 body ✓').toBeTruthy()
+  const body = req.postDataJSON() as Record<string, unknown>
+  expect(body, '创建请求必须带 body ✓').toBeTruthy()
 
-  // ⚠ **如实标注（本轮没做到）** ✗：本想顺便断言"结果区出现指标卡" ✓，
-  //   实测发现 `年化收益` 这个文本也出现在**历史表格的列头**里 ✓ ⇒ 用它当断言会**假通过** ✗
-  //   （我第一版就是这么写的 ✓，是 a11y 树里那行 `columnheader "年化收益"` 暴露的 ✓）。
-  //   要点住"提交→轮询→结果渲染"整条链，得先摸清结果区的**独有文案/结构** ✓（例如指标卡的容器 ✓），
-  //   那是下一轮的事 ✓ —— 不在这里写一条会误报的断言 ✗。
+  // ⭐ 载荷契约 ✓：表单 → payload 的字段名/类型不能漂 ✗
+  //   （后端按这些键解析 ✓；改名不会报错，只会"用默认值跑一遍"✗，结果为 0 但界面正常 ✓）
+  for (const key of ['universe', 'start_date', 'end_date', 'model', 'feature', 'topk']) {
+    expect(body, `payload 缺字段 ${key} ✗`).toHaveProperty(key)
+  }
+  expect(String(body['start_date'])).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  expect(String(body['end_date'])).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  expect(Number(body['topk'])).toBeGreaterThan(0)
+
+  // ⚠ **如实标注（本轮仍没做到）** ✗：还想断言"结果区出现指标卡" ✓。
+  //   已经摸索到的结论：**`夏普比率` 才是唯一可用标记** ✓（`年化收益` 会撞历史表头 ✗ ——
+  //   第一版就因此**假通过** ✓，是 a11y 树里的 `columnheader "年化收益"` 暴露的 ✓）。
+  //   但实测在"契约级 stub"下**指标卡没渲染出来** ✓（`夏普比率` 找不到 ✓）⇒
+  //   说明从 `success` 到"渲染结果"之间还有一步依赖 ✓（很可能是 snapshot/artifacts 的形状 ✓，
+  //   或者要等某次轮询的下一拍 ✓）—— 需要**逐帧追一次**才敢下断言 ✓。
+  //   ⇒ 本轮只交**载荷契约** ✓（上面那段 ✓），结果渲染留给下一轮 ✓，不写会误报的断言 ✗。
   expect(errors, '提交回测期间出现未捕获错误 ✗：\n' + errors.join('\n')).toEqual([])
 })
