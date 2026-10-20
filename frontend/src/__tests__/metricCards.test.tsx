@@ -5,17 +5,23 @@ import MetricCards from '../components/MetricCards'
 import type { BacktestResult } from '../types'
 
 /**
- * `MetricCards` 的**服务端渲染**测试（★ 2026-10-19 ✓）。
+ * `MetricCards` 的**服务端渲染**测试（★ 2026-10-19 ✓；原因已在 v2.10.28 更正 ✗→✓）。
  *
- * ## 为什么用 `renderToStaticMarkup` 而不是 jsdom
+ * ## ⚠ 这里曾经写着"CI 上走 jsdom 就崩"——**那是错的** ✗（v2.10.28 追清 ✓）
  *
- * CI（Linux + Node 20）上**只要走 jsdom 环境就崩** ✗
- * （`TypeError: Cannot read properties of undefined (reading 'bind')`，0 个用例被收集 ✓），
- * 而本地 Windows 正常 ✓ —— 这是环境问题、不是测试问题 ✓。
+ * 原始症状确实存在过 ✓（`TypeError: Cannot read properties of undefined (reading 'bind')`）；
+ * 但真因**不是 jsdom 不可用** ✗，而是测试环境**缺浏览器 API 桩** ——
+ * 这次在组件交互测试里复现出的根因是 `ReferenceError: ResizeObserver is not defined` ✓
+ * （recharts 的 `<ResponsiveContainer>` 要用它 ✓，而 jsdom **不实现** ✓）。
+ * ⇒ 在 `frontend/vitest.setup.ts` 补上 `ResizeObserver` / `matchMedia` 桩之后，
+ *   **交互测试可以正常跑** ✓（见 `icChartInteractive.test.tsx` ✓）。
  *
- * 但"组件渲染不炸 + 关键文案在"这类安全网**根本不需要 DOM** ✓：
- * `renderToStaticMarkup` 直接把组件渲成 HTML 字符串 ✓（纯 Node ✓，CI 能跑 ✓）。
- * ⇒ 先建这层网 ✓；将来要测**交互**（点击/输入/展开 ✗）时再解决 jsdom ✓（配置里留有 TODO ✓）。
+ * ## 那为什么这个文件仍然用 `renderToStaticMarkup`（是**选择**，不是**妥协** ✓）
+ *
+ * `MetricCards` 是**纯展示**组件（props → HTML，零交互、零副作用 ✓）：
+ * `renderToStaticMarkup` **更快**（纯 Node ✓ 不启 jsdom ✓）且**更能保证"服务端也能渲"** ✓
+ * （这份 HTML 本来就要经 API 返回给前端做快照 ✓）。
+ * ⇒ 纯展示组件继续用 SSR ✓；**需要点击/输入**的组件才用 jsdom ✓（不要再被上面那句话挡住 ✗）。
  *
  * ## 守什么
  *

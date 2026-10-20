@@ -24,6 +24,38 @@
 
 ---
 
+## [2.10.28] - 2026-10-20
+
+### Fixed（**"CI 上 jsdom 会崩"是错的** ✗→✓ —— 真因：缺 `ResizeObserver` 桩 ✓）
+
+- **这条错误认知的代价** ✓：`metricCards.test.tsx` 里写着「CI（Linux + Node 20）上**只要走 jsdom
+  就崩**」✗ ⇒ 从那以后**所有组件测试都退成 `renderToStaticMarkup`** ✓ ⇒
+  **点击 / 输入 / 展开类断言一个都写不了** ✗ ⇒ 前端 100+ 组件里只测了纯展示与纯逻辑 ✓
+  （覆盖率长期停在 ~18% ✗ 的直接原因之一 ✓）。
+- **追到底的结论** ✓：本轮给 `ICChart` 写交互测试时**当场复现**了那个 `TypeError` 的**真正来源**：
+  ```
+  ReferenceError: ResizeObserver is not defined
+  ```
+  —— 它来自 recharts 的 `<ResponsiveContainer>` ✓（用它监听容器尺寸 ✓），而 **jsdom 不实现
+  `ResizeObserver`** ✗（`matchMedia` 同理 ✓）。⇒ **不是"环境不可用"** ✗，是**少一个 polyfill** ✓。
+- **修法** ✓：新增 `frontend/vitest.setup.ts`（只放**最小**浏览器 API 桩 ✓：
+  `ResizeObserver` 的 `observe/unobserve/disconnect` 空实现 + `matchMedia` 常量返回 ✓），
+  在 `vitest.config.ts` 里 `setupFiles` 挂上 ✓。桩要**最小** ✓ —— 布局在 jsdom 里本来就没有 ✓，
+  别假装有 ✗（所以**断言不许依赖尺寸** ✓）。
+- **顺带核对了一件更重要的事** ✓：CI 日志里 `taskStatusPanel.test.tsx`（`createRoot` + `act`，
+  **必须要 DOM** ✓）**真的跑了** ✓，整轮 **28 文件全过** ✓ ⇒ **jsdom 在 CI 上一直是好的** ✓
+  —— 这句误导性注释害了整整两年 ✓。
+- **新增 `icChartInteractive.test.tsx`（3 条 ✓）** —— 第一批**真交互**断言：
+  · 默认在测试集 ⇒ 点「训练集 IC」后**列表真的换过去** ✓（不是只换高亮 ✗）；
+  · **切换分段 ⇒ 徽章数值跟着换** ✓（串味 = 用户看着 A 段数据以为在 B 段 ✗）；
+  · 切回测试集 ⇒ 选中态**重置**到第一个分段 ✓。
+- **并把那条误导性注释改写了** ✓（`metricCards.test.tsx` 文件头 ✓）：说明真因是缺桩 ✓，
+  并写清"该文件继续用 SSR 是**选择**（纯展示、更快、能保服务端可渲染 ✓），不是妥协"✓ ——
+  避免下一个人又被它挡住 ✗。
+- **实测** ✓：`npx vitest run` **198 passed / 29 文件** ✓ ｜ `tsc -b` **0 错误** ✓ ｜
+  CI ✓。**下一步** ✓：交互测试已解锁 ⇒ `SignalTestPanel`(1.5k) / `SingleFactorTestPanel`(2.1k)
+  / `EventStudyModal`(1.5k) 这些"零测试大组件"终于可以啃了 ✓（覆盖率的主升浪在这里 ✓）。
+
 ## [2.10.27] - 2026-10-20
 
 ### Changed（**前端覆盖率门槛 17 → 20** ✓ —— 靠两个图表组件一次性拉起来 ✓）

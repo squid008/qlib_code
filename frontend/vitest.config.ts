@@ -30,6 +30,10 @@ export default defineConfig({
     pool: 'forks',
     poolOptions: { forks: { singleFork: true } },
 
+    // ★ v2.10.28：补浏览器 API 桩（`ResizeObserver` / `matchMedia` ✓）——
+    //   见 `vitest.setup.ts` 顶部的追因说明 ✓：当年"jsdom 会崩"真因是**缺这个 polyfill** ✗
+    setupFiles: ['./vitest.setup.ts'],
+
     // ★ v2.10.23（2026-10-20 ✓）：**前端覆盖率采集** ✗→✓
     //
     // 为什么现在才加：前端已有 181 条用例 ✓，但**覆盖了哪些组件完全未知** ✗ ——
