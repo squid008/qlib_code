@@ -159,6 +159,49 @@ def _panel_with(jump_day: int | None = None, suspend_t1: bool = False,
     return df
 
 
+def _panel_with_labels(limit_t: bool = False, limit_t1: bool = False) -> pd.DataFrame:
+    """0/1 信号**全为 1** ✓ + **非 NaN 的交易所标签** ✓（关键：见下面用例的注释 ✓）。
+
+    标签口径照真实数据：`LIMIT_UP` = 当日**涨停价** ✓。
+    让目标行的 `CLOSE` **正好等于** 标签值 ⇒ 该行应被判为涨停 ✓。
+    """
+    df = _panel_with()
+    day_lv = df.index.get_level_values(1)
+    mask = (df.index.get_level_values(0) == "A") & (day_lv == day_lv.unique()[10])
+    if limit_t:
+        df.loc[mask, "LIMIT_UP"] = df.loc[mask, "CLOSE"]
+    if limit_t1:
+        df.loc[mask, "T1_LIMIT_UP"] = df.loc[mask, "T1_CLOSE"]
+    return df
+
+
+def test_limit_up_excluded_when_labels_are_provided():
+    """⭐⭐ 给了**非 NaN 标签**时，信号日涨停必须被剔 ✓ 且计入 `limit_up_excluded_t` ✓。
+
+    ⚠ 这条是上一轮那条"实测事实"的**反面验证** ✓：
+    · 标签全 NaN ⇒ 计数恒 0 ✓（见下一条用例 ✓）；
+    · 标签有值 ⇒ **必须真的剔掉** ✓（否则"列存在就用标签"这条语义等于没实现 ✗）。
+    两条合起来才算把这块钉住 ✓ —— 只测一边，另一边退化了也发现不了 ✗。
+    """
+    base = _run(_panel_with_labels())
+    hit = _run(_panel_with_labels(limit_t=True))
+    assert hit["limit_up_excluded_t"] > base["limit_up_excluded_t"], \
+        "有标签时信号日涨停没被计入 ✗（lu_t = %d）" % hit["limit_up_excluded_t"]
+    # ⚠ `n_obs` 是**剔除前**的有效配对数 ✓（实测：仍 240 ✗ 我的假设错了 ✓）——
+    #   "剔了多少"只能看 `limit_up_excluded*` 这一组 ✓，不要拿 `n_obs` 判 ✓。
+    assert hit["n_obs"] == base["n_obs"], "n_obs 是剔除前的总数 ✓（这条把口径固定住 ✓）"
+    assert hit["limit_up_excluded"] >= hit["limit_up_excluded_t"]
+
+
+def test_trade_day_limit_up_excluded_when_labels_are_provided():
+    """⭐ 成交日（T+1）标签版 ✓：计入 `limit_up_excluded_t1` ✓
+    （真实撮合约束：封板买不到 ✓ —— 与"信号日追高"是两个**不同**的计数 ✓）。"""
+    base = _run(_panel_with_labels())
+    hit = _run(_panel_with_labels(limit_t1=True))
+    assert hit["limit_up_excluded_t1"] > base["limit_up_excluded_t1"], \
+        "有标签时成交日涨停没被计入 ✗（lu_t1 = %d）" % hit["limit_up_excluded_t1"]
+
+
 def test_exclusion_stays_zero_without_exchange_labels():
     """⚠ **本轮实测确定的事实**（不是猜测 ✓）：面板里 `LIMIT_UP` / `T1_LIMIT_UP` 列**存在但全 NaN** 时，
     即使 `CHANGE` 已经到 10%（主板涨停 ✓），**剔除计数仍保持 0** ✓。
