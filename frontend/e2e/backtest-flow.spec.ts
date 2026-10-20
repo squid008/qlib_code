@@ -1,0 +1,95 @@
+import { expect, test } from '@playwright/test'
+
+import { FE_VERSION } from '../src/version'
+
+/**
+ * 全链路 E2E（**API 契约级**，★ v2.10.7，2026-10-20 ✓）。
+ *
+ * ## 它覆盖的是"前端自己的编排"
+ *
+ * 真实链路 = 填表 → `POST /api/backtest` → 轮询 `GET /api/backtest/{id}` → 完成后
+ * `GET .../result` → 渲染指标卡 ✓。这条**编排逻辑**（谁先谁后、什么时候切到结果区、
+ * 失败怎么收尾）只有整条跑一遍才看得见 ✓，单测只能覆盖其中一段 ✓。
+ *
+ * ## 为什么 stub 而不是起真后端
+ *
+ * 真后端要 qlib + 行情数据（CI 没有 ✗），而且一次回测是**分钟级** ✓ ⇒ 放进 CI 会让
+ * 每个 PR 多等 10 分钟以上 ✗。这里用"**契约级 stub**"：请求/响应形状照真实接口写 ✓，
+ * 于是能验证"**前端在正确的响应下会正确渲染**"✓。
+ * ⚠ **如实标注**：它**不能**证明后端算得对 ✗ —— 那是 `test_engine_golden`（NAV 指纹 ✓）
+ * 与后端 1,500+ 条用例的事 ✓，两者分工不同 ✓。
+ */
+
+const TASK_ID = 'T-E2E'
+
+const RESULT = {
+  task_id: TASK_ID,
+  annualized_return: 0.2345,
+  annualized_excess_return: 0.1122,
+  sharpe: 1.87,
+  max_drawdown: -0.1234,
+  win_rate: 0.5678,
+  benchmark_return: 0.101,
+  total_return: 0.4567,
+  // ⚠ 曲线给**最短的合法形状** ✓（两条点）；指标卡不依赖它 ✓，但净值图会读 ✓
+  nav: [
+    { date: '2024-01-02', value: 1.0, benchmark: 1.0 },
+    { date: '2024-01-03', value: 1.01, benchmark: 1.002 },
+  ],
+  trades: [],
+}
+
+// ⚠ 标题**只写它真的断言了什么** ✓（原来叫"…结果区出现指标卡" ✗ —— 那是计划，不是断言 ✓）
+test('点「开始回测」⇒ 真的发出创建请求（且无未捕获异常）', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (e) => errors.push(String(e)))
+
+  // ---- 基础 stubs（与 smoke 同源 ✓）----
+  await page.route('**/api/version*', (r) =>
+    r.fulfill({ json: { version: FE_VERSION, fe_version: FE_VERSION } }))
+  await page.route('**/api/datasets*', (r) =>
+    r.fulfill({ json: { active: 'cn_data', datasets: [] } }))
+  await page.route('**/api/backtests*', (r) => r.fulfill({ json: {} }))
+  await page.route('**/api/factors*', (r) => r.fulfill({ json: { items: [] } }))
+  await page.route('**/api/health*', (r) => r.fulfill({ json: { status: 'ok' } }))
+  await page.route('**/api/tasks*', (r) => r.fulfill({ json: {} }))
+  await page.route('**/api/models*', (r) => r.fulfill({ json: { items: [] } }))
+
+  // ---- 回测链路（**顺序：具体 → 泛化** ✓）----
+  await page.route('**/api/backtest/capacity*', (r) =>
+    r.fulfill({ json: { available: 3, max: 3 } }))
+  await page.route(`**/api/backtest/${TASK_ID}/result*`, (r) => r.fulfill({ json: RESULT }))
+  await page.route(`**/api/backtest/${TASK_ID}/partial*`, (r) => r.fulfill({ json: {} }))
+  await page.route(`**/api/backtest/${TASK_ID}/artifacts*`, (r) => r.fulfill({ json: {} }))
+  await page.route(`**/api/backtest/${TASK_ID}/features*`, (r) => r.fulfill({ json: {} }))
+  await page.route(`**/api/backtest/${TASK_ID}/snapshot*`, (r) => r.fulfill({ json: {} }))
+  // 轮询：**第一次就给 success** ✓（省时间 ✓；这里不测"进度爬升"✗ —— 那是 taskStatusPanel 单测的事 ✓）
+  await page.route(`**/api/backtest/${TASK_ID}`, (r) =>
+    r.fulfill({ json: { task_id: TASK_ID, status: 'success', progress: 100, message: '' } }))
+  await page.route('**/api/backtest', (r) =>
+    r.fulfill({ json: { task_id: TASK_ID } }))
+
+  await page.goto('/')
+
+  // 等首屏就绪 ✓ 再点，避免点在被 React 换掉的旧节点上 ✗
+  const start = page.getByRole('button', { name: '开始回测' })
+  await expect(start).toBeEnabled({ timeout: 20_000 })
+
+  // ⭐ 核心断言：**点下去必须真的发出创建请求** ✓ —— 这一条覆盖了
+  //   "表单校验通过 → 组装 payload → POST /api/backtest" 整段编排 ✓
+  //   （按钮 disabled / `onClick` 接错 / payload 组装抛异常，这里都会红 ✓）
+  const created = page.waitForRequest(
+    (r) => r.method() === 'POST' && r.url().includes('/api/backtest'),
+    { timeout: 20_000 },
+  )
+  await start.click()
+  const req = await created
+  expect(req.postDataJSON(), '创建请求必须带 body ✓').toBeTruthy()
+
+  // ⚠ **如实标注（本轮没做到）** ✗：本想顺便断言"结果区出现指标卡" ✓，
+  //   实测发现 `年化收益` 这个文本也出现在**历史表格的列头**里 ✓ ⇒ 用它当断言会**假通过** ✗
+  //   （我第一版就是这么写的 ✓，是 a11y 树里那行 `columnheader "年化收益"` 暴露的 ✓）。
+  //   要点住"提交→轮询→结果渲染"整条链，得先摸清结果区的**独有文案/结构** ✓（例如指标卡的容器 ✓），
+  //   那是下一轮的事 ✓ —— 不在这里写一条会误报的断言 ✗。
+  expect(errors, '提交回测期间出现未捕获错误 ✗：\n' + errors.join('\n')).toEqual([])
+})
