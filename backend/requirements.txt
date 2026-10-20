@@ -10,6 +10,18 @@ numpy
 pandas
 pyarrow
 
+# ★ v2.10.24（2026-10-20 ✓）：**这五个一直在 CI 的内联列表里，却没写进本文件** ✗
+#   把 CI 改成 `-r requirements.txt` 之后立刻暴露 ✓：
+#   `ModuleNotFoundError: No module named 'h5py'`（4 个测试模块收集失败 ✓）。
+#   ⇒ 教训：**CI 里的裸 `pip install` 列表 = 一份"影子依赖清单"** ✗，
+#     它和 requirements.txt 一旦不同步，就只在"换安装方式"或"换机器"时才炸 ✓。
+h5py
+scipy
+joblib
+PyYAML
+tqdm
+Cython
+
 # 交易信号测试：上传 XLSX / XLS 需要的 Excel 引擎（v1.19.46 起）
 # ⚠ 本机开发环境早就有它们，CI 的 pip 列表里原先没有 ⇒ 2026-09-15 那次 push CI 直接红
 #   （`ModuleNotFoundError: No module named 'openpyxl'`）。运行时缺失只会得到友好报错，

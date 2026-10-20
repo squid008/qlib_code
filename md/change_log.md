@@ -24,6 +24,25 @@
 
 ---
 
+## [2.10.24] - 2026-10-20
+
+### Fixed（**`requirements.txt` 漏声明 6 个依赖** ✓ —— 换安装方式时立刻暴露 ✓）
+
+- v2.10.23 把 CI 的"裸 `pip install` 列表"换成 `-r requirements.txt` ✓ ⇒ **当场红了** ✓：
+  ```
+  ModuleNotFoundError: No module named 'h5py'
+  （4 个测试模块收集失败：test_finance_pit_mapping / test_finance_yoy_absbase /
+    test_tushare_finance / test_tushare_pit_dedup）
+  ```
+- **根因** ✓：这 6 个包一直**只在 CI 的内联列表里** ✗、没写进 `requirements.txt` ✗ ——
+  `h5py` / `scipy` / `joblib` / `PyYAML` / `tqdm` / `Cython`。
+  ⇒ 教训写进文件注释 ✓：**CI 里的裸 `pip install` 列表就是一份"影子依赖清单"** ✗，
+  它和 `requirements.txt` 一旦不同步，只在"换安装方式"或"换机器"时才炸 ✓
+  （与当年 `openpyxl` 那次 `ModuleNotFoundError` 是**同一个形状** ✓）。
+- **这正好说明这次改动值了** ✓：把影子清单消掉之后，**第一件事就是把缺的依赖暴露出来** ✓ ——
+  以前它们藏在 CI 的列表里，谁也不会去核对 ✓。
+- **校验** ✓：CI（后端收集恢复 ✓）｜ 本地 `pytest` 不受影响（本机早有这些包 ✓）｜ 版本 + 体检 14 passed ✓。
+
 ## [2.10.23] - 2026-10-20
 
 ### Added（**三件工程化补强** ✓ —— 把两个「6 分档」拉起来 ✓）
