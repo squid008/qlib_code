@@ -68,7 +68,10 @@ def _const_int(e: Expr):
     return None
 
 
-def _scan_deps(expr: Expr, imm: set, delayed: dict, ref_compound: set) -> None:
+# ★ 2026-10-20（mypy `attr-defined` ✗→✓）：`delayed` 的注解原本写成 **`dict`** ✗，
+#   而函数体里对它调的是 `.add(...)` ✓、调用处传的也是 `set()` ✓ ⇒ **错在注解，不在代码** ✓
+#   （这处曾被列进"语义疑点待查"✓，查清后确认：**行为一直是 set** ✓，没有任何运行时风险 ✓）。
+def _scan_deps(expr: Expr, imm: set, delayed: set, ref_compound: set) -> None:
     """扫一棵树，分三类收集引用（见上方规则 ✓）：
     `imm` = 非延迟引用（同根）｜`delayed` = `REF(变量, 常量k≥1)` 的 (名, k)｜
     `ref_compound` = 出现在 REF 里但**不是**"裸变量 + 常量k"的变量名（⇒ 若是递推成员就报错 ✓）。
@@ -120,9 +123,15 @@ def recursion_members(defs: dict) -> list:
 
     `defs`: `{大写名: 表达式}`（含输出线 ✓）。
     """
-    imm, delayed, ref_compound = {}, {}, {}
+    # ★ 2026-10-20（mypy `var-annotated`）：`{名称: 集合}` 的三张表 ✓ + 每组三个空集合 ✓
+    #   空容器不标注时 mypy 无从推断元素类型 ✓ ⇒ 显式标注 ✓（**纯注解，零行为变化** ✓）。
+    imm: dict = {}
+    delayed: dict = {}
+    ref_compound: dict = {}
     for name, expr in defs.items():
-        i, d, rc = set(), set(), set()
+        i: set = set()
+        d: set = set()
+        rc: set = set()
         _scan_deps(expr, i, d, rc)
         imm[name], delayed[name], ref_compound[name] = i, d, rc
     # 全图（同根 + 延迟）里能回到自己 ⇒ 递推成员 ✓
@@ -259,7 +268,7 @@ def resolve_vars(formula: Formula) -> Formula:
         raise SemanticError(f"公式只允许 1 个输出因子，当前有 {len(formula.outputs)} 个：{names}")
 
     # 检查变量是否被重复定义（大小写不敏感）
-    seen_assigns = {}
+    seen_assigns: dict = {}      # ★ 2026-10-20（mypy `var-annotated`）：纯注解 ✓
     for a in formula.assigns:
         key = a.name.upper()
         if key in seen_assigns:

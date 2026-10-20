@@ -70,11 +70,11 @@ files = [
     # ★ v2.10.10（2026-10-20）：公式翻译器里的**两个纯解析文件** ✓
     "app/factors/parser/lexer.py",
     "app/factors/parser/parser.py",
-    # ⚠ **`app/factors/parser/semantic.py` 先不收** ✗：6 条里有一条是语义疑点 ——
-    #   `semantic.py:84` 在 **`dict` 上调用 `.add()`** ✓（`dict` 没有 `add` ✗），
-    #   而 `_scan_deps` 的第 3 参被注解成 `dict` ✓、调用处传的却是 `set` ✓ ——
-    #   **注解与实参互相矛盾** ✓ ⇒ 要判断"哪边是对的"必须读懂语义扫描的数据流 ✓，
-    #   属**单独一轮**的事 ✓（改错了会让公式校验静默失效 ✗）。本轮只收能确定的两个文件 ✓。
+    # ★ v2.10.12（2026-10-20）：`semantic.py` **查清后收进来** ✓ ——
+    #   原先那 6 条里最可疑的一条（`dict` 上调 `.add()`）已确认是**注解写错、代码是对的** ✓
+    #   （`delayed` 一直是 `set` ✓，调用处也传 `set()` ✓ ⇒ 零运行时风险 ✓），其余 5 条纯属
+    #   "空容器没标元素类型" ✓ ⇒ 全部**只改注解** ✓，一行行为没动 ✓。
+    "app/factors/parser/semantic.py",
 ]
 follow_imports = "silent"
 # 只报"能修且值得修"的：`--strict` 会把 `Any` 泛滥全暴露出来 ✗（另有专门回合 ✓）

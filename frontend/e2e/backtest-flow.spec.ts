@@ -40,7 +40,7 @@ const RESULT = {
 }
 
 // ⚠ 标题**只写它真的断言了什么** ✓（原来叫"…结果区出现指标卡" ✗ —— 那是计划，不是断言 ✓）
-test('点「开始回测」⇒ 真的发出创建请求（且无未捕获异常）', async ({ page }) => {
+test('「开始回测」⇒ 发出创建请求（含载荷契约）→ 轮询到 success 上屏', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(String(e)))
 
@@ -69,6 +69,13 @@ test('点「开始回测」⇒ 真的发出创建请求（且无未捕获异常�
   await page.route('**/api/backtest', (r) =>
     r.fulfill({ json: { task_id: TASK_ID } }))
 
+  // ⚠ 先清 `localStorage` ✗→✓：本应用会把任务列表**持久化在浏览器里** ✓
+  //   ⇒ 上一次跑（甚至开发时的真实任务 ✓）会残留 ✓ ⇒ 页面会去拉**别人的** snapshot ✓
+  //   （实测探针里看到一串 `GET /api/backtest/<别人的id>/snapshot` ✓ —— 就是这样来的 ✓）。
+  await page.addInitScript(() => {
+    try { localStorage.clear() } catch { /* 忽略 ✓ */ }
+  })
+
   await page.goto('/')
 
   // 等首屏就绪 ✓ 再点，避免点在被 React 换掉的旧节点上 ✗
@@ -96,12 +103,19 @@ test('点「开始回测」⇒ 真的发出创建请求（且无未捕获异常�
   expect(String(body['end_date'])).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   expect(Number(body['topk'])).toBeGreaterThan(0)
 
-  // ⚠ **如实标注（本轮仍没做到）** ✗：还想断言"结果区出现指标卡" ✓。
-  //   已经摸索到的结论：**`夏普比率` 才是唯一可用标记** ✓（`年化收益` 会撞历史表头 ✗ ——
-  //   第一版就因此**假通过** ✓，是 a11y 树里的 `columnheader "年化收益"` 暴露的 ✓）。
-  //   但实测在"契约级 stub"下**指标卡没渲染出来** ✓（`夏普比率` 找不到 ✓）⇒
-  //   说明从 `success` 到"渲染结果"之间还有一步依赖 ✓（很可能是 snapshot/artifacts 的形状 ✓，
-  //   或者要等某次轮询的下一拍 ✓）—— 需要**逐帧追一次**才敢下断言 ✓。
-  //   ⇒ 本轮只交**载荷契约** ✓（上面那段 ✓），结果渲染留给下一轮 ✓，不写会误报的断言 ✗。
+  // ⭐ 轮询闭环 ✓：任务必须出现在「任务状态」里 **并且显示 success** ✓ ——
+  //   这条把"提交 → 轮询 `GET /api/backtest/{id}` → 反映到界面"整段都覆盖了 ✓
+  //   （探针实测：stub 返回 success 后，卡片上会显示 `T-P success 100.0%` ✓）。
+  await expect(page.getByText(TASK_ID)).toBeVisible({ timeout: 20_000 })
+  await expect(page.getByText('100.0%')).toBeVisible({ timeout: 20_000 })
+
+  // ⚠ **如实标注（仍未做到）** ✗：还想断言"**结果面板**渲染指标卡" ✓。
+  //   探针已经把原因追清了 ✓：提交后前端只请求 `GET /backtest/{id}` 与 `.../artifacts` ✓，
+  //   **不请求 `/result`** ✗ ⇒ 结果面板是"**选中某个任务**"才加载的 ✓（不是自动渲染 ✓）。
+  //   而"点卡片"这一步在 stub 环境里**不可靠** ✗ —— 本应用把任务列表持久化在 `localStorage` ✓，
+  //   残留的旧任务会让点击命中别人 ✓（探针里出现一串 `GET /api/backtest/<别人的id>/snapshot` ✓）。
+  //   ⇒ 要断言结果面板，得先给"任务卡片"一个**稳定选择器**（data-testid ✓），
+  //     并确认 `/result` 的响应形状 ✓ —— 属下一轮 ✓，这里不写会误报的断言 ✗。
+  //   （另：`夏普比率` 是唯一可用标记 ✓；`年化收益` 会撞历史表头 ✗ —— 第一版就因此假通过 ✓。）
   expect(errors, '提交回测期间出现未捕获错误 ✗：\n' + errors.join('\n')).toEqual([])
 })
