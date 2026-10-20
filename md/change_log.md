@@ -24,6 +24,34 @@
 
 ---
 
+## [2.10.20] - 2026-10-20
+
+### Test（**C′ 第二刀：597 行的 `_quantile_curve_block` 跑到** ✓ —— `single_test.py` **43.3% → 52.4%** ✓）
+
+- **做法（关键决策）**：它的 23 个形参全是 `_continuous_stats` 的**自由变量** ✓ ——
+  手搓这 23 个值既脆、又会**测出一条假的分位曲线** ✗ ⇒ 改从**调用方**进：
+  `_test_one(df, ...)` ✓（真实代码替我们算好中间量 ✓），断言落在它产出的**三个结构**上 ✓。
+- **先用探针看清结构** ✓（临时脚本，跑完即删 ✓）⇒ 拿到 44 个键与形状，
+  其中三个正是这一块的产物 ✓：`quantile_curves`（`n_groups/n_periods/dates/
+  monotonicity/best_quantile` ✓）、`topk_curves`（`rebalance_period/horizon/n_days/
+  dates/side/default_quantile` ✓）、`topk_sensitivity`（`default_k/ks/…` ✓）。
+- **7 条断言** ✓：
+  · **分组数跟着 `quantiles` 变** ✓（5/10 各验一次 ✓ —— 写死 10 就说明参数被忽略 ✗）；
+  · 曲线结构自洽 ✓：`len(dates) == n_periods` ✓、`monotonicity ∈ [-1,1]` ✓、
+    `best_quantile` 落在合法组号内 ✓（它决定前端高亮哪一组 ✓）；
+  · **`topk_list` 的两种口径都认** ✓：`≤1` 视为**比例**（0.1 = 10% ✓）、`>1` 视为**只数**（10 ✓）
+    ⇒ `ks` 至少两档 ✓（只认一种的话，用户切到"按百分比"就得到空图 ✗）；
+  · **调仓期默认跟随预测周期** ✓（`horizon=3` ⇒ `rebalance_period==3` ✓），
+    显式传 7 时用它 ✓（否则设置项形同虚设 ✗）；
+  · **取消必须抛 `FactorTestCancelled`** ✓（被吞 = "点了取消但继续算"✗）；
+  · **样本 < 100 ⇒ 整段跳过** ✓，并钉住一个**契约细节**：跳过时三个键**根本不存在** ✗
+    （不是 `None` ✓）⇒ 前端读它们**必须判空** ✓，否则小样本因子渲染崩 ✗。
+- **✗ 两处我自己的错**：① `FactorTestCancelled` 从 `app.signals.engine` 导 ✗（它在
+  `app.factors.single_test` 里 ✓）；② 跳过时断言 `is None` ✗ ⇒ 实际是**缺键** ✓（改 `.get` ✓）。
+- **实测** ✓：九份 `single_test` 用例合计覆盖该模块 **43.28% → 52.43%** ✓（1,213 语句 ✓），
+  **82 passed** ✓，相关回归 **146 passed** ✓。
+- **校验** ✓：7 passed（3.5 秒 ✓）｜ `ruff` **0 错误** ✓ ｜ CI ✓。
+
 ## [2.10.19] - 2026-10-20
 
 ### Changed（**门槛抬到 61** ✓ —— 第一次按 **CI 自己的数字**定门槛 ✓）
