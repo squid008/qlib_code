@@ -67,6 +67,14 @@ files = [
     "app/engine/inst_mask.py",
     "app/signals/engine.py",
     "app/signals/pricing.py",
+    # ★ v2.10.10（2026-10-20）：公式翻译器里的**两个纯解析文件** ✓
+    "app/factors/parser/lexer.py",
+    "app/factors/parser/parser.py",
+    # ⚠ **`app/factors/parser/semantic.py` 先不收** ✗：6 条里有一条是语义疑点 ——
+    #   `semantic.py:84` 在 **`dict` 上调用 `.add()`** ✓（`dict` 没有 `add` ✗），
+    #   而 `_scan_deps` 的第 3 参被注解成 `dict` ✓、调用处传的却是 `set` ✓ ——
+    #   **注解与实参互相矛盾** ✓ ⇒ 要判断"哪边是对的"必须读懂语义扫描的数据流 ✓，
+    #   属**单独一轮**的事 ✓（改错了会让公式校验静默失效 ✗）。本轮只收能确定的两个文件 ✓。
 ]
 follow_imports = "silent"
 # 只报"能修且值得修"的：`--strict` 会把 `Any` 泛滥全暴露出来 ✗（另有专门回合 ✓）

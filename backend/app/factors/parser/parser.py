@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, NoReturn
 
 from .ast import (
     Formula, Assign, Output, Expr, Num, Str, Field, Var, BinOp, UnaryOp, FuncCall,
@@ -91,7 +91,10 @@ class Parser:
         self.tokens = Lexer(text).tokenize()
         self.idx = 0
 
-    def error(self, msg: str):
+    # ★ 2026-10-20（mypy `return`）：这里**必然 raise** ✓，但没标注时 mypy 以为它会返回 ✓
+    #   ⇒ `expect()` / `_parse_atom()` 被判成"缺少 return 语句"✗（两处 `Missing return statement` ✓）
+    #   ⇒ 标成 `NoReturn` ✓：这是**唯一正确**的修法 ✓（在调用处补 `raise` 是噪声 ✗）。
+    def error(self, msg: str) -> "NoReturn":
         t = self.tokens[self.idx]
         pos = t.pos if t.pos >= 0 else "EOF"
         raise ParseError(f"{msg} (位置 {pos})")

@@ -216,7 +216,7 @@ class Lexer:
         """读取字符串字面量（不含外层引号）；不闭合立刻报错。"""
         start = self.pos
         self.pos += 1                      # 跳过开引号
-        buf = []
+        buf: list[str] = []      # ★ 2026-10-20（mypy `var-annotated`）：空 list 要给元素类型 ✓
         while self.pos < self.n:
             ch = self.text[self.pos]
             if ch == quote:
