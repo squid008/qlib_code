@@ -24,6 +24,32 @@
 
 ---
 
+## [2.10.14] - 2026-10-20
+
+### Changed（**mypy 闸门扩到 17 个文件** ✓ —— `services/` 与 `datasource/` 各一圈 ✓）
+
+- 从 12 → **17** 个文件 ✓（仍 **0 错误** ✓）：新增 `services/error_policy.py` ✓、`services/expr_cache.py` ✓、
+  `services/custom_formulas.py` ✓、`datasource/qlib_source.py` ✓、`datasource/tdx_gpcw.py` ✓。
+  这一批统一是"**注解与实现不一致**"✗，**只改注解** ✓、一行行为没动 ✓。
+- **⭐ 两类值得记的修法**：
+  1. **`None` 被 mypy 冻结成 `None` 类型** ✗→✓：`datasource/qlib_source.py` 里 `self._D = None` ✓
+     等 lazy init 才换成 `qlib.data.D` ✓ ⇒ 不标注时 mypy 认为它**永远是 `None`** ✗ ⇒
+     `D.features / list_instruments / calendar` 三处全报"`None` 没有该属性"✓ ⇒ 标 **`Any`** ✓
+     （它的类型**依赖运行时是否装了 qlib** ✓，静态上无从确定 ✓）；
+  2. **同一个名字被复用成两种类型** ✗→✓：`custom_formulas.py` 里 `cur` 先装 `int`（tomb 的值 ✓）
+     又被拿去装元组 ✓ ⇒ 换个名字即可 ✓。这类"同名换类型"是最容易让类型检查失效的写法 ✓。
+- 其余 ✓：`error_policy` 的 `detail` 会从 `str` 变成**元组** ✓（两种形状都传给 logger ✓）⇒ 标 `object` ✓；
+  `expr_cache.prune` 的三个默认值是 `None` 而注解是 `float/int` ✗ ⇒ 改 `"float | None"` ✓；
+  `expr_cache.status` 的 `dict(_STATS)` 被推成 `dict[str, int]` ✗ 而后面要塞 `float` ⇒ 标 `dict` ✓；
+  `tdx_gpcw` 有一条**已经失效的 `type: ignore`** ✗ ⇒ 删掉 ✓（`warn_unused_ignores` 会把它当错误 ✓）。
+- **⚠ `services/artifacts_service.py` 故意先不收** ✗（7 条 ✓，理由写进 `pyproject.toml`）：
+  其中两条不是注解问题 —— `"object" has no attribute "__iter__"` ✓ 与
+  `Unsupported target for indexed assignment ("list[str] | dict | str | None")` ✓
+  ⇒ 指向**同一坨可变结构在多个分支里被当成不同类型用** ✗ ⇒ 要先读懂数据流（可能顺手改结构 ✓）
+  才敢动 ✓ —— 单独一轮 ✓，本轮不硬塞 ✗。
+- **校验** ✓：`mypy` **0 errors（17 files）** ✓ ｜ `ruff` **0** ✓ ｜
+  相关回归（expr/cache/formula/datasource/tdx/error）**405 passed** ✓ ｜ CI ✓。
+
 ## [2.10.13] - 2026-10-20
 
 ### Test + Changed（**E2E 补完最后一块：结果面板真的渲染出指标卡** ✓）

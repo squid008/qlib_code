@@ -272,8 +272,10 @@ def load_merged() -> List[dict]:
                 if cur is None or rank > cur:
                     tomb[k] = rank
                 continue
-            cur = best.get(k)
-            if cur is None or rank > cur[:3]:
+            # ★ 2026-10-20（mypy `assignment`）：`cur` 上面已被绑成 `int`（tomb 的值 ✓），
+            #   这里又拿去装元组 ✗ ⇒ 换个名字 ✓（**同名复用不同类型**最容易让类型检查失效 ✓）。
+            cur_b = best.get(k)
+            if cur_b is None or rank > cur_b[:3]:
                 best[k] = (ts, -prio, path, it)
     out: List[dict] = []
     for k, (ts, nprio, path, it) in best.items():

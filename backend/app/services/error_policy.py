@@ -62,7 +62,9 @@ def swallow(scope: str, exc: BaseException, *, level: str = "debug",
     extra: 额外上下文（键、任务号、区间 ✓）—— 只放**能复现**的信息 ✓，别塞整张表 ✗
     """
     msg = "[吞] %s: %s"
-    detail = repr(exc)[:limit]
+    # ★ 2026-10-20（mypy `assignment`）：下面有 `extra` 时 `detail` 会被换成**元组** ✓
+    #   （`fn(msg, scope, detail)` 两种形状都允许 ✓）⇒ 标成 `object` ✓，**行为不变** ✓。
+    detail: object = repr(exc)[:limit]
     if extra:
         msg += " ｜ %s"
         detail = (detail, extra)

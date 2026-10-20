@@ -123,7 +123,9 @@ def read_pack(path: str, fields: Optional[Dict[str, int]] = None) -> Tuple[int, 
         for k, idx in fields.items():
             out[k].append(float(arr[idx]) if idx < arr.size else np.nan)
     res = {k: np.asarray(v, dtype=np.float64) for k, v in out.items()}
-    res["__codes__"] = np.asarray(codes, dtype=object)      # type: ignore[assignment]
+    # ★ 2026-10-20（mypy `unused-ignore`）：这条 `type: ignore` 已经**不再需要** ✓
+    #   （`res` 现在被推成宽度够的类型 ✓）⇒ 删掉 ✓（`warn_unused_ignores` 会把它当错误 ✗）
+    res["__codes__"] = np.asarray(codes, dtype=object)
     return int(report_date), res
 
 

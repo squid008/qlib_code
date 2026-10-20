@@ -9,7 +9,7 @@ Qlib 数据源实现。
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from .base import (
     DataSource,
@@ -31,7 +31,11 @@ class QlibDataSource(DataSource):
         self.provider_uri = provider_uri
         self.region = region
         self._qlib = None
-        self._D = None
+        # ★ 2026-10-20（mypy `attr-defined`）：这里先给 `None` ✓，lazy init 后才换成 `qlib.data.D` ✓
+        #   ⇒ 不标注时 mypy 把它**冻结成 `None` 类型** ✗ ⇒ 下面 `D.features(...)` /
+        #   `D.list_instruments(...)` / `D.calendar(...)` 全被报"`None` 没有该属性"✓。
+        #   标 `Any` ✓：它的类型**依赖运行时是否装了 qlib** ✓，静态上无从确定 ✓。
+        self._D: Any = None
         self._lazy_init()
 
     def _lazy_init(self):

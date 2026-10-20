@@ -152,7 +152,10 @@ def save(k: str, df: pd.DataFrame) -> bool:
         return False
 
 
-def prune(ttl_days: float = None, max_files: int = None, max_mb: float = None) -> int:
+# ★ 2026-10-20（mypy `assignment`）：默认值是 `None` 而注解是 `float/int` ✗ ⇒ 两处不一致 ✓
+#   （`None` 在函数体里表示\"用配置默认值\" ✓）⇒ 注解改成 `| None` ✓，**只改注解** ✓。
+def prune(ttl_days: "float | None" = None, max_files: "int | None" = None,
+          max_mb: "float | None" = None) -> int:
     """按 **TTL / 个数 / 总量** 清理 ✓，返回删掉的文件数 ✓。
 
     ⚠ 全部异常吞掉 ✓（清理失败绝不能影响主流程 ✗）。
@@ -231,7 +234,9 @@ def stats() -> dict:
     except Exception as _e:  # noqa: BLE001
         _log().debug("[吞] expr_cache: %r", _e)
         pass
-    out = dict(_STATS)
+    # ★ 2026-10-20（mypy `dict-item`）：`dict(_STATS)` 被推成 `dict[str, int]` ✗，
+    #   而下面要塞 `float`（`mb` / `max_mb`）✓ ⇒ 显式标 `dict` ✓。
+    out: dict = dict(_STATS)
     out.update({"files": files, "mb": round(mb, 2), "enabled": enabled(),
                 "ttl_days": _TTL_DAYS, "max_files": _MAX_FILES, "max_mb": _MAX_MB})
     return out

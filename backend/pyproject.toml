@@ -70,6 +70,16 @@ files = [
     # ★ v2.10.10（2026-10-20）：公式翻译器里的**两个纯解析文件** ✓
     "app/factors/parser/lexer.py",
     "app/factors/parser/parser.py",
+    # ★ v2.10.14（2026-10-20）：`services/` 与 `datasource/` 的一圈 ✓（12 → 17 个文件 ✓）
+    "app/services/error_policy.py",
+    "app/services/expr_cache.py",
+    "app/services/custom_formulas.py",
+    "app/datasource/qlib_source.py",
+    "app/datasource/tdx_gpcw.py",
+    # ⚠ **`app/services/artifacts_service.py` 先不收** ✗：7 条里有两条不是注解问题 ——
+    #   `"object" has no attribute "__iter__"` ✓ 与 `Unsupported target for indexed assignment
+    #   ("list[str] | dict | str | None")` ✓ ⇒ 都指向**同一坨可变结构在多个分支里被当成不同类型用** ✗，
+    #   要先读懂它的数据流（并可能顺手改结构 ✓）才敢动 ✓ —— 单独一轮 ✓，本轮不硬塞 ✗。
     # ★ v2.10.12（2026-10-20）：`semantic.py` **查清后收进来** ✓ ——
     #   原先那 6 条里最可疑的一条（`dict` 上调 `.add()`）已确认是**注解写错、代码是对的** ✓
     #   （`delayed` 一直是 `set` ✓，调用处也传 `set()` ✓ ⇒ 零运行时风险 ✓），其余 5 条纯属
