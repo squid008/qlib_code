@@ -71,6 +71,11 @@ export default function TaskStatusPanel({
           return (
             <div
               key={t.task_id}
+              // ★ 2026-10-20（v2.10.13）：给 E2E 一个**稳定选择器** ✓
+              //   原来只能按文本「点卡片」✗ —— 而任务列表持久化在 localStorage ✓、
+              //   历史区也有同名文本 ⇒ 实测会点到**别人的任务** ✗（拉了一串别的 id 的 snapshot ✓）。
+              data-testid={`task-card-${t.task_id}`}
+              data-task-status={t.status}
               onClick={() => onSelectTask?.(t.task_id)}
               title="点击查看该任务的曲线/已跑段，再点一次取消"
               className={`border rounded-lg p-3 cursor-pointer transition-colors ${

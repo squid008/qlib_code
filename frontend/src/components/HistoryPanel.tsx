@@ -400,6 +400,9 @@ export default function HistoryPanel({ onUseParams, onReuseBacktest, onViewResul
                     <td className="py-2 pr-3 whitespace-nowrap">
                       <div className="flex gap-1">
                         <button
+                          // ★ 2026-10-20（v2.10.13）：E2E 用稳定选择器 ✓ —— 这是**结果面板的唯一入口** ✓
+                          //   （实测 `handleViewResult` 只挂在这里 ✓；任务卡片只管"选中"✓ 不拉 `/result` ✗）
+                          data-testid={`history-view-${row.item.task_id}`}
                           onClick={() => onViewResult(row.item.task_id)}
                           disabled={!canView}
                           className="px-2 py-0.5 rounded text-xs border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed dark:text-slate-300"

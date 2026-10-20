@@ -40,7 +40,7 @@ const RESULT = {
 }
 
 // ⚠ 标题**只写它真的断言了什么** ✓（原来叫"…结果区出现指标卡" ✗ —— 那是计划，不是断言 ✓）
-test('「开始回测」⇒ 发出创建请求（含载荷契约）→ 轮询到 success 上屏', async ({ page }) => {
+test('「开始回测」⇒ 创建请求（载荷契约）→ 轮询 success 上屏 → 历史「查看」渲染指标卡', async ({ page }) => {
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(String(e)))
 
@@ -50,6 +50,25 @@ test('「开始回测」⇒ 发出创建请求（含载荷契约）→ 轮询到
   await page.route('**/api/datasets*', (r) =>
     r.fulfill({ json: { active: 'cn_data', datasets: [] } }))
   await page.route('**/api/backtests*', (r) => r.fulfill({ json: {} }))
+  // ⭐ 历史列表：**结果面板的唯一入口**就在这里的「查看」按钮上 ✓
+  //   （`HistoryItem` 形状照 `api.ts` 的 interface 写 ✓ —— 少一个 `has_*` 按钮就 disabled ✗）
+  await page.route('**/api/backtests/history*', (r) =>
+    r.fulfill({
+      json: {
+        items: [{
+          task_id: TASK_ID,
+          dir_name: `20240101_${TASK_ID}`,
+          has_params: true,
+          has_result: true,
+          has_meta: false,
+          has_artifacts: true,
+          images: {},
+          segments: [],
+          meta_summary: { model: 'LightGBM', universe: 'csi300', start_year: '2024', end_year: '2024' },
+        }],
+        retention: null,
+      },
+    }))
   await page.route('**/api/factors*', (r) => r.fulfill({ json: { items: [] } }))
   await page.route('**/api/health*', (r) => r.fulfill({ json: { status: 'ok' } }))
   await page.route('**/api/tasks*', (r) => r.fulfill({ json: {} }))
@@ -106,8 +125,19 @@ test('「开始回测」⇒ 发出创建请求（含载荷契约）→ 轮询到
   // ⭐ 轮询闭环 ✓：任务必须出现在「任务状态」里 **并且显示 success** ✓ ——
   //   这条把"提交 → 轮询 `GET /api/backtest/{id}` → 反映到界面"整段都覆盖了 ✓
   //   （探针实测：stub 返回 success 后，卡片上会显示 `T-P success 100.0%` ✓）。
-  await expect(page.getByText(TASK_ID)).toBeVisible({ timeout: 20_000 })
+  // ⚠ `.first()` **必须加** ✗→✓：`T-E2E` 会同时出现在**任务卡**与**历史行**里 ✓
+  //   ⇒ 不加就撞 Playwright 的 strict mode ✓（实测报 "resolved to 2 elements" ✓）
+  await expect(page.getByText(TASK_ID).first()).toBeVisible({ timeout: 20_000 })
   await expect(page.getByText('100.0%')).toBeVisible({ timeout: 20_000 })
+
+  // ⭐⭐ 结果面板：**唯一入口是历史回测列表的「查看」按钮** ✓
+  //   （实测 `handleViewResult` 只挂在 `HistoryPanel` 的按钮上 ✓；任务卡片只管"选中"✗ 不拉 `/result` ✓）
+  //   ⇒ 先把一条历史记录 stub 出来 ✓，再点那个按钮 ✓ ⇒ 才会请求 `/result` 并渲染指标卡 ✓。
+  await page.getByTestId(`history-view-${TASK_ID}`).click()
+  // `夏普比率` 是**唯一可信标记** ✓（`年化收益` 会撞历史表头 ✗ —— 第一版就因此假通过 ✓）
+  await expect(page.getByText('夏普比率')).toBeVisible({ timeout: 20_000 })
+  // ⚠ `最大回撤` 必须 `exact` ✗→✓：它同时是「**超额**最大回撤」的子串 ✓（实测 2 个元素 ✓）
+  await expect(page.getByText('最大回撤', { exact: true })).toBeVisible({ timeout: 20_000 })
 
   // ⚠ **如实标注（仍未做到）** ✗：还想断言"**结果面板**渲染指标卡" ✓。
   //   探针已经把原因追清了 ✓：提交后前端只请求 `GET /backtest/{id}` 与 `.../artifacts` ✓，

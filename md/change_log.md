@@ -24,6 +24,35 @@
 
 ---
 
+## [2.10.13] - 2026-10-20
+
+### Test + Changed（**E2E 补完最后一块：结果面板真的渲染出指标卡** ✓）
+
+- 上一轮留下的硬骨头是"**结果面板渲染**"✗ —— 这一轮把它解决了 ✓，靠的是**两个稳定选择器** +
+  一次追因 ✓。
+- **⭐ 追因结论（关键）**：结果面板的**唯一入口是历史回测列表的「查看」按钮** ✓ ——
+  `handleViewResult` 只挂在 `HistoryPanel` 的那个按钮上 ✓；而**任务卡片只管"选中"** ✗
+  （`handleSelectTask` 只 `setTask` + 拉 `artifacts` ✓，**不请求 `/result`** ✗）。
+  ⇒ 用例必须：先 stub 一条历史记录 ✓ → 点「查看」✓ → `/result` 才被请求 ✓ → 指标卡出现 ✓。
+- **加了两个 `data-testid`** ✓（纯增量 ✓，不改行为 ✓）：
+  · `TaskStatusPanel` 的任务卡：`task-card-<id>` ✓ + `data-task-status` ✓；
+  · `HistoryPanel` 的「查看」按钮：`history-view-<id>` ✓。
+  理由写进注释 ✓：原来只能**按文本点** ✗，而任务列表**持久化在 localStorage** ✓、历史区又有同名文本
+  ⇒ 实测会点到**别人的任务** ✗（上一轮探针里那串 `GET /api/backtest/<别人的id>/snapshot` ✓ 就是这么来的 ✓）。
+- **断言用 `夏普比率` 而不是 `年化收益`** ✓：后者在**历史表格列头**里也出现 ✓
+  ⇒ 用它断言会**永远通过**✗（v2.10.7 那次假通过就是它 ✓，a11y 树里的 `columnheader "年化收益"` 暴露的 ✓）。
+- **✗ 三个 Playwright 细节坑（都被实测抓出 ✓）**：
+  1. `getByText(TASK_ID)` 会**同时**命中任务卡与历史行 ✓ ⇒ strict mode 报
+     `resolved to 2 elements` ✗ ⇒ 必须 `.first()` ✓；
+  2. `getByText('最大回撤')` 会**连带命中「超额最大回撤」** ✓（子串 ✓）⇒ 必须 `{ exact: true }` ✓；
+     ⚠ 而指标卡标签节点**带空白** ✓ ⇒ 对 `夏普比率` 反而**不能**加 `exact` ✗（上一轮实测 ✓）
+     —— **"要不要 exact"取决于该词是否别处有更长的兄弟** ✓，不能一刀切 ✗；
+  3. 路由顺序：`**/api/backtests*` 与 `**/api/backtests/history*` 都注册时 ✓，
+     **后注册的优先** ✓ ⇒ history 必须在泛化之后注册 ✓（否则永远命中 `{}` ✗）。
+- **实测** ✓：`npx playwright test` **3 passed（9.0 秒）** ✓ ｜ `tsc -b` **0 错误** ✓ ｜
+  `npm test` **181 passed** ✓（改组件未影响单测 ✓）。
+- **校验** ✓：3 passed ｜ CI（e2e job ✓）。
+
 ## [2.10.12] - 2026-10-20
 
 ### Test + Changed（**A/B/C 三件一起收** ✓ —— E2E 追因 / semantic 注解 / ops_ext 对拍 ✓）
