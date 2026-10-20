@@ -24,6 +24,33 @@
 
 ---
 
+## [2.10.16] - 2026-10-20
+
+### Test（**C′ 第一刀：312 行的 `_test_one` 终于能测了** ✓ —— `single_test.py` **22.18% → 43.28%** ✓）
+
+- **⭐⭐ 先纠正一个我自己重复多次的错误结论** ✗→✓：
+  前几轮我一直写"`_test_one` 要 mock「数据集+模型+recorder」三件套 ✗ ⇒ 有意不做"✓ ——
+  **读签名才发现它根本不碰 qlib** ✓：`_test_one(df, factor, col, ...)` 收的是**已经准备好的
+  DataFrame** ✓，docstring 也写明要哪几列 ✓ ⇒ **一张合成面板就能跑** ✓。
+  ⇒ 教训：**"需要 mock 什么"必须去读函数签名，不能凭模块名推断** ✗
+  （`single_test.py` 名字里有 qlib 味 ✓，但它 90% 是纯 pandas 计算 ✓）。
+- 新增 `tests/test_single_test_one.py`（**8 条 ✓**）：
+  · **契约字段齐全** ✓（`id/name/source/coverage/nonzero_ratio/is_binary/grouping/
+    quintile_ret/ic/rank_ic/n_obs/limit_up_excluded/...` ✓ —— 少一个前端就少一块 ✓）；
+  · **连续因子** ⇒ `is_binary=False` ✓；**0/1 因子** ⇒ `is_binary=True` 且**必须**给出
+    `trigger` / `not_trigger` 两组 ✓（缺一组就没有对照组 ✓）；
+  · **⭐ 覆盖率分母只算 `CLOSE` 有效行** ✓：把一只票的 `CLOSE` 全置 NaN ⇒ 分母**必须正好少 NDAY** ✓
+    （旧口径用"面板并集行数"⇒ 会随同桌因子变 ✗）；
+  · **同一张表跑两次完全一致** ✓（无隐藏状态 ✓）；
+  · **四个剔除开关任意单个开启都不抛** ✓（标签列不存在时必须当"没有"✓，否则用户一勾就 500 ✗）。
+- **✗✗ 两次 `KeyError` 才把夹具补齐（docstring 与实现不同步）**：
+  源码 `_NR` 白名单实际要 `CLOSE_FF / OPEN / OPEN_FF / T1_OPEN / LIMIT_UP / T1_LIMIT_UP /
+  IS_ST / T1_IS_ST` ✓ —— 而 docstring 只写了 6 列 ✗；`T1_LIMIT_UP` 缺了直接炸 ✓。
+  ⇒ 夹具一次造全 ✓（缺的置 NaN = "没有标签"⇒ 不剔除 ✓），并把"docstring 不同步"记在这里 ✓。
+- **实测** ✓：八份 `single_test` 用例合计覆盖该模块 **22.18% → 43.28%** ✓（1,213 语句 ✓），
+  **75 passed** ✓，相关回归 **128 passed** ✓。
+- **校验** ✓：8 passed（3.6 秒 ✓）｜ `ruff` **0 错误** ✓ ｜ CI ✓。
+
 ## [2.10.15] - 2026-10-20
 
 ### Changed（**mypy 闸门 17 → 18 个文件** ✓ —— `factors/benchmark_curves.py` 一次清掉 8 条 ✓）
