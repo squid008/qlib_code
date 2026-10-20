@@ -163,6 +163,11 @@ class BacktestTask(BaseModel):
 
 class BacktestResult(BaseModel):
     """回测结果"""
+    # ★ 2026-10-20（mypy 抓出 ✗→✓）：`metrics._extract_result` 的两条**错误分支**会写
+    #   `result.message = ...` ✓，但本模型**原先没有 `message` 字段** ✗ ⇒ pydantic 直接抛
+    #   `ValueError: "BacktestResult" object has no field "message"` ✓
+    #   ⇒ 用户看到的是这句莫名其妙的报错，而不是「指标提取异常：…」✗（**错误分支自身崩** ✓）。
+    message: Optional[str] = Field(None, description="结果状态说明（如「指标提取异常：…」）")
     annualized_return: Optional[float] = None
     annualized_excess_return: Optional[float] = None
     sharpe: Optional[float] = None

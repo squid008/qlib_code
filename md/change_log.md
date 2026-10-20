@@ -24,6 +24,35 @@
 
 ---
 
+## [2.10.4] - 2026-10-20
+
+### Fixed + Added（**第二件事「类型检查」开工** ✓ —— mypy 一上来就抓到一个真 bug ✓）
+
+- **⭐ 真 bug（`attr-defined`）** ✓：`metrics._extract_result` 的两条**错误分支**写
+  `result.message = ...` ✓，而 `BacktestResult`（pydantic v2）**原先没有 `message` 字段** ✗
+  ⇒ 赋值直接 `ValueError: "BacktestResult" object has no field "message"` ✓
+  ⇒ **错误分支自身崩** ✗：用户本想看到「指标提取异常：…」✓，实际拿到的是
+  「has no field message」✗（一句和真正原因毫不相干的报错 ✓）。
+  **为什么一直没被发现** ✗：那两条分支只在"指标提取失败 / 找不到 `report_normal`"时走到 ✓，
+  正常路径**一次都不碰** ✓ ⇒ 常规跑测永远绿 ✓；是 mypy 把它揪出来的 ✓。
+  ⇒ 修法：给 `BacktestResult` 补 `message: Optional[str] = None` ✓（**加性变更** ✓ 不影响现有字段 ✓），
+  并加 `tests/test_backtest_result_message.py`（4 条 ✓）钉住"可赋值 / 可序列化 / 默认 None / 长文本不炸"✓。
+- **另外两条 `mypy` 真问题** ✓：`float(initial_account)` 上 `Optional` ✗
+  （`float(None)` 会 TypeError ✓）⇒ 改 `float(initial_account or 1.0)` ✓（下面算的是相对净值，
+  基数只影响缩放 ✓）；`account = {}` 被推成 `dict[str, dict]` ✗ ⇒ 显式标 `dict` ✓。
+- **闸门怎么接的** ✓（这次只做**关键切片**，不是全量 ✗ —— 全量 108 文件一次性严格化是
+  "重写一遍"级别的工程 ✓）：
+  · `backend/pyproject.toml` 加 `[tool.mypy]` ✓：`files = app/models + app/config.py +
+    app/engine/metrics.py` ✓、`ignore_missing_imports = true` ✓、
+    **`plugins = ["pydantic.mypy"]`** ✓；
+  · **插件为什么必须有** ✗→✓：不启用时 mypy 把每个 `Field(...)` 当成"必填参数"✓
+    ⇒ `BacktestResult()` 报 **12 条** `Missing named argument` **假阳性** ✗
+    （这种噪声会让人把闸门关掉 ✓）。启用后同一份代码 **0 错误** ✓。
+  · `.github/workflows/ci.yml` 新增步骤 `python -m mypy` ✓、并把 `mypy` 加进后端依赖 ✓；
+  · 要求 **0 错误** ✓ —— 先把闸门做成"**如实失败**"✓，再按"只增不减"的棘轮思路往周边扩 ✓。
+- **校验** ✓：`mypy` **0 errors（4 files）** ✓ ｜ 本文件 4 条 + 相关 20 条 **24 passed** ✓ ｜
+  关键词回归（result/model/serial/api）**78 passed** ✓ ｜ `ruff` **0 错误** ✓ ｜ CI ✓（含新 mypy 步骤 ✓）。
+
 ## [2.10.3] - 2026-10-20
 
 ### Test（`_apply_node` **其余分支** 14 条 ✓ —— `panel_expr` 三份合计 **30.05% → 34.48%** ✓）

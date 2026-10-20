@@ -33,10 +33,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install numpy scipy pandas lightgbm joblib h5py pyarrow \
-            fastapi "uvicorn[standard]" pydantic pydantic-settings python-multipart pyyaml tqdm cython ruff pytest pytest-cov \
+            fastapi "uvicorn[standard]" pydantic pydantic-settings python-multipart pyyaml tqdm cython ruff pytest pytest-cov mypy \
             openpyxl xlrd
           git clone --depth 1 https://github.com/microsoft/qlib "$HOME/qlib"
           pip install -e "$HOME/qlib"
+
+      - name: mypy 类型检查（★ 关键切片，v2.10.4）
+        # ★ 2026-10-20：第二件事「类型检查」的第一道闸 ✓
+        #   · 只查 `app/models` + `app/config.py` + `app/engine/metrics.py` ✓
+        #     （切片与理由写在 `backend/pyproject.toml` 的 `[tool.mypy]` 注释里 ✓）
+        #   · **必须带 pydantic 插件** ✗→✓：不带时 `BacktestResult()` 会被报 12 条
+        #     `Missing named argument` 假阳性 ✗（插件在配置里 ✓，这里不用重复指定 ✓）
+        #   · 要求 **0 错误** ✓ —— 先把它做成"如实失败"的闸门 ✓，再往周边扩 ✓
+        run: python -m mypy
 
       - name: pytest + 覆盖率（纯逻辑；datareq 无数据自动跳过）
         # ★ v2.9.6（2026-10-18 ✓）：**覆盖率门槛 = 防倒退** ✗→✓

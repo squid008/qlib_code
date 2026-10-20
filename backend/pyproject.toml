@@ -33,3 +33,24 @@ omit = ["app/engine/patches/*"]
 skip_covered = true
 show_missing = true
 precision = 2
+
+# ---------------------------------------------------------------------------
+# mypy（★ v2.10.4，2026-10-20）—— 第二件事「类型检查」的第一道闸 ✓
+#
+# ⚠ **只对关键切片开**（不是全量 108 个文件 ✗）：一次性给整个 `app/` 加注解是
+#   "重写一遍"级别的工程 ✓；先拿语义最集中的三处（数据模型 / 配置 / 指标汇总 ✓），
+#   等这批稳定 0 错误后，再按"**只增不减**"的棘轮思路往周边扩 ✓。
+#
+# ⚠ 必须启用 **`pydantic.mypy` 插件** ✗→✓：不启用时，mypy 会把每个 `Field(...)`
+#   当成"必填参数" ✓ ⇒ `BacktestResult()` 会报 12 条 `Missing named argument` ✗
+#   （这类假阳性会把闸门变成噪声 ✓，最后被人关掉 ✗）。
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+files = ["app/models", "app/config.py", "app/engine/metrics.py"]
+# 只报"能修且值得修"的：`--strict` 会把 `Any` 泛滥全暴露出来 ✗（另有专门回合 ✓）
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true

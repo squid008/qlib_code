@@ -232,7 +232,10 @@ def _extract_result(par, recorder, initial_account: Optional[float] = None) -> B
             if use_account:
                 acct = report["account"].astype(float)
                 acct = acct.fillna(acct.ffill().bfill())
-                nav_values = acct / float(initial_account)
+                # ★ 2026-10-20（mypy `arg-type`）：`initial_account` 是 `Optional[float]` ✗
+                #   ⇒ 直接 `float(None)` 会 TypeError ✓；用 `or 1.0` 兜底（0 / None 都按 1.0 ✓，
+                #   反正下面算的是**相对净值**，基数只影响缩放不影响形状 ✓）。
+                nav_values = acct / float(initial_account or 1.0)
                 # 日收益：相邻日净值之比 - 1；首日无前值，直接 = 首日净值 - 1（相对段初账户）
                 ret = nav_values.pct_change(fill_method=None)
                 ret = ret.copy()
@@ -323,7 +326,9 @@ def _extract_end_position(recorder) -> Optional[dict]:
         p = getattr(pos, "position", None)
         if not isinstance(p, dict):
             return None
-        account = {}
+        # ★ 2026-10-20（mypy `assignment`）：值既可能是 dict（持仓明细）也可能是 float（cash）✗
+        #   ⇒ 不标注时 mypy 按首个赋值推成 `dict[str, dict]` ✓，后面写 float 就报不兼容 ✗。
+        account: dict = {}
         for k, v in p.items():
             if k in ("cash", "now_account_value", "now_weight"):
                 continue
