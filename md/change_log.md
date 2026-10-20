@@ -24,6 +24,38 @@
 
 ---
 
+## [2.10.2] - 2026-10-20
+
+### Test（**合成面板跑真求值 25 条** ✓ —— `panel_expr` 两份合计覆盖 **14.14% → 30.05%** ✓）
+
+- **做法**：`PanelEvaluator.__init__` 要 qlib 日历 ✗ ⇒ 用 `object.__new__` 手工装配合成面板 ✓
+  （`_full` + `_field_cache` + 三个缓存 ✓，与 `test_chip_field.py` 同套 ✓），
+  然后 `ev.eval(parse_expr(expr))` ✓ —— **走的正是线上 `eval_expr` 那条路** ✓。
+- **⭐ 三条我原先假设错、被实测纠正的事实**（都写进注释 ✓）：
+  1. **`eval` 认规范化算子名**（qlib 风格 ✓）：窗口只有 `Mean/Sum/Std/Var/Max/Min/Count` ✓、
+     比较是 `Gt/Lt/Ge/Le/Eq/Ne` ✓ —— **`MA`/`HHV`/`LLV`/`Mod`/`Cross` 在这里不存在** ✗
+     （`MA` 由上层 codegen 映射 ✓）；我第一次写 `MA($close,3)` 直接 `ValueError` ✓；
+  2. **`>` 不能写在函数实参里** ✗ —— `Count($close>2,3)` 报「期望 , 或 )」✓ ⇒ 条件要写 `Gt($close,2)` ✓；
+  3. **`Greater` 是逐元素取大**（`_BIN_ELEM` ✓），**不是比较** ✗ —— 比较必须用 `Gt` ✓。
+- **⭐⭐ 抓到一个真实陷阱：跨公式复用节点缓存会串味** ✗ ——
+  `parse_expr` 每次 `_CANON.clear()` ⇒ 节点 key **从 0 重排** ✓ ⇒ 结构不同的公式会**撞 key** ✓
+  ⇒ 不清缓存就会把**上一个公式的结果**当前公式的 ✓（实测：`Gt($close,3)` **原样返回了** `Pow($close,2)` 的数组 ✓）。
+  这解释了生产 `eval_expr` 里"每个表达式都清 `_node_cache`"那段代码 ✓（那里写的理由是**内存** ✓，
+  而这里补上了**正确性**理由 ✓）。⇒ 已固化成 `test_cache_must_be_cleared_between_different_formulas` ✓。
+- **覆盖到的语义** ✓：`Mean/Sum/Std/Var/Max/Min` 与 pandas `rolling(3, min_periods=1)` **逐位对拍** ✓；
+  `Ref` 与 `groupby.shift` 对拍 ✓；`Abs/Sqrt/Log/Sgn/TRUNC` 数值对拍 ✓；`Pow` ✓；
+  `If/BETWEEN`（含边界 ✓）/`BARSLAST`（从未成立 ⇒ **全 0** ✓）/`BARSSINCE` ✓；
+  `EMA` 与 `EMA_TDX` **首值相同、尾部靠拢、始终不越界** ✓；`SMA` **首值 = 首值、单调、且滞后** ✓；
+  `sr=True` 返回**压缩序列**（停牌日**不在 index 里** ✓，回填由 `eval_expr` 做 ✓）✓；
+  节点缓存命中返回**同一对象** ✓ 且字节记账同步 ✓。
+- **✗ 两处我主动收敛**（不写自己都没吃透的断言 ✗）：`FILTER` / `Count` 的实际输出与我的假设不符 ✓
+  ⇒ 只断言"**是合法信号序列**（0/1、长度对、计数落在 `[0,N]`）" ✓，具体抑制语义**记为待查** ✓。
+- **实测** ✓：`test_panel_expr_ops` + `test_panel_expr_eval` 两份合计覆盖该模块 **30.05%** ✓
+  （1,421 语句 ✓；单 ops 时是 14.14% ✓）；**43 passed** ✓。
+- **校验** ✓：25 passed（2.7 秒 ✓）｜ `ruff` **0 错误** ✓ ｜ CI ✓。
+- **下一步（①覆盖率继续）** ✓：`ops_ext` 的纯 numpy 层补 `_seg_window_op` / `_dyn_bars` 等 ✓；
+  再往上是 `single_test` 巨型聚合 ✗（需 mock 数据集 ✗，与 `_run_single` 同类 ✓）。
+
 ## [2.10.1] - 2026-10-20
 
 ### Test（**面板底层算子对拍 18 条** ✓ —— 第一件事「覆盖率」开工 ✓）
