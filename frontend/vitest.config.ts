@@ -60,7 +60,10 @@ export default defineConfig({
       //   `ICChart.tsx` **0 → 92.25%** ✓、`LayerChart.tsx` **0 → 84.44%** ✓（各 9/5 条用例 ✓）
       //   ⇒ 这条曲线说明一件事：**前端覆盖率不是"摊薄"型指标** ✓ ——
       //     抓一个零测试的大组件，比给十个已有测试的小文件加断言划算得多 ✓。
-      thresholds: { statements: 20, lines: 20 },
+      // ★ v2.10.30：**20 → 25** ✓（CI 实测 **25.03%** ✓ 取整 25 ✓）
+      //   +4.5pp 主要来自 `TopkCurveModal.tsx`（1157 行，8 条用例 ✓）——
+      //   又一次印证那条经验 ✓：**啃一个零测试的大文件**远比给已有测试补分支划算 ✓。
+      thresholds: { statements: 25, lines: 25 },
     },
   },
 })
