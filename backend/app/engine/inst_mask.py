@@ -139,9 +139,13 @@ def _daily_member_mask(universe: str, index: pd.MultiIndex) -> Optional[np.ndarr
     mat = np.zeros((days.size, insts.size), dtype=bool)
     for c, segs in spans.items():
         j = inst_pos[c]
-        for s, e in segs:
-            a = int(np.searchsorted(days, s, side="left"))
-            b = int(np.searchsorted(days, e, side="right"))
+        # ★ 2026-10-20（mypy `misc` ✗→✓）：循环变量原名 `s, e` ✗ —— 而上面解析区间时用过
+        #   `except Exception as e:` ✓，Python 在 `except` 块结束时**会删掉 `e`** ✓
+        #   ⇒ 同名复用会被 mypy 判成"在 except 块外赋值给 e"✓（这类遮蔽在 Python 里合法但
+        #   极易误读 ✓）⇒ 改成 `st, en` ✓。
+        for st, en in segs:
+            a = int(np.searchsorted(days, st, side="left"))
+            b = int(np.searchsorted(days, en, side="right"))
             if b > a:
                 mat[a:b, j] = True
 

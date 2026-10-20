@@ -49,7 +49,26 @@ precision = 2
 python_version = "3.10"
 plugins = ["pydantic.mypy"]
 ignore_missing_imports = true
-files = ["app/models", "app/config.py", "app/engine/metrics.py"]
+
+# ★ v2.10.6（2026-10-20）：**扩一圈** ✓ —— 加上本轮逐个修干净的 5 个文件 ✓
+#   ⚠ **必须 `follow_imports = "silent"`** ✗→✓：不加时 mypy 会顺着 import 检查**整张依赖图**
+#   （实测 6 个文件 → **105 条** ✗，其中大部分属于 `factors/` 分支 ✓）⇒ 闸门第一天就变成噪声 ✓；
+#   加了之后只报**这里列出的文件** ✓（同一批 6 个文件 → **15 条** ✓，逐条可修 ✓）。
+#
+# ⚠ **`engine/charts.py` 故意先不收** ✗：它有 6 条 `arg-type`，全是 matplotlib 对
+#   `list[Any | None]`（日期列表里可能有 `None` ✓）的严格签名 ✓ —— 要修就得改绘图数据流 ✓
+#   （收益低、风险高 ✓）。等哪天图表要重写时一起处理 ✓。
+files = [
+    "app/models",
+    "app/config.py",
+    "app/engine/metrics.py",
+    "app/engine/analysis.py",
+    "app/engine/artifacts.py",
+    "app/engine/inst_mask.py",
+    "app/signals/engine.py",
+    "app/signals/pricing.py",
+]
+follow_imports = "silent"
 # 只报"能修且值得修"的：`--strict` 会把 `Any` 泛滥全暴露出来 ✗（另有专门回合 ✓）
 warn_redundant_casts = true
 warn_unused_ignores = true

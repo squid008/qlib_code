@@ -45,7 +45,10 @@ def _extract_model_artifacts(model, dataset, req: BacktestRequest, seg_label: st
       - params: 模型超参数
       - model_file: 树模型的序列化文本（LightGBM/XGBoost，可用于加载复现）
     """
-    artifacts = {
+    # ★ 2026-10-20（mypy `var-annotated` / `index`）：不标注时 mypy 会把嵌套值推成
+    #   `dict | str | list | None` 的联合 ✗ ⇒ 后面 `artifacts["model_info"]["num_trees"]=…`
+    #   就报"无法在下标上赋值"✓ ⇒ 显式标 `dict` ✓（结构确实同质 ✓）。
+    artifacts: dict = {
         "model_info": {
             "model": req.model,
             "feature": req.feature,
@@ -653,7 +656,9 @@ def _save_backtest_params(dir_path: str, req: BacktestRequest):
             "TopK": req.topk,
             # ★ v1.20.67：把**选股方式**写进人工快照 ✓ —— 复现/审计时一眼看清
             #   （固定只数 vs 全池比例 ✓；后者口径见 periodic_strategy._k_of ✓）
-            "选股方式": (("前 %g%%（全池可交易只数 × 比例）" % (float(req.topk_ratio) * 100))
+            # ★ 2026-10-20（mypy `arg-type`）：`topk_ratio` 是 `Optional[float]` ✗ ⇒
+            #   这一支只有为真时才走到 ✓，但 mypy 不会替你收窄 `getattr(...)` ✓ ⇒ 用 `or 0` ✓。
+            "选股方式": (("前 %g%%（全池可交易只数 × 比例）" % (float(req.topk_ratio or 0) * 100))
                          if getattr(req, "topk_ratio", None) else ("固定 %d 只" % int(req.topk))),
             "持仓周期(天)": req.n_days_hold,
             "划分方式": "滚动训练" if (req.split_mode or "").lower() == "custom" else "一次性训练",

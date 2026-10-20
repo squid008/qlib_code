@@ -24,6 +24,36 @@
 
 ---
 
+## [2.10.6] - 2026-10-20
+
+### Changed（**mypy 闸门扩一圈：4 → 9 个文件** ✓ —— 又修掉一处真实隐患 ✓）
+
+- **扩了哪些** ✓：`+ app/engine/analysis.py` ✓、`+ app/engine/artifacts.py` ✓、
+  `+ app/engine/inst_mask.py` ✓、`+ app/signals/engine.py` ✓、`+ app/signals/pricing.py` ✓
+  （原来只有 `models` + `config.py` + `engine/metrics.py` ✓）。
+- **⚠ 一条必须加的开关** ✗→✓：**`follow_imports = "silent"`** ——
+  不加时 mypy 会顺着 `import` 把**整张依赖图**都检查 ✓（6 个文件 ⇒ **105 条** ✗，
+  大头在 `factors/` 分支 ✓）⇒ 闸门第一天就变成噪声 ✓，最后一定被人关掉 ✗。
+  加上之后**只报配置里列出的文件** ✓（同一批 6 个文件 ⇒ **15 条** ✓，逐条可修 ✓）。
+- **⭐ 又抓到一个真实隐患** ✓（`engine/inst_mask.py`: `Assignment to variable "e" outside except`）：
+  解析区间文件时写过 `except Exception as e:` ✓，而 Python **在 `except` 块结束时会删掉 `e`** ✓
+  ⇒ 下面 `for s, e in segs:` **同名复用** ✓（合法但极易误读 ✓，改名为 `st/en` ✓）。
+  这类"名字遮蔽"不会报错 ✓，但会让人在调试时看到**已被删除的变量** ✗。
+- **其余 6 条都是"注解与实现不一致"** ✓（全部按真实语义修 ✓，没有 `type: ignore` ✗）：
+  · `price(..., kind: str = None)` ⇒ `"str | None"` ✓（默认值是 None 而注解是 str ✗）；
+  · `nav_rows` 里 `rec = {"date": ...}` ⇒ 显式 `dict` ✓（否则被推成 `dict[str,str]` ✗，
+    后面写 `None`/`float` 全不兼容 ✓）；
+  · `artifacts = {...}` ⇒ 显式 `dict` ✓（否则嵌套值被推成联合类型 ✗ ⇒
+    `artifacts["model_info"]["num_trees"]=…` 报"无法在下标上赋值"✓）；
+  · `float(req.topk_ratio)` ⇒ `float(... or 0)` ✓（`Optional` 收窄不到 ✓）；
+  · `all_trades` 是**异构容器**（`dict` 与 `("__ROW__", rec)` 元组混装 ✓，
+    代码里本来就有注释说明 ✓）⇒ 显式标 `list` ✓，让类型**如实表达混装** ✓。
+- **⚠ 故意先不收 `engine/charts.py`** ✗：它 6 条 `arg-type` 全是 matplotlib 对
+  `list[Any | None]` 的严格签名 ✓ ⇒ 要修就得改绘图数据流 ✓（收益低、风险高 ✓）；
+  已写进 `pyproject.toml` 注释 ✓ —— **不是忘了** ✓。
+- **校验** ✓：`mypy` **0 errors（9 files）** ✓ ｜ `ruff` **0** ✓ ｜
+  相关回归（engine/mask/artifact/pricing/analysis/metrics）**277 passed** ✓ ｜ CI ✓。
+
 ## [2.10.5] - 2026-10-20
 
 ### Added（**第三件事「E2E」骨架上线** ✓ —— 真浏览器里跑整棵 React 树 ✓）

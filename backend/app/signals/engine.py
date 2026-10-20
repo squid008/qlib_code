@@ -229,7 +229,7 @@ def _limit_ctx(prep: dict, px_kind: str, strict_limit: bool, limit_judge: str = 
     _rawraw = OR if px_kind == "open" else CR
     RAW = np.where(np.isfinite(_rawraw) & (_rawraw > 0), _rawraw, np.nan)
 
-    def price(i: int, c: int, kind: str = None):
+    def price(i: int, c: int, kind: "str | None" = None):
         if kind is None:
             # ⚠⚠ v1.20.9 **试过去掉 `float()`，实测反而变慢（1.28s → 1.72s ✗），已回退** ——
             #   原因是下游 `round(np.float64)` 比 `round(float)` **慢一个量级** ✗
@@ -401,7 +401,7 @@ def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
               "signals_mapped": bk["n_mapped"], "signals_deferred": bk["deferred"],
               "signals_beyond_data": bk["beyond"],
               "limits_from": "inferred" if "_limits_inferred" in panel else "exchange_tag"})
-    all_trades, navs = [], {}
+    all_trades: list = []; navs: dict = {}   # all_trades 混装 dict 与元组 ⇒ 标 list（2.10.6 ✓）
     mode_rejects: Dict[str, List[dict]] = {}      # 方案 → 明细（最后轮转合并，见 _interleave_rejects）
 
     for mode_spec in alloc_modes:
@@ -1349,7 +1349,9 @@ def nav_rows(nav: pd.DataFrame) -> list:
     """
     rows = []
     for d, row in nav.iterrows():
-        rec = {"date": str(pd.Timestamp(d).date())}
+        # ★ 2026-10-20（mypy `assignment`）：`{"date": ...}` 把 `rec` 推成 `dict[str, str]` ✗
+        #   ⇒ 后面写 `None` / `float` 全部不兼容 ✓ ⇒ 显式标 `dict` ✓。
+        rec: dict = {"date": str(pd.Timestamp(d).date())}
         for c in nav.columns:
             v = row[c]
             rec[str(c)] = None if not pd.notna(v) else round(float(v), 5)
