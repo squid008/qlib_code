@@ -117,6 +117,8 @@ npm run test:e2e                              # Playwright（需先 npx playwrig
 ```
 
 - ⚠ **`-m "not datareq"` 不能去掉** ✗：带 `datareq` 标的用例要真实行情数据，本地没数据会失败 —— CI 也只跑这个子集。
+- ⚠ **密钥扫描在 CI 里跑**（`gitleaks`，本地不必装 ✓）：`pip-audit` 管的是**依赖漏洞**，
+  它管的是**我们自己写进仓库的密钥/令牌** —— 后者一旦发生就得**轮换**，而且 `git rm` 之后**历史里还在**。
 - ⚠ **改数值口径**（净值/成本/复利/回撤/换手）**必须跑** `tests/test_engine_golden.py`（6 配置精确 NAV 指纹）——
   它会在你提交前告诉你“数字变了”，而不是等用户发现。
 - ⚠ **升级依赖** ⇒ 单独一个 commit，**只改 `backend/constraints.txt`** ✓（便于一眼定位“哪次升级导致变红”）。

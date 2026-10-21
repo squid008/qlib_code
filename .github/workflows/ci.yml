@@ -189,3 +189,33 @@ jobs:
             frontend/playwright-report
             frontend/test-results
           retention-days: 7
+
+  # ★ v2.10.65（2026-10-21 ✓）：**密钥扫描**（技术债 P2-#7 已清偿 ✓）
+  #
+  # 为什么单开一个 job ✗→✓：
+  #  · 它**不需要** Python/npm 环境 ✓ ⇒ 独立跑只要几秒 ✓（挂在 backend job 里会白白等
+  #    numpy/lightgbm 装完才轮到它 ✗）；
+  #  · 红的时候一眼看出是"**泄露**"而不是"测试挂了"✓ —— 这两件事的处置完全不同 ✓。
+  #
+  # 为什么值得有 ✓：`pip-audit` 管的是**依赖漏洞**（间接依赖被人投毒 ✓），
+  #   而这里管的是**我们自己写进仓库的密钥/令牌** ✗ —— 那是"一旦发生就得**轮换**"的事 ✓，
+  #   越晚发现越贵 ✓（且 `git rm` 之后**历史里还在** ✗）。
+  #
+  # ⚠ 首次接入前已本地做过启发式预扫（`sk-…` / `ghp_…` / `AKIA…` / `BEGIN … PRIVATE KEY` /
+  #   `xxx_key = "<12+ 位>"` 五类）⇒ **零命中** ✓，所以这里**没有**预先加 allowlist ✓。
+  #   ⚠ 若将来出现**误报**（如文档里写了个示例 token ✗）：请加**精确到文件+行**的 allowlist ✓，
+  #     用 `--no-git` 或整仓 `paths` 忽略会把真泄露一起放过 ✗。
+  secret-scan:
+    name: 密钥扫描（gitleaks）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 需要历史才能扫"过去的提交"✓（只扫工作区会漏掉"已提交过、后来删掉"的密钥 ✗）
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 个人账号免费 ✓；组织账号需要 GITLEAKS_LICENSE ✗（本仓库是个人 public ✓）
+          GITLEAKS_ENABLE_SUMMARY: true
