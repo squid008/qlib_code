@@ -106,7 +106,11 @@ export default function NavChart({
   if (!nav || nav.length === 0) {
     return (
       <section className="bg-white dark:bg-slate-800 rounded-xl shadow p-6">
-        <h2 className="text-lg font-semibold mb-4">净值曲线</h2>
+        {/* ★ v2.10.58（2026-10-21 ✓）：空态标题统一成「收益曲线」✗→✓
+            原来空态写「净值曲线」、有数据写「收益曲线」⇒ **同一块区域两个名字** ✓
+            （写组件测试时撞出来的 ✓）。以有数据时为准 ✓ —— 这块除了净值还画基准/池内等权 ✓，
+            「收益曲线」更准 ✓。 */}
+        <h2 className="text-lg font-semibold mb-4">收益曲线</h2>
         <p className="text-slate-400 text-sm">暂无净值数据</p>
       </section>
     )
