@@ -112,7 +112,7 @@ python -m pip_audit -r requirements.txt       # 依赖漏洞（阻断式）
 # 前端（cd frontend）
 npx tsc -b                                    # strict
 npm test                                      # vitest
-npm run test:cov                              # 覆盖率门槛 39%
+npm run test:cov                              # 覆盖率门槛 44%（CI 实测 44.69%）
 npm run test:e2e                              # Playwright（需先 npx playwright install chromium）
 ```
 
@@ -122,6 +122,22 @@ npm run test:e2e                              # Playwright（需先 npx playwrig
 - ⚠ **改数值口径**（净值/成本/复利/回撤/换手）**必须跑** `tests/test_engine_golden.py`（6 配置精确 NAV 指纹）——
   它会在你提交前告诉你“数字变了”，而不是等用户发现。
 - ⚠ **升级依赖** ⇒ 单独一个 commit，**只改 `backend/constraints.txt`** ✓（便于一眼定位“哪次升级导致变红”）。
+
+## 写“巨型组件”测试的五条（都是红灯换来的）
+
+> 前端 4 个 1.5k~2.1k 行的大组件，覆盖率 17.9% → 44.69% 基本就靠这套打法。
+> 每条后面括号里是**当时真实的表现**。
+
+1. **先 `grep "result\\.[a-z_]+"` 把组件真读的字段列全** —— 凭印象补夹具会立刻
+   `Cannot read properties of undefined (reading 'map')`（我漏了 8 个字段）。
+2. **内部 state 不可观察 ⇒ 断言“唯一出口”**：抓**请求参数/回调入参**（例：`defaultK` 的唯一出口是
+   `runEventNav({ hold_days })`），比断言界面文字更硬（文字会改，契约不会）。
+3. **先确认它是不是在 `setTimeout` / `requestAnimationFrame` 里** —— 只 flush 微任务永远等不到
+   （表现：spy 的 `calls` 一直是空，断言拿到 `undefined`）。
+4. **名字照源码，别按语义猜**：`hold_days` 不是 `k`、`Pow` 不是 `POW`、`selectedFormulaIds` 是 `Set` 不是数组、
+   开关是 `<button role="switch">` 不是 checkbox（这四条各错一次）。
+5. **子组件的入参契约是下一层**：主组件通了 ≠ 整体通了。**3~4 轮还没通就记录卡点 + 删掉草稿**
+   （留个 `skip` 的死测试比不写更糟 —— 它会让人以为“这里测过了”）。
 
 ## 主要 API
 
