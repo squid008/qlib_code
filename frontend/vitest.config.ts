@@ -77,7 +77,11 @@ export default defineConfig({
       //   `FormulaEditor`(561) + `ExitCurveModal`(315) 两个中等件共 8 条 ⇒ +2.5pp ✓。
       // ★ v2.10.40：**37 → 39** ✓（CI 实测 **39.23%** ✓ 取整 39 ✓）
       //   `ModelArtifacts`(368) + `GateAttribution`(390) 各 3 条 ⇒ +1.9pp ✓。
-      thresholds: { statements: 39, lines: 39 },
+      // ★ v2.10.70：**39 → 44** ✓（CI 实测 **44.69%** ✓ 取整 44 ✓）
+      //   这一档涨得多 ✓ 是因为**把"零测试组件"清零了** ✓：
+      //   `ZoomableLineChart`(577，全站所有折线图的唯一实现 ✓) / `FormulaPanel`(369) / `NavChart`(296)
+      //   ＋ 四个巨型面板的骨架 ✓ ⇒ 248 条 / 40 文件 ✓。
+      thresholds: { statements: 44, lines: 44 },
     },
   },
 })
