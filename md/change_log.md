@@ -24,6 +24,34 @@
 
 ---
 
+## [2.10.87] - 2026-10-21
+
+### Refactor（**拆巨型文件第三刀：`ops_ext` 2027 → 1717 行** ✓ —— 段感知族整块搬走 ✓）
+
+- **搬了什么** ✓：`ops_seg.py`（405 行 ✓）= **10 个 `*_seg`** + **6 个共享 helper**
+  （`_build_sparse` / `_win_lens_vec` / `_dyn_geom` / `_make_dyn_ext` / `_dyn_best_idx_ext` /
+  `_build_argmax_sparse` ✓）＋ `_TLS` ＋ `_arange_cached` / `_merge_adjacent_vals` / `_ARANGE_CACHE` ✓。
+- **为什么这族能整块搬** ✓：6 个 helper **只依赖 `numpy`** ✓、彼此无环 ✓ ⇒ 搬出去是**单向依赖** ✓。
+  而它们**非 seg 代码也在用** ✓（`_dyn_rmq_vec` / `_dyn_arg_idx_vec` / `_dyn_window_prefix` ✓）
+  ⇒ `ops_ext` 里做**回导** ✓ ⇒ 所有历史调用点**一行没改** ✓。
+- **⭐⭐ 本轮最有价值的一条：靠"静态未定义名检查"驱动补搬** ✓
+  第一版我按"人工列举的名字"搬 16 个 ✓ ⇒ 一跑就 `NameError: _arange_cached` ✗；
+  于是写了个小脚本：**解析 `ops_seg` 找"被 load 但未定义"的顶层名 ⇒ 缺什么搬什么** ✓ ——
+  ```
+  第 1 轮：缺 ['_ARANGE_CACHE', '_merge_adjacent_vals'] ⇒ 搬了后者
+  第 2 轮：缺 ['_ARANGE_CACHE'] ⇒ 它是**带注解的赋值**（`_ARANGE_CACHE: "dict" = {}` ✗
+           我的脚本只认普通赋值 ✓）⇒ 手工补
+  第 3 轮：无 ✓
+  ```
+  ⇒ **人工列举必然漏** ✓（数值代码里这种"隐式依赖"太多 ✓，通读也看不出来 ✗）；
+  而"编译期/静态检查说缺什么"是**证据驱动** ✓，比我猜可靠得多 ✓。
+- **⚠ 如实标注：`ops_seg` 暂不入 mypy 闸门** ✗ —— 它有 **6 条**类型问题，
+  与 `ops_ext` 那 3 条**同源**（ndarray 一维/二维混用、标量当下标、`Any` 转 int ✓）。
+  ⇒ 要一轮"**ndarray 形状梳理**"才能真修对 ✓；**只用 `# type: ignore` 糊过去 = 把闸门废掉** ✗（已记入技术债 P2-#4 ✓）。
+- **实测** ✓：段一致性/最右极值/ops 内核 **48 passed** ✓（含"段版 vs 非段版逐位一致"14 条 ✓）｜
+  ops/panel/expr 广回归 **369 passed** ✓ ｜ `mypy` **no issues found in 47 source files** ✓ ｜
+  `ruff` **0** ✓ ｜ 体检 **10 passed** ✓ ｜ `ops_ext` **2027 → 1717 行** ✓ ｜ CI ✓。
+
 ## [2.10.86] - 2026-10-21
 
 ### Refactor（**拆巨型文件第二刀：`ops_ext` 2162 → 2027 行** ✓ —— 抽出"最右极值"三件套 ✓）

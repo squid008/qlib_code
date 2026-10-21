@@ -114,6 +114,10 @@ files = [
     #   ⚠ `ops_ext` 本身**仍未纳入** ✗ —— 它有 3 条既有的 `ndarray` 类型问题 ✓，
     #     属于"要读数据流才能修对"的那类 ✓，留给后续 ✓（不硬加注解 ✗）。
     "app/factors/ops_rightmost.py",
+    # ⚠ v2.10.87：段感知族搬出的 `ops_seg.py` **暂不入闸门** ✗ —— 它有 **6 条**类型问题 ✓，
+    #   与 `ops_ext` 那 3 条**同源**（ndarray 一维/二维混用、标量当下标、`Any` 转 int ✓）
+    #   ⇒ 要一轮"**ndarray 形状梳理**"才能真修对 ✓。
+    #    ⚠ 只用 `# type: ignore` 糊过去 = 把这道闸门废掉 ✗ ⇒ 宁可不加 ✓（见技术债 P2-#4）。
     "app/factors/seg_ops.py",
     "app/factors/chip_turn.py",
     "app/factors/chip_store.py",
