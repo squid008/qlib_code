@@ -24,6 +24,35 @@
 
 ---
 
+## [2.10.55] - 2026-10-21
+
+### Chore（**清掉 backend/ frontend/ 下 36 个运行时产物** ✓ ＋ 加清理脚本 ✓）
+
+- **这些文件是什么**（用户问"一堆 log/err 都干嘛的"✓）：**一个都不是源码** ✓，也**一个都没被 git 跟踪** ✓
+  （`.gitignore` 早已覆盖 `*.log` / `server.log.*` / `frontend/*.out.txt` / `*.tsbuildinfo` / `.coverage`）✓。
+  实测 **36 个 / 2.34 MB**，来源四类：
+  | 类别 | 文件 | 谁写的 |
+  |---|---|---|
+  | 启动/重启重定向 | `uvicorn_*.log`、`server_std*.log`、`backend_restart*.log`、`server.log/.err` | 启停脚本 |
+  | 数据物化与体检 | `materialize_*.log`、`dump_*.log`、`check_fin.log`、`pytest_fin.log` | 部署/校验脚本 |
+  | 前端 dev/build | `dev.*.log|txt`、`vite_*.log`、`build.out.txt`、`tsc_*.log` | 本地调试重定向 |
+  | 工具产物 | `.coverage`、`frontend/tsconfig.tsbuildinfo` | pytest-cov / tsc 增量缓存 |
+- **删得安全吗** ✓：先核对 —— `git ls-files` 里**只有** `constraints.txt` / `requirements*.txt` ✓
+  与日志无关 ✓ ⇒ 删除后 `git status` **只多了一个未跟踪的新脚本** ✓（零 git 影响 ✓）。
+  最大两个是 9 月的历史启动日志（`uvicorn_restart.log` 859 KB ✓、`uvicorn_restart_err.log` 524 KB ✓）。
+- **新增 `scripts/clean_runtime_logs.ps1`** ✓：**白名单式**清理（只匹配上面这几类 ✓，
+  **绝不做"删所有非源码文件"** ✗），支持 `-DryRun` ✓，跳过被占用的文件 ✓（服务在跑时属正常 ✓）。
+- **✗ 踩了两个坑（都修了，值得记）**：
+  1. **首版脚本的 `-DryRun` 没生效** ✗ —— 本想先干跑，结果它**直接删了** 36 个文件 ✓
+     （好在目标就是这些产物 ✓ 且零 git 影响 ✓ ⇒ 无损失 ✓）。⇒ 现在**先造探针验证 `-DryRun` 真的不删** ✓
+     再放心用 ✓；
+  2. **PowerShell 5.1 会把无 BOM 的 UTF-8 脚本按 ANSI 读** ✗ ⇒ 脚本里的中文全变乱码 ✓
+     ⇒ 定规矩：**`.ps1` 里只用 ASCII** ✓（注释也一样 ✓），中文说明放 `md/` ✓。
+- **`.gitignore` 补三条** ✓：`*.out.txt` / `*.err.txt`（重定向常用 .txt，`*.log` 覆盖不到 ✗）、
+  `backend/coverage.json` ✓。
+- **校验** ✓：清理后 `Get-ChildItem` 命中 **0 个** ✓ ｜ `git status` 只有新脚本 ✓ ｜
+  `-DryRun` 与真删各验一次 ✓ ｜ 版本 + 体检 14 passed ✓ ｜ CI ✓。
+
 ## [2.10.54] - 2026-10-21
 
 ### Docs（**README 840 → 167 行** ✓ —— 只留在用的，其余**整篇归档**不删 ✗→✓）
