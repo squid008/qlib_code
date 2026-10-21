@@ -24,6 +24,33 @@
 
 ---
 
+## [2.10.83] - 2026-10-21
+
+### Refactor（**拆巨型文件第一刀：`.bin` 缓存层抽成 `panel_cache.py`** ✓ —— 挑的是"有测试护着"的那块 ✓）
+
+- **为什么挑这块** ✓（技术债 P1-#3 的六个巨型文件里，这是**唯一自包含且已有 7 条测试**的 ✓）：
+  `.bin` 读盘 LRU 缓存（`_put_bin_cache` / 淘汰 / 字节记账 / 上限调整 ✓）**只依赖 `os` + `numpy` + `OrderedDict`** ✓，
+  不碰 `pd.Series`、不碰 qlib ✓ ⇒ 抽出去**零耦合** ✓。
+  ⚠ `single_test`(2643) / `panel_expr` 其余部分**都没有测试护着** ✗ ⇒ 直接拆等于盲改 ✓，那是下一档的事 ✓。
+- **⭐ 拆分时踩到一个必须处理的点** ✓：`_BIN_CACHE_BYTES` / `_BIN_CACHE_MAX_BYTES` 是**可变整型模块变量** ✓ ——
+  跨模块 `from x import _BIN_CACHE_BYTES` 拿到的是**当时的副本** ✗（之后变化看不到 ✓）
+  ⇒ 所以新模块**只暴露函数** `bin_cache_bytes()` / `bin_cache_max_bytes()` ✓，
+  并在文件头写死规矩：**不要在外部给上限赋值** ✗，要改就调 `set_bin_cache_mb()` ✓。
+  （`_BIN_CACHE` 那个 **dict 是引用类型** ✓ ⇒ 直接 import 共享同一对象 ✓，无需包装 ✓。）
+- **改了哪些调用点** ✓：`clear_bin_cache()` 与 `reset_caches()` 里原来"清表 + 手动归零字节" ✗
+  ⇒ 统一改成 `clear_bin_entries()` ✓（**表 + 计数一起归零** ✓ —— 这正是 2.10.61 那条测试守着的语义 ✓）；
+  `set_panel_runtime()` 换目录时同样收口到它 ✓。
+- **⚠ 如实说明收益** ✓：`panel_expr` **2555 → 2533 行**（只 −22 ✗ —— 我把说明注释写多了 ✓）；
+  新模块 **94 行** ✓。**这刀的价值不是行数，而是职责独立** ✓：
+  缓存逻辑现在可以**单独测、单独改、单独调上限** ✓（以前混在 2.5k 行里 ✓），
+  而且新模块**第一天就进了 mypy 闸门** ✓（新代码不该是盲区 ✗）。
+- **测试同步** ✓：`test_panel_bin_cache.py` 里对内部状态的 33 处引用改走 `panel_cache` ✓
+  （`P._BIN_CACHE_BYTES` ⇒ `PC.bin_cache_bytes()` ✓；两处**赋值**改成 `PC.set_bin_cache_mb(10)` ✓
+  —— 直接赋值跨模块会变成"改了个副本" ✗）。
+- **实测** ✓：三份 panel 测试 **28 passed** ✓ ｜ panel 相关回归 **260 passed** ✓ ｜
+  `mypy` **no issues found in 46 source files** ✓（新模块顺手收进闸门 ✓）｜ `ruff` **0** ✓ ｜
+  体检棘轮 **10 passed** ✓ ｜ CI ✓。
+
 ## [2.10.82] - 2026-10-21
 
 ### Changed（**mypy 第二批：36 → 45 个源文件（≈46%）** ✓ —— 覆盖率从 20% 到接近一半 ✓）

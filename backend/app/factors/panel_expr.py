@@ -68,37 +68,23 @@ _FEATURE_DIR: Optional[str] = None
 # 重复全量读多次。缓存以文件 mtime 为失效键（重 dump 后自动失效），按字节上限从最旧
 # 淘汰。容量默认 768MB（QLIB_PANEL_BIN_CACHE_MB 可调）。线程不安全但 GIL + 重复读
 # 无害（最多并发重复读一次）；子进程 worker 各自独立缓存。
-_BIN_CACHE_MAX_BYTES = int(os.environ.get("QLIB_PANEL_BIN_CACHE_MB", "768")) * 1024 * 1024
-_BIN_CACHE: "OrderedDict[Tuple[str, str], Tuple[int, int, np.ndarray]]" = OrderedDict()
-_BIN_CACHE_BYTES = 0
-
-
-def _entry_bytes(entry) -> int:
-    return entry[2].nbytes + 64
-
-
-def _evict_bin_cache(need: int) -> None:
-    global _BIN_CACHE_BYTES
-    while _BIN_CACHE_BYTES + need > _BIN_CACHE_MAX_BYTES and _BIN_CACHE:
-        _BIN_CACHE_BYTES -= _entry_bytes(_BIN_CACHE.popitem(last=False)[1])
-
-
-def _put_bin_cache(key: Tuple[str, str], mtime: int, start: int, vals: np.ndarray) -> None:
-    global _BIN_CACHE_BYTES
-    old = _BIN_CACHE.pop(key, None)
-    if old is not None:
-        _BIN_CACHE_BYTES -= _entry_bytes(old)
-    entry = (mtime, start, vals)
-    _evict_bin_cache(_entry_bytes(entry))
-    _BIN_CACHE[key] = entry
-    _BIN_CACHE_BYTES += _entry_bytes(entry)
+# ★ v2.10.83（2026-10-21 ✓）：**这层缓存搬去 `panel_cache.py`** ✓（拆巨型文件的第一刀 ✓，
+#   选它是因为**自包含 + 已有 7 条测试护着** ✓，风险最低 ✓）。
+#   ⚠ `import` 放在原位置（而不是文件头 ✓）—— 这样 `git diff` 只看到"一处块被换掉" ✓，
+#     审阅时容易确认"没有别的改动" ✓。
+from .panel_cache import (  # noqa: E402
+    _BIN_CACHE,
+    _put_bin_cache,
+    bin_cache_bytes,
+    clear_bin_entries,
+    set_bin_cache_mb,
+)
 
 
 def clear_bin_cache() -> None:
     """清空进程级 .bin 读盘缓存与字段元信息缓存（数据重 dump 后调用；测试用）。"""
-    global _BIN_CACHE_BYTES, _MERGED_DIR
-    _BIN_CACHE.clear()
-    _BIN_CACHE_BYTES = 0
+    global _MERGED_DIR
+    clear_bin_entries()       # ← `.bin` 那层（表 + 字节计数 ✓，见 panel_cache ✓）
     _BIN_META_CACHE.clear()
     _DIR_META_CACHE.clear()   # v1.18.36：目录级元信息快照
     _MERGED_IDX.clear()       # v1.18.42：合并层索引与 memmap 一并失效
@@ -106,13 +92,6 @@ def clear_bin_cache() -> None:
     _INLINE_CACHE.clear()     # ★ v2.10.64：现算回退的结果也是**数据派生**的 ✓
     _INLINE_WARNED.clear()    #   ⇒ 重 dump 后必须重算 ✓（否则拿旧数据填新面板 ✗）
     _MERGED_DIR = None        # 允许下次重新探测（manifest 出现/消失）
-
-
-def set_bin_cache_mb(mb: int) -> None:
-    """动态调整本进程 .bin 读盘缓存上限（MB）；超限立即逐出。"""
-    global _BIN_CACHE_MAX_BYTES
-    _BIN_CACHE_MAX_BYTES = max(1, int(mb)) * 1024 * 1024
-    _evict_bin_cache(0)
 
 
 def set_node_cache_mb(mb: int) -> None:
@@ -201,7 +180,7 @@ def set_panel_runtime(calendar=None, feature_dir=None):
             # 数据目录切换：目录快照/元信息缓存立即失效（避免跨数据源串用）
             _DIR_META_CACHE.clear()
             _BIN_META_CACHE.clear()
-            _BIN_CACHE.clear()
+            clear_bin_entries()      # ★ v2.10.83：换目录 ⇒ .bin 那层也要清（含字节计数 ✓）
         _FEATURE_DIR = feature_dir
 
 
@@ -237,11 +216,10 @@ def reset_caches() -> None:
       也都在内存里 ✗ ⇒ 切了目录却不清它们，就会**继续读旧数据集** —— 而且**不报错** ✗✗，
       于是"对照实验"会得出"两边一样"的假象 ✗。切数据集必须连缓存一起换 ✓。
     """
-    global _CAL, _FEATURE_DIR, _BIN_CACHE_BYTES, _MERGED_DIR
+    global _CAL, _FEATURE_DIR, _MERGED_DIR
     _CAL = None
     _FEATURE_DIR = None
-    _BIN_CACHE.clear()
-    _BIN_CACHE_BYTES = 0
+    clear_bin_entries()          # ★ v2.10.83：`.bin` 层（表 + 字节计数 ✓）
     _BIN_META_CACHE.clear()
     _DIR_META_CACHE.clear()
     _MERGED_DIR = None

@@ -107,6 +107,9 @@ files = [
     "app/engine/data_cache.py",
     "app/engine/feature_cache.py",
     "app/engine/periodic_strategy.py",
+    # ★ v2.10.83：从 `panel_expr` 抽出的 `.bin` 缓存层 ✓（新模块一写就是 0 错误 ✓，
+    #   顺便就收进闸门 ✓ —— 拆出来的模块**从第一天起就该被检查** ✓，否则新代码是盲区 ✗）
+    "app/factors/panel_cache.py",
     "app/factors/seg_ops.py",
     "app/factors/chip_turn.py",
     "app/factors/chip_store.py",
