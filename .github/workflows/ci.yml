@@ -92,7 +92,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           # ★★ v2.9.40（2026-10-19 ✓）：20 → **22** ✗→✓
           #   为什么：2.9.21 查清 CI（Linux + Node 20）上**只要走 jsdom 就崩** ✗
@@ -143,7 +143,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
           cache: 'npm'
