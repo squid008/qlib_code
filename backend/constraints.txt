@@ -37,6 +37,6 @@ pytest-cov==7.1.0
 PyYAML==6.0.3
 ruff==0.16.6
 scipy==1.15.3
-tqdm==4.70.0
+tqdm==4.70.1
 uvicorn==0.52.4
 xlrd==2.0.2
