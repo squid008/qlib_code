@@ -1084,32 +1084,32 @@ def _align(a: pd.Series, b: pd.Series):
 def _apply_node(op: str, args, sr: bool, active=None, ev=None) -> Optional[pd.Series]:
     if op == "Ref":
         s, k = args[0], int(args[1])
-        if s is None:
+        if not isinstance(s, pd.Series):
             raise ValueError("Ref 首参不能是常量")
         # active 行集上普通 shift：SR 时 active 已剔停牌 → 语义正确
         return _ref(s, k, sr=False)
     if op in _ROLL_FUNC:
         s, N = args[0], int(args[1])
-        if s is None:
+        if not isinstance(s, pd.Series):
             raise ValueError(f"{op} 首参不能是常量")
         # SR 时 active 已剔停牌 → 普通滚动即可（无需 _valid_rolling 二次剔除）
         return _roll(s, _ROLL_FUNC[op], N, sr=False)
     if op in ("EMA", "EMA_TDX"):
         s, N = args[0], args[1]
-        if s is None:
+        if not isinstance(s, pd.Series):
             raise ValueError(f"{op} 首参不能是常量")
         # EMA 非固定窗口（指数递归），逐股 ewm（sr=True 时 active 已是压缩序列）
         return _ema(s, float(N), tdx=(op == "EMA_TDX"), sr=sr)
     if op == "SMA":
         s, N, M = args[0], args[1], args[2]
-        if s is None:
+        if not isinstance(s, pd.Series):
             raise ValueError("SMA 首参不能是常量")
         return _sma(s, float(N), float(M), sr=sr)
     if op == "BARSCOUNT":
         # 自数据起点累计有效交易日（BARSCOUNT($close)）；面板与 qlib 同从各自
         # read_start 起点累计 → 对齐。逐股内核 _bars_count_seg。
         s = args[0]
-        if s is None:
+        if not isinstance(s, pd.Series):
             raise ValueError("BARSCOUNT 首参不能是常量")
         from . import ops_ext
 
@@ -1118,7 +1118,7 @@ def _apply_node(op: str, args, sr: bool, active=None, ev=None) -> Optional[pd.Se
     if op == "BARSSINCE":
         # 距首次成立周期数（不限窗口）。面板与 qlib 共用 ops_ext.barsince_vec。
         s = args[0]
-        if s is None:
+        if not isinstance(s, pd.Series):
             raise ValueError("BARSSINCE 首参不能是常量")
         from . import ops_ext
 
@@ -1127,7 +1127,7 @@ def _apply_node(op: str, args, sr: bool, active=None, ev=None) -> Optional[pd.Se
     if op == "FILTER":
         # 信号抑制：成立输出 1 后 N-1 周期抑制重复。面板与 qlib 共用 ops_ext.filter_vec。
         s, N = args[0], args[1]
-        if s is None:
+        if not isinstance(s, pd.Series):
             raise ValueError("FILTER 首参不能是常量")
         from . import ops_ext
 
@@ -1136,7 +1136,7 @@ def _apply_node(op: str, args, sr: bool, active=None, ev=None) -> Optional[pd.Se
     if op == "TRUNC":
         # 向零截断取整（np.trunc；3.7→3、-3.7→-3），NaN 保持
         s = args[0]
-        if s is None:
+        if not isinstance(s, pd.Series):
             raise ValueError("TRUNC 参数不能是常量")
         return np.trunc(s)
     if op == "BETWEEN":
@@ -1156,7 +1156,7 @@ def _apply_node(op: str, args, sr: bool, active=None, ev=None) -> Optional[pd.Se
     if op in ("IdxMax", "IdxMin", "Rank", "Slope", "Rsquare", "Resi", "Quantile"):
         # Alpha158 窗口类：逐股复刻 qlib Rolling 语义（min_periods=1），面板与 qlib 同源
         s = args[0]
-        if s is None:
+        if not isinstance(s, pd.Series):
             raise ValueError(f"{op} 首参不能是常量")
         N = int(args[1])
         q = args[2] if op == "Quantile" else None
@@ -1266,7 +1266,7 @@ def _apply_node(op: str, args, sr: bool, active=None, ev=None) -> Optional[pd.Se
         return getattr(a, _BIN_CMP[op])(b).astype(np.float64)
     if op in _UNARY:
         s = args[0]
-        if s is None:
+        if not isinstance(s, pd.Series):
             raise ValueError(f"{op} 参数不能是常量")
         fn = _UNARY[op]
         if fn == "abs":
@@ -1409,7 +1409,7 @@ class PanelEvaluator:
             #   口径/换算与物化 bin（`tools/dump_date.py`）**同源**（`factors/calc_date.py` ✓）
             #   ⇒ 面板路径与 qlib 路径逐位一致 ✓（tests/test_date_field.py 守着 ✓）。
             s = self._field_cache.get(key)
-            if s is None:
+            if not isinstance(s, pd.Series):
                 _full = getattr(self, "_full", None)
                 if _full is None:
                     raise ValueError("DATE 字段需要面板已就绪（缺少 _full）")
@@ -1428,7 +1428,7 @@ class PanelEvaluator:
             # ⚠ v1.20.25：缺物化文件时**不报错、静默全 NaN** ✗ ⇒ 主动警告一次 ✓
             _warn_if_materialized_missing(key, s)
             return s
-        if s is None:
+        if not isinstance(s, pd.Series):
             # v1.18.31：直接按位铺到 _full（等价于原 `load_field_series(...).reindex(_full)`，
             # 见 _load_field_on）。所有字段仍统一对齐到全池全日历基准（缺失股/缺失行补 NaN），
             # 保证跨字段 Series 天然同 index（_align 恒等路径，避免 union 类型问题）。
@@ -1637,9 +1637,14 @@ class PanelEvaluator:
         else:
             args = [self.eval(a, sr=sr) for a in node.args]
             out = self._apply(op, args, sr=sr, active=active)
-        if out is not None:
-            self._node_cache[key] = out
-            self._node_bytes += _series_mem_bytes(out)
+            # ⚠ v2.10.69（技术债 #17 ② ✗→✓）：**只缓存 Series** ✓ ——
+            #   常量子树（`MAX(1,2)` ✓）的结果是 `float` ✓，而 `_series_mem_bytes(out)`
+            #   会去读 `out.index` ✗ ⇒ `AttributeError: 'float' object has no attribute 'index'`
+            #   ⇒ 整条公式崩 ✓（`$close*(1+2)` 正常、`MAX(1,2)+$close` 崩 ✗ —— 只因标量在左边 ✓）。
+            #   ⇒ 标量不缓存（本来就便宜 ✓），也不计字节 ✓。
+            if isinstance(out, pd.Series):
+                self._node_cache[key] = out
+                self._node_bytes += _series_mem_bytes(out)
             # LRU 逐出：记账字节超上限时从最旧开始淘汰，封顶单 worker 节点缓存
             while self._node_bytes > _NODE_CACHE_MAX_BYTES and self._node_cache:
                 _k, _v = self._node_cache.popitem(last=False)

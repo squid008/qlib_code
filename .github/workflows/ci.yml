@@ -87,7 +87,9 @@ jobs:
         #     —— 两者差 0.26pp ✓，说明过去"CI 略高"的说法**不总成立** ✗ ⇒ 只认 CI 数 ✓）；
         #   · 改这个数字必须同时写进 `md/change_log.md` ✓（否则下一个人不知道为什么是 61 ✗）；
         #   · 若 CPython/依赖版本变化导致掉点，先看日志里的 `TOTAL` ✓（现在会真的打印 ✓）再决定调不调 ✓。
-        run: python -m pytest tests -m "not datareq" -q --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=62
+        # ★ v2.10.69：**62 → 63** ✓（本地全量实测 **63.55%** / 1700 passed ✓；
+        #   CI 历来比本地低 0.2~0.3pp ⇒ 仍有 ~0.3pp 余量 ✓，靠 CI 实测兜底 ✓）
+        run: python -m pytest tests -m "not datareq" -q --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=63
 
       - name: ruff 静态检查
         run: python -m ruff check app tests tools
