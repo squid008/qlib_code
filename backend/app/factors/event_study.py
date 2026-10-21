@@ -185,7 +185,8 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
     n_ev = len(events)
     code_arr = events["code"].astype(str).values
     dt_arr = pd.to_datetime(events["dt"]).values
-    # ⚠ 本函数**下面**有个局部变量也叫 `lag`（`np.fmin.accumulate` 的"期内最低" ✓，老代码 ✓）
+    # ⚠ 本函数下面原有个局部变量**也叫 `lag`**（`np.fmin.accumulate` 的"期内最低" ✓，老代码 ✓）
+    #   —— 已在 v2.10.89 改名为 `lag_arr` ✓（遮蔽同名参数 ✗，mypy 会把它当 int ✓）。
     #   ⇒ 这里先把参数归一成 `_lag_up` 再用 ✓，避免被它遮蔽造成"看起来用了、其实用了别的"✗。
     _lag_up = 0 if int(lag) <= 0 else 1
     mat, max_ret, min_ret = _align_returns(px_wide, events, max_k, cancel_check, lag=_lag_up)
@@ -265,7 +266,11 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
     codes_str = [str(c) for c in code_arr]
     dts_str = [str(pd.Timestamp(d).date()) for d in dt_arr]
     lead = np.fmax.accumulate(mat, axis=1)      # 期内最高（到 j 期为止的最大值，忽略 NaN）
-    lag = np.fmin.accumulate(mat, axis=1)       # 期内最低（同上；亏损榜的"期内最低"= Top 榜"期内最高"的镜像）
+    # ★ v2.10.89：**改名 `lag_arr`** ✗→✓ —— 它原来叫 `lag` ✓，而本函数的**参数**就叫
+    #   `lag`（成交时点 ✓）⇒ 局部变量**遮蔽**了参数 ✓（源码上方 L188 的注释早就记着这个坑 ✗）。
+    #   参数在赋值前已经用掉（`_lag_up` ✓），所以数值一直是对的 ✓ —— 但读代码的人会以为
+    #   "这里的 lag 还是成交时点" ✗，mypy 也把它当成 int 去下标 ✗。纯改名 ✓。
+    lag_arr = np.fmin.accumulate(mat, axis=1)       # 期内最低（同上；亏损榜的"期内最低"= Top 榜"期内最高"的镜像）
     top_by_k: dict = {}
     worst_by_k: dict = {}
     for j, k in enumerate(ks):
@@ -285,7 +290,7 @@ def build_event_stats(px_wide: pd.DataFrame, events: pd.DataFrame, max_k: int,
             "code": codes_str[i],
             "dt": dts_str[i],
             "ret": _r(x[i]),
-            "min_ret": _r(lag[i, j]),      # 期内最低（亏损榜与 Top 榜"期内最高"对称）
+            "min_ret": _r(lag_arr[i, j]),      # 期内最低（亏损榜与 Top 榜"期内最高"对称）
         } for i in o2[:20]]
 
     last = mat[:, -1]

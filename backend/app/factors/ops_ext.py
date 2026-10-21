@@ -230,7 +230,7 @@ def barsincen_vec(vals: np.ndarray, N: int) -> np.ndarray:
     n = len(vals)
     mask = (vals != 0) & ~np.isnan(vals)
     pos = np.flatnonzero(mask)
-    out = np.zeros(n, dtype=float)
+    out: np.ndarray = np.zeros(n, dtype=float)   # ★ v2.10.89：显式声明为 ndarray ✓ —— 下面会赋 `np.where(...)`（形状未知 ✗）
     if pos.size:
         lo = np.maximum(0, np.arange(n) - N + 1)
         j = np.searchsorted(pos, lo, side="left")
@@ -1334,7 +1334,7 @@ def barsince_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
     vals = np.asarray(vals, dtype=float)
     n = len(vals)
     mask = (vals != 0) & ~np.isnan(vals)
-    out = np.zeros(n, dtype=float)
+    out: np.ndarray = np.zeros(n, dtype=float)   # ★ v2.10.89：显式声明为 ndarray ✓ —— 下面会赋 `np.where(...)`（形状未知 ✗）
     pos = np.flatnonzero(mask)
     if pos.size:
         j = np.searchsorted(pos, seg_start, side="left")

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import threading
+from typing import cast
 
 import numpy as np
 
@@ -28,7 +29,7 @@ _TLS = threading.local()
 _ARANGE_CACHE: "dict" = {}
 
 
-def _build_sparse(vals: np.ndarray, func, k_max: int = None) -> np.ndarray:
+def _build_sparse(vals: np.ndarray, func, k_max: int | None = None) -> np.ndarray:
     """构建稀疏表（RMQ 预处理），func 是 np.fmin / np.fmax（忽略 NaN）。
 
     返回 **2D 连续数组** `st[k, i]` = func(vals[i .. i + 2^k - 1])（尾部越界沿用原值），
@@ -148,7 +149,7 @@ def _dyn_best_idx_ext(ai: np.ndarray, bi: np.ndarray, vals_ext: np.ndarray,
     return np.where(b_wins, bi, ai)
 
 
-def _build_argmax_sparse(vals: np.ndarray, is_max: bool, k_max: int = None) -> np.ndarray:
+def _build_argmax_sparse(vals: np.ndarray, is_max: bool, k_max: int | None = None) -> np.ndarray:
     """稀疏表（RMQ）变体：每层存"区间极值的最右下标"，同值取更右（等值取最近）。
 
     与 `_build_sparse`（存极值）同构，同样返回 **2D 连续数组** 且支持 `k_max` 只建所需层。
@@ -193,15 +194,17 @@ def _build_argmax_sparse(vals: np.ndarray, is_max: bool, k_max: int = None) -> n
     return si
 
 
-def barsincen_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
+def barsincen_vec_seg(vals: np.ndarray, nvals: float | None, seg_start, seg_end) -> np.ndarray:
     """BARSSINCEN 段感知：N 窗内最早成立距当前周期数（窗口下界 clip 到段起点）。"""
     vals = np.asarray(vals, dtype=float)
-    N = max(1, int(nvals)) if np.isscalar(nvals) else 1
+    # ⚠ `np.isscalar` 是 **TypeGuard** ✗ —— 它会把类型"收窄"成 numpy 的一堆标量联合 ✓，
+    #   反而让 `int(nvals)` 报错 ✓。`cast(float, ...)` 只是**声明意图** ✓（运行时零影响 ✓）。
+    N = max(1, int(cast(float, nvals))) if nvals is not None and np.isscalar(nvals) else 1
     n = len(vals)
     i = np.arange(n)
     mask = (vals != 0) & ~np.isnan(vals)
     pos = np.flatnonzero(mask)
-    out = np.zeros(n, dtype=float)
+    out: np.ndarray = np.zeros(n, dtype=float)
     if pos.size:
         lo = np.maximum(seg_start, i - N + 1)
         j = np.searchsorted(pos, lo, side="left")
@@ -212,13 +215,15 @@ def barsincen_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray
     return out
 
 
-def filter_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
+def filter_vec_seg(vals: np.ndarray, nvals: float | None, seg_start, seg_end) -> np.ndarray:
     """FILTER 段感知：逐段贪心抑制（只在触发位置上前进，段内 reopen 重置）。
 
     与逐段 `filter_vec` 逻辑完全一致（reopen 用全局下标：段起点即段内 reopen=0）。
     """
     vals = np.asarray(vals, dtype=float)
-    N = max(1, int(nvals)) if np.isscalar(nvals) else 1
+    # ⚠ `np.isscalar` 是 **TypeGuard** ✗ —— 它会把类型"收窄"成 numpy 的一堆标量联合 ✓，
+    #   反而让 `int(nvals)` 报错 ✓。`cast(float, ...)` 只是**声明意图** ✓（运行时零影响 ✓）。
+    N = max(1, int(cast(float, nvals))) if nvals is not None and np.isscalar(nvals) else 1
     n = len(vals)
     out = np.zeros(n, dtype=float)
     mask = (vals != 0) & ~np.isnan(vals)
@@ -227,8 +232,10 @@ def filter_vec_seg(vals: np.ndarray, nvals, seg_start, seg_end) -> np.ndarray:
         return out
     starts = np.flatnonzero(np.r_[True, seg_start[1:] != seg_start[:-1]])
     ends = np.r_[starts[1:], n]
-    lo = np.searchsorted(pos, starts, side="left")
-    hi = np.searchsorted(pos, ends, side="left")
+    # ⚠ 明确成 1D 数组：`searchsorted` 的返回类型随入参而变（标量/数组）✗
+    #   ⇒ mypy 认为 `lo[g]` 是在给标量取下标 ✓。`atleast_1d` 不改运行时结果 ✓。
+    lo = np.atleast_1d(np.searchsorted(pos, starts, side="left"))
+    hi = np.atleast_1d(np.searchsorted(pos, ends, side="left"))
     for g in range(len(starts)):
         reopen = int(starts[g])
         for p in pos[lo[g]:hi[g]]:

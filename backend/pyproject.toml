@@ -114,10 +114,16 @@ files = [
     #   ⚠ `ops_ext` 本身**仍未纳入** ✗ —— 它有 3 条既有的 `ndarray` 类型问题 ✓，
     #     属于"要读数据流才能修对"的那类 ✓，留给后续 ✓（不硬加注解 ✗）。
     "app/factors/ops_rightmost.py",
-    # ⚠ v2.10.87：段感知族搬出的 `ops_seg.py` **暂不入闸门** ✗ —— 它有 **6 条**类型问题 ✓，
-    #   与 `ops_ext` 那 3 条**同源**（ndarray 一维/二维混用、标量当下标、`Any` 转 int ✓）
-    #   ⇒ 要一轮"**ndarray 形状梳理**"才能真修对 ✓。
-    #    ⚠ 只用 `# type: ignore` 糊过去 = 把这道闸门废掉 ✗ ⇒ 宁可不加 ✓（见技术债 P2-#4）。
+    # ★ v2.10.89（2026-10-21）：**"ndarray 形状梳理"一轮修完 10 条** ✓ ⇒ 三个文件一起入闸门 ✓
+    #   覆盖面 **47 → 50 个源文件（≈52%）** ✓。修的真身（都**不改数值逻辑** ✓）：
+    #   · `k_max: int = None` ⇒ `int | None`（2 处）✓；
+    #   · `int(nvals)` 被 `np.isscalar` 的 **TypeGuard** 收窄成奇怪联合 ✗ ⇒ 显式 `cast(float, …)` ✓（2 处）；
+    #   · `out`/`lead` 先 1-D 再赋 `np.where(...)`（形状未知）✗ ⇒ 显式声明 `out: np.ndarray` ✓（3 处）；
+    #   · ⭐ `event_study` 的局部 `lag` **遮蔽了同名参数**（成交时点 ✓）✗ ⇒ 改名 `lag_arr` ✓（2 处）；
+    #   · `searchsorted` 返回类型随入参变 ✗ ⇒ `np.atleast_1d(...)` 明确成 1-D 再按下标取 ✓。
+    "app/factors/ops_ext.py",
+    "app/factors/ops_seg.py",
+    "app/factors/event_study.py",
     "app/factors/seg_ops.py",
     "app/factors/chip_turn.py",
     "app/factors/chip_store.py",
