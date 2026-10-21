@@ -74,10 +74,25 @@ def _ast_to_expr(n: Node) -> str:
     return "%s(%s)" % (n.op, inner)
 
 
+#: 用户**手写**的形态（面板里看到的就是这些 ✓）—— 与归一化后的 `$entry_*` 一并认 ✓。
+#  ★ v2.10.44（2026-10-21 ✗→✓ 实测抓到）：原来只认 `$entry_price` / `$entry_first` ✗，
+#    而**用户写的是 `ENTRY_PRICE`** ✓（文档、面板示例、报错文案全是这个写法 ✓），
+#    归一化要到 `codegen`/`parser` 才发生 ✓ ⇒ 在**入队校验**这一步
+#    `uses_entry("CLOSE < ENTRY_PRICE*0.95")` 返回 **False** ✗ ⇒
+#    ① 「进场因子用了入场价就 400」这道闸**根本不触发** ✗（用户写了也不拦 ✓）；
+#    ② 更糟：**离场**公式写 `ENTRY_PRICE` 时也判不出"含入场价"⇒ 不走拆分路径 ✗
+#       ⇒ 到后面才报"未知字段"✓（用户看到的是莫名其妙的错 ✗）。
+#    ⇒ 两种写法都认 ✓（只让闸更严 ✓，不会误伤：这些词不会出现在别的标识符里 ✓）。
+_ENTRY_ALIASES = ("ENTRY_PRICE", "ENTRY_FIRST", "入场价", "首次入场价")
+
+
 def uses_entry(expr: str) -> bool:
-    """该表达式是否用到入场价字段（⇒ 必须走"拆分 + 逐日代入"路径 ✓）。"""
+    """该表达式是否用到入场价字段（⇒ 必须走"拆分 + 逐日代入"路径 ✓）。
+
+    ⚠ **归一化前后两种写法都要认** ✓（见 `_ENTRY_ALIASES` 的注释：只认一种会漏判 ✗）。
+    """
     s = str(expr or "")
-    return any(t in s for t in _ENTRY_TOKENS)
+    return any(t in s for t in _ENTRY_TOKENS) or any(a in s for a in _ENTRY_ALIASES)
 
 
 def _has_entry(n: Node) -> bool:

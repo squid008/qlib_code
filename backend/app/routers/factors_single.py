@@ -460,11 +460,9 @@ def _apply_exit_validation(req) -> None:
     items = _exit_list(req)
     req.exit_factors = items
     req.exit_factor = None
-    if not items:
-        return
-    entries = {(f.expression or "").strip(): f for f in (req.factors or [])}
-    # ★ v2.6.0：**入场价字段只能在离场公式里用** ✓ —— 进场因子用到 ⇒ 直接拒（清楚 ✓）：
-    #   它是回测状态量（取决于你实际在哪根成交 ✗），当因子算不出任何意义的值 ✗。
+
+    # 入场价是回测状态量 ⇒ 只能出现在离场公式里 ✓；⚠ 本段必须在 `if not items: return` **之前**
+    #（v2.10.44 ✗→✓：原在之后 ⇒ 没勾离场时这道闸根本不跑 ✗，详见 change_log）
     for f in (req.factors or []):
         if uses_entry(str(f.expression or "")):
             raise HTTPException(
@@ -472,6 +470,10 @@ def _apply_exit_validation(req) -> None:
                 detail="「进场因子」里不能使用 ENTRY_PRICE / ENTRY_FIRST（入场价）✗ —— "
                        "它们是**回测状态量**（取决于你实际在哪一根买入 ✓），只有当**离场条件**才有意义 ✓；"
                        "请把它们写在离场公式里（例：`止损: CLOSE < ENTRY_PRICE*0.95;`）✓")
+
+    if not items:
+        return
+    entries = {(f.expression or "").strip(): f for f in (req.factors or [])}
     for e in items:
         expr = (e.expression or "").strip()
         # ★ v2.6.0 / v2.7.0：含入场价的离场公式 ⇒ **入队前就拆一遍做校验** ✓
