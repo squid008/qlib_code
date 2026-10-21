@@ -24,6 +24,38 @@
 
 ---
 
+## [2.10.53] - 2026-10-21
+
+### Changed（**dependabot 首批：合 3 条、关 1 条** ✓ —— 并验证 `joblib 1.6` 不影响 NAV 指纹 ✓）
+
+- **收了三条**（都是**纯依赖**改动 ✓，各自一个 squash commit ✓ —— 正好符合"升级依赖单独 commit"的规矩 ✓）：
+  | PR | 变更 | CI |
+  |---|---|---|
+  | #20 | `joblib 1.5.3 → 1.6.0`（后端） | 3/3 ✓ |
+  | #21 | `axios 1.19.0 → 1.20.0`（前端） | 3/3 ✓（先 `@dependabot rebase` 解 lock 冲突 ✓） |
+  | #23 | `autoprefixer 10.5.4 → 10.6.1`（前端 patch） | 3/3 ✓ |
+- **关掉一条** ✗ #22 `pydantic-settings 2.15.0 → 2.16.0`：
+  它的后端 job **15 秒**就红 ✓ —— 连测试都没跑到，倒在
+  ```
+  pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+  ERROR: Cannot install pydantic-settings>=2.16.0 because these package versions
+         have conflicting dependencies.  The user requested (constraint) pydantic-settings==2.16.0
+  ERROR: ResolutionImpossible
+  ```
+  真因 ✓：PR 只把 `pydantic-settings` 抬到 `==2.16.0` ✓，而 `constraints.txt` 里 **`pydantic==2.13.4` 没动** ✓
+  ⇒ 2.16.0 要求的 pydantic 更高 ⇒ **约束集不可满足** ✓。
+  ⚠ 这类**版本联动的包**（pydantic / pydantic-settings / starlette / fastapi）✗ **不能一个一个升** ✓ ——
+  必须**同批升 + 重跑引擎 NAV 指纹** ✓（属人工一批，不是 bot 的活 ✓）。
+- **顺带验证了合并没有副作用** ✓：`joblib` 被 `engine/artifacts.py` 与 `qlib_engine` 用到 ✓
+  ⇒ 专门跑了 `golden / artifact / joblib / engine` 子集：**224 passed** ✓
+  （含 **6 配置 NAV 指纹** ✓ ⇒ 1.6.0 没有改变序列化/并行语义 ✓）。
+- **一个可对照的数字** ✓：收紧前 dependabot 一次开 **14 个 PR、半数红** ✗；
+  收紧后 **4 个 PR、1 个红** ✓，而那 1 个红是**真冲突**（该红就红 ✓）不是噪音 ✓。
+- **操作细节（顺手记下）** ✓：两个前端 PR 都改 `package-lock.json` ⇒ 先合的那个会让后一个冲突 ✓
+  ⇒ `gh pr comment <n> --body "@dependabot rebase"` ✓ 等它重算 lock 后再合 ✓
+  （**不要**手工改 lock ✗ —— 本机 `npm install` 在这个环境里会被打断 ✓）。
+- **校验** ✓：版本守门 **14 passed** ✓ ｜ 敏感回归 **224 passed** ✓ ｜ 四处版本仍一致（2.10.52 → 2.10.53）✓ ｜ CI ✓。
+
 ## [2.10.52] - 2026-10-21
 
 ### Fixed（**dependabot 一上来开了 14 个 PR、半数 CI 红** ✗→✓ —— 收紧到"只提 patch/minor"）
