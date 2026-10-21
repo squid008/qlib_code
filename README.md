@@ -157,6 +157,7 @@ npm run test:e2e                              # Playwright（需先 npx playwrig
 | 文档 | 说明 |
 |---|---|
 | [`md/开发记录.md`](./md/开发记录.md) | **顶部是「当前基线」**（版本 / 用例数 / 覆盖率门槛 / 模块覆盖 / 故意停手处）—— 开工先看这几行 |
+| **[`md/技术债.md`](./md/技术债.md)** | **已知债务清单**（每条带证据 / 影响 / 还法 / 成本 + 「已清偿」档案）—— 想动刀先看它 |
 | [`md/change_log.md`](./md/change_log.md) | 版本更新记录（Keep a Changelog；更早已按卷归档在 `md/change_log/`） |
 | [`md/deploy.md`](./md/deploy.md) | 部署指南（新机器、Python 环境、数据部署、物化字段） |
 | [`md/start_stop.md`](./md/start_stop.md) | 启停脚本说明 |
