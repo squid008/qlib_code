@@ -27,11 +27,15 @@ from app.factors import panel_expr as P
 
 @pytest.fixture(autouse=True)
 def _reset_warned(monkeypatch):
-    """清"已告警过"集合 + 强制走 `warnings` 分支 ✓（模块级全局状态会互相污染 ✗）。"""
+    """清"已告警过"集合与现算缓存 + 强制走 `warnings` 分支 ✓（全局状态会互相污染 ✗）。"""
     P._MISSING_WARNED.clear()
+    P._INLINE_CACHE.clear()
+    P._INLINE_WARNED.clear()
     monkeypatch.setattr(P, "_LOGGER", None)
     yield
     P._MISSING_WARNED.clear()
+    P._INLINE_CACHE.clear()
+    P._INLINE_WARNED.clear()
 
 
 def _series(values, n_inst=2):
@@ -105,11 +109,68 @@ def test_market_field_falls_back_inline_and_stays_silent(monkeypatch):
     with _no_warn():
         P._warn_if_materialized_missing("mkt_insum_purity", s)
     assert np.isfinite(s.to_numpy(dtype=float)).all(), "回退成功后必须**就地填好** ✓"
-    # ⚠ 实测：回退**成功**时**不**记入 `_MISSING_WARNED` ✗（只有失败才记 ✓）——
-    #   我第一版以为"自愈了就记住"，实测是 `set()` 空 ✓。
-    #   ⇒ 后果：**每次评估都会重新现算回退** ✓（结果正确 ✓，但走的是"明显更慢"那条路 ✗）。
-    #   已记进 `md/技术债.md`（P2-#16），这里只钉**现状** ✓（不假装它是设计 ✗）。
+    # ⚠ `_MISSING_WARNED` 只装"**失败/缺文件**"的字段 ✓（自愈成功的不进去 ✓ —— 那是另一回事）
     assert "mkt_insum_purity" not in P._MISSING_WARNED
+    # ★ v2.10.64（技术债 P2-#16 已清偿）：**算出来的序列**被缓存了 ✓ ⇒ 下次不用重算 ✓
+    assert "mkt_insum_purity" in P._INLINE_CACHE
+
+
+def test_inline_fallback_computes_once_but_fills_every_time(monkeypatch):
+    """⭐⭐ P2-#16 的回归测试 —— 两件必须**同时**成立：
+
+    ① 第二次调用**不再重算** ✓（原来每次都走"明显更慢"的现算 ✗）；
+    ② 第二次传进来的**仍是全 NaN 列**，必须**照样被填好** ✓。
+
+    ⚠ ② 是关键 ✗：若按"记住 ⇒ 跳过"实现（我最初的思路 ✗），列会**永远是 NaN** ✓
+    ⇒ 把"慢"换成了"错" ✓ —— 比原问题严重得多 ✓。所以缓存的必须是**序列本身** ✓。
+    """
+    from app.factors import market_stat
+
+    calls = {"n": 0}
+
+    def _count(key):
+        calls["n"] += 1
+        s0 = _series([np.nan] * 6)
+        dates = pd.DatetimeIndex(s0.index.get_level_values(1)).unique()
+        return pd.Series(np.arange(1.0, len(dates) + 1.0), index=dates)
+
+    monkeypatch.setattr(market_stat, "compute_field_inline", _count)
+
+    s1 = _series([np.nan] * 6)
+    with _no_warn():
+        P._warn_if_materialized_missing("mkt_insum_count", s1)
+    s2 = _series([np.nan] * 6)          # ★ 又是一份全新的全 NaN 列 ✓
+    with _no_warn():
+        P._warn_if_materialized_missing("mkt_insum_count", s2)
+
+    assert calls["n"] == 1, "第二次必须命中缓存 ✓（原来每次都重算 ⇒ 越跑越慢 ✗）"
+    assert np.isfinite(s1.to_numpy(dtype=float)).all(), "第一次要填好 ✓"
+    assert np.isfinite(s2.to_numpy(dtype=float)).all(), \
+        "第二次**也必须填好** ✓（跳过式实现会让它永远是 NaN ✗）"
+
+
+def test_inline_cache_is_cleared_with_data_cache(monkeypatch):
+    """数据重 dump 后必须**重算** ✓（拿旧数据填新面板 = 静默口径漂移 ✗）。"""
+    from app.factors import market_stat
+
+    calls = {"n": 0}
+
+    def _count(key):
+        calls["n"] += 1
+        s0 = _series([np.nan] * 6)
+        dates = pd.DatetimeIndex(s0.index.get_level_values(1)).unique()
+        return pd.Series(np.arange(1.0, len(dates) + 1.0), index=dates)
+
+    monkeypatch.setattr(market_stat, "compute_field_inline", _count)
+    with _no_warn():
+        P._warn_if_materialized_missing("mkt_insum_count", _series([np.nan] * 6))
+    assert calls["n"] == 1
+
+    P.clear_bin_cache()                 # ← 与 .bin 缓存同一个"数据已变"的开关 ✓
+    assert P._INLINE_CACHE == {}
+    with _no_warn():
+        P._warn_if_materialized_missing("mkt_insum_count", _series([np.nan] * 6))
+    assert calls["n"] == 2, "清缓存后必须重算 ✓"
 
 
 def test_market_field_fallback_failure_warns(monkeypatch):

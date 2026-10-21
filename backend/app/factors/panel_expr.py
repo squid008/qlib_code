@@ -118,6 +118,8 @@ def clear_bin_cache() -> None:
     _DIR_META_CACHE.clear()   # v1.18.36：目录级元信息快照
     _MERGED_IDX.clear()       # v1.18.42：合并层索引与 memmap 一并失效
     _MERGED_MM.clear()
+    _INLINE_CACHE.clear()     # ★ v2.10.64：现算回退的结果也是**数据派生**的 ✓
+    _INLINE_WARNED.clear()    #   ⇒ 重 dump 后必须重算 ✓（否则拿旧数据填新面板 ✗）
     _MERGED_DIR = None        # 允许下次重新探测（manifest 出现/消失）
 
 
@@ -470,6 +472,12 @@ _LOGGER = logging.getLogger(__name__)
 #   ⇒ 一并纳入"整列全 NaN 就提示 + 给出修复命令"的防护 ✓。
 _MATERIALIZED_PREFIXES = ("chip_", "pre", "prevwap", "mkt_")
 _MISSING_WARNED: set = set()
+# ★ v2.10.64（技术债 P2-#16）：`mkt_*` 现算回退的**结果缓存**与"已提示过"集合 ✓
+#   ⚠ 为什么不能只记"这个字段已自愈、下次跳过" ✗：每次调用拿到的是**新的全 NaN 列** ✓
+#     ⇒ 跳过 ⇒ 列**永远是 NaN** ✗（把"慢"换成了"错"，比原问题严重得多 ✓）。
+#     ⇒ 缓存的是**算出来的序列** ✓：下次仍会回填（正确 ✓），但不用再算（快 ✓）。
+_INLINE_CACHE: dict = {}
+_INLINE_WARNED: set = set()
 
 
 def _warn_if_materialized_missing(key: str, s: "pd.Series") -> None:
@@ -493,15 +501,21 @@ def _warn_if_materialized_missing(key: str, s: "pd.Series") -> None:
     #   失败才照旧出声 ✓（慢是必然的：这是"坏了才走"的退路 ✓）。
     if key.startswith("mkt_"):
         try:
-            from .market_stat import compute_field_inline
-            ser = compute_field_inline(key)
+            ser = _INLINE_CACHE.get(key)
+            if ser is None:
+                from .market_stat import compute_field_inline
+                ser = compute_field_inline(key)
+                if ser is not None and len(ser):
+                    _INLINE_CACHE[key] = ser       # ★ 缓存**算出来的序列**（不是"跳过"✗）
             if ser is not None and len(ser):
                 _idx = s.index
                 _dates = _idx.get_level_values(1) if getattr(_idx, "nlevels", 1) > 1 else _idx
                 filled = ser.reindex(pd.DatetimeIndex(_dates)).to_numpy(dtype=float)
                 if np.isfinite(filled).any():
                     s.iloc[:] = filled
-                    if _LOGGER is not None:
+                    # 提示只出**一次** ✓（每次评估都刷这句 ⇒ 日志没法看 ✗）
+                    if _LOGGER is not None and key not in _INLINE_WARNED:
+                        _INLINE_WARNED.add(key)
                         _LOGGER.warning(
                             "物化字段 $%s 缺失 ⇒ 已改用**现算回退**（结果正确 ✓ 但明显更慢 ✗）；"
                             "想恢复性能请跑：python backend/tools/materialize_market.py --overwrite ✓",
