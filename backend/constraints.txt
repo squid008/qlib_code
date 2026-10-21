@@ -19,7 +19,7 @@
 # 导出方式（下次同步时重跑 ✓）：
 #   python -m pip list --format=freeze | findstr /R "^fastapi== ^pandas=="    ← 只挑本清单涉及的 ✓
 
-Cython==3.2.9
+Cython==3.3.0
 fastapi==0.141.1
 h5py==3.16.0
 joblib==1.5.3
