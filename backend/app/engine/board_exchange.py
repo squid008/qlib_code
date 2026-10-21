@@ -100,7 +100,9 @@ class BoardAwareExchange(Exchange):
         self._exclude_gem = bool(exclude_stock_gem)
         self._exclude_star = bool(exclude_stock_kcb)
         self._exclude_any = self._exclude_st or self._exclude_gem or self._exclude_star
-        self._forbid_by_dt = None  # 调仓日 -> 该日各股是否禁买（由 _mark_forbidden 构建）
+        # ★ v2.10.81：**显式标注** ✓ —— 原来 `= None` 让 mypy 把属性推成 `None` 类型 ✗
+        #   ⇒ 后文 `self._forbid_by_dt = {...}` 报 "dict 赋给 None 变量" ✓（纯注解问题，不改行为 ✓）
+        self._forbid_by_dt: dict | None = None  # 调仓日 -> 该日各股是否禁买（由 _mark_forbidden 构建）
         super().__init__(*args, **kwargs)
 
     def _calc_trade_info_by_order(self, order, position, dealt_order_amount=None):

@@ -135,7 +135,11 @@ def _levels_at(edges: np.ndarray, cum: np.ndarray, q: np.ndarray) -> np.ndarray:
 
 def chip_run(close: np.ndarray, high: np.ndarray, low: np.ndarray,
              turn: np.ndarray, *, qs: Sequence[float] = (5.0, 30.0, 75.0, 95.0),
-             prices: Optional[np.ndarray] = None, bins: int = DEFAULT_BINS,
+             # ★ v2.10.81：**签名写窄了** ✗→✓ —— 实际调用方（`chip_store`）传的是
+             #   **「每个赢家价基准一个数组」的列表** ✓（`prices=pmat`，pmat 由 wins 生成 ✓）
+             #   ⇒ 原来标成 `Optional[np.ndarray]` ✗ ⇒ mypy 报 "list 传给 ndarray" ✓。
+             #   ⚠ 只改注解，**运行时行为不变** ✓。
+             prices: Optional[Sequence[np.ndarray]] = None, bins: int = DEFAULT_BINS,
              pad: float = DEFAULT_PAD, decay: float = 1.0, peak: str = "hl2",
              shape: str = "tri", open_: Optional[np.ndarray] = None,
              turn_unit: str = "auto") -> Dict[str, np.ndarray]:

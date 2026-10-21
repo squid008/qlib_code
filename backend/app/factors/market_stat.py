@@ -325,7 +325,15 @@ def materialize_impact(name: str) -> List[str]:
         return []
     import hashlib                                   # noqa: PLC0415
     try:
-        now = hashlib.md5(formula_expression(specs[0].formula).encode("utf-8")).hexdigest()[:12]
+        # ★ v2.10.81：**先收窄再调用** ✓ —— `specs[0].formula` 是 `str | None` ✓，
+        #   原来直接传给要求 `str` 的 `formula_expression` ✗ ⇒ mypy 报 arg-type ✓。
+        #   ⚠ 行为与原来**完全一致** ✓：None/空串 ⇒ 直接返回 `[]` ✓
+        #     （原来是让 `formula_expression(None)` 抛、再被下面的 `except` 吞成 `[]` ✓ ——
+        #      结果一样，但现在**不用靠异常兜** ✓，日志里也不会留一条无意义的 `[吞]` ✓）。
+        _f = specs[0].formula
+        if not _f:
+            return []
+        now = hashlib.md5(formula_expression(_f).encode("utf-8")).hexdigest()[:12]
     except Exception as e:  # noqa: BLE001
         _log_swallowed("market_stat.py", e)
         return []

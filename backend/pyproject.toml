@@ -91,6 +91,31 @@ files = [
     #   （`delayed` 一直是 `set` ✓，调用处也传 `set()` ✓ ⇒ 零运行时风险 ✓），其余 5 条纯属
     #   "空容器没标元素类型" ✓ ⇒ 全部**只改注解** ✓，一行行为没动 ✓。
     "app/factors/parser/semantic.py",
+    # ★ v2.10.81（2026-10-21）：**一次扩 17 个模块** ✓ —— 覆盖面 18 → 35 条（模块 ≈ 37% ✓）。
+    #   做法不是"先加进去再修"✗，而是**先批量跑 mypy 探明哪些本来就零错误** ✓
+    #   （19 个候选里 **14 个是零错误** ✓ ⇒ 直接收 ✓），再修剩下 3 个单错误的：
+    #   · `board_exchange`：属性 `= None` 让 mypy 推成 `None` 类型 ⇒ **显式标注** ✓；
+    #   · `chip_dist.chip_run`：`prices` 签名写窄了 ✗（实际收**数组列表**）⇒ 改 `Sequence[ndarray]` ✓；
+    #   · `market_stat`：`specs[0].formula` 是 `str | None` ⇒ **先收窄再调用** ✓（行为不变 ✓）。
+    #   ⚠ 剩下 `storage_cleanup`(7 条) / `artifacts_service`(7 条) **没收** ✗ ——
+    #     它们要读数据流才能修对 ✓（硬加注解只会掩盖真问题 ✗），留给下一轮 ✓。
+    "app/engine/code_fp.py",
+    "app/engine/context.py",
+    "app/engine/utils.py",
+    "app/engine/resource.py",
+    "app/engine/board_exchange.py",
+    "app/engine/data_cache.py",
+    "app/engine/feature_cache.py",
+    "app/engine/periodic_strategy.py",
+    "app/factors/seg_ops.py",
+    "app/factors/chip_turn.py",
+    "app/factors/chip_store.py",
+    "app/factors/market_stat.py",
+    "app/signals/codes.py",
+    "app/signals/event.py",
+    "app/services/datasets.py",
+    "app/services/formula_git_sync.py",
+    "app/services/qlib_runtime.py",
 ]
 follow_imports = "silent"
 # 只报"能修且值得修"的：`--strict` 会把 `Any` 泛滥全暴露出来 ✗（另有专门回合 ✓）
