@@ -82,7 +82,11 @@ def apply_hard_filters(score: pd.Series, req) -> pd.Series:
     if all(v is None for v in (lo_bn, hi_bn, min_px)):
         return score
     out = score.copy().astype(float)
-    daily = _daily_series(None, score.index, ["$market_cap", "$close", "$factor"])
+    # ⚠ v2.10.45（2026-10-21 ✗→✓ 靠 mypy `call-arg` 抓到）：这里原来传了 **3 个** 参数
+    #   `_daily_series(None, score.index, [...])` ✗，而函数只要 2 个 ✓
+    #   ⇒ **只要用户配了任一硬过滤（市值/股价）就 TypeError** ✗ ⇒ 整个硬过滤功能**从没跑通过** ✓
+    #   （它要 qlib 行情 ⇒ 常规测试碰不到 ✓，是静态检查把它揪出来的 ✓）。
+    daily = _daily_series(score.index, ["$market_cap", "$close", "$factor"])
     keep = pd.Series(True, index=score.index)
     if lo_bn is not None or hi_bn is not None:
         mcap = daily["$market_cap"].astype(float)
@@ -245,7 +249,10 @@ def _gate_attribution(X, y, bst, extra_cols, exprs) -> dict:
     base_cols = [c for c in cols if c not in ex_set]
     g_base, g_ex = float(gains[base_cols].sum()), float(gains[extra_cols].sum())
     tot = g_base + g_ex
-    out = {
+    # ★ v2.10.45（mypy `operator`）：`out` 里既有 `float` 又有 `str`/`int`/`bool` ✓
+    #   不标注时 mypy 按首值推成 `dict[str, float]` ✗ ⇒ 后面 `out["note"] += "…"` 报
+    #   「object 不支持 +」✓ ⇒ 显式标 `dict` ✓（**纯注解** ✓）。
+    out: dict = {
         "primary_p_gain_share": (float(gains.get("primary_p", 0.0)) / tot) if tot else 0.0,
         "extras_gain_share": (g_ex / tot) if tot else 0.0,
         "note": "分裂增益占比(gain_share)=门控模型在该公式上累计用掉的增益（在这批附加因子内归一，"
@@ -321,7 +328,7 @@ def train_gate(dataset, model, opts=None, universe=None, span=None):
 
 
 def gate_z(dataset, bst, p_test: pd.Series, opts=None, universe=None, span=None) -> pd.Series:
-    o = dict(extra_features=[])
+    o: dict = dict(extra_features=[])      # ★ v2.10.45（mypy `var-annotated`）：纯注解 ✓
     if opts:
         o.update({k: v for k, v in opts.items() if v is not None})
     X = _features(dataset, "test").dropna()

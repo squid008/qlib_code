@@ -72,6 +72,11 @@ files = [
     "app/factors/parser/parser.py",
     # ★ v2.10.14（2026-10-20）：`services/` 与 `datasource/` 的一圈 ✓（12 → 17 个文件 ✓）
     "app/factors/benchmark_curves.py",
+    # ★ v2.10.45（2026-10-21）：`engine/signal_compose.py` ✓ —— **这条是"补漏"而不是"扩展"** ✗→✓：
+    #   它里面 `_daily_series(None, score.index, [...])` 多传一个参数 ✗ ⇒
+    #   **只要用户配了市值/股价硬过滤就 TypeError** ✓（该功能从没跑通过 ✓）。
+    #   那类错本轮是**临时跑一次 mypy 才发现的** ✓ ⇒ 收进闸门，以后**每次 CI 都会拦** ✓。
+    "app/engine/signal_compose.py",
     "app/services/error_policy.py",
     "app/services/expr_cache.py",
     "app/services/custom_formulas.py",
