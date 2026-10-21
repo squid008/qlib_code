@@ -9,6 +9,15 @@
 
 name: CI
 
+# ★ v2.10.57（2026-10-21 ✓）：**同一分支只留最新一次 run** ✗→✓
+#   没有这段时：连着推 3 次 ⇒ 3 条 CI **同时跑** ✓（每个都要装 numpy/lightgbm/Chromium ✗），
+#   而且旧的那两条**结论已经没意义**✓（代码都换了两版 ✓），却仍占并发、仍会发失败邮件 ✗。
+#   ⚠ 用 `head_ref` 做 key ✓：PR 上按**分支名**区分 ✓，推 main 时按 `ref` ✓ ——
+#     两者都不能省 ✗（只写 `github.ref` 时，同一 PR 的多次推送会互相取消错对象 ✓）。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [main]
@@ -103,6 +112,10 @@ jobs:
           #   ⚠ 若探针仍红 ✗：说明光升 Node 不够 ⇒ 钉 jsdom 版本或换 `happy-dom` ✓
           #     （**不要**再动全局 `environment` ✗ —— 它是 `node`，纯函数用例跑得更快 ✓）。
           node-version: 22
+          # ★ v2.10.57：**补上 npm 缓存** ✓（e2e job 早就有 ✓，这个 job 漏了 ✗）
+          #   `npm install --legacy-peer-deps` 每次都从零拉 ~300 个包 ⇒ 白等 40~60 秒 ✓。
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
 
       - name: 安装依赖
         # ★★ v2.9.19（2026-10-18 ✓）：`npm ci` → `npm install --legacy-peer-deps` ✗→✓
@@ -145,7 +158,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # ★ v2.10.57（2026-10-21 ✗→✓）：**20 → 22**，与单测 job 对齐 ✓
+          #   原来前端单测跑 **22** ✓、E2E 跑 **20** ✗ ⇒ **同一个前端跑在两个 Node 上** ✓
+          #   ⇒ 会出现"单测过、e2e 挂"（或反之）这种最难查的偏差 ✗
+          #   （Playwright 与 vite/vitest 的差异常常就藏在 runtime 版本里 ✓）。
+          #   ⇒ 统一到 **22（LTS）** ✓ —— 单测那边升 22 是为了 jsdom，e2e 跟着走 ✓。
+          node-version: 22
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 

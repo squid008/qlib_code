@@ -1,5 +1,7 @@
 # Qlib 量化回测平台
 
+[![CI](https://github.com/squid008/qlib_code/actions/workflows/ci.yml/badge.svg)](https://github.com/squid008/qlib_code/actions/workflows/ci.yml)
+
 基于 Qlib 的量价因子机器学习回测系统：**React 前端 + FastAPI 后端 + Qlib 引擎**，
 从「写公式 → 单因子诊断 → 训练/回测 → 产物复现」一条闭环。
 
