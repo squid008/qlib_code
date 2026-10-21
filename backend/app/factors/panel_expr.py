@@ -2108,7 +2108,16 @@ def _expr_ext_days(expr: str) -> int:
             if n >= 1:
                 need = max(need, int(n) - 1)
             elif n > 0:
-                need = max(need, int(_math.log(1e-6) / _math.log(1 - n)))
+                # ⚠ v2.10.67（2026-10-21 ✗→✓ 写测试才发现）：这里原来**不减 1** ✗，
+                #   而主路径（`_tree_ext_days` 的 `0<N<1` 分支）是 `int(...) - 1` ✓
+                #   ⇒ 同一个表达式"能解析"和"解析失败走兜底"会差 **1 天** ✓
+                #   ⇒ 少读一天 ⇒ EMA/滚动类序列**整体偏移** ✓（不报错 ✗）。
+                #   两条路的语义必须一致 ✓（`-1` 的理由同主路径：窗口要覆盖 N 个点的跨度 ✓）。
+                need = max(need, max(0, int(_math.log(1e-6) / _math.log(1 - n)) - 1))
+        # ⚠⚠ v2.10.67（2026-10-21 ✗→✓ 实测抓到）：`return need` 原来**缩在 `for` 循环体里** ✗
+        #   ⇒ 循环**一次都没进入**时（表达式解析失败、且里面没有 EMA）函数返回 **None** ✓
+        #   —— 而签名是 `-> int` ✗ ⇒ 调用方 `start - ext` 会 TypeError ✓，
+        #   或某处 `or 0` 悄悄兜住 ⇒ 预热 0 天 ⇒ 序列偏移 ✓（两种都很糟 ✓）。
         return need
 
 

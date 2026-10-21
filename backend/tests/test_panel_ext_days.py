@@ -22,9 +22,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace as NS
 
+import numpy as np
 import pytest
 
-from app.factors.panel_expr import _tree_ext_days
+from app.factors.panel_expr import _dyn_kernel, _expr_ext_days, _tree_ext_days, parse_expr
 
 
 def F(name: str = "$close") -> NS:
@@ -110,3 +111,103 @@ def test_non_const_window_falls_back_to_zero_not_crash():
 def test_all_common_rolling_ops_share_the_rule(op):
     """常用滚动算子必须**同一套规则** ✓（漏登记一个 ⇒ 它少预热 ✓ 且无人察觉 ✗）。"""
     assert _tree_ext_days(OP(op, F(), C(20))) == 19
+
+
+# --------------------------------------------------------------- _expr_ext_days
+def test_expr_ext_days_matches_tree():
+    """正常表达式 ⇒ 与 `_tree_ext_days(parse_expr(...))` **同一结果** ✓
+    （两条路必须一致 ✓，否则"能解析"与"解析失败"会得到不同预热天数 ✗）。"""
+    for expr, want in [
+        ("EMA(Max($high,34),4)", 36),
+        ("Mean($close,5)", 4),
+        ("$close", 0),
+    ]:
+        assert _expr_ext_days(expr) == want, expr
+
+
+def test_expr_ext_days_unparsable_falls_back_to_zero():
+    """解析不了的串 ⇒ 兜底正则扫不到 EMA ⇒ **0** ✓，且**不许抛** ✓。"""
+    assert _expr_ext_days("@@@ 完全不是表达式 @@@") == 0
+
+
+def test_expr_ext_days_fallback_matches_main_path_for_fractional_window():
+    """⭐⭐ 兜底路径必须与主路径**给出同一个数** ✓。
+
+    ⚠ v2.10.67 实测到一处不一致 ✗：主路径对 `0<N<1` 返回 `int(log/log) - 1` ✓，
+      而**解析失败**时的正则兜底**不减 1** ✗ ⇒ 同一表达式两条路差 **1 天** ✓
+      ⇒ 少读一天 ⇒ EMA 类序列整体偏移 ✓（不报错 ✗）。
+      触发条件真实存在：表达式能编译但 `parse_expr` 抛异常（新算子/边界语法 ✓）。
+    """
+    # 让整串解析失败、但正则仍能扫到 `EMA(...,0.5)` ✓
+    expr = "EMA($close, 0.5) + @@@@"
+    main_path = _tree_ext_days(parse_expr("EMA($close, 0.5)"))
+    assert _expr_ext_days(expr) == main_path, "兜底必须与主路径一致 ✓（差 1 天就是偏移 ✗）"
+
+
+# ---------------------------------------------------------------- _dyn_kernel
+
+
+class _FakeOps:
+    """假 ops_ext：记录**哪个函数被调用** + **传了什么** ✓（不真算 ✓）。"""
+
+    def __init__(self):
+        self.calls = []
+        for name in ("dyn_ref_vec", "_dyn_rmq_vec", "dyn_window_sum_vec",
+                     "dyn_window_count_vec", "dyn_window_mean_vec", "dyn_bars_vec"):
+            setattr(self, name, self._mk(name))
+
+    def _mk(self, name):
+        def f(*a):
+            self.calls.append((name, a))
+            return name
+        return f
+
+
+VALS, NVALS = [1.0, 2.0], [2.0, 2.0]
+
+
+def test_dyn_kernel_dispatch_map():
+    """⭐ 八种动态窗口各自分派到**正确**的实现 ✓（分派错了 ⇒ 静默算成另一个算子 ✗）。"""
+    cases = {
+        "ref": "dyn_ref_vec",
+        "min": "_dyn_rmq_vec",
+        "max": "_dyn_rmq_vec",
+        "sum": "dyn_window_sum_vec",
+        "count": "dyn_window_count_vec",
+        "mean": "dyn_window_mean_vec",
+        "hhvbars": "dyn_bars_vec",
+        "llvbars": "dyn_bars_vec",
+    }
+    for kind, fn in cases.items():
+        ops = _FakeOps()
+        got = _dyn_kernel(kind, VALS, NVALS, ops)
+        assert got == fn, kind
+        assert ops.calls[0][0] == fn, kind
+        assert ops.calls[0][1][:2] == (VALS, NVALS), "必须原样转发数据与窗口 ✓"
+
+
+def test_dyn_kernel_min_max_use_the_right_comparator():
+    """⭐⭐ `min` 必须用 `np.fmin` ✓、`max` 必须用 `np.fmax` ✓ ——
+    弄反 ⇒ **最高价当最低价**（或反之）✓，一路算下来全是"看起来正常"的错数 ✗。"""
+    for kind, cmp in (("min", np.fmin), ("max", np.fmax)):
+        ops = _FakeOps()
+        _dyn_kernel(kind, VALS, NVALS, ops)
+        assert ops.calls[0][1][2] is cmp, kind
+
+
+def test_dyn_kernel_bars_direction_flag():
+    """⭐⭐ `hhvbars` ⇒ 方向 **True**、`llvbars` ⇒ **False** ✓ ——
+    弄反 ⇒「距最高点」与「距最低点」**互换** ✓（两者都是正数，肉眼分不出 ✗）。"""
+    ops = _FakeOps()
+    _dyn_kernel("hhvbars", VALS, NVALS, ops)
+    assert ops.calls[0][1][2] is True
+    ops = _FakeOps()
+    _dyn_kernel("llvbars", VALS, NVALS, ops)
+    assert ops.calls[0][1][2] is False
+
+
+def test_dyn_kernel_unknown_kind_raises_with_name():
+    """未知 kind ⇒ **抛**（且消息里带 kind ✓）—— 静默返回原值会把"没算"伪装成"算过" ✗。"""
+    with pytest.raises(ValueError) as ei:
+        _dyn_kernel("no-such-kind", VALS, NVALS, _FakeOps())
+    assert "no-such-kind" in str(ei.value)
