@@ -110,6 +110,10 @@ files = [
     # ★ v2.10.83：从 `panel_expr` 抽出的 `.bin` 缓存层 ✓（新模块一写就是 0 错误 ✓，
     #   顺便就收进闸门 ✓ —— 拆出来的模块**从第一天起就该被检查** ✓，否则新代码是盲区 ✗）
     "app/factors/panel_cache.py",
+    # ★ v2.10.86：从 `ops_ext` 抽出的"最右极值"三件套 ✓（147 行算法 + 10 条测试护着 ✓）
+    #   ⚠ `ops_ext` 本身**仍未纳入** ✗ —— 它有 3 条既有的 `ndarray` 类型问题 ✓，
+    #     属于"要读数据流才能修对"的那类 ✓，留给后续 ✓（不硬加注解 ✗）。
+    "app/factors/ops_rightmost.py",
     "app/factors/seg_ops.py",
     "app/factors/chip_turn.py",
     "app/factors/chip_store.py",
