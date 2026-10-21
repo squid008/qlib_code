@@ -24,6 +24,36 @@
 
 ---
 
+## [2.10.52] - 2026-10-21
+
+### Fixed（**dependabot 一上来开了 14 个 PR、半数 CI 红** ✗→✓ —— 收紧到"只提 patch/minor"）
+
+- **现象**（用户报 ✓）：邮箱一堆 dependabot 提醒 ✓、CI "红了一大堆" ✗。
+- **查清的第一件事** ✓：**main 一直是绿的** ✓（`5f0ef4a` = success ✓）——
+  红的是 **`pull_request` 事件**：dependabot 首次启用会**把所有落后版本一次性提上来** ✓，
+  这次开了 **14 个 PR** ✗，其中大半是 **major 跳跃**：
+  ```
+  recharts 2.15 → 3.10 ｜ typescript 5.9 → 7.0 ｜ vite 5.4 → 8.3
+  numpy 2.2 → 2.5 ｜ actions/checkout 4 → 7 ｜ setup-python 5 → 7 ｜ upload-artifact 4 → 7
+  ```
+  major 基本都要改代码才能适配 ✓ ⇒ 这些 PR 的 CI **几乎全红** ✗。
+- **危害不只是邮件** ✓：一堆常红 PR 会**污染"main 是绿的"这个信号** ✗ ——
+  以后真红一次，人已经麻木了 ✓（这就是狼来了 ✓）。
+- **修法** ✓（三个 ecosystem 都改）：
+  · **`ignore: version-update:semver-major`** ✓ —— **major 一律人工评估** ✓
+    （major 往往要连带改代码 + 改 `constraints.txt` + 跑引擎 NAV 指纹 ✓，
+    不该由一个 bot 自动触发 ✗）；
+  · `open-pull-requests-limit: 2` ✓（原来是 5，一次最多 3 个 ecosystem × 5 = 15 ✗）；
+  · npm 加 **`cooldown: default-days: 3`** ✓ —— 刚发布的 patch 经常几小时内被回滚 ✓，
+    让上游先踩一遍 ✓（这是能白拿的稳定性 ✓）；
+  · `vitest` 连 **minor** 也不自动提 ✓（必须与 `@vitest/coverage-v8` **同版本** ✓，
+    否则覆盖率插件直接不工作 ✗）。
+- **同时把已开的 14 个 PR 全部关闭** ✓（并留言说明"等 major 人工评估"✓）——
+  关闭可逆 ✓，但**不占住"PR 列表全是红叉"** ✓。
+- ⚠ **保留一个好习惯** ✓：dependabot 的**安全告警邮件**（security alert）与 PR 通知是两条线 ✓ ——
+  前者是真 CVE ✓（本项目 `pip-audit` 已在 CI 阻断 ✓），**不要一条都关掉** ✗。
+- **校验** ✓：`main` CI success ✓ ｜ 配置改动只涉及 `.github/dependabot.yml` ✓ ｜ 版本 + 体检 14 passed ✓。
+
 ## [2.10.51] - 2026-10-21
 
 ### Added + Test（**三件一起收** ✓ —— 协作规范 / E2E 补两条 / 最后一个零测试组件 ✓）

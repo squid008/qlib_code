@@ -1,17 +1,21 @@
-# 自动依赖升级（★ v2.10.51）
+# 自动依赖升级（★ v2.10.51 引入；★ v2.10.52 **收紧** ✗→✓）
 #
-# 为什么要它：依赖漏洞 / 上游破坏性变更**不会自己报** ✗ ——
-#   现在只有"人想起来跑一次 pip-audit"才知道 ✓（虽然 pip-audit 已进 CI ✓，
-#   但它只在**有人提交时**才跑 ✗ ⇒ 没人提交就没人知道 ✓）。
+# ## v2.10.52 为什么收紧（真实教训 ✓）
 #
-# ⚠ 协作规矩（与 `backend/constraints.txt` 的约定配套 ✓）：
-#   · 本项目用 **`constraints.txt`（全 `==`）锁定精确版本** ✓；
-#   · 所以 pip 的升级 PR **应当改 `requirements.txt` 的版本下界**，
-#     并在**同一个 PR** 里同步 `constraints.txt` ✓；
-#   · **不要**把多个依赖升级塞进一个 PR ✗ —— 出问题时分不清是谁 ✓。
+# 首次启用后 dependabot **一次开了 14 个 PR** ✗ —— 因为"首次扫描"会把**所有**落后版本
+# 一次性提上来 ✓，其中大半是 **major 跳跃**：
+#   recharts 2.15 → **3.10** ｜ typescript 5.9 → **7.0** ｜ vite 5.4 → **8.3**
+#   numpy 2.2 → 2.5 ｜ actions/checkout 4 → **7**
+# ⇒ 这些 PR 的 CI **几乎全红** ✗（major 基本都要改代码才能适配 ✓），
+#   结果是：**邮件一堆、红灯一片、还挡住"main 是绿的"这个信号** ✗。
 #
-# ⚠ 已知限制：dependabot 对 **pip + constraints 文件**的组合支持一般 ✓
-#   ⇒ 它开出来的 PR 大概率只动 `requirements.txt` ✗ ⇒ **合之前人工补 constraints.txt** ✓。
+# ⇒ 现在的原则 ✓：
+#   · **只自动提 patch / minor** ✓（这类升级绝大多数是安全的 ✓）；
+#   · **major 一律人工评估** ✓（禁止自动开 PR ✗）——
+#     major 往往要连带改代码 + 改 `constraints.txt` + 跑引擎指纹 ✓，不该由一个 bot 触发 ✗；
+#   · 每个 ecosystem 的 PR **上限 2 个** ✓（不许多开 ✗）；
+#   · `cooldown`：patch 也等 3 天 ✓ —— 刚发布的版本经常几小时内被回滚 ✓，
+#     让上游先踩一遍 ✓（这是我们能白拿的稳定性 ✓）。
 
 version: 2
 
@@ -22,13 +26,17 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 2
     labels:
       - dependencies
       - backend
     commit-message:
-      # 前缀与仓库习惯对齐 ✓（`chore(deps): ...` 一眼可辨 ✓）
       prefix: "chore(deps)"
+    # ⚠ 本项目用 `constraints.txt`（全 `==`）锁定精确版本 ✓
+    #   ⇒ dependabot 大概率**只动 `requirements.txt`** ✗ ⇒ 合之前人工补 `constraints.txt` ✓
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     # ⚠ qlib 是**上游源码安装**（`pip install -e`）✓，不在本文件管辖 ✓
 
   # ---- 前端 ----
@@ -37,25 +45,36 @@ updates:
     schedule:
       interval: weekly
       day: monday
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 2
     labels:
       - dependencies
       - frontend
     commit-message:
       prefix: "chore(deps)"
+    cooldown:
+      default-days: 3
     ignore:
-      # vitest 的**主版本**要跟着 `@vitest/coverage-v8` 一起动 ✓
-      #（两者版本不一致时覆盖率插件直接不工作 ✗）⇒ 交给人工同批升级 ✓
-      - dependency-name: vitest
+      - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # vitest **必须与 `@vitest/coverage-v8` 同版本** ✓（不一致时覆盖率插件直接不工作 ✗）
+      # ⇒ 连 minor 也不自动提 ✓，交给人工同批升级 ✓
+      - dependency-name: vitest
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
 
   # ---- CI 里用到的 action（供应链里最容易被忽略的一段 ✗）----
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    open-pull-requests-limit: 2
     labels:
       - dependencies
       - ci
     commit-message:
       prefix: "chore(ci)"
+    ignore:
+      # action 的 major 往往是"v4 → v7"这种跨代 ✓（如 checkout 4→7）⇒ 人工评估 ✓
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
