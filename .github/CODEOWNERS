@@ -1,0 +1,28 @@
+# 代码所有权（★ v2.10.51）
+#
+# 目的：让"谁该看这个 PR"在 GitHub 上**自动出现** ✓ ——
+#   否则一张改到引擎口径的 PR 可能被当成"随便看看"就合了 ✗。
+#
+# ⚠ 单人仓库也值得有这文件 ✓：将来加协作者时，规则已经在位 ✓；
+#   而且 GitHub 会在 PR 页面自动请求对应 owner 的 review ✓。
+#
+# 语法：`路径模式  @用户名`（后面的规则覆盖前面的 ✓）
+
+# 默认：全部归仓库所有者
+*                                   @squid008
+
+# 引擎与口径（改错会静默改坏净值 / 成本 / 回撤 ⇒ 必须 owner 过目）
+/backend/app/engine/                @squid008
+/backend/app/factors/               @squid008
+/backend/app/signals/               @squid008
+
+# 导出契约（`_meta` 里的参数键决定"导出能否原样回灌"✓）
+/backend/app/exports/               @squid008
+/backend/app/routers/export_xlsx.py @squid008
+
+# 闸门本身（改这里等于改"谁能合代码"）
+/.github/workflows/                 @squid008
+/backend/pyproject.toml             @squid008
+/backend/constraints.txt            @squid008
+/backend/requirements.txt           @squid008
+/frontend/vitest.config.ts          @squid008

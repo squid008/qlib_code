@@ -1,0 +1,61 @@
+# 自动依赖升级（★ v2.10.51）
+#
+# 为什么要它：依赖漏洞 / 上游破坏性变更**不会自己报** ✗ ——
+#   现在只有"人想起来跑一次 pip-audit"才知道 ✓（虽然 pip-audit 已进 CI ✓，
+#   但它只在**有人提交时**才跑 ✗ ⇒ 没人提交就没人知道 ✓）。
+#
+# ⚠ 协作规矩（与 `backend/constraints.txt` 的约定配套 ✓）：
+#   · 本项目用 **`constraints.txt`（全 `==`）锁定精确版本** ✓；
+#   · 所以 pip 的升级 PR **应当改 `requirements.txt` 的版本下界**，
+#     并在**同一个 PR** 里同步 `constraints.txt` ✓；
+#   · **不要**把多个依赖升级塞进一个 PR ✗ —— 出问题时分不清是谁 ✓。
+#
+# ⚠ 已知限制：dependabot 对 **pip + constraints 文件**的组合支持一般 ✓
+#   ⇒ 它开出来的 PR 大概率只动 `requirements.txt` ✗ ⇒ **合之前人工补 constraints.txt** ✓。
+
+version: 2
+
+updates:
+  # ---- 后端：运行时与开发依赖 ----
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - backend
+    commit-message:
+      # 前缀与仓库习惯对齐 ✓（`chore(deps): ...` 一眼可辨 ✓）
+      prefix: "chore(deps)"
+    # ⚠ qlib 是**上游源码安装**（`pip install -e`）✓，不在本文件管辖 ✓
+
+  # ---- 前端 ----
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - frontend
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      # vitest 的**主版本**要跟着 `@vitest/coverage-v8` 一起动 ✓
+      #（两者版本不一致时覆盖率插件直接不工作 ✗）⇒ 交给人工同批升级 ✓
+      - dependency-name: vitest
+        update-types: ["version-update:semver-major"]
+
+  # ---- CI 里用到的 action（供应链里最容易被忽略的一段 ✗）----
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: "chore(ci)"
