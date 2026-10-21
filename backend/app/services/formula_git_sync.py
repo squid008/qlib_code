@@ -52,18 +52,7 @@ import threading
 
 from ..logger import _Utf8SafeStream      # ★ v1.20.63：安全打印（GBK 下不抛 ✓）
 
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
-      全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)
+from ..logger import _log_swallowed  # noqa: E402
 
 
 # ⚠ 本模块的日志**必须**走安全打印：后端 stdout 在 Windows 下常是 **GBK** ✗ ⇒

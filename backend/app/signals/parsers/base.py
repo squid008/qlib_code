@@ -18,20 +18,7 @@ import pandas as pd
 
 from ..codes import normalize_code, parse_date, parse_time, CodeInfo
 
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A 收尾 ✓）—— 吞异常后写一行 debug 日志。
-
-    ⚠ 三条硬约束（都是踩过的坑 ✓）：
-      ① `logger` 名字各文件不同（`logger` / `_LOGGER` / 都没有 ✓）⇒ 全兜住 ✓；
-      ② 有的模块 `logger` 在 **Linux 上是 None** ✗（Windows-only 初始化 ✓）⇒ 不能用 `logger.xxx` ✓；
-      ③ 日志自身失败**绝不许抛** ✗ ⇒ 全程 `contextlib.suppress` ✓（2.9.26 的教训 ✓）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)
+from ...logger import _log_swallowed  # noqa: E402
 
 
 # ---- 列名别名（小写去空格后匹配）----

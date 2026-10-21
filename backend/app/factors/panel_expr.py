@@ -48,22 +48,7 @@ from .seg_ops import (  # noqa: F401,E402
     _seg_window_op, _segment_bnd,
 )
 
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ 本文件里的 logger 名字不统一 ✗（`panel_expr` 用 `_LOGGER` ✓、`qlib_engine` 用 `logger` ✓），
-      而且历史上出现过"logger 在某个平台上是 None"✓（2.9.26 事故 ✗：把静默改成崩溃 ✓）
-      ⇒ 这里**两个都认** ✓，再兜底 `logging.getLogger(__name__)` ✓；
-      `contextlib.suppress` 明确声明"日志失败也无所谓"✓（也避免被静默债务棘轮算成新债 ✓）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = (globals().get("logger")
-              or globals().get("_LOGGER")
-              or _logging.getLogger(__name__))
-        lg.debug("[吞] %s: %r", where, exc)
+from ..logger import _log_swallowed  # noqa: E402
 
 
 # CWH 这类巨型公式嵌套可达数百~上千层，提高递归上限（模块级，全局一次）

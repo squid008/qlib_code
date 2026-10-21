@@ -75,7 +75,15 @@ def _log_swallowed(where, exc, **ctx: Any):
             prefix += " stage=%s" % stage
         if ctx:                                   # 其它结构化字段（原样拼，不丢 ✓）
             prefix += " " + " ".join("%s=%s" % (k, v) for k, v in ctx.items())
-        lg = globals().get("logger") or globals().get("_LOGGER") or logging.getLogger(__name__)
+        # ★ v2.10.71（技术债 P1-#1 清偿）：**按 `where` 推导 logger 名** ✓
+        #   ⚠ 原来是 `globals().get("logger") or globals().get("_LOGGER")` ✗ —— 那是在
+        #     **每个调用方文件里各有一份副本**的年代用的 ✓（`globals()` 指的是那个文件 ✓）；
+        #     现在这里是**唯一实现** ✓，`globals()` 指的是 `logger.py` 自己 ✗
+        #     ⇒ 那个技巧彻底失效 ✓。改为从 `where`（如 `"engine/task_manager.py"` ✓）
+        #     推导成 `app.engine.task_manager` ✓ —— 日志来源仍然精确到文件 ✓，
+        #     比原来"全都记到 app.logger" 更有用 ✓。
+        lg = logging.getLogger(
+            "app." + str(where).replace("\\", "/").replace("/", ".").removesuffix(".py"))
         lg.debug("%s %s: %r", prefix, where, exc)
 
 

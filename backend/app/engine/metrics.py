@@ -9,20 +9,7 @@ from typing import Optional
 
 from ..models.backtest import BacktestResult
 
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ 为什么不用裸 `logger.debug(...)` ✗：本文件**没有 logger**（`metrics.py` / `single_test.py` ✓），
-      而别处已出现过"logger 在 Linux 上为 None"的情况 ✓（2.9.26 事故 ✗：直接把静默改成了崩溃 ✓）。
-    ⚠ 也不用 `except: pass` ✗ —— 那正是"静默"，而这里用 `contextlib.suppress` ✓：
-      明确声明"日志失败也无所谓"✓，不会被静默债务棘轮算成新债 ✓。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)
+from ..logger import _log_swallowed  # noqa: E402
 
 
 

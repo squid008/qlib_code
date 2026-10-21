@@ -57,19 +57,7 @@ from ..factors.event_study import run_event_study                  # noqa: E402
 from ..factors.single_test import FactorTestCancelled, _bad_date_arg  # noqa: E402
 from .factors_state import _json_safe                              # noqa: E402
 
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ 本模块**没有模块级 logger** ✗（`factors_single` 是内联 `get_logger("factors")` 用法 ✓）
-      ⇒ 这里用 `logging.getLogger(__name__)` ✓（= `app.routers.xxx` ✓，能与其它日志一起看 ✓）。
-    ⚠ 全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)
+from ..logger import _log_swallowed  # noqa: E402
 
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])  # noqa: E402

@@ -27,17 +27,7 @@ import pandas as pd
 
 from qlib.data.dataset.loader import QlibDataLoader
 
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ 本文件有**模块级 try**（导入期就要用 ✓）⇒ helper 必须定义在它**之前** ✓
-      （所以这里放在 import 之后、业务代码之前 ✓，而不是像其它文件那样追加到 EOF ✗）。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
+from ..logger import _log_swallowed  # noqa: E402
 
 
 try:

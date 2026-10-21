@@ -15,21 +15,7 @@ from ..logger import get_logger
 from ..models.backtest import BacktestRequest, BacktestResult
 from .context import get_artifact_dir
 
-def _log_swallowed(where, exc):
-    """**留痕兜底** ✓（P2-A ✓ 2026-10-18）—— 吞异常后写一行 debug 日志。
-
-    ⚠ 为什么不用裸 `logger.debug(...)` ✗：本文件（以及 `metrics.py`）的 `logger`
-      **可能是 None** ✓（有的初始化在 Windows-only 分支里 ✓）⇒ 直接调用会把
-      "静默吞掉"变成"**更响的崩溃**" ✗✗（CI 上 10 个用例就是这么红的 ✓）。
-    ⚠ 也不许用 `except: pass` ✗ —— 那正是本模块要消灭的"静默"✓；
-      这里用 `contextlib.suppress` ✓：**明确声明"日志失败也无所谓"** ✓。
-    """
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)
+from ..logger import _log_swallowed  # noqa: E402
 
 
 logger = get_logger(__name__)

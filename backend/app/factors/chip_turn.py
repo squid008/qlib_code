@@ -16,14 +16,7 @@ import numpy as np
 import pandas as pd  # noqa: F401
 
 
-def _log_swallowed(where, exc):
-    """吞异常留痕 ✓（与 `panel_expr` 里那份同语义 ✓；本模块自给自足 ✓ 不反向依赖 ✗）。"""
-    import contextlib
-    import logging as _logging
-
-    with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)
+from ..logger import _log_swallowed  # noqa: E402
 
 
 # 筹码派生字段（`$chip_cost_*` / `$chip_win_*`）依赖的基础字段（v1.19.83）：

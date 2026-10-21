@@ -29,7 +29,10 @@ from app.logger import (
     task_log_context,
 )
 
-LOGGER_NAME = "app.logger"
+#: ★ v2.10.71：`_log_swallowed` 现在把日志记到**按 `where` 推导出的** logger 上 ✓
+#  （如 `where="engine/x.py"` ⇒ `app.engine.x` ✓）。所以这里在 **`app` 这一层**开 propagate ✓ ——
+#  子 logger 都继承 ✓，不必逐个猜名字 ✓（原来写死 `app.logger` ✗ ⇒ 合并后抓不到了 ✓）。
+LOGGER_NAME = "app"
 
 
 def _capture(caplog):
@@ -93,7 +96,7 @@ def test_log_swallowed_includes_task_and_stage(caplog):
         with task_log_context("T-42", "compose"):
             _log_swallowed("engine/x.py", ValueError("boom"))
     finally:
-        lg.propagate = False
+        lg.propagate = True   # 恢复默认 ✓（原来写 False ✗ 会污染其它测试）
 
     text = caplog.text
     assert "[吞]" in text
@@ -108,7 +111,7 @@ def test_log_swallowed_without_context_has_no_task_field(caplog):
     try:
         _log_swallowed("engine/y.py", RuntimeError("no-ctx"))
     finally:
-        lg.propagate = False
+        lg.propagate = True   # 恢复默认 ✓（原来写 False ✗ 会污染其它测试）
 
     text = caplog.text
     assert "[吞]" in text and "no-ctx" in text
@@ -122,7 +125,7 @@ def test_explicit_arg_beats_context(caplog):
         with task_log_context("CTX"):
             _log_swallowed("engine/z.py", ValueError("x"), task_id="EXPLICIT", stage="s2")
     finally:
-        lg.propagate = False
+        lg.propagate = True   # 恢复默认 ✓（原来写 False ✗ 会污染其它测试）
 
     assert "task=EXPLICIT" in caplog.text
     assert "task=CTX" not in caplog.text
