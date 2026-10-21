@@ -112,7 +112,7 @@ python -m pip_audit -r requirements.txt       # 依赖漏洞（阻断式）
 # 前端（cd frontend）
 npx tsc -b                                    # strict
 npm test                                      # vitest
-npm run test:cov                              # 覆盖率门槛 44%（CI 实测 44.69%）
+npm run test:cov                              # 覆盖率门槛 47%（CI 实测 47.34%）
 npm run test:e2e                              # Playwright（需先 npx playwright install chromium）
 ```
 

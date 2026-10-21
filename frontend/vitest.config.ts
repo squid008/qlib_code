@@ -81,7 +81,10 @@ export default defineConfig({
       //   这一档涨得多 ✓ 是因为**把"零测试组件"清零了** ✓：
       //   `ZoomableLineChart`(577，全站所有折线图的唯一实现 ✓) / `FormulaPanel`(369) / `NavChart`(296)
       //   ＋ 四个巨型面板的骨架 ✓ ⇒ 248 条 / 40 文件 ✓。
-      thresholds: { statements: 44, lines: 44 },
+      // ★ v2.10.85：**44 → 47** ✓（CI 实测 **47.34%** ✓ 取整 47 ✓）
+      //   这一档涨得多是因为 `EventStudyModal`（1512 行）主链路终于有真断言了 ✓
+      //   （`defaultK` 那条用户报过的 bug ✓ ⇒ 一个组件就从 44.69 跳到 47.34 ✓）。
+      thresholds: { statements: 47, lines: 47 },
     },
   },
 })
