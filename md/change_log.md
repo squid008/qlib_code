@@ -24,6 +24,29 @@
 
 ---
 
+## [2.10.82] - 2026-10-21
+
+### Changed（**mypy 第二批：36 → 45 个源文件（≈46%）** ✓ —— 覆盖率从 20% 到接近一半 ✓）
+
+- **同一套做法** ✓：再探 16 个候选 ⇒ **9 个零错误** ✓ 直接收 ✓
+  （`exports/spec` `exports/exit_curve` `parser/macros` `event_study_cache`
+  `signals/parsers/base` `signals/parsers/qlib_export` `datasource/rqalpha_source`
+  `patches/serial_load` `patches/cancel_train` ✓）。
+- **累计** ✓：两轮共 **19 → 45 个源文件**（97 个模块的 **≈46%** ✓），配置条目 18 → 44 ✓，
+  `mypy` **0 错误** ✓。
+- **仍未收的三个（如实标注，不硬加注解 ✗）**：
+  · `engine/qlib_engine.py`（7 条）—— 回测主循环，要读数据流 ✓；
+  · `engine/charts.py`（6 条）；
+  · `factors/event_study.py`（2 条）—— **变量被复用成不同类型** ✓
+    （`ndarray` 之后当 `int` 用 ✓）⇒ 这是**真问题信号** ✓，硬加注解只会把它藏起来 ✗。
+- **为什么"先探明再收"是对的顺序** ✓：如果反过来（**先加进去再让它红** ✗），
+  45 个文件里会同时冒出 30+ 条错误 ✓ ⇒ 分不清"哪些是注解问题、哪些是真 bug" ✓
+  ⇒ 最后只能一把 `type: ignore` 糊过去 ✗（那等于把这道闸门废掉 ✓）。
+  现在的顺序保证**每条被修的错都是经过判断的** ✓。
+- **实测** ✓：`mypy` **no issues found in 45 source files** ✓ ｜ `ruff` **0** ✓ ｜
+  体检 **10 passed** ✓ ｜ CI ✓。
+- **对评分的影响** ✓：类型安全 **8.2 → 8.7**（覆盖 20% → 46% ✓，已接近"过半"这个心理线 ✓）。
+
 ## [2.10.81] - 2026-10-21
 
 ### Changed（**mypy 覆盖面 19 → 36 个源文件（≈37%）** ✓ —— 按"先探明、再收"的顺序 ✓）

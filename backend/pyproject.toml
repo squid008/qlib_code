@@ -116,6 +116,19 @@ files = [
     "app/services/datasets.py",
     "app/services/formula_git_sync.py",
     "app/services/qlib_runtime.py",
+    # ★ v2.10.82（2026-10-21）：**第二批 9 个** ✓ —— 同一套"先探明、再收"的做法 ✓（16 个候选里
+    #   9 个零错误 ✓）。覆盖面 36 → **45 个源文件**（≈46% ✓）。
+    #   ⚠ 仍未收的三个（都有真问题要读上下文 ✓，硬加注解只会掩盖 ✗）：
+    #     `qlib_engine`(7) / `charts`(6) / `event_study`(2 —— 变量复用成不同类型 ✓)。
+    "app/exports/spec.py",
+    "app/exports/exit_curve.py",
+    "app/factors/parser/macros.py",
+    "app/factors/event_study_cache.py",
+    "app/signals/parsers/base.py",
+    "app/signals/parsers/qlib_export.py",
+    "app/datasource/rqalpha_source.py",
+    "app/engine/patches/serial_load.py",
+    "app/engine/patches/cancel_train.py",
 ]
 follow_imports = "silent"
 # 只报"能修且值得修"的：`--strict` 会把 `Any` 泛滥全暴露出来 ✗（另有专门回合 ✓）
