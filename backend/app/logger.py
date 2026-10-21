@@ -10,22 +10,73 @@
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sys
+from contextvars import ContextVar
+from typing import Any, Iterator
 
-def _log_swallowed(where, exc):
+#: 当前任务号 / 阶段（★ v2.10.60）——
+#  ⚠ 为什么用 `ContextVar` 而不是"给每个函数加参数" ✗：
+#    全仓有 **352 处** `_log_swallowed(...)` 调用、分布在 **50 个文件**里 ✓，
+#    挨个加 `task_id` 参数既不可能（改动面太大）也不该（日志字段不是业务参数）✓。
+#    `ContextVar` 是 **per-thread/per-task 隐式上下文** ✓ ⇒ **调用点一行都不用改** ✓，
+#    只要在"任务开跑"的地方包一层 `with task_log_context(task_id)` ✓ 就有了 ✓。
+#  ⚠ 它与 `threading.local` 的区别：协程/异步里也正确 ✓（本项目任务走线程 ✓，两者都行 ✓）。
+_TASK_ID: ContextVar[str] = ContextVar("qlib_task_id", default="")
+_STAGE: ContextVar[str] = ContextVar("qlib_stage", default="")
+
+
+@contextlib.contextmanager
+def task_log_context(task_id: str = "", stage: str = "") -> Iterator[None]:
+    """在 `with` 块内给**所有**日志（含 `_log_swallowed`）打上 `task=` / `stage=` ✓。
+
+    用法（一行 ✓）：`with task_log_context(task_id): ...干活...` ✓
+    ⚠ **嵌套安全**：内层结束后自动恢复外层值 ✓（`ContextVar.reset` ✓）。
+    """
+    tok_id = _TASK_ID.set(str(task_id or ""))
+    tok_stage = _STAGE.set(str(stage or ""))
+    try:
+        yield
+    finally:
+        _TASK_ID.reset(tok_id)
+        _STAGE.reset(tok_stage)
+
+
+def current_task_id() -> str:
+    """当前日志上下文里的任务号（没有则空串 ✓ —— 别返回 None ✗，省得调用方判空）。"""
+    return _TASK_ID.get()
+
+
+def current_stage() -> str:
+    """当前日志上下文里的阶段名（没有则空串 ✓）。"""
+    return _STAGE.get()
+
+
+def _log_swallowed(where, exc, **ctx: Any):
     """**留痕兜底** ✓（P2-A，2026-10-18）—— 吞异常后写一行 debug 日志。
 
     ⚠ logger 名在不同模块不一样（`logger` / `_LOGGER` / 没有 ✓），这里全兜住 ✓；
       全程 `contextlib.suppress` ✓：**日志自身失败绝不许抛** ✗（2.9.26 事故教训 ✓）。
-    """
-    import contextlib
-    import logging as _logging
 
+    ★ v2.10.60：自动带上 `task=` / `stage=` ✓（来自 `task_log_context` ✓）——
+      排查"某个任务为什么慢/失败"时，能在 `backend.log` 里**按任务号 grep** ✓，
+      而不是在一堆交错的多任务日志里猜哪几行属于它 ✗。
+      ⚠ 也可以显式传 `**ctx`（如 `_log_swallowed("x", e, task_id=...)` ✓），优先用它 ✓。
+    """
     with contextlib.suppress(Exception):
-        lg = globals().get("logger") or globals().get("_LOGGER") or _logging.getLogger(__name__)
-        lg.debug("[吞] %s: %r", where, exc)
+        tid = str(ctx.pop("task_id", "") or _TASK_ID.get())
+        stage = str(ctx.pop("stage", "") or _STAGE.get())
+        prefix = "[吞]"
+        if tid:
+            prefix += " task=%s" % tid
+        if stage:
+            prefix += " stage=%s" % stage
+        if ctx:                                   # 其它结构化字段（原样拼，不丢 ✓）
+            prefix += " " + " ".join("%s=%s" % (k, v) for k, v in ctx.items())
+        lg = globals().get("logger") or globals().get("_LOGGER") or logging.getLogger(__name__)
+        lg.debug("%s %s: %r", prefix, where, exc)
 
 
 _LEVEL = os.environ.get("QLIB_LOG_LEVEL", "INFO").upper()

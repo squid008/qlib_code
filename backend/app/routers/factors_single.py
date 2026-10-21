@@ -1240,13 +1240,16 @@ def single_factor_test_tasks(limit: int = 20):
     用于前端刷新页面后恢复"未取消完成"的任务：找到 running 任务即可重新轮询进度/继续取消。
     """
     with _SFT_LOCK:
-        tasks = sorted(_SFT_TASKS.values(), key=lambda v: v.get("ts", 0), reverse=True)
+        pairs = sorted(_SFT_TASKS.items(), key=lambda kv: kv[1].get("ts", 0), reverse=True)
     out = []
-    for t in tasks[: max(1, min(int(limit or 20), 100))]:
+    for _tid, t in pairs[: max(1, min(int(limit or 20), 100))]:
         progress, message = _sft_render_view(t)
         out.append(
             {
-                "task_id": t["task_id"],
+                # ⚠ v2.10.60：**用字典键兜底** ✓ —— 原来直取 `t["task_id"]` ✗
+                #   只要表里混进一条缺该字段的记录（历史遗留 / 别的代码写入不完整 ✓），
+                #   整个列表就 **500** ✗ ⇒ 前端连"有哪些任务"都看不到 ✓（连取消都没法点 ✗）。
+                "task_id": t.get("task_id") or _tid,
                 "status": t["status"],
                 "progress": progress,
                 "message": message,

@@ -258,6 +258,20 @@ class TaskManager:
         return task_id
 
     def _run(self, task_id: str, req: BacktestRequest):
+        """★ v2.10.60：**给这个任务的所有日志打上 `task=`** ✓（然后交给 `_run_impl` ✓）。
+
+        为什么要这层薄包装（而不是在 `_run_impl` 里逐处传参）✗→✓：
+          回测过程中 **50 个模块**都会调 `_log_swallowed(...)` ✓，而"这行日志属于哪个任务"
+          只能靠外部上下文 ✓。`task_log_context` 用 `ContextVar` 实现 ✓，
+          ⇒ **一行**就把整条调用链（含 qlib 内部回调 ✓）的日志都标上任务号 ✓。
+        ⚠ 线程安全 ✓：`ContextVar` 是 per-thread 的 ✓（每个任务一个线程 ✓，互不串味 ✓）。
+        """
+        from ..logger import task_log_context
+
+        with task_log_context(task_id):
+            return self._run_impl(task_id, req)
+
+    def _run_impl(self, task_id: str, req: BacktestRequest):
         task = self._get(task_id)
         if task is None:
             return

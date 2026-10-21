@@ -140,6 +140,20 @@ def test_tasks_include_cancel_flag():
     assert row["cancel_requested"] is True, "前端靠这个显示「正在取消」✓"
 
 
+def test_tasks_tolerates_entry_without_task_id():
+    """⭐⭐ 表里混进**缺 `task_id`** 的条目 ⇒ 列表**不许 500** ✓。
+
+    ⚠ 原来直取 `t["task_id"]` ✗ ⇒ 一条烂记录就让**整个列表** 500 ✓
+    ⇒ 用户连"有哪些任务"都看不到 ✓、**连取消按钮都没有** ✗（这比"少一条"严重得多 ✓）。
+    现在用字典键兜底 ✓。触发场景真实存在：历史遗留、别的代码写入不完整 ✓。
+    """
+    _put("NOID")
+    with F._SFT_LOCK:
+        F._SFT_TASKS["NOID"].pop("task_id", None)      # 只删这一个字段 ✓（其余都正常 ✓）
+    tasks = F.single_factor_test_tasks()["tasks"]
+    assert any(t["task_id"] == "NOID" for t in tasks), "缺字段时必须用字典键兜底 ✓"
+
+
 # ------------------------------------------------------------ _period_roll_pick
 def _state_with(expr: str, horizon: int, items: dict, dates=None) -> dict:
     hi = HoldingsIndex()
