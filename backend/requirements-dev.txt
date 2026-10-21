@@ -16,7 +16,7 @@ ruff>=0.6
 mypy>=1.10
 
 # 依赖漏洞扫描（★ v2.10.23 新加 ✓ —— 见 .github/workflows/ci.yml 的 audit 步骤 ✓）
-pip-audit>=2.7
+pip-audit>=2.10.1
 
 # 图表（`engine/charts.py` 生成 PNG 快照要用 ✓，CI 里也必须装 ✓）
 matplotlib>=3.8
