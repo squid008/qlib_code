@@ -24,6 +24,38 @@
 
 ---
 
+## [2.10.56] - 2026-10-21
+
+### Docs + Chore（**扫全仓"日志写到仓库里"的源头** ✓ —— 结论：现役脚本干净，只剩文档示例诱导 ✗→✓）
+
+- **扫了哪些** ✓（共 **54 个**候选脚本）：
+  · `scripts/` 7 个（`bump_version` / `check` / `clean_runtime_logs` / `disk_speedtest` /
+    `formula_*` ×3 ✓）；
+  · 仓库根 4 个 `.bat`（`start_backend` / `start_frontend` / `stop_*` ✓）；
+  · `backend/workdir/*.ps1` 3 个（现役启停 ✓）＋ `backend/tools/` 30+ 个数据脚本 ✓。
+- **结论一：`scripts/` 与 4 个 `.bat` 完全干净** ✓ —— 一处日志重定向都没有 ✓
+  （grep 命中的 `>` 全是 Python 代码与文档里的箭头 ✓）。
+- **结论二：现役启停脚本已经规范** ✓ —— `backend/workdir/restart_backend.ps1` /
+  `restart_frontend.ps1` / `run_dump_mf.ps1` 都把日志写进 **`backend/workdir/`**
+  （`backend.log` / `backend_err.log` / `frontend.log` / `dump_moneyflow.log` ✓），
+  而 `backend/workdir/*` **已在 `.gitignore`** ✓ ⇒ 这些日志**永远不会入库** ✓。
+  ⇒ **上一轮清掉的 36 个，是"早期脚本版本写 `backend/` 根"留下的历史残渣 + 手工调试重定向** ✓，
+  不是现役脚本还在写 ✗。
+- **结论三（唯一隐患，已修）** ✗→✓：`md/start_stop.md` 的示例
+  ```powershell
+  -ArgumentList "/c","npm run dev > vite.log 2>&1"  -WorkingDirectory "...\frontend"
+  ```
+  ⇒ `>` 的相对路径**相对 `-WorkingDirectory`** ✓ ⇒ 日志落到 **`frontend\vite.log`** ✗
+  —— 正是刚清掉的那一类 ✓。现在改成 **`..\backend\workdir\frontend.log`** ✓，
+  并补了两条说明：① 后端日志同理**别写 `backend\` 根下** ✓；
+  ② 清理历史残渣先跑 `scripts\clean_runtime_logs.ps1 -DryRun` ✓。
+  （本项目 `md/开发记录.md` 早就总结过"日志一律用**绝对路径**"✓ —— 但这份文档的示例没跟上 ✗，
+  这次补上了 ✓。）
+- **没动的**：`deploy.md` 里的 `pip freeze > requirements_qlib.txt` ✓ —— 那是**故意入库**的
+  部署依赖清单 ✓（不是日志 ✓）。
+- **校验** ✓：`md/start_stop.md` 已无 `server.log` / `vite.log` 残留引用 ✓ ｜
+  清理脚本 `-DryRun` 与真删各验一次 ✓ ｜ 版本 + 体检 14 passed ✓ ｜ CI ✓。
+
 ## [2.10.55] - 2026-10-21
 
 ### Chore（**清掉 backend/ frontend/ 下 36 个运行时产物** ✓ ＋ 加清理脚本 ✓）

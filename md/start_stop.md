@@ -126,20 +126,25 @@ Start-Process -FilePath "D:\miniconda3\envs\qlib\python.exe" `
   -WindowStyle Hidden
 ```
 
-- 日志写到 `backend\server.log`（出错时查看）。
+- ⚠ **日志一律写到 `backend\workdir\`** ✓（现役脚本 `backend/workdir/restart_backend.ps1` 就是：
+  `workdir\backend.log` + `workdir\backend_err.log` ✓）—— 别写在 `backend\` 根下 ✗，
+  那会让仓库根目录堆满 `server.log` / `uvicorn_*.log`（2026-10-21 一次清出 **36 个 / 2.34 MB** ✓）。
 - 注意：`-RedirectStandardOutput` 和 `-RedirectStandardError` **不能指向同一个文件**，所以日志和错误分两个文件。
 
 **2. 启动前端（端口 5173）**
 
 ```powershell
-cd D:\quant\qlib_code\frontend
 Start-Process -FilePath "cmd.exe" `
-  -ArgumentList "/c","npm run dev > vite.log 2>&1" `
+  -ArgumentList "/c","npm run dev > ..\backend\workdir\frontend.log 2>&1" `
   -WorkingDirectory "D:\quant\qlib_code\frontend" `
   -WindowStyle Hidden
 ```
 
-- 日志写到 `frontend\vite.log`。
+- ⚠ **日志别落在 `frontend\` 里** ✗：`>` 的相对路径是相对 `-WorkingDirectory` 的 ✓
+  ⇒ 旧的 `> vite.log` 会生成 `frontend\vite.log` ✓（正是要清的那类 ✓）。
+  现在**统一收到 `backend\workdir\frontend.log`** ✓（`workdir` 已在 `.gitignore` 里 ✓）。
+- 现役脚本：`backend/workdir/restart_frontend.ps1` ✓（它写 `workdir\frontend.log` + `workdir\frontend_err.log` ✓）。
+- 清历史残留：`powershell -File scripts\clean_runtime_logs.ps1 -DryRun` 先看 ✓，去掉 `-DryRun` 再删 ✓。
 
 **3. 验证两个服务是否起来**
 
