@@ -22,7 +22,7 @@
 Cython==3.2.9
 fastapi==0.141.1
 h5py==3.16.0
-joblib==1.5.3
+joblib==1.6.0
 lightgbm==4.7.0
 matplotlib==3.10.9
 mypy==2.4.0
