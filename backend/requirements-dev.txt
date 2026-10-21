@@ -19,4 +19,4 @@ mypy>=1.10
 pip-audit>=2.7
 
 # 图表（`engine/charts.py` 生成 PNG 快照要用 ✓，CI 里也必须装 ✓）
-matplotlib>=3.8
+matplotlib>=3.11.2
