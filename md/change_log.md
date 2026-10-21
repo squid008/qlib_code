@@ -24,6 +24,31 @@
 
 ---
 
+## [2.10.90] - 2026-10-21
+
+### Changed（**mypy 收尾：50 → 52 个源文件（≈54%）** ✓ —— 最后两个"要读数据流"的也进了闸门 ✓）
+
+- **`charts.py`（6 条，同一根因）** ✓：`dates`/`bench` 是 `[p.get(...) for p in nav]` ✓
+  ⇒ 类型被推成 `list[Any | None]` ✗ ⇒ 传给 `ax.plot()` / `set_xticks()` 就报
+  "要 float/Buffer、给了可能含 None 的列表" ✓。声明成 `list[Any]` 即可 ✓。
+  ⚠ **没有顺手过滤 None** ✗→✓：`dates` 元素来自 `nav[i]["date"]`（本应有值 ✓），
+  真为 None 时 matplotlib 本来就画不出来 ⇒ 让它在运行时暴露 ✓；
+  若在这里**静默过滤**，曲线与图例会**错位** ✓ —— 那才是更糟的 bug ✗。
+- **`qlib_engine.py`（7 条，四类）** ✓：
+  1. `seg_label: str = None` / `prog: float = None` ⇒ **`str | None` / `float | None`** ✓（2 条）；
+  2. `all_nav = []` / `all_trades = []` ⇒ 补 `: list` 注解 ✓（2 条）；
+  3. ⭐ **`art_dir` 同名复用**：同一函数里 L216 已把它推成 `str`（来自 `src_dir` ✓），
+     而 L330 又赋 `_get_artifact_dir()`（`str | None` ✗）⇒ 换名 **`_cur_art`** ✓
+     （语义也更清楚：这里问的是"**当前**产物目录"✓）；
+  4. `_save_compose_attr(dir_path: str, …)` 的注解**比实现窄** ✗ —— 函数体第一句就是
+     `if not dir_path: return` ✓ ⇒ 补成 **`str | None`** ✓
+     （这类"注解与实现不一致"和 2.10.81 的 `chip_run(prices=…)` 是同一类问题 ✓）。
+- **热路径验证（`qlib_engine` 是回测主循环 ✓，一步没省）**：
+  · **引擎 NAV 指纹 16 条全绿** ✓（6 配置精确指纹未变 ⇒ 改名与注解都没动数值 ✓）；
+  · 引擎/图表/产物相关回归 **251 passed** ✓ ｜ 体检 **10 passed** ✓ ｜
+  · `mypy` **no issues found in 52 source files** ✓ ｜ `ruff` **0** ✓ ｜ CI ✓。
+- **类型安全评分** ✓：**9.0 → 9.3**（覆盖 20% → **54%**，两次收尾共 +34pp ✓）。
+
 ## [2.10.89] - 2026-10-21
 
 ### Changed（**"ndarray 形状梳理"一轮修完 10 条** ✓ —— mypy **47 → 50 个源文件（≈52%）** ✓）

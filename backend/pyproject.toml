@@ -121,6 +121,13 @@ files = [
     #   · `out`/`lead` 先 1-D 再赋 `np.where(...)`（形状未知）✗ ⇒ 显式声明 `out: np.ndarray` ✓（3 处）；
     #   · ⭐ `event_study` 的局部 `lag` **遮蔽了同名参数**（成交时点 ✓）✗ ⇒ 改名 `lag_arr` ✓（2 处）；
     #   · `searchsorted` 返回类型随入参变 ✗ ⇒ `np.atleast_1d(...)` 明确成 1-D 再按下标取 ✓。
+    # ★ v2.10.90（2026-10-21）：**最后两个"要读数据流"的文件也收进来了** ✓
+    #   `charts.py` 6 条 = `dates`/`bench` 本就是 `Any | None`（`p.get()` ✓）⇒ 声明 `list[Any]` ✓；
+    #   `qlib_engine.py` 7 条 = `None` 默认值(3) + 空列表缺注解(2) + `art_dir` 同名复用(1)
+    #   + `_save_compose_attr` 的 `dir_path` 注解偏窄(1) ✓ —— **全部不改数值逻辑** ✓。
+    #   ⇒ 覆盖面 **50 → 52 个源文件（≈54%）** ✓。
+    "app/engine/charts.py",
+    "app/engine/qlib_engine.py",
     "app/factors/ops_ext.py",
     "app/factors/ops_seg.py",
     "app/factors/event_study.py",

@@ -5,6 +5,7 @@
 纯绘图逻辑，依赖 BacktestRequest / BacktestResult / utils._add_period。
 """
 import os
+from typing import Any
 
 from ..models.backtest import BacktestRequest, BacktestResult
 from .utils import _add_period
@@ -39,9 +40,15 @@ def _save_curve_snapshot(dir_path: str, req: BacktestRequest, result: BacktestRe
         if not nav:
             return
 
-        dates = [p.get("date") for p in nav]
+        # ★ v2.10.90：**显式 `list[Any]`** ✓ —— `p.get(...)` 返回的是 `Any | None` ✗，
+        #   mypy 会把整个列表推成 `list[Any | None]` ✓ ⇒ 传给 `ax.plot()` / `set_xticks()`
+        #   就报"要 float/Buffer、给了可能含 None 的列表" ✗（6 条错误全在这里 ✓）。
+        #   ⚠ 这里**不筛掉 None** ✓：`dates` 元素来自 `nav[i]["date"]`（本应有值 ✓），
+        #     真为 None 时 matplotlib 本来就画不出来 ⇒ 让它在**运行时**暴露更好 ✗→✓
+        #     （若在这里静默过滤，曲线和图例会**错位** ✓ —— 那才是更糟的 bug ✗）。
+        dates: list[Any] = [p.get("date") for p in nav]
         values = [float(p.get("value", 1.0)) for p in nav]
-        bench = [p.get("benchmark") for p in nav]
+        bench: list[Any] = [p.get("benchmark") for p in nav]
 
         # 收集结果指标与参数
         metrics = []

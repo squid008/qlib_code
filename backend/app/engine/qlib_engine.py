@@ -327,10 +327,13 @@ def run_backtest(req: BacktestRequest, work_dir: Optional[str] = None,
 
     # 生成净值曲线 + 参数快照图（存入 artifacts）
     _report(96, "生成回测曲线快照...")
-    art_dir = _get_artifact_dir()
-    if art_dir:
-        _save_curve_snapshot(art_dir, req, result)
-        _save_result_json(art_dir, result)
+    # ★ v2.10.90：换名 `_cur_art` ✓ —— 本函数上文（L216）已有 `art_dir`（str 型），
+    #   而 `_get_artifact_dir()` 返回 `str | None` ⇒ 复用同名变量会被判
+    #   "把 str|None 赋给 str" ✓。改名后语义也更清楚：这里问的是**当前**产物目录 ✓。
+    _cur_art = _get_artifact_dir()
+    if _cur_art:
+        _save_curve_snapshot(_cur_art, req, result)
+        _save_result_json(_cur_art, result)
 
     _report(100, "完成")
     return result
@@ -653,8 +656,8 @@ def _seg_prog(idx: int, total: int, frac: float) -> float:
     return round(lo + (hi - lo) * frac, 2)
 
 
-def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str = None,
-                          prog: float = None, universe=None, span=None) -> None:
+def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str | None = None,
+                          prog: float | None = None, universe=None, span=None) -> None:
     """信号合成（硬规则闸门 / Meta-Gate / 触发叠加，默认全关）：训练后覆盖该 recorder 的回测信号。
 
     single 与滚动（rolling，每段）共用：主模型 SignalRecord.generate() 之后调用。
@@ -1101,8 +1104,8 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
     _report(15, "滚动训练共 %d 段" % total)
 
     # 汇总结果（连续账户方案：下一段期初 = 上一段期末，账户资金自然延续）
-    all_nav = []          # 全局净值曲线（相对初始账户 1.0 的累计）
-    all_trades = []       # 全部调仓记录
+    all_nav: list = []          # 全局净值曲线（相对初始账户 1.0 的累计）
+    all_trades: list = []       # 全部调仓记录
     seg_results = []      # 每段的独立结果
     # 分层回测 / IC 分析收集器
     layer_segments = []   # 每段分层数据 {segment, groups}

@@ -580,7 +580,9 @@ def _assign_backtest_seq(dir_path: str):
             logger.warning("分配回测序号失败 %s: %s", dir_path, e)
 
 
-def _save_compose_attr(dir_path: str, seg_label, info: dict) -> None:
+def _save_compose_attr(dir_path: str | None, seg_label, info: dict) -> None:
+    # ★ v2.10.90：`dir_path` 允许 None ✓ —— 函数体第一句就是 `if not dir_path: return` ✓，
+    #   而调用方传的是 `_get_artifact_dir()`（可能为 None ✓）⇒ 注解补齐 ✓。
     """把信号合成（Meta-Gate / 触发叠加 / 硬规则）的归因结果**按段累积**写入 `compose.json`。
 
     v1.19.72（用户 2026-09-16 报）：「我勾了 Meta-Gate 风控，训练产物里没有这块结果？不知道机器
