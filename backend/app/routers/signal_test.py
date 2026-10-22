@@ -338,6 +338,13 @@ def run(req: SignalTestRequest) -> Dict:
     # ================= 模式②：聚宽成交明细 =================
     if res.kind == "jq_trades":
         tr = res.trades
+        # ★ v2.11.34：**判空** ✗→✓ —— `ParseResult.trades` 是 `Optional` ✓，
+        #   而这里默认它一定有（`kind == "jq_trades"` ✓）⇒ 真出问题时原写法是
+        #   `AttributeError: 'NoneType' object has no attribute 'min'` ✗（用户看不懂 ✓）。
+        #   给一句**能照做**的错 ✓。
+        if tr is None or not len(tr):
+            raise HTTPException(status_code=400,
+                                detail="成交明细为空（识别为聚宽明细但没解析出任何成交行）")
         start = str(tr["date"].min().date())
         end = str(tr["date"].max().date())
         codes = sorted(set(tr["code"]))
@@ -477,6 +484,9 @@ def run(req: SignalTestRequest) -> Dict:
 
     # ================= 模式①：信号清单 =================
     sig = res.signals
+    # ★ v2.11.34：**判空** ✓（同上 ✓ —— `signals` 也是 `Optional` ✓）
+    if sig is None or not len(sig):
+        raise HTTPException(status_code=400, detail="信号清单为空（没解析出任何信号行）")
     ev = normalize_events(sig[sig["side"] > 0])
     if not len(ev):
         raise HTTPException(status_code=400, detail="没有解析出任何买入信号")
@@ -760,7 +770,7 @@ def run(req: SignalTestRequest) -> Dict:
         except Exception as e:  # 批次信息异常不影响其它方案
             _log_swallowed("signal_test.py", e)
             pass
-        bt = run_backtest(sig, panel, hold_days=horizon, fill=req.fill, cost=req.cost,
+        bt = run_backtest(sig, panel, hold_days=horizon, fill=_fill, cost=req.cost,
                           capital=req.capital, strict_limit=req.strict_limit,
                           # ★ T1（v2.8.6）：涨停判定口径透传 ✓（`None` = 老口径 ✓ 逐位不变 ✓）
                           limit_judge=(req.limit_judge or "legacy"),
@@ -775,7 +785,7 @@ def run(req: SignalTestRequest) -> Dict:
             try:
                 from ..signals.period_roll import merge_into as _merge_pr
                 from ..signals.period_roll import run_period_roll as _run_pr
-                bt = _merge_pr(bt, _run_pr(sig, panel, fill=req.fill, cost=req.cost,
+                bt = _merge_pr(bt, _run_pr(sig, panel, fill=_fill, cost=req.cost,
                                            capital=req.capital,
                                            strict_limit=req.strict_limit))
             except Exception as _pre:                     # noqa: BLE001

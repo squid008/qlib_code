@@ -190,6 +190,8 @@ files = [
     "app/signals/period_roll_state.py",
     # ★ v2.11.33：`period_roll.py` 108 条错清零（其中 108 条是我 v2.11.29 自己造成的 ✓）
     "app/signals/period_roll.py",
+    # ★ v2.11.34：`routers/signal_test.py` 14 条清零（含"漏用 _fill"那个真 bug ✓）
+    "app/routers/signal_test.py",
     # ★ v2.11.12：`batch_even` 的信号折叠（纯函数 ✓）
     "app/signals/batch_execs.py",
     # ★ v2.11.13：逐日循环的初始状态（含"按票记持有天数"的口径 ✓）
