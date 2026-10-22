@@ -41,6 +41,8 @@ import pandas as pd
 # ⚠ 别把说明写进 `noqa:` 里面 ✗（ruff 会报 "Invalid noqa directive" ✓，2026-10-18 实测 ✓）。
 # ★ v2.11.12（技术债 P1-#3 第十四刀）：`batch_even` 的信号折叠（纯函数 ✓）
 from .batch_execs import build_batch_execs  # noqa: E402
+# ★ v2.11.13（第十五刀）：逐日循环的初始状态（含"按票记持有天数"的口径 ✓）
+from .batch_state import init_batch_state  # noqa: E402
 
 from .matching import (                       # noqa: E402
     FILL_LAG as _FILL_LAG,
@@ -987,30 +989,23 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         return BtResult(diag={"error": _sig_err})
     share = 1.0 / max(1, len(buckets))
 
-    cash = {b: float(capital) * share for b in buckets}
-    sh: Dict[str, Dict[int, int]] = {b: {} for b in buckets}
-    basis: Dict[str, Dict[int, float]] = {b: {} for b in buckets}
-    # ★★ v2.1.51：**连续持有口径**（用户 2026-10-12："统一成连续持有" ✓）——
-    #   原来是 `(批, 列号) → 建仓日` ✗ ⇒ 同一只票被多个批次连续持有时**每批各算一次** ✗
-    #   （量出来恒 ≈ h = 60 ✓ 但"平均持有"读起来像"只持 60 天" ✗）。
-    #   现在按**票**记：`entry_c` = 首次建仓日（所有批次合计从 0 → >0 时 ✓）、
-    #   `nhold` = 有**几个批次**还持有它 ✓（归零才结算一笔 ✓）、`pnl_c` = 现金净额累计 ✓。
-    entry_c: Dict[int, int] = {}
-    nhold: Dict[int, int] = {}
-    pnl_c: Dict[int, float] = {}
-    sell_q: Dict[Tuple[str, int], Tuple[int, str]] = {}
-    # 待**减仓**（份数变少 ⇒ 超配部分要卖）：(批, 列号) → (决策日, 目标份数, 当期总份数)
-    #   ⚠ 与 sell_q（移出名 ⇒ 全卖）分开：一个是"卖掉多出来的部分"、一个是"清仓"。
-    #   跌停/停牌当天卖不出时登记在此、逐日重试（价格在变 ⇒ 每次都按当前权益重算目标）。
-    trim_q: Dict[Tuple[str, int], Tuple[int, float, float]] = {}
-    trades: List[dict] = []
-    rejects: List[dict] = []
-    nav_dates, nav_vals = [], []
-    fee_sum = 0.0
+    # ★ v2.11.13（技术债 P1-#3 第十五刀 ✓）：初始状态整块搬去
+    #   `signals/batch_state.init_batch_state` ✓ —— 那里写清了「现金按批次均分」
+    #   与「持有天数按**票**记（不是按 (批次,票)）」两条口径 ✓，以及 sell_q / trim_q 的区别 ✓。
+    _S = init_batch_state(capital, buckets)
+    share = _S["share"]
+    cash = _S["cash"]
+    sh = _S["sh"]
+    basis = _S["basis"]
+    entry_c, nhold, pnl_c = _S["entry_c"], _S["nhold"], _S["pnl_c"]
+    sell_q, trim_q = _S["sell_q"], _S["trim_q"]
+    trades, rejects = _S["trades"], _S["rejects"]
+    nav_dates, nav_vals = _S["nav_dates"], _S["nav_vals"]
+    fee_sum = _S["fee_sum"]
     wins = losses = 0
     n_refresh = n_defer_sell = 0
-    hold_sum = hold_n = 0                  # 已实现持有的交易日合计 / 笔数（avg_hold_days）
-    min_cash = float(capital)
+    hold_sum = hold_n = 0
+    min_cash = _S["min_cash"]
 
     def _log_trade(i, b, c, side, qty, px, reason):
         nonlocal fee_sum, wins, losses, hold_sum, hold_n

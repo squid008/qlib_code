@@ -142,6 +142,8 @@ files = [
     "app/signals/period_roll_buckets.py",
     # ★ v2.11.12：`batch_even` 的信号折叠（纯函数 ✓）
     "app/signals/batch_execs.py",
+    # ★ v2.11.13：逐日循环的初始状态（含"按票记持有天数"的口径 ✓）
+    "app/signals/batch_state.py",
     "app/factors/event_study_stages.py",
     "app/factors/event_study.py",
     "app/factors/seg_ops.py",
