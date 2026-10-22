@@ -134,6 +134,8 @@ files = [
     # ★ v2.11.3：从 `routers/factors_single.py` 抽出的入参校验层 ✓（新模块第一天进闸门 ✓）
     "app/routers/factors_single_validate.py",
     "app/routers/factors_single_state.py",
+    # ★ v2.11.5：覆盖率口径（纯函数 ✓，新模块第一天进闸门 ✓）
+    "app/factors/single_test_coverage.py",
     "app/factors/event_study_stages.py",
     "app/factors/event_study.py",
     "app/factors/seg_ops.py",

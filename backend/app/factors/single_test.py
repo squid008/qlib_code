@@ -38,6 +38,8 @@ from .event_study import build_event_stats, compute_baseline_curves
 # ★ v2.7.0：离场公式若含"入场价"（ENTRY_PRICE / ENTRY_FIRST ⇒ 回测状态量 ✓）⇒ 拆成
 #   「预计算列（交给面板、任意字段/算子都能用 ✓）+ 骨架（回测逐日代入 ✓）」，见 factors/exit_rules.py ✓
 from .exit_rules import split_entry_rule, uses_entry
+# ★ v2.11.5：覆盖率口径（含那次"同因子不同覆盖率"事故的来历 ✓）搬去独立模块 ✓
+from .single_test_coverage import coverage_of
 
 from ..logger import _log_swallowed  # noqa: E402
 
@@ -551,36 +553,15 @@ def _test_one(
         return result
 
     # ---- 覆盖率（v1.21.6 改口径：分母换成「CLOSE 有效行」✓）----------------------
-    # ★ 为什么不能再用 `df[col].notna().mean()`（旧口径 ✗，2026-10-10 追查实锤）：
-    #   面板行集 = 本次请求**全部参与字段覆盖区间的并集**（`panel_expr._union_layout` ✓，
-    #   为对齐 qlib `D.features` 的 union 行集 ✓）；而 `fin_*` 物化 bin 的区间**铺满整条历法**
-    #   （起点 = 该股 pit 最早公告日、含**上市前**报告期：招股书披露日如宁德时代
-    #   2017-11-10 披露 2014q4~2017q2 ✓；001267 甚至有 1996-1997 的前身财务 ✗）⇒
-    #   面板里存在大量"有财务值、**没有行情**"的死行（实测 cn_data 三因子 203,594 行 /
-    #   cn_data2 92,420 行 ✗）⇒ 旧口径下：**同一个因子、同一参数，只因同桌多测了一个用
-    #   `fin_*` 的因子，覆盖率就从 99.75% 掉到 98.16%（cn_data 96.04%）** ✗ —— 用户拿它
-    #   对比两套数据源时会被误导成"数据有毛病"（2026-10-10 实际发生过 ✓）。
-    #   新口径 = **因子非空行 ÷ CLOSE 有效行**（"在有行情的交易日里，该因子有多少比例有值" ✓）：
-    #   · 分母与"同桌因子 / 字段并集"无关 ⇒ 同一因子在任何数据集、任何组合下都可直接对比 ✓；
-    #   · 真正有信息量的缺失仍照报：金融股无毛利 ⇒ `FINANCE(5)` 覆盖率 < 100% ✓、
-    #     历史不足（预热关掉时）⇒ < 100% ✓、退市/停牌（CLOSE 空）行不再参与分母 ✓。
-    #   ⚠ 统计量**本来就**不受死行影响（`_sub_pos` = 因子有效 ∩ LABEL 有效 ✓）⇒ 本次只动
-    #     这一列显示值，触发/收益/IC/事件研究一律不变 ✓（已用进程内挂钩逐位核对 ✓）。
-    #   CLOSE = `$close/$factor`（后复权真实价，与复权方式无关 ✓）⇒ 分母在前/后复权下一致 ✓。
-    fv = df[col]
-    if "CLOSE" in df.columns:
-        _cl = df["CLOSE"].to_numpy(copy=False)
-        _ok_cl = ~pd.isna(_cl)
-        _den = int(np.count_nonzero(_ok_cl))
-        if _den > 0:
-            _num = int(np.count_nonzero(_ok_cl & ~pd.isna(fv.to_numpy(copy=False))))
-            result["coverage"] = round(_num / _den, 4)
-            result["coverage_den"] = _den            # 分母（CLOSE 有效行），便于自查/测试 ✓
-        else:
-            result["coverage"] = None
-            result["coverage_den"] = 0
-    else:                                            # 兜底（没有 CLOSE 列时退回旧口径 ✓）
-        result["coverage"] = round(float(fv.notna().mean()), 4)
+    # ★ v2.11.5：**口径来历（含那次"同因子不同覆盖率"的事故）已搬去
+    #   `factors/single_test_coverage.py` 的模块 docstring** ✓ —— 那里讲清了
+    #   "为什么分母不能用面板总行数"（`fin_*` 铺满历法 ⇒ 死行撑大分母 ✓）。
+    # ★ v2.11.5（技术债 P1-#3 第十一刀 ✓）：口径实现搬去
+    #   `factors/single_test_coverage.coverage_of` ✓（含那次口径 bug 的完整来历 ✓）
+    _cov, _cov_den = coverage_of(df, col)
+    result["coverage"] = _cov
+    if _cov_den is not None:                         # 兜底口径没有分母 ⇒ 不写这个键 ✓（与原来一致 ✓）
+        result["coverage_den"] = _cov_den
 
     # v1.18.34 性能：位置索引化。原实现在 _exclude / 分位段里对百万行做 `df.loc[g.index]`
     # （MultiIndex 对齐）——全 A 单因子 `_test_one`（20s）cProfile 实测：`Index._get_indexer`
