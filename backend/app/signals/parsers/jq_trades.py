@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any, Dict
 
 import pandas as pd
 
@@ -64,7 +65,9 @@ def parse_jq_trades(raw, filename: str = "") -> ParseResult:
             n_drop += 1
             res.add_issue(i, "%s | %s" % (raw_date, raw_code), "日期无法识别")
             continue
-        info = normalize_code(raw_code)
+        # `raw_code` 可能为 None（行缺列 ✓）⇒ 转空串交给它自己报"标的无法识别" ✓，
+        # 比直接 AttributeError 好 ✓（mypy 也正是这么提示的 ✓）。
+        info = normalize_code(str(raw_code or ""))
         if info.qlib_code is None:
             n_drop += 1
             res.add_issue(i, "%s | %s" % (raw_date, raw_code), (info.issues or ["标的无法识别"])[0])
@@ -129,7 +132,8 @@ def parse_jq_trades(raw, filename: str = "") -> ParseResult:
 
 def _trade_stats(tr: pd.DataFrame, n_drop: int, n_cancel: int, n_mid: int, n_total: int) -> dict:
     """流水统计：笔数、费率反推、初始资金推断、成交价口径分布。"""
-    st = {
+    # ★ v2.11.35：显式 `Dict[str, Any]` ✓（同上：统计值混型 ✓，不注解会被推成 `dict[str, int]` ✗）
+    st: Dict[str, Any] = {
         "rows_total": n_total, "rows_valid": int(len(tr)), "dropped": int(n_drop),
         "cancel_rows": int(n_cancel), "intraday_orders": int(n_mid),
     }

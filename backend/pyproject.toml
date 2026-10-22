@@ -192,6 +192,9 @@ files = [
     "app/signals/period_roll.py",
     # ★ v2.11.34：`routers/signal_test.py` 14 条清零（含"漏用 _fill"那个真 bug ✓）
     "app/routers/signal_test.py",
+    # ★ v2.11.35：两个聚宽解析器的 20 条 dict 混型错清零（同源 ✓）
+    "app/signals/parsers/jq_trades.py",
+    "app/signals/parsers/jq_perf.py",
     # ★ v2.11.12：`batch_even` 的信号折叠（纯函数 ✓）
     "app/signals/batch_execs.py",
     # ★ v2.11.13：逐日循环的初始状态（含"按票记持有天数"的口径 ✓）

@@ -24,6 +24,25 @@
 
 ---
 
+## [2.11.35] - 2026-10-22
+
+### Fixed（**两个聚宽解析器 20 条同源错清零** ✓ —— mypy **92/112（82%）** ✓）
+
+- **同源** ✓：`jq_trades`(11) + `jq_perf`(9) 全是 **`dict` 未注解** ✗ ⇒
+  mypy 按**首个字面量**推成 `dict[str, int]` ✓，而后面 `.update()` 塞的是
+  **str（日期）/ float（净值）/ None（基准缺失）** ✓ ⇒ 报一堆 `dict-item` ✓。
+  ⇒ 两处都标 `Dict[str, Any]` ✓（**这些值本来就是混型** ✓，注解是在**描述事实** ✓）。
+- **顺带修一处入参** ✓：`normalize_code(raw_code)` 里 `raw_code` 可能是 `None`（行缺列 ✓）
+  ⇒ 原写法会 `AttributeError` ✗ ⇒ 改 `str(raw_code or "")` ✓，
+  交给它自己报 **\"标的无法识别\"** ✓（**能照做**的错，比崩溃好 ✓）。
+- **验证** ✓：`mypy` **92 个源文件 0 错误** ✓ ｜ parser/jq/perf/signal/router 回归
+  **302 passed** ✓ ｜ `ruff` **0** ✓ ｜ CI ✓。
+- **⚠ 又踩了一次"内联 `python -c`"** ✗：想一次改两文件 ✓，结果 PowerShell 把
+  嵌套引号撕碎（`SyntaxError: unterminated string literal` ✓）⇒ 白跑一轮 ✓。
+  > 这条**已经写进记忆里**（`feedback_refactor_and_tooling_pitfalls.md` ①）✓ 还是犯了 ✗
+  > ⇒ 下次改多文件**一律**用 `replace_in_file` 或**脚本文件** ✓（记忆条目已被这次验证为"必须遵守" ✓）。
+- **账面** ✓：mypy **90 → 92 个文件（≈82%）** ✓。
+
 ## [2.11.34] - 2026-10-22
 
 ### Fixed（**`routers/signal_test.py` 14 → 0 条** ✓ —— 其中**修出一个真 bug** ✓）

@@ -20,6 +20,8 @@
 """
 from __future__ import annotations
 
+from typing import Any, Dict
+
 import numpy as np
 import pandas as pd
 
@@ -79,7 +81,10 @@ def parse_jq_perf(raw, filename: str = "") -> ParseResult:
 
 
 def _perf_stats(pf: pd.DataFrame, n_drop: int, n_total: int) -> dict:
-    st = {"rows_total": n_total, "rows_valid": int(len(pf)), "dropped": int(n_drop)}
+    # ★ v2.11.35：显式 `Dict[str, Any]` ✓ —— 不加注解时 mypy 按**首个字面量**推成
+    #   `dict[str, int]` ✗，后面 `.update()` 塞 str/float/None 就报 9 条 `dict-item` ✓
+    #   （这些值本来就是混型 ✓：日期是 str、净值是 float、基准缺失是 None ✓）。
+    st: Dict[str, Any] = {"rows_total": n_total, "rows_valid": int(len(pf)), "dropped": int(n_drop)}
     if not len(pf):
         return st
     nav = pf["nav"].to_numpy(dtype=float)
