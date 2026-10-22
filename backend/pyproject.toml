@@ -136,6 +136,8 @@ files = [
     "app/routers/factors_single_state.py",
     # ★ v2.11.5：覆盖率口径（纯函数 ✓，新模块第一天进闸门 ✓）
     "app/factors/single_test_coverage.py",
+    # ★ v2.11.6：离场输入准备（列轴对齐 / 整手 / 形状自检 ✓）
+    "app/signals/period_roll_exit_prep.py",
     "app/factors/event_study_stages.py",
     "app/factors/event_study.py",
     "app/factors/seg_ops.py",

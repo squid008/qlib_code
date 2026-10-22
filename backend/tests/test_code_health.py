@@ -34,7 +34,11 @@ BIG_DEBT = {
     # ⚠ 2026-10-18：P2-A 收尾给这两处各加了几行日志（+5 / +3 ✓），上限随之上调 ✓
     "routers/signal_test.py::run": 539,
     "factors/single_test.py::run_single_factor_tests": 539,
-    "signals/period_roll.py::run_period_roll": 477,
+    # ★ v2.11.6（技术债 P1-#3 第十二刀 ✓）：离场输入准备 50 行抽去
+    #   `signals/period_roll_exit_prep.py` ✓ ⇒ **477 → 438** ✓（棘轮收紧 ✓）。
+    #   ⚠ 它仍是 438 行的逐日循环本体 ✓ ⇒ 要过 300 还得再抽 3~4 块
+    #     （内层闭包 `_acc`/`_sell`/`_buy` 与逐日循环强耦合 ✗，是后面几轮的事）。
+    "signals/period_roll.py::run_period_roll": 438,
     # ★★ v2.11.3~2.11.4（技术债 P1-#3 第九、十刀 ✓）：`single_factor_test` **391 → 299** ✓
     #   两刀抽出 `factors_single_validate.py`（入参校验 77 行 ✓）与
     #   `factors_single_state.py`（运行态契约 ✓）⇒ **降到警戒线以下 ⇒ 本条下线** ✓。
