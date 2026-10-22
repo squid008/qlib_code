@@ -24,7 +24,14 @@ from __future__ import annotations
 
 import os
 
+import pandas as pd
+
+from ..engine.limits import mark_limit_up  # noqa: E402
 from ..logger import _log_swallowed  # noqa: E402
+# ⚠ 必须从 **`engine/limits.py`**（真正出处 ✓）取 `mark_limit_up`，
+#   而**不能** `from .event_study import mark_limit_up` ✗ ——
+#   后者会造成 **`event_study` ↔ `event_study_stages` 循环引用**
+#   （`event_study` 顶层 import 本模块 ✓）⇒ 导入期直接炸 ✗。
 
 
 def _resolve_warmup(warmup_days) -> int:
@@ -41,6 +48,63 @@ def _resolve_warmup(warmup_days) -> int:
             _log_swallowed("event_study.py", e)
             warmup_days = 250
     return max(0, int(warmup_days or 0))
+
+
+def _build_triggers(df, *, exclude_limit_up_signal: bool, exclude_limit_up_trade: bool,
+                    exclude_suspended: bool, exclude_st_t1: bool = False,
+                    exclude_stock_gem: bool = False, exclude_stock_kcb: bool = False):
+    """从因子面板提 0/1 触发样本并剔除 ⇒ `(trig, ev, n_raw, inst_pos, dt_pos, 错误文案)` ✓。
+
+    剔除口径**与 `single_test._test_one._exclude` 完全一致** ✓
+    （信号日涨停 / 成交日涨停 / T+1 停牌 / T+1 ST / 创业板 / 科创板 ✓）——
+    两条链口径不一致的话，"同一因子在单因子测试与事件研究里样本数不同"✓，
+    而这种差异**没有任何地方会报错** ✗。
+
+    ⚠ 两个"空样本"必须给出**不同的**文案 ✓（源码原样保留）：
+    · 剔除前就空 ⇒ 因子在区间内根本没触发（**可能是表达式写错** ✓）；
+    · 剔除后空 ⇒ 触发了但全被涨停/停牌/ST/板块过滤掉（**是过滤太严** ✓）。
+    合成一句话的话，用户会照着错的方向排查 ✗。
+    """
+    from .single_test import _inst_codes       # 懒导入：避免 `single_test` ↔ 本模块的循环引用 ✓
+
+    sub = df[df["F0"].notna()]
+    trig = sub[sub["F0"] > 0.5]
+    if len(trig) == 0:
+        return None, None, 0, 0, 0, "该因子在区间内没有触发样本（非 0/1 信号或条件从未满足）"
+
+    def _exclude(g):
+        if len(g) == 0:
+            return g
+        if exclude_limit_up_signal and "CLOSE" in df.columns and "CHANGE" in df.columns:
+            g = g[~mark_limit_up(df.loc[g.index], "CLOSE", "CHANGE")]
+        if exclude_limit_up_trade and "T1_CLOSE" in df.columns and "T1_CHANGE" in df.columns:
+            g = g[~mark_limit_up(df.loc[g.index], "T1_CLOSE", "T1_CHANGE")]
+        if exclude_suspended and "T1_CLOSE" in df.columns:
+            g = g[~df.loc[g.index, "T1_CLOSE"].isna()]
+        if (exclude_st_t1 or exclude_stock_gem or exclude_stock_kcb) and len(g):
+            codes = _inst_codes(df.loc[g.index])
+            keep = pd.Series(True, index=g.index)
+            if exclude_st_t1 and "T1_IS_ST" in df.columns:
+                keep &= ~(df.loc[g.index, "T1_IS_ST"] > 0.5)
+            if exclude_stock_gem:
+                keep &= ~codes.str.startswith("SZ30")
+            if exclude_stock_kcb:
+                keep &= ~codes.str.startswith("SH688")
+            g = g[keep]
+        return g
+
+    n_raw = int(len(trig))
+    trig = _exclude(trig)
+    if len(trig) == 0:
+        return None, None, n_raw, 0, 0, "触发样本在剔除后为空（全部落在涨停/停牌/ST/板块过滤内）"
+
+    inst_pos = trig.index.names.index("instrument")
+    dt_pos = trig.index.names.index("datetime")
+    ev = pd.DataFrame({
+        "code": trig.index.get_level_values(inst_pos).astype(str),
+        "dt": pd.to_datetime(trig.index.get_level_values(dt_pos)),
+    }).reset_index(drop=True)
+    return trig, ev, n_raw, inst_pos, dt_pos, None
 
 
 def _cache_lookup(params: dict, *, use_cache: bool, cache_mod, prog, timings):

@@ -28,7 +28,7 @@ import warnings
 from typing import Optional
 
 # ★ v2.11.1（技术债 P1-#3）：`run_event_study` 的两个前置阶段搬去独立模块 ✓
-from .event_study_stages import _cache_lookup, _resolve_warmup
+from .event_study_stages import _build_triggers, _cache_lookup, _resolve_warmup
 
 import numpy as np
 import pandas as pd
@@ -780,44 +780,21 @@ def run_event_study(
     _check()
 
     # ---------- 4. 触发样本 + 剔除（口径同 _test_one._exclude） ----------
+    # ★ v2.11.2：整块搬去 `event_study_stages._build_triggers` ✓（技术债 P1-#3 第八刀 ✓）
+    #   ⚠ 两种"空"仍返回**不同文案** ✓（剔除前空 = 表达式可能写错；剔除后空 = 过滤太严 ✓），
+    #     合成一句会让用户照着错的方向排查 ✗。
     _prog(35.0, "提取触发样本...")
-    sub = df[df["F0"].notna()]
-    trig = sub[sub["F0"] > 0.5]
-    if len(trig) == 0:
-        return {"error": "该因子在区间内没有触发样本（非 0/1 信号或条件从未满足）"}
-
-    def _exclude(g: pd.DataFrame) -> pd.DataFrame:
-        if len(g) == 0:
-            return g
-        if exclude_limit_up_signal and "CLOSE" in df.columns and "CHANGE" in df.columns:
-            g = g[~mark_limit_up(df.loc[g.index], "CLOSE", "CHANGE")]
-        if exclude_limit_up_trade and "T1_CLOSE" in df.columns and "T1_CHANGE" in df.columns:
-            g = g[~mark_limit_up(df.loc[g.index], "T1_CLOSE", "T1_CHANGE")]
-        if exclude_suspended and "T1_CLOSE" in df.columns:
-            g = g[~df.loc[g.index, "T1_CLOSE"].isna()]
-        if (exclude_st_t1 or exclude_stock_gem or exclude_stock_kcb) and len(g):
-            codes = _inst_codes(df.loc[g.index])
-            keep = pd.Series(True, index=g.index)
-            if exclude_st_t1 and "T1_IS_ST" in df.columns:
-                keep &= ~(df.loc[g.index, "T1_IS_ST"] > 0.5)
-            if exclude_stock_gem:
-                keep &= ~codes.str.startswith("SZ30")
-            if exclude_stock_kcb:
-                keep &= ~codes.str.startswith("SH688")
-            g = g[keep]
-        return g
-
-    n_raw = int(len(trig))
-    trig = _exclude(trig)
-    if len(trig) == 0:
-        return {"error": "触发样本在剔除后为空（全部落在涨停/停牌/ST/板块过滤内）"}
-
-    inst_pos = trig.index.names.index("instrument")
-    dt_pos = trig.index.names.index("datetime")
-    ev = pd.DataFrame({
-        "code": trig.index.get_level_values(inst_pos).astype(str),
-        "dt": pd.to_datetime(trig.index.get_level_values(dt_pos)),
-    }).reset_index(drop=True)
+    trig, ev, n_raw, inst_pos, dt_pos, _trig_err = _build_triggers(
+        df,
+        exclude_limit_up_signal=exclude_limit_up_signal,
+        exclude_limit_up_trade=exclude_limit_up_trade,
+        exclude_suspended=exclude_suspended,
+        exclude_st_t1=exclude_st_t1,
+        exclude_stock_gem=exclude_stock_gem,
+        exclude_stock_kcb=exclude_stock_kcb,
+    )
+    if _trig_err:
+        return {"error": _trig_err}
 
     # ---------- 5. 加载触发标的收盘价（仅涉及标的，数据量小） ----------
     codes = sorted(ev["code"].unique().tolist())

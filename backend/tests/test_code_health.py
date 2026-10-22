@@ -37,10 +37,11 @@ BIG_DEBT = {
     "signals/period_roll.py::run_period_roll": 477,
     "routers/factors_single.py::single_factor_test": 391,
     "signals/engine.py::run_batch_backtest": 367,
-    # ★ v2.11.1（技术债 P1-#3 第七刀 ✓）：抽出 `event_study_stages.py`（预热解析 + 缓存查表 ✓）
-    #   ⇒ **326 → 316** ✓（棘轮收紧 ✓）。⚠ 原以为能一战降到 <300 从而**下线这条** ✗ ——
-    #   实际只 −10（说明注释写多了 ✗）⇒ 还得再抽一块（"触发样本 + 剔除"约 40 行 ✓）。
-    "factors/event_study.py::run_event_study": 316,
+    # ★★ v2.11.1~2.11.2（技术债 P1-#3 第七、八刀 ✓）：`run_event_study` **326 → 293** ✓
+    #   两刀抽出 `event_study_stages.py`（预热解析 / 缓存查表 / 触发样本+剔除 ✓）
+    #   ⇒ **已降到警戒线 300 以下** ✓ ⇒ **本条从棘轮里下线** ✓（只减不增 ✓）。
+    #   ⚠ 下线 ≠ 不用管：它仍是 293 行的编排函数 ✓，**再涨回 300 会立刻被这条测试抓到** ✓
+    #     （白名单外的上限就是 `MAX_ANY = 300` ✓）。
     "factors/single_test.py::_test_one": 312,
 }
 
