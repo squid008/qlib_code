@@ -93,7 +93,13 @@ def _perf_stats(pf: pd.DataFrame, n_drop: int, n_total: int) -> dict:
                           if pf["bench_nav"].notna().any() else None),
         "excess_end_pct": (round(float(pf["excess"].iloc[-1]), 2)
                            if pf["excess"].notna().any() else None),
-        "buy_total": round(float(pf["buy_amt"].fillna(0).sum()), 2),
-        "sell_total": round(float(pf["sell_amt"].fillna(0).sum()), 2),
+        # ★ v2.11.16：**显式转数值** ✗→✓ —— 原来是 `pf["buy_amt"].fillna(0).sum()` ✓，
+        #   而这几列在聚宽 CSV 里可能是**混合 dtype（object）** ✓ ⇒ pandas 给
+        #   `FutureWarning: Downcasting object dtype arrays on .fillna` ✓，
+        #   并说明**未来版本会改这个行为** ✗ ⇒ 到那时这里会静默变成 `NaN` ✓
+        #   （`float(NaN)` 不报错 ✓，统计里只是"买卖总额 = NaN"，没人会注意到 ✗）。
+        #   ⇒ `pd.to_numeric(..., errors="coerce")` 把口径写死 ✓：非数值当缺失 ✓、再补 0 ✓。
+        "buy_total": round(float(pd.to_numeric(pf["buy_amt"], errors="coerce").fillna(0).sum()), 2),
+        "sell_total": round(float(pd.to_numeric(pf["sell_amt"], errors="coerce").fillna(0).sum()), 2),
     })
     return st

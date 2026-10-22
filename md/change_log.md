@@ -24,6 +24,30 @@
 
 ---
 
+## [2.11.16] - 2026-10-22
+
+### Fixed（**`fillna` 降级警告：未来会静默变 `NaN`** ✓ —— 上一轮跑测试时抓到的）
+
+- **症状** ✓（v2.11.15 那 3 条端到端一跑就冒）：
+  ```
+  FutureWarning: Downcasting object dtype arrays on .fillna
+  app/signals/parsers/jq_perf.py:96/97
+  ```
+  `_perf_stats` 里 `pf["buy_amt"].fillna(0).sum()` ✓ —— 这几列在聚宽 CSV 里是
+  **object dtype（混合）** ✓ ⇒ pandas 说明**未来版本会改这个行为** ✗。
+- **为什么值得修** ✓（不是"消个警告"那么简单）：
+  到行为变更后，`fillna` 不再降级 ⇒ `sum()` 可能给出 **`NaN`** ✓，
+  而 `float(NaN)` **不报错** ✓ ⇒ 统计里只是"**买卖总额 = NaN**" ✓
+  —— 页面照常显示，**没人会注意到** ✗（本项目的典型"静默错"✓）。
+- **修法** ✓：`pd.to_numeric(pf["buy_amt"], errors="coerce").fillna(0).sum()` ✓
+  —— 把口径**写死**：非数值当缺失 ✓、再补 0 ✓（旧写法靠 pandas 的隐式降级 ✓ = 靠不住 ✗）。
+- **验证** ✓：用 **`-W error::FutureWarning`** 跑（**把该警告当失败** ✓）——
+  修前必红 ✓、修后 **13 passed** ✓ ⇒ 证明真的消除了 ✓，不是"警告被过滤掉"✓。
+  另补 1 条断言把它钉住 ✓：CSV **根本没有"当日买入"列**时
+  `buy_total` / `sell_total` 仍必须是 **数字 0** ✓（不是 `NaN` ✗）。
+- **实测** ✓：本文件 **4 passed** ✓ ｜ parser/signal/router 回归 **296 passed** ✓ ｜
+  `mypy` **61 个源文件 0 错误** ✓ ｜ `ruff` **0** ✓ ｜ CI ✓。
+
 ## [2.11.15] - 2026-10-22
 
 ### Refactor + Test（**第十七刀：`signal_test.run` 508 → 501** ✓ ＋ **`/run` 首个端到端测试** ✓）

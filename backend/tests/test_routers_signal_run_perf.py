@@ -57,6 +57,23 @@ def test_official_nav_is_one_plus_pct_over_100():
         "末日净值应为 1 + 767.62/100 = 8.6762 ✓，实际 %r" % (last,))
 
 
+def test_trade_totals_are_numeric_even_without_those_columns():
+    """⭐⭐ `buy_total` / `sell_total` 必须是**数字** ✓（本 CSV 根本没有"当日买入"列 ✓）。
+
+    这条钉的是 v2.11.16 那个修复 ✓：原来写 `pf["buy_amt"].fillna(0).sum()` ✓，
+    列是 **object dtype** ⇒ pandas 报 `FutureWarning: Downcasting object dtype arrays on .fillna`
+    并说明**未来会改行为** ✗ ⇒ 到那时可能静默变 `NaN` ✓（`float(NaN)` 不报错 ✓，
+    统计里只是"买卖总额 = NaN"，**没人会注意到** ✗）。
+    ⇒ 改成 `pd.to_numeric(..., errors="coerce").fillna(0)` ✓ 把口径写死 ✓。
+    """
+    r = client.post("/api/signal-test/run", json={"content": PERF_CSV, "filename": "perf.csv"})
+    assert r.status_code == 200, r.text[:300]
+    st = r.json()["official"]["stats"]
+    for k in ("buy_total", "sell_total"):
+        assert isinstance(st.get(k), (int, float)), "%s 必须是数字 ✓，实际 %r" % (k, st.get(k))
+        assert st[k] == pytest.approx(0.0), "没有该列 ⇒ 0 ✓（不是 NaN ✗）"
+
+
 def test_empty_content_is_4xx_not_500():
     """⭐ 空内容 ⇒ **4xx**（我们明确拒绝 ✓），不许 500 ✓。"""
     r = client.post("/api/signal-test/run", json={"content": "", "filename": "empty.csv"})
