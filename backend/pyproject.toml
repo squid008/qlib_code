@@ -71,6 +71,34 @@ ignore_missing_imports = true
 #   `list[Any | None]`（日期列表里可能有 `None` ✓）的严格签名 ✓ —— 要修就得改绘图数据流 ✓
 #   （收益低、风险高 ✓）。等哪天图表要重写时一起处理 ✓。
 files = [
+    # ★ v2.11.30：**批量探明本来就干净的 23 个模块，一次收进闸门** ✓
+    #   做法（与 v2.10.81 同一套）：对每个未收录模块**单独**跑
+    #   mypy --follow-imports=silent <file>，零错误才收（避免加进去一片红）。
+    #   ⚠ 探的时候**必须正确解析 files = [...]**：我第一次用非贪婪正则，
+    #     被注释里的括号截断 ⇒ 误判 75 个未收录（实际只有 50）。
+    "app/datasource/base.py",
+    "app/datasource/factory.py",
+    "app/engine/cost_curves.py",
+    "app/engine/limits.py",
+    "app/engine/perf_metrics.py",
+    "app/engine/task_manager.py",
+    "app/exports/event_study.py",
+    "app/exports/topk.py",
+    "app/exports/xl.py",
+    "app/factors/handler.py",
+    "app/factors/holdings_index.py",
+    "app/factors/parser/ast.py",
+    "app/factors/topk_sensitivity.py",
+    "app/logger.py",
+    "app/main.py",
+    "app/metrics.py",
+    "app/routers/data.py",
+    "app/routers/datasets.py",
+    "app/routers/factors.py",
+    "app/routers/factors_state.py",
+    "app/services/task_store.py",
+    "app/signals/matching.py",
+    "app/signals/models.py",
     "app/models",
     "app/config.py",
     "app/engine/metrics.py",
