@@ -45,7 +45,7 @@ def _run(exit_cols, exit_specs=None, thresholds=0.3, progress_cb=None, exits=Non
     ST._sft_exit_curves(
         _exits=exits or [{"id": "e1", "name": "离场一", "expression": "EXIT1>0.3"},
                          {"id": "e2", "name": "离场二", "expression": "EXIT1>0.5"}],
-        df=_df(), e=None, exit_cols=exit_cols, exit_out=out, exit_specs=exit_specs,
+        df=_df(), exit_cols=exit_cols, exit_out=out, exit_specs=exit_specs,
         exit_threshold=thresholds, horizons=[2], label_cols={2: "LABEL_2"},
         progress_cb=progress_cb,
     )
@@ -102,7 +102,7 @@ def test_effect_requires_two_samples_each_side():
     df.loc[(slice(None), df.index.get_level_values("datetime")[2]), "LABEL_2"] = np.nan
     out: dict = {}
     ST._sft_exit_curves(
-        _exits=[{"id": "e1", "name": "x", "expression": "EXIT1>0.3"}], df=df, e=None,
+        _exits=[{"id": "e1", "name": "x", "expression": "EXIT1>0.3"}], df=df,
         exit_cols=["EXIT1"], exit_out=out, exit_specs=[{}], exit_threshold=0.3,
         horizons=[2], label_cols={2: "LABEL_2"}, progress_cb=None,
     )
@@ -116,7 +116,7 @@ def test_entry_dependent_path_passes_skeleton_and_series():
     df["PRE_A"] = 1.0
     out: dict = {}
     ST._sft_exit_curves(
-        _exits=[{"id": "e9", "name": "含入场价", "expression": "CLOSE<ENTRY_PRICE"}], df=df, e=None,
+        _exits=[{"id": "e9", "name": "含入场价", "expression": "CLOSE<ENTRY_PRICE"}], df=df,
         exit_cols=[None], exit_out=out, exit_specs=[{"skel": {"op": "Lt"}, "pre_exprs": ["A"],
                                                      "pre_cols": ["PRE_A"]}],
         exit_threshold=0.5, horizons=[2], label_cols={2: "LABEL_2"}, progress_cb=None,
@@ -133,7 +133,7 @@ def test_entry_dependent_path_passes_skeleton_and_series():
 def test_entry_dependent_error_is_reported_not_raised():
     out: dict = {}
     ST._sft_exit_curves(
-        _exits=[{"id": "e9", "name": "坏", "expression": "X"}], df=_df(), e=None,
+        _exits=[{"id": "e9", "name": "坏", "expression": "X"}], df=_df(),
         exit_cols=[None], exit_out=out, exit_specs=[{"error": "语法错误: 无法解析"}],
         exit_threshold=0.5, horizons=[2], label_cols={2: "LABEL_2"}, progress_cb=None,
     )
@@ -146,7 +146,7 @@ def test_blank_exit_list_reports_error(monkeypatch):
     monkeypatch.setattr(ST, "_dump_sft_error", lambda e: None)
     out: dict = {}
     ST._sft_exit_curves(
-        _exits=[{"id": "", "name": "", "expression": ""}], df=_df(), e=None,
+        _exits=[{"id": "", "name": "", "expression": ""}], df=_df(),
         exit_cols=[None], exit_out=out, exit_specs=[{}],
         exit_threshold=0.5, horizons=[2], label_cols={2: "LABEL_2"}, progress_cb=None,
     )

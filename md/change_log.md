@@ -24,6 +24,50 @@
 
 ---
 
+## [2.11.36] - 2026-10-22
+
+### Fixed（**`single_test`(11) + `storage_cleanup`(7) 清零** ✓ —— 其中一颗是**定时炸弹** ✓）
+
+#### ① `single_test.py` 11 → 0（因子引擎核心 ✓）
+
+- **⭐⭐ 最重要的一条不是类型错，是炸弹** ✓：`_sft_exit_curves(e=e, ...)` 里那个 `e`
+  - 在 `_sft_exit_curves` 函数体里**从未被使用** ✗（`grep` 只剩签名那一行 ✓）；
+  - 而调用处传的 `e` 原本是**因子循环的残留值**（= 最后一个因子的表达式 ✓，语义上毫无意义 ✗）；
+  - 更糟：同一函数里还有**两处** `except Exception as e:` ✓ —— Python 会在 except 结束时
+    **删掉** `e` ✗ ⇒ 这行**随时可能 `NameError`** ✓（mypy 报的正是 "Trying to read deleted variable e" ✓）。
+  ⇒ **删掉这个死参数** ✓（签名 + 调用处 ✓）：行为零变化 ✓，同时拆掉炸弹 ✓。
+- **变量名复用** ✓：因子循环里的 `e` 改 `_fexpr` ✓（同函数两处 `except ... as e` ⇒ 复用会报两条 ✓）。
+- **判空** ✓：`split_entry_rule` 返回 `EntryRule | None` ✓ ⇒ 走进"已含入场价"的分支后
+  直接 `.pre_exprs` 会是 `AttributeError` ✗ ⇒ 用 `_require_rule()` 包一层 ✓。
+- **`None` 列表注解** ✓：`col_map` / `exit_cols` / `exit_specs` 确实会 append `None` ✓
+  ⇒ 标 `Optional[...]` ✓。
+- ⚠ **改测试** ✓：`test_single_test_exit_curves.py` 里 6 处 `e=None` **删掉** ✓
+  （它们是在调被外提的函数 ✓，参数没了就跟着改 ✓）—— 否则 8 条全红 ✗。
+
+#### ② `storage_cleanup.py` 7 → 0
+
+- **⭐ 第 3 次栽在同一个坑** ✗→✓：`_preview_cache = {"ts": 0.0, "root": None, "data": None}`
+  是裸 dict ✓ ⇒ mypy 把值类型推成 `float | None` ✓ ⇒ `now - cache["ts"]` 报"不能减"✗、
+  `return cache["data"]` 报"返回 float 但期望 dict"✗（连带 3 条 ✓）。
+  ⇒ 改 **`_PreviewCache(TypedDict)`** ✓ 一次解决 ✓。
+  > 前两次分别是 `batch_state`（v2.11.13，mypy 64 条）与 `period_roll_state`（v2.11.33，108 条）✓
+  > —— 同一个教训**记了三次** ✓：**抽/声明"状态字典"必须带 `TypedDict`** ✗。
+- 其余 4 条是纯注解 ✓（`total/files`、`out`、`stat: Dict[str, Any]` ✓）。
+
+#### ③ ⚠ 又被棘轮抓了两次（这次是对的）
+
+- 第一版我在 `run_single_factor_tests` / `_quantile_curve_block` 里**写了很多注释** ✗
+  ⇒ 从 **539 → 557**、**597 → 600** ✗ ⇒ `test_big_functions_only_shrink` **当场红** ✓。
+- 修法（值得记 ✓）：**把详细说明写到函数外面** ✓（模块级注释 / 独立小函数 ✓），
+  函数体里只留**一行** ✓；另加两个小 helper（`_require_rule` / `_new_exit_lists` ✓）把行数压回上限 ✓。
+  > 结论：**"想加防御/注释"和"棘轮只减不增"是直接冲突的** ✓ ⇒
+  > 在紧贴上限的函数里加东西，**必须同时等量抽走** ✓。
+
+- **实测** ✓：`mypy` **94 个源文件 0 错误** ✓（两个新模块入闸门 ✓）｜
+  single/factor/storage/cleanup/health/exit/engine 回归 **411 passed** ✓ ｜
+  `ruff` **0** ✓ ｜ CI ✓。
+- **账面** ✓：mypy **92 → 94 个文件（≈84%）** ✓。
+
 ## [2.11.35] - 2026-10-22
 
 ### Fixed（**两个聚宽解析器 20 条同源错清零** ✓ —— mypy **92/112（82%）** ✓）

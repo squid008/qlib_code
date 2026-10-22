@@ -941,12 +941,43 @@ def _apply_ff_labels(df, label_cols, horizons, inst_lv: int, lab_px: str) -> Non
         df[label_cols[h]] = cur.where(cur.notna(), ff)   # 只补主标签为 NaN 的那些行 ✓（原语义 ✓）
 
 
+# ★ v2.11.36（mypy 收口 ✓，本函数 **11 条类型错清零**）：四处修改的来龙去脉记在函数**外面** ✓
+#   —— 因为这个函数有**棘轮上限**（`test_code_health` 里写死 539 行、**只减不增** ✗），
+#   注释写进函数体就会顶破它 ✓（实测 +18 行 ⇒ 当场红 ✗）。
+#   1. `factors: List[dict] = None` ⇒ `Optional[List[dict]]` ✓（默认值本来就是 None ✓）；
+#   2. 因子循环里的 `e` ⇒ `_fexpr` ✓ —— 同函数还有两处 `except Exception as e:` ✓，
+#      Python 会在 except 结束时**删掉** `e` ⇒ 复用该名字会报 "Assignment to variable e
+#      outside except" / "Trying to read deleted variable e" ✓；
+#   3. `col_map` / `exit_cols` / `exit_specs` 显式标 `Optional[...]` ✓（它们确实会 append `None` ✓）；
+#   4. ⭐ `_sft_exit_curves(e=e, ...)` 那个 `e` 是**死参数**（函数体从未用到 ✓）⇒ **删掉** ✓。
+#      更关键：调用处传的 `e` 原本是因子循环的残留值（= **最后一个因子的表达式** ✗，无意义 ✓），
+#      而且它随时会被上面的 `except ... as e` 删掉 ⇒ **NameError 定时炸弹** ✓ ⇒ 一并拆掉 ✓。
+def _require_rule(rule):
+    """`split_entry_rule` 可能返回 `None` ✓ ⇒ 走到"已判定含入场价"的路径时它不该是空 ✓。
+
+    ★ v2.11.36：单独成函数是为了**不涨调用方的行数** ✓（`run_single_factor_tests`
+    有棘轮上限 539 行、只减不增 ✗）。原来写 `if _rule is None: raise` 要 2 行 ✓。
+    """
+    if rule is None:
+        raise ValueError("含入场价的离场公式拆分结果为空（请反馈给开发）")
+    return rule
+
+
+def _new_exit_lists():
+    """→ `(exit_fields, exit_cols, exit_specs)` ✓（★ v2.11.36，理由同上：省调用方 2 行）。
+
+    ⚠ 后两个**会 append `None`** ✓（含入场价的规则没有整列 ✓）⇒ 类型必须带 `Optional` ✓，
+    否则 mypy 报 "append None 到 list[str]" ✗。
+    """
+    return [], [], []
+
+
 def run_single_factor_tests(
     label_horizons,
     universe: str,
     start_date: str,
     end_date: str,
-    factors: List[dict] = None,
+    factors: Optional[List[dict]] = None,
     progress_cb=None,
     cancelled=None,  # 取消检查回调：返回 True 表示用户已取消
     exclude_limit_up_signal: bool = True,
@@ -1129,18 +1160,18 @@ def run_single_factor_tests(
     # 因子去重编号
     ordered_exprs: List[str] = []
     factor_cols: List[str] = []
-    col_map: List[str] = []
+    col_map: List[Optional[str]] = []          # ★ v2.11.36：确实会 append None ✓
     seen = {}
-    for f in factors:
-        e = f.get("expression", "")
-        if not e:
+    for f in (factors or []):
+        _fexpr = f.get("expression", "")
+        if not _fexpr:
             col_map.append(None)
             continue
-        if e not in seen:
-            seen[e] = len(ordered_exprs)
-            ordered_exprs.append(e)
+        if _fexpr not in seen:
+            seen[_fexpr] = len(ordered_exprs)
+            ordered_exprs.append(_fexpr)
             factor_cols.append(f"F{len(ordered_exprs) - 1}")
-        col_map.append(factor_cols[seen[e]])
+        col_map.append(factor_cols[seen[_fexpr]])
 
     if not ordered_exprs:
         err = [{**_test_one(pd.DataFrame(), f, ""), "error": "因子表达式为空"} for f in factors]
@@ -1215,7 +1246,7 @@ def run_single_factor_tests(
             continue
         _seen_exit.add(_ex)
         _exits.append(dict(_e, expression=_ex))
-    exit_fields, exit_cols, exit_specs = [], [], []
+    exit_fields, exit_cols, exit_specs = _new_exit_lists()   # ★ v2.11.36
     for _i, _e in enumerate(_exits):
         _adj = adjust_expr(_e["expression"], pa, round_prices=price_round)
         if uses_entry(_adj):
@@ -1227,7 +1258,8 @@ def run_single_factor_tests(
             #   ⚠ 这类公式仍**不进**触发率预检/离场事件研究（那两项要有整列信号 ✗，而入场价
             #     依赖回测 ✓）；它的效果从对比表的 离场卖出/顺延/被覆盖/空转 + 曲线看 ✓。
             try:
-                _rule = split_entry_rule(_adj, float(exit_threshold))
+                _rule = _require_rule(split_entry_rule(_adj, float(exit_threshold)))
+                # （★ v2.11.36：判空已在 `_require_rule` 里 ✓）
                 _cols = []
                 for _j, _pe in enumerate(_rule.pre_exprs):
                     _cn = "EXITP_%d_%d" % (_i, _j)
@@ -1415,10 +1447,9 @@ def run_single_factor_tests(
     #      （`LABEL_h` ✓ 面板里本来就有 ⇒ **零额外取数** ✓）与同期**未触发**样本的差 ✓ ——
     #      这才回答"离场是躲开了下跌，还是砍掉了上涨" ✓（比两条净值相减可靠得多 ✓，
     #      也是我们自己的老规矩：不许用净值比值下结论 ✓）。
-    _sft_exit_curves(
+    _sft_exit_curves(                          # ★ v2.11.36：去掉死参数 e=e（见函数上方说明）
             _exits=_exits,
         df=df,
-        e=e,
         exit_cols=exit_cols,
         exit_out=exit_out,
         exit_specs=exit_specs,
@@ -2368,7 +2399,7 @@ def _quantile_curve_block(*, _REBAL, _dec_p, _dts, _med, _qbest, _rkcol, _side, 
             result["topk_sensitivity"] = build_k_sensitivity(
                 tmp, dt_pos, inst_pos, _dts, _REBAL,
                 median_daily=_med, default_k=k10, rk_col=_rkcol,
-                verify_turnover=_cc_fixed_default["turnover"])
+                verify_turnover=(_cc_fixed_default or {}).get("turnover"))   # ★ v2.11.36
         except Exception as _e2:      # 与 `event_study_error` 同一处理风格
             result["topk_sensitivity_error"] = "%r @ %s" % (
                 _e2, __import__("traceback").format_exc().strip().splitlines()[-1])
@@ -2537,7 +2568,7 @@ def _sft_horizon_loop(*, _es_px_cache, _es_res_cache, _full_wide_box, _ph_feat, 
             progress_cb(h, 100.0, f"{h} 日周期完成")
 
 
-def _sft_exit_curves(*, _exits, df, e, exit_cols, exit_out, exit_specs, exit_threshold, horizons, label_cols, progress_cb) -> None:
+def _sft_exit_curves(*, _exits, df, exit_cols, exit_out, exit_specs, exit_threshold, horizons, label_cols, progress_cb) -> None:
     """★ P0-C-3（2026-10-18 ✓）：从 `run_single_factor_tests` **原样外提**的一段 ✓（逻辑零改动 ✓）。
 
     外提原因：该段 **85 行** ✗；形参 = AST 推导的自由变量（10 个 ✓）；

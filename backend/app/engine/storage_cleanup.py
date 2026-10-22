@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from ..logger import _log_swallowed  # noqa: E402
 
@@ -76,7 +77,9 @@ def _work_dir() -> str:
 
 def _dir_size_and_bytes(root: str):
     """返回 (总字节, [(path, mtime), ...])（仅该目录下直接文件，非递归）。"""
-    total, files = 0, []
+    # ★ v2.11.36：显式注解 ✓ —— `files` 不注解会被推成 `list[Never]` ✗（`var-annotated` ✓）
+    total = 0
+    files: List[Tuple[str, float]] = []
     if not os.path.isdir(root):
         return total, files
     try:
@@ -120,7 +123,7 @@ def _clean_feature_cache(root: str) -> int:
     limit = _FEATURE_CACHE_GB * 1024 ** 3
     if not os.path.isdir(root):
         return 0
-    files = []
+    files: List[Tuple[str, float]] = []
     for n in os.listdir(root):
         p = os.path.join(root, n)
         try:
@@ -353,7 +356,21 @@ def _rmtree(path: str) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
-_preview_cache = {"ts": 0.0, "root": None, "data": None}
+class _PreviewCache(TypedDict):
+    """预览缓存（`ts` / `root` / `data` 三件套 ✓）。
+
+    ★ v2.11.36：**必须是 TypedDict** ✗→✓ —— 写成裸 dict 时 mypy 会把值类型推成
+    `float | None` ✓ ⇒ 后面 `now - _preview_cache["ts"]` 报"float 与 None 不能减" ✗、
+    `return _preview_cache["data"]` 报"返回 float 但期望 dict" ✗（连带 3 条 ✓）。
+    **这是本项目第 3 次栽在"状态字典不带 TypedDict"上** ✓（前两次：`batch_state` / `period_roll_state`）。
+    """
+
+    ts: float
+    root: Optional[str]
+    data: Optional[Dict[str, Any]]
+
+
+_preview_cache: _PreviewCache = {"ts": 0.0, "root": None, "data": None}
 _PREVIEW_TTL = 60.0
 
 
@@ -406,7 +423,7 @@ def preview_artifacts_recycle(root: str | None = None, ttl: float = _PREVIEW_TTL
     base = root or os.path.join(_work_dir(), "artifacts")
     quota_bytes = _ARTIFACTS_GB * 1024 ** 3
     keep = max(5, _ARTIFACTS_KEEP)
-    out = {"quota_gb": _ARTIFACTS_GB, "keep": keep, "count": 0, "total_gb": 0.0,
+    out: Dict[str, Any] = {"quota_gb": _ARTIFACTS_GB, "keep": keep, "count": 0, "total_gb": 0.0,
            "over_quota": False, "trigger": None, "to_slim": [], "to_remove": [],
            "slim_freed_gb": 0.0, "growth_gb_per_day": None, "est_days": None, "note": "",
            "oldest": []}
@@ -483,7 +500,7 @@ def cleanup_storage(work_dir: str | None = None, force: bool = False) -> dict:
             return {}
         _last_run[0] = now
     wd = work_dir or _work_dir()
-    stat = {}
+    stat: Dict[str, Any] = {}
     try:
         stat["feature_cache_removed"] = _clean_feature_cache(os.path.join(wd, "feature_cache"))
     except Exception:
