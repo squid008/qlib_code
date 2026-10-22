@@ -24,6 +24,37 @@
 
 ---
 
+## [2.11.28] - 2026-10-22
+
+### Refactor（**第十八刀：`run_batch_backtest` 329 → 297** ✓ —— 棘轮第 **4** 次下线 ＋ 一次自我纠错）
+
+- **抽走** ✓：结果装配（42 行：nav + stats + diag）→ `signals/batch_result.build_batch_result` ✓
+  ⇒ `run_batch_backtest` **329 → 297** ✓ ⇒ 低于 `MAX_ANY = 300` ⇒ `BIG_DEBT` 条目**删除** ✓
+  （第 **4** 次真正下线 ✓；前三：`run_event_study` / `single_factor_test` / `_test_one`）。
+- **⚠⚠ 上一轮我在这儿写过一句错话，这轮被自己推翻** ✗→✓：
+  > 「它剩下的 29 行全是**循环内共享状态**（`nonlocal` 闭包 + 逐日重试队列），不是再切一刀能解决的」
+
+  实际这次又切下来了 ✓ —— 真正剩下的 30 行里，**结果装配那 42 行是纯函数** ✓（混在逐日循环里看不出来 ✗）。
+  **教训：\"看起来拆不动\"往往只是\"没量过\"** ✓（这次是先量了 329 行的分节结构才找到的 ✓）。
+- **⭐⭐ 一次真被测试抓住的错误（值得记）** ✗→✓：我第一版让新函数从 `batch_state` 那份 dict 计数器 ✓ ——
+  但那份 dict 只是**初始快照** ✓，逐日循环里 `_log_trade` 用的是
+  **`nonlocal hold_sum, hold_n, fee_sum, wins, losses, …`** ✓ ⇒ **改的是局部变量，不写回 dict** ✓
+  ⇒ 装配读到的是**初始值 0** ⇒ `avg_hold_days`、`fees_paid` 全部变成 0/None ✗。
+  原文 **`tests/test_signal_batch.py::test_avg_hold_days_is_reported` 当场红** ✓ ⇒ 改成**显式传计数器** ✓。
+  （这类错误**净值曲线看不出来** ✗ —— 只有统计字段变 ✓，正是这个项目最怕的\"静默错\"✓。）
+- **两条口径写进新模块 docstring** ✓：① `trades`/`rejects` **截断**（4000/1500 ✓）但统计里的
+  `"trades"` 用**真实条数** ✓（混用会让用户看到\"成交 4000 笔\"而实际更多 ✗）；
+  ② `avg_hold_days` / `win_rate` 在\"还没平过仓\"时是 **`None` 不是 0** ✓
+  （0 会被读成\"持有 0 天\" ✓，用户 2026-09-16 专门问过 ✓）。
+- **⚠ 循环引用** ✓：`batch_result` 需要 `BtResult` / `_perf` ✓，而 `engine` 顶层 import 本模块 ✓
+  ⇒ 模块顶层 import 会**导入期炸** ✗ ⇒ 注解用 `TYPE_CHECKING` ✓、运行时在函数内懒导入 ✓
+  （`ruff` 的 **F821** 先抓到注解里的 `BtResult` 未定义 ✓ —— 静态检查又救了一次 ✓）。
+- **实测** ✓：**20 条引擎指纹全绿且值未变** ✓（纯搬动 ✓）｜ batch/体检/引擎/Nav 回归 **381 passed** ✓ ｜
+  `mypy` **62 个源文件 0 错误** ✓（新模块第一天进闸门 ✓）｜ `ruff` **0** ✓ ｜ CI ✓。
+- **账面** ✓：`>300 行函数` **6 → 5**（`run_backtest` 614 / `_quantile_curve_block` 597 /
+  `run_single_factor_tests` 539 / `signal_test.run` 501 / `run_period_roll` 418）；
+  代码健康 **8.5 → 8.7** ✓。
+
 ## [2.11.27] - 2026-10-22
 
 ### Fixed + Chore（**清偿 P2-#20 ＋ 上源码级 SAST** ✓ —— 代码健康 **8.2 → 8.5**、安全 **8.0 → 8.5** ✓）

@@ -43,6 +43,8 @@ import pandas as pd
 from .batch_execs import build_batch_execs  # noqa: E402
 # ★ v2.11.13（第十五刀）：逐日循环的初始状态（含"按票记持有天数"的口径 ✓）
 from .batch_state import init_batch_state  # noqa: E402
+# ★ v2.11.28（第十八刀）：结果装配（纯装配 ✓，见该模块的两条口径 ⚠）
+from .batch_result import build_batch_result  # noqa: E402
 
 from .matching import (                       # noqa: E402
     FILL_LAG as _FILL_LAG,
@@ -1234,49 +1236,17 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         nav_dates.append(cal[i])
         nav_vals.append(eq / capital)
 
-    nav = pd.Series(nav_vals, index=pd.DatetimeIndex(nav_dates))
-    out = BtResult()
-    out.nav = pd.DataFrame({mode: nav})
-    out.nav.index.name = "date"
-    out.trades = pd.DataFrame(trades[:4000])
-    out.rejects = pd.DataFrame(rejects[:1500])
-    net = nav.pct_change().fillna(0.0).to_numpy()
-    out.stats[mode] = {
-        "alloc": mode, "rebal_band": 0.0, "min_cash": round(float(min_cash), 2),
-        "final_nav": round(float(nav.iloc[-1]), 4) if len(nav) else None,
-        "total_return": round(float(nav.iloc[-1] - 1), 4) if len(nav) else None,
-        "trades": len(trades),
-        "buys": sum(1 for t in trades if t["side"] == "买"),
-        "sells": sum(1 for t in trades if t["side"] == "卖"),
-        "fees_paid": round(fee_sum, 2),
-        "fee_ratio_of_capital": round(fee_sum / max(1.0, capital), 4),
-        "hold_refreshes": n_refresh,
-        "sell_deferrals": n_defer_sell,
-        "closed_trades": hold_n,
-        # 清单驱动：持有天数由名单决定（不是固定 N）——但仍**如实统计**已实现持有的交易日
-        # （用户 2026-09-16 问「为啥会是 null 日」⇒ 不该是 null ✓）
-        "avg_hold_days": round(hold_sum / hold_n, 1) if hold_n else None,
-        "win_rate": round(wins / (wins + losses), 3) if (wins + losses) else None,
-        "open_positions_end": sum(len(sh[b]) for b in buckets),
-        "rejects_limit_up": sum(1 for r in rejects if r["reason"].startswith("limit_up")),
-        "rejects_suspended": sum(1 for r in rejects if r["reason"] == "suspended"),
-        "rejects_no_cash": sum(1 for r in rejects if r["reason"] == "no_cash"),
-        "rejects_total": len(rejects),
-        "perf": _perf(net),
-    }
-    out.diag = {
-        "fill": fill, "cost": cost, "capital": capital, "hold_days": None,
-        "strict_limit": bool(strict_limit), "lot": lot, "n_codes": len(codes),
-        "missing_codes": prep["missing"][:20],
-        "signals_mapped": _n_mapped,
-        "signals_deferred": defer, "signals_beyond_data": beyond,
-        "limits_from": "inferred" if "_limits_inferred" in panel else "exchange_tag",
-        "batch": {"mode": mode, "n_batches": len(buckets), "share_each": round(share, 4),
-                  "batches": buckets[:12], "refreshes": _n_refresh,
-                  "cash_end": {b: round(float(cash[b]), 2) for b in buckets[:12]},
-                  "holdings_end": {b: len(sh[b]) for b in buckets[:12]}},
-    }
-    return out
+    # ★ v2.11.28（第十八刀）：装配搬去 `batch_result.build_batch_result` ✓
+    #   ⚠ 计数器必须**显式传** —— `_S` 只是初始快照，`_log_trade` 改的是 `nonlocal` 局部变量 ✓
+    return build_batch_result(
+        nav_dates=nav_dates, nav_vals=nav_vals, buckets=buckets, share=share,
+        codes=codes, prep=prep, panel=panel, capital=capital, mode=mode,
+        fill=fill, cost=cost, strict_limit=strict_limit, lot=lot,
+        n_mapped=_n_mapped, defer=defer, beyond=beyond,
+        trades=trades, rejects=rejects, cash=cash, sh=sh,
+        fee_sum=fee_sum, wins=wins, losses=losses, hold_sum=hold_sum, hold_n=hold_n,
+        n_refresh=n_refresh, n_defer_sell=n_defer_sell, min_cash=min_cash,
+    )
 
 
 def _perf(net: np.ndarray) -> dict:

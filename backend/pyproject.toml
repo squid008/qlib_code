@@ -158,6 +158,8 @@ files = [
     "app/signals/batch_execs.py",
     # ★ v2.11.13：逐日循环的初始状态（含"按票记持有天数"的口径 ✓）
     "app/signals/batch_state.py",
+    # ★ v2.11.28：`batch_even` 的结果装配（纯装配 ✓）
+    "app/signals/batch_result.py",
     "app/factors/event_study_stages.py",
     "app/factors/event_study.py",
     "app/factors/seg_ops.py",
