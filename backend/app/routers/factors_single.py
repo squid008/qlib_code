@@ -61,6 +61,7 @@ from ..factors.single_test import (FactorTestCancelled,                    # noq
 
 from ..logger import _log_swallowed  # noqa: E402
 # ★ v2.11.3：入参校验搬去独立模块 ✓（77 行纯校验 ✓，见该模块 docstring）
+from .factors_single_state import new_task_state  # noqa: E402
 from .factors_single_validate import validate_test_request  # noqa: E402
 
 
@@ -793,36 +794,10 @@ def single_factor_test(req: SingleFactorTestRequest):
     topk_list = _nv.topk_list
 
     task_id = uuid.uuid4().hex[:12]
-    # 结构化运行态（读侧渲染 message/progress，杜绝多线程抢写 message 造成文案来回跳）：
-    #   running_h / queued_h：正在统计运行 / 排队等并发单元的预测周期
-    #   per_h_prog / per_h_msg：各周期统计内部进度 0-100 / 内部最新进度文案
-    #   done_n：已完成统计的周期数
-    #   load_prog / load_msg：共享特征加载阶段整体进度 0-30 / 文案（读侧映射：加载 0-30 → 统计 30-100）
-    state: dict = {
-        "task_id": task_id,
-        "status": "running",
-        "progress": 0.0,
-        "message": "已提交",
-        "result": None,
-        "error": None,
-        "cancel_requested": False,
-        "ts": time.time(),
-        "config": {"horizons": horizons, "parallel": parallel},
-        "running_h": [],
-        "queued_h": [],
-        "done_n": 0,
-        "per_h_prog": {},
-        "per_h_msg": {},
-        "load_prog": 0.0,
-        "load_msg": "",
-        # ★ v2.4.2（用户 2026-10-15 截图反馈 ✓）：统计**之后**还有一段附加阶段 ——
-        #   「每期全仓滚动（实盘口径，逐点对拍）」要**先取全池行情面板**再逐档逐日回测
-        #   （全 A 约 10~20 秒/档 ✗），而统计一完成进度就已经是 100% ✗ ⇒ 进度条顶在 100%
-        #   干等（单周期时 `message` 还是空串 ✗ ⇒ 界面只剩"进度 100%"✗）。
-        #   ⇒ 统计阶段封顶 **95%**、尾巴 95→99.5 留给这一阶段，并把文案实时报出来 ✓。
-        "extra_prog": 0.0,
-        "extra_msg": "",
-    }
+    # ★ v2.11.4（技术债 P1-#3 第十刀 ✓）：运行态结构搬去 `factors_single_state.py` ✓
+    #   （它是前端读侧与后台写侧的**唯一契约** ✓，单独成文更不容易改错 ✓；
+    #    结构与各字段语义见该模块 docstring ✓，含 `extra_*` 那段进度尾巴的由来 ✓）。
+    state: dict = new_task_state(task_id, horizons, parallel)
     _sft_store(task_id, state)
 
     def _set_cancel(state: dict) -> None:

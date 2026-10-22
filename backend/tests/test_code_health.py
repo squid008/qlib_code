@@ -35,10 +35,10 @@ BIG_DEBT = {
     "routers/signal_test.py::run": 539,
     "factors/single_test.py::run_single_factor_tests": 539,
     "signals/period_roll.py::run_period_roll": 477,
-    # ★ v2.11.3（技术债 P1-#3 第九刀 ✓）：入参校验 77 行抽去
-    #   `routers/factors_single_validate.py` ✓ ⇒ **391 → 325** ✓（棘轮收紧 ✓）。
-    #   ⚠ 还差 26 行才到 300 以下 ✓（下一刀可抽"结构化运行态初始化"或"装配段"）。
-    "routers/factors_single.py::single_factor_test": 325,
+    # ★★ v2.11.3~2.11.4（技术债 P1-#3 第九、十刀 ✓）：`single_factor_test` **391 → 299** ✓
+    #   两刀抽出 `factors_single_validate.py`（入参校验 77 行 ✓）与
+    #   `factors_single_state.py`（运行态契约 ✓）⇒ **降到警戒线以下 ⇒ 本条下线** ✓。
+    #   （这是棘轮第 **2** 次真正下线一条 ✓，第 1 次是 `run_event_study` ✓。）
     "signals/engine.py::run_batch_backtest": 367,
     # ★★ v2.11.1~2.11.2（技术债 P1-#3 第七、八刀 ✓）：`run_event_study` **326 → 293** ✓
     #   两刀抽出 `event_study_stages.py`（预热解析 / 缓存查表 / 触发样本+剔除 ✓）
