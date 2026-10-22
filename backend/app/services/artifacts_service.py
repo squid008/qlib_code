@@ -14,7 +14,7 @@ import json
 import os
 import re
 import shutil
-from typing import Optional
+from typing import Any, Dict, List, Optional, cast
 
 from .. import config
 from ..logger import get_logger
@@ -103,7 +103,8 @@ def note_resume_task(src_dir: str, task_id: str) -> None:
         return
     p = os.path.join(src_dir, "resume_tasks.json")
     try:
-        data = {}
+        # ★ v2.11.37：显式注解 ✓ —— 空 dict 不注解会被推成 `dict[Never, Never]` ✗
+        data: dict = {}
         if os.path.exists(p):
             try:
                 with open(p, "r", encoding="utf-8") as f:
@@ -229,8 +230,11 @@ def build_feature_formulas(params: dict, feature_names: list) -> list:
 
     def _flat(dataset: str) -> dict:
         try:
-            return {r["name"]: (r.get("expression") or "")
-                    for r in (get_catalog(dataset).get("flat") or [])}
+            # ★ v2.11.37：`cast` ✓ —— `get_catalog()` 返回 `dict`（值类型 object ✗）
+            #   ⇒ `.get("flat")` 是 `object` ⇒ 不可迭代（mypy 报 `has no attribute __iter__` ✓）。
+            #   这里 `cast` 是在**说明已知事实** ✓（目录结构就那样 ✓），不是绕过检查 ✗。
+            _rows = cast(List[dict], get_catalog(dataset).get("flat") or [])
+            return {r["name"]: (r.get("expression") or "") for r in _rows}
         except Exception as e:  # 目录不可用 ⇒ 退化为"未知"，不影响其它列
             _log_swallowed("artifacts_service.py", e)
             return {}
@@ -320,7 +324,9 @@ def load_snapshot(task_id: str) -> dict:
     if base is None:
         raise ArtifactNotFoundError(f"任务 {task_id} 没有产物目录")
 
-    info = {
+    # ★ v2.11.37：显式注解 ✓ —— 否则 `info["images"][name]` 会报
+    #   "list[str] | dict | str | None 不支持下标赋值" ✗（连带 2 条 ✓）。
+    info: Dict[str, Any] = {
         "task_id": task_id,
         "dir_name": os.path.basename(base),
         "params": None,
@@ -460,7 +466,9 @@ def scan_history() -> dict:
                 images[img] = img
         segments = sorted(os.path.basename(d) for d in glob.glob(os.path.join(full, "segment_*")))
 
-        meta_summary = {}
+        # ★ v2.11.37：显式注解 ✓ —— 两个分支取值来源不同（`segs` 拆解 / `meta.get` ✓），
+        #   不注解时按**第一个**分支推成 `dict[str, str]` ✗ ⇒ 第二个分支塞 `Any | None` 就报错 ✓。
+        meta_summary: Dict[str, Any] = {}
         segs = name.split("_")
         if len(segs) >= 6:
             meta_summary = {

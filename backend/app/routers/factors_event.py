@@ -328,7 +328,11 @@ def event_study_nav(req: EventNavRequest):
         raise HTTPException(status_code=400,
                             detail="找不到这次信号的触发明细（任务已清理或因子没触发过）—— "
                                    "点「重新计算」重跑一次事件研究即可看净值曲线")
-    start, end = rq.get("start_date"), rq.get("end_date")
+    # ★ v2.11.37：**归一成 str** ✓ —— `rq.get()` 返回 `Any | None` ✗，而下面
+    #   `load_bench_wide(...start, end)` / `_untrig_nav_series(..., start, end, ...)`
+    #   都要求 `str` ✓（4 条 mypy 错全在这一处 ✓）。缺值给 `""` ✓
+    #   （下游 `if not start` 一类判断对它仍为假 ✓，行为不变 ✓）。
+    start, end = str(rq.get("start_date") or ""), str(rq.get("end_date") or "")
     k = max(1, min(int(req.hold_days or 20), 250))
     codes = sorted(ev["code"].astype(str).unique().tolist())
     # 单向依赖：factors → signals（signals 侧不反向依赖 factors，无环）
@@ -478,7 +482,7 @@ def event_study_nav(req: EventNavRequest):
                         "diluted": _diluted,
                         "text": (("持有期 %d 天 ≥ 平均重触发间隔 %.1f 天 ⇒ 约 %.0f%% 的票在任一时刻都在持仓"
                                   " ⇒ 组合已退化为「全市场等权」，这条曲线基本反映的是 beta，不是信号 ✗"
-                                  % (int(k), _gap, float(_cover) * 100.0))
+                                  % (int(k), _gap, float(_cover or 0.0) * 100.0))
                                  if _diluted else "")}
         except Exception as e:  # noqa: BLE001 —— 诊断失败不影响主结果 ✓
             _log_swallowed("factors_event.py", e)

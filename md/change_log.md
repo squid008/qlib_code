@@ -24,6 +24,33 @@
 
 ---
 
+## [2.11.37] - 2026-10-22
+
+### Fixed（**`artifacts_service`(7) + `factors_event`(5) 清零** ✓ —— mypy **96/112（86%）**）
+
+- **`factors_event.py`（5 条，4 条同源）** ✓：
+  `start, end = rq.get("start_date"), rq.get("end_date")` ⇒ `Any | None` ✗，
+  而下游 `load_bench_wide(...)` / `_untrig_nav_series(..., start, end, ...)` 都要求 `str` ✓。
+  ⇒ 在**定义处一次性归一**成 `str(... or "")` ✓（缺值给空串 ✓ —— 下游 `if not start`
+  一类判断对它仍为假 ✓，**行为不变** ✓）。
+  > 这正是"在**源头**归一比在下游每处 cast 好"的例子 ✓：一处改，4 条错一起消 ✓。
+- **`artifacts_service.py`（7 条）** ✓：
+  · `data = {}` / `info = {...}` / `meta_summary = {}` ⇒ 空 dict 不注解会被推成
+    `dict[Never, Never]` ✗ ⇒ 显式 `dict` / `Dict[str, Any]` ✓
+    （`info` 那条尤其典型：不注解时 `info["images"][name]` 报
+    "list[str] | dict | str | None 不支持下标赋值" ✓）；
+  · `meta_summary` 在**两个分支**取值来源不同（`segs` 拆解 / `meta.get` ✓）⇒
+    按第一个分支推成 `dict[str, str]` ✗ ⇒ 第二个分支塞 `Any | None` 就红 ✓；
+  · `get_catalog(...).get("flat")` 是 `object` ⇒ 不可迭代 ✗ ⇒ 用 `cast(List[dict], ...)` ✓
+    （**说明已知事实** ✓，不是绕过检查 ✗）。
+- **⚠ 一处自己造的麻烦** ✗：给 `meta_summary` 加注解时，我把 3 行注释写在了
+  **错误的缩进层级** ⇒ mypy 报 `Expected indentation` ✗（`replace_in_file` 只替换文本、
+  不管缩进 ✓）⇒ 重新对齐后 0 条 ✓。
+- **实测** ✓：`mypy` **96 个源文件 0 错误** ✓（两个模块入闸门 ✓）｜
+  artifact/event/router/task/体检 回归 **233 passed** ✓ ｜ 棘轮体检 **10 passed** ✓（未被顶破 ✓）｜
+  `ruff` **0** ✓ ｜ CI ✓。
+- **账面** ✓：mypy **94 → 96 个文件（≈86%）** ✓。
+
 ## [2.11.36] - 2026-10-22
 
 ### Fixed（**`single_test`(11) + `storage_cleanup`(7) 清零** ✓ —— 其中一颗是**定时炸弹** ✓）
