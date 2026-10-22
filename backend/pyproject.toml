@@ -131,6 +131,8 @@ files = [
     "app/factors/ops_ext.py",
     "app/factors/ops_seg.py",
     # ★ v2.11.1：从 `event_study.py` 拆出的两个前置阶段 ✓（新模块第一天进闸门 ✓）
+    # ★ v2.11.3：从 `routers/factors_single.py` 抽出的入参校验层 ✓（新模块第一天进闸门 ✓）
+    "app/routers/factors_single_validate.py",
     "app/factors/event_study_stages.py",
     "app/factors/event_study.py",
     "app/factors/seg_ops.py",
