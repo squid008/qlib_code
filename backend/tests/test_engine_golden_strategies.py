@@ -43,9 +43,9 @@ from app.signals.period_roll import run_period_roll              # noqa: E402
 #: 黄金值（2026-10-22 实测 ✓ v2.11.17 之后）
 GOLD = {
     "period_roll": dict(trades=9183, rejects=0, nav_last=1.0551722828,
-                        sha="b8cec07074b4ff6c"),
+                        sha="b8cec07074b4ff6c", trades_sha="b19a7c2f1a9bdd1e"),
     "batch_even": dict(trades=4000, rejects=49, nav_last=1.0161231221,
-                       sha="a2497ed9268d77ea"),
+                       sha="a2497ed9268d77ea", trades_sha="0c67399e2de1e17f"),
 }
 
 KW = dict(cost=0.004, capital=1e9, fill="t1_open", strict_limit=True, lot=100)
@@ -56,6 +56,24 @@ def nav_sha1(nav) -> str:
     h = hashlib.sha1()
     h.update(np.asarray(nav.to_numpy(), dtype="float64").tobytes())
     h.update("|".join(map(str, nav.columns)).encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
+def trades_multiset_sha1(tr) -> str:
+    """成交明细的**行序无关**哈希 ✓ —— 把每行转成字符串、**排序后**再哈希。
+
+    ⚠ 为什么不直接用 `tr.to_csv()`（`bench_engine.checksum` 那样）✗：
+    v2.11.18 实测**本地 Windows 绿、CI ubuntu 红** ✓，而同一用例里的
+    `trades`/`rejects`/`nav_last` **全一致** ✓ ⇒ 差异只在**行序** ✗。
+    ⇒ 排序后哈希既能抓住"某笔的数量/价格/费用变了"✓，又不依赖平台相关的行序 ✓。
+    """
+    if tr is None or not len(tr):
+        return "empty"
+    rows = tr.astype(str).apply(lambda r: "|".join(r.tolist()), axis=1)
+    h = hashlib.sha1()
+    for line in sorted(rows.tolist()):
+        h.update(line.encode("utf-8"))
+        h.update(b"\n")
     return h.hexdigest()[:16]
 
 
@@ -102,3 +120,9 @@ def test_strategy_numbers_are_frozen(panel_sig, name, runner):
         "%s 的 NAV 指纹变了 ✗（%s ≠ %s）\n"
         "  ⇒ 若这是**有意**改口径：请同时更新 GOLD 与 md/change_log.md ✓\n"
         "  ⇒ 若不是：说明某处撮合/成本/整手/权重算错了 ✓" % (name, got, g["sha"]))
+
+    got_tr = trades_multiset_sha1(r.trades)
+    assert got_tr == g["trades_sha"], (
+        "%s 的成交明细内容变了 ✗（行序无关哈希 %s ≠ %s）\n"
+        "  ⇒ 相比 v2.11.19 只数条数，这一条能抓住\"条数没变但某笔数量/价格/费用变了\" ✓\n"
+        "  ⇒ 有意改口径就同步更新 GOLD ✓" % (name, got_tr, g["trades_sha"]))
