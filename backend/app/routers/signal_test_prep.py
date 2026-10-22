@@ -70,6 +70,21 @@ def resolve_price_tables(panel, align) -> Tuple[Dict, Dict[str, pd.DataFrame], l
     return panel, px_es, warns, pa, pr
 
 
+def require_frame(x, msg: str):
+    """`ParseResult.trades` / `.signals` 都是 `Optional` ✓ ⇒ 统一"判空 + 400" ✓。
+
+    ⚠ 为什么不就地写 `if x is None: raise` ✗：那个路由函数**已经 500 行** ✓，
+    每加 3 行就顶破 `test_code_health` 的棘轮上限（501 ✓，**只减不增** ✗）。
+    ⇒ 抽成一行调用 ✓（既判空、又不涨函数体 ✓）。
+    ⭐ 顺带把"用户看不懂的 `NoneType has no attribute 'min'`"换成**能照做的**中文 ✓。
+    """
+    if x is None or not len(x):
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail=msg)
+    return x
+
+
 def build_only_perf_block(res, nav_rows, elapsed: float) -> Dict:
     """模式③（只上传《收益概述》⇒ 只画官方净值 ✓，**无需行情** ✓ 秒出）的响应块 ✓。
 

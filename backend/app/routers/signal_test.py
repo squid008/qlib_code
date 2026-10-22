@@ -29,8 +29,8 @@ from ..signals.replay import replay_trades
 
 from ..logger import _log_swallowed  # noqa: E402
 # ★ v2.11.14（技术债 P1-#3 第十六刀）：回灌口径解析（复权选价 + 剔除开关优先级 ✓）
-from .signal_test_prep import (build_only_perf_block, resolve_exclude_flags,  # noqa: E402
-                                resolve_price_tables)
+from .signal_test_prep import (build_only_perf_block, require_frame,  # noqa: E402
+                                resolve_exclude_flags, resolve_price_tables)
 
 
 router = APIRouter(prefix="/api/signal-test", tags=["signal-test"])
@@ -337,14 +337,7 @@ def run(req: SignalTestRequest) -> Dict:
 
     # ================= 模式②：聚宽成交明细 =================
     if res.kind == "jq_trades":
-        tr = res.trades
-        # ★ v2.11.34：**判空** ✗→✓ —— `ParseResult.trades` 是 `Optional` ✓，
-        #   而这里默认它一定有（`kind == "jq_trades"` ✓）⇒ 真出问题时原写法是
-        #   `AttributeError: 'NoneType' object has no attribute 'min'` ✗（用户看不懂 ✓）。
-        #   给一句**能照做**的错 ✓。
-        if tr is None or not len(tr):
-            raise HTTPException(status_code=400,
-                                detail="成交明细为空（识别为聚宽明细但没解析出任何成交行）")
+        tr = require_frame(res.trades, "成交明细为空（识别为聚宽明细但没解析出任何成交行）")
         start = str(tr["date"].min().date())
         end = str(tr["date"].max().date())
         codes = sorted(set(tr["code"]))
@@ -483,10 +476,7 @@ def run(req: SignalTestRequest) -> Dict:
         return resp
 
     # ================= 模式①：信号清单 =================
-    sig = res.signals
-    # ★ v2.11.34：**判空** ✓（同上 ✓ —— `signals` 也是 `Optional` ✓）
-    if sig is None or not len(sig):
-        raise HTTPException(status_code=400, detail="信号清单为空（没解析出任何信号行）")
+    sig = require_frame(res.signals, "信号清单为空（没解析出任何信号行）")
     ev = normalize_events(sig[sig["side"] > 0])
     if not len(ev):
         raise HTTPException(status_code=400, detail="没有解析出任何买入信号")
