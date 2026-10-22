@@ -29,7 +29,7 @@ import re
 import sys
 import time
 from collections import OrderedDict
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple, cast
 
 import numpy as np
 import pandas as pd
@@ -866,11 +866,18 @@ def parse_expr(text: str) -> Node:
         # 一元负号（仅当后随数字/字段/函数且上下文需要 → 简化：数字已含负号）
         if c == "$":
             m = _RE_FIELD.match(text, pos)
+            # ★ v2.11.31（mypy 收口 ✓，同时也是**真 bug 防线**）：正则没匹配上时
+            #   原写法会 `AttributeError: 'NoneType' object has no attribute 'group'` ✗
+            #   —— 用户只看到一句与公式毫无关系的错 ✓（正是本项目最忌的"看不懂的崩溃"✓）。
+            if m is None:
+                raise ValueError("字段名不合法（`$` 后应是字母/数字/下划线）：…%s" % text[pos:pos + 12])
             tok = m.group(0)
             pos = m.end()
             return Node("field", [tok], tok)
         if c.isdigit() or (c == "-" and pos + 1 < n and text[pos + 1].isdigit()):
             m = _RE_NUM.match(text, pos)
+            if m is None:                     # 理论上进不来（上面已判 c 是数字/负号+数字）
+                raise ValueError("数字字面量不合法：…%s" % text[pos:pos + 12])
             tok = m.group(0)
             pos = m.end()
             return Node("const", [tok], tok)
@@ -1208,7 +1215,11 @@ def _apply_node(op: str, args, sr: bool, active=None, ev=None) -> Optional[pd.Se
         #   现在数组会落到 pandas 兜底 ✓（`_as_series` 已支持数组 ✓），走 `np.where` 那条 ✓。
         if (not isinstance(a, pd.Series) and not isinstance(b, pd.Series)
                 and np.isscalar(a) and np.isscalar(b)):
-            _af, _bf = np.float64(a), np.float64(b)
+            # ★ v2.11.31：先 `float()` 再 `np.float64()` ✓ —— 上面已确认 `np.isscalar` ✓，
+            #   但类型上是宽联合（`generic|bool|int|float|complex|str|bytes|memoryview` ✓）
+            #   ⇒ mypy 不认 ✗。**值不变** ✓（标量转 float 后再转 float64 与直接转等价 ✓）。
+            # cast：运行时已由上面的 `np.isscalar` 确认是标量 ✓，这里只是告诉 mypy ✓
+            _af, _bf = np.float64(cast(float, a)), np.float64(cast(float, b))
             with np.errstate(all="ignore"):
                 if op in _BIN_ELEM:
                     _fn = _BIN_ELEM[op]
@@ -1332,6 +1343,9 @@ def _apply_node(op: str, args, sr: bool, active=None, ev=None) -> Optional[pd.Se
 
 
 class PanelEvaluator:
+    # ★ v2.11.31：动态挂上的缓存要在**类上**声明类型 ✓ ——
+    #   否则 mypy 报 `Need type annotation for "_recur_cache"` ✓（它是 `setattr` 出来的 ✓）。
+    _recur_cache: "OrderedDict[tuple, Any]"
     """在一整块面板上求值；节点缓存消除公共子式重复计算。
 
     SR 上下文模型（对齐 qlib 2026-09-09 实证）：SR 语义 = 剔停牌(NaN)行后在
@@ -1443,11 +1457,15 @@ class PanelEvaluator:
         （如 `COST(36)` ⇒ `$chip_cost_36` ✓）**按用户要求退回现算** ✓（结果同样正确 ✓，
         只是慢 ⇒ 想快就把该档位加进 `chip_store.DEFAULT_FIELDS` 再物化一次 ✓）。
         """
+        # ★ v2.11.31：用 **list** 承接 ✓ —— 原来 `_MAT` 直接是 import 来的 tuple ✓，
+        #   而 except 分支赋 `()` 时 mypy 报 "Name already defined by an import / 类型不兼容" ✗。
+        _MAT: list[str]
         try:
-            from .chip_store import DEFAULT_FIELDS as _MAT
+            from .chip_store import DEFAULT_FIELDS as _M0
+            _MAT = list(_M0)
         except Exception as e:  # noqa: BLE001
             _log_swallowed("panel_expr.py", e)
-            _MAT = ()
+            _MAT = []
         if key in _MAT:
             # ⚠ 轻量构造（单测里 `PanelEvaluator.__new__` 不走 `__init__` ✓）没有 `_full`
             #   ⇒ 视为"面板未就绪"，退回现算 ✓（生产路径恒有 ✓，行为不变 ✓）。
@@ -1522,7 +1540,10 @@ class PanelEvaluator:
         j = int(node.args[0].args[0])
         n = int(node.args[1].args[0])
         members = node.args[2:]
-        cache = getattr(self, "_recur_cache", None)
+        # ★ v2.11.31：注解写成 `... | None` ✓ —— 这样 `if cache is None` 之后
+        #   mypy 能收窄成 `OrderedDict[...]` ✓，`cache[key] = got` 才合法 ✓
+        #   （只写 `OrderedDict[...]` 会在赋值处报"Any|None 不兼容"✗）。
+        cache: "OrderedDict[tuple, Any] | None" = getattr(self, "_recur_cache", None)
         if cache is None:
             cache = self._recur_cache = OrderedDict()
         key = (bool(sr), n, tuple(m.key for m in members))
@@ -2159,8 +2180,10 @@ def _panel_features_uncached(instruments: Sequence[str], fields: Sequence[Tuple[
     # qlib（自身扩展≈子树、多为 0）系统性偏移（实测 csi300 对拍差 32/37/1）→ 也走
     # 精确起点组（ext 允许为 0 = 逻辑起点，不强制最小扩展）。
     _STATE_START_OPS = ("BARSCOUNT(", "BARSSINCE(", "FILTER(")
-    sensitive_fields = {}
-    normal_fields = {}
+    # ★ v2.11.31：显式注解 ✓（空 dict 不注解 ⇒ mypy 推成 `dict[Never, Never]` ✗，
+    #   后面 `d[e] = ...` 会报 "Invalid index type" ✓）。
+    sensitive_fields: dict = {}
+    normal_fields: dict = {}
     for expr, name in fields:
         e = str(expr).strip()
         if not e or e.lower() in ("", "none", "nan"):

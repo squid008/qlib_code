@@ -24,6 +24,30 @@
 
 ---
 
+## [2.11.31] - 2026-10-22
+
+### Fixed（**`panel_expr` 的 11 条类型错清零** ✓ —— 顺带补了 **4 条真 bug 防线** ✓）
+
+- **11 条分 5 组** ✓，**两类**：
+  - ⭐⭐ **真 bug 防线（4 条，L869/870/874/875）**：字段/数字正则的 `.match()` 结果**没判空** ✗ ⇒
+    输入不合法时抛 `AttributeError: 'NoneType' object has no attribute 'group'` ✓ ——
+    用户只看到一句**与公式毫无关系**的错 ✓（正是本项目最忌的\"看不懂的崩溃\"✓）。
+    ⇒ 现在抛 `ValueError("字段名不合法（`$` 后应是字母/数字/下划线）：…<原文片段>"` ✓
+    （**带上原文片段** ✓，用户一眼知道改哪儿 ✓）。
+  - 其余 7 条是**纯类型收口** ✓（`np.float64(cast(float, a))` ✓、`_MAT` 改 list 承接 ✓、
+    `_recur_cache` 在**类上**声明 ✓、`cache: "OrderedDict[tuple, Any] | None"` ✓、
+    `sensitive_fields/normal_fields` 显式注解 ✓）。
+- **⚠ 我第一轮改错了、第二轮才对（值得记）** ✗→✓：
+  - 给 `_MAT` 加 `tuple[str, ...]` 注解 ⇒ 与 **import 来的 tuple 型冲突** ⇒ `no-redef` ✗；
+  - 给 `cache` 加 `"OrderedDict[tuple, object]"` 注解 ⇒ **值类型是 object** ⇒
+    下游 `got[j]` 报\"object 不可索引\" ✗（应写 `Any` ✓）；
+  - 还得**在类上**声明 `_recur_cache` ✗（它是 `setattr` 动态挂的 ⇒ 否则报 `var-annotated` ✓）。
+  ⇒ 教训：**给"动态挂属性 + 宽类型"补注解时，要先看清下游怎么用** ✗；
+  而且 **mypy 的报错位置会随注解改变而移动** ✓（改一处可能冒出新错 ✓）。
+- **实测** ✓：`mypy` **87 个源文件 0 错误** ✓（`panel_expr` 已进闸门 ✓）｜
+  panel/expr/ops/factor 回归 **625 passed** ✓（行为零变化 ✓）｜ `ruff` **0** ✓ ｜ CI ✓。
+- **账面** ✓：mypy **86 → 87 个文件（≈78%）** ✓ ｜ 类型安全 **9.6 → 9.7** ✓。
+
 ## [2.11.30] - 2026-10-22
 
 ### Chore（**mypy 闸门 63 → 86 个文件（≈77%）** ✓ —— 类型安全 **9.4 → 9.6** ✓）

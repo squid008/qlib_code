@@ -149,6 +149,8 @@ files = [
     "app/engine/periodic_strategy.py",
     # ★ v2.10.83：从 `panel_expr` 抽出的 `.bin` 缓存层 ✓（新模块一写就是 0 错误 ✓，
     #   顺便就收进闸门 ✓ —— 拆出来的模块**从第一天起就该被检查** ✓，否则新代码是盲区 ✗）
+    # ★ v2.11.31：`panel_expr` 的 11 条类型错全部修掉（含 4 条真 bug 防线 ✓）
+    "app/factors/panel_expr.py",
     "app/factors/panel_cache.py",
     # ★ v2.10.86：从 `ops_ext` 抽出的"最右极值"三件套 ✓（147 行算法 + 10 条测试护着 ✓）
     #   ⚠ `ops_ext` 本身**仍未纳入** ✗ —— 它有 3 条既有的 `ndarray` 类型问题 ✓，
