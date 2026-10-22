@@ -26,6 +26,8 @@ import {
 // ★ 2026-10-15：前端自己的版本号（与后端 /api/version 比对，不一致 ⇒ 顶栏标黄 ✓）
 import { FE_VERSION } from './version'
 import type { BacktestCapacity, CustomFormula, CustomFormulaConflict } from './api'
+// ★ v2.11.10：轮询的纯逻辑（终态判定 + 单任务刷新 ✓，含 v1.19.10 的 404 修复 ✓）
+import { isTerminal, pollOneTask } from './taskPoll'
 import type { BacktestRequest, BacktestTask, DataSourceInfo, ModelArtifacts, FactorCatalog, DatasetsStatus } from './types'
 import DatasetPicker from './components/DatasetPicker'
 import MetricCards from './components/MetricCards'
@@ -968,30 +970,10 @@ export default function App() {
       const curr = tasksRef.current
       if (curr.length === 0) return
       try {
-        const updated = await Promise.all(
-          curr.map(async (t) => {
-            if (t.status === 'success' || t.status === 'failed' || t.status === 'cancelled') {
-              return t
-            }
-            try {
-              return await getBacktestTask(t.task_id)
-            } catch (e) {
-              // v1.19.10：**404 = 后端内存任务表里已无此任务**（后端重启会清空内存任务表）。
-              // 原写法直接 `return t` ⇒ 卡片**永远冻结在最后一帧进度**：用户看到"初始化 Qlib
-              // 3% 特别慢"，其实是任务早被后端重启杀掉、轮询把 404 静默吞掉了（真因）。现在
-              // 标记为已中止并把原因写进 message，避免误导。
-              const code = (e as { response?: { status?: number } })?.response?.status
-              if (code === 404) {
-                return {
-                  ...t,
-                  status: 'cancelled' as const,
-                  message: '任务已中止：后端服务重启后任务丢失（产物文件仍在磁盘，可在「历史」查看）',
-                }
-              }
-              return t
-            }
-          }),
-        )
+        // ★ v2.11.10：单个任务的刷新逻辑抽去 `taskPoll.pollOneTask` ✓
+        //   （含 v1.19.10 那个"404 ⇒ 卡片冻结在最后一帧进度"的修复 ✓，
+        //    现在有单测护着 ✓ —— 以前它埋在 1716 行的 App 里，一行都测不了 ✗）
+        const updated = await Promise.all(curr.map((t) => pollOneTask(t, getBacktestTask)))
         setTasks(updated)
         try {
           const cap = await getBacktestCapacity()
@@ -1001,8 +983,10 @@ export default function App() {
         for (let i = 0; i < updated.length; i++) {
           const was = curr[i]
           const now = updated[i]
-          const wasDone = was && (was.status === 'success' || was.status === 'failed' || was.status === 'cancelled')
-          const isDone = now.status === 'success' || now.status === 'failed' || now.status === 'cancelled'
+          // ★ v2.11.10：终态判定收口到 `taskPoll.isTerminal` ✓（三处判断同一份定义 ✓
+          //   —— 以前这里手抄了一遍 ✓，漏改一处就会出现"到了终态还在轮询"或反之 ✗）
+          const wasDone = was && isTerminal(was.status)
+          const isDone = isTerminal(now.status)
           if (!wasDone && isDone) anyDone = true
           if (!wasDone && isDone && now.status === 'success') {
             try {
