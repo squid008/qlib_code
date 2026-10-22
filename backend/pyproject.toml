@@ -130,6 +130,8 @@ files = [
     "app/engine/qlib_engine.py",
     "app/factors/ops_ext.py",
     "app/factors/ops_seg.py",
+    # ★ v2.11.1：从 `event_study.py` 拆出的两个前置阶段 ✓（新模块第一天进闸门 ✓）
+    "app/factors/event_study_stages.py",
     "app/factors/event_study.py",
     "app/factors/seg_ops.py",
     "app/factors/chip_turn.py",

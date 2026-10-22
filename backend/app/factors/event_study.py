@@ -27,6 +27,9 @@ from __future__ import annotations
 import warnings
 from typing import Optional
 
+# ★ v2.11.1（技术债 P1-#3）：`run_event_study` 的两个前置阶段搬去独立模块 ✓
+from .event_study_stages import _cache_lookup, _resolve_warmup
+
 import numpy as np
 import pandas as pd
 
@@ -679,13 +682,8 @@ def run_event_study(
         return {"error": "因子表达式为空"}
 
     # ---------- 0. 预热缓冲（与单因子测试同语义：None → env → 默认 250） ----------
-    if warmup_days is None:
-        try:
-            warmup_days = int(os.environ.get("QLIB_SFT_WARMUP_DAYS", "250"))
-        except Exception as e:
-            _log_swallowed("event_study.py", e)
-            warmup_days = 250
-    warmup_days = max(0, int(warmup_days or 0))
+    # ★ v2.11.1：实现搬去 `event_study_stages._resolve_warmup` ✓（技术债 P1-#3 拆分 ✓）
+    warmup_days = _resolve_warmup(warmup_days)
 
     # ---------- 0.5 内容寻址缓存（v1.20.36）----------
     # 指纹含**所有影响结果的参数** + 数据版本（漏一个就会出现"参数不同却命中同一结果"）。
@@ -706,20 +704,15 @@ def run_event_study(
         "freeze_suspended_price": freeze_suspended_price,
         "warmup_days": warmup_days,
     }
-    _cache_fp = None
-    if use_cache:
-        try:
-            _cache_fp = _escache.path_for(_cache_params)
-            _hit = _escache.load(_cache_fp)
-        except Exception as e:
-            _log_swallowed("event_study.py", e)
-            _cache_fp, _hit = None, None
-        if _hit is not None:
-            _prog(100.0, "缓存命中（同参数上次已算过，直接复用）")
-            out = dict(_hit)
-            out["cached"] = True
-            out["timings"] = _timings(True)
-            return out
+    # ★ v2.11.1：查表搬去 `event_study_stages._cache_lookup` ✓（技术债 P1-#3 拆分 ✓）
+    #   ⚠ 新模块**必须**同时加进 `event_study_cache.fingerprint` 的 `code_fingerprint(...)`
+    #     列表 ✗→✓ —— 否则改新模块后旧缓存**不失效** ⇒ 新算法"看起来没生效" ✓。
+    _cache_fp, _cached_out = _cache_lookup(
+        _cache_params, use_cache=use_cache, cache_mod=_escache,
+        prog=_prog, timings=_timings,
+    )
+    if _cached_out is not None:
+        return _cached_out
 
     # ---------- 1. 股票池 ----------
     _prog(2.0, "解析股票池成分股...")

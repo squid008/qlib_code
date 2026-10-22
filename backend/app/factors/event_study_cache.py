@@ -67,8 +67,14 @@ def fingerprint(params: dict) -> str:
     #   ⇒ 靠人记，忘了就会让新算法"看起来没生效" ✗✗）。手工版本号**保留**（仍是显式开关 ✓）。
     try:
         from ..engine.code_fp import code_fingerprint
-        h.update(("|src=%s" % code_fingerprint("app/factors/event_study.py",
-                                               "app/factors/event_study_cache.py")).encode("utf-8"))
+        # ⚠⚠ v2.11.1：**从 `event_study.py` 拆出去的新模块也必须列在这里** ✗→✓
+        #   （`event_study_stages.py` 已加入 ✓）。否则"改了新模块 ⇒ 指纹不变 ⇒ 旧缓存仍被复用"
+        #   ⇒ 新算法**看起来没生效** ✓ —— 正是这个项目最忌讳的"口径漂移 + 看不见" ✓。
+        #   ⇒ 以后任何一次拆分，**都要回来补一行** ✓（注释写在这儿，免得忘 ✓）。
+        h.update(("|src=%s" % code_fingerprint(
+            "app/factors/event_study.py",
+            "app/factors/event_study_stages.py",
+            "app/factors/event_study_cache.py")).encode("utf-8"))
     except Exception as e:  # noqa: BLE001
         _log_swallowed("event_study_cache.py", e)
         h.update(b"|src=na")
