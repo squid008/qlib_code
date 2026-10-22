@@ -46,9 +46,13 @@ BIG_DEBT = {
     #   `signals/period_roll_exit_prep.py` ✓ ⇒ **477 → 438** ✓（棘轮收紧 ✓）。
     #   ⚠ 它仍是 438 行的逐日循环本体 ✓ ⇒ 要过 300 还得再抽 3~4 块
     #     （内层闭包 `_acc`/`_sell`/`_buy` 与逐日循环强耦合 ✗，是后面几轮的事）。
-    # ★ v2.11.7（第十三刀 ✓）：批次 → 调仓日 → 目标名单（27 行）抽去
-    #   `signals/period_roll_buckets.py` ✓ ⇒ **438 → 418** ✓（棘轮继续收紧 ✓，**只减不增** ✓）。
-    "signals/period_roll.py::run_period_roll": 418,
+    # ★ v2.11.7 / 2.11.29（第十三、十九刀 ✓）：`run_period_roll` **477 → 399** ✓
+    #   （`period_roll_buckets.py` 目标名单 ✓ ／ `period_roll_state.py` 初始状态 ✓）。
+    #   ⚠ **它离 300 还差 99 行** —— 而剩下的**全在 `_buy` 这个 241 行的内层闭包里** ✗
+    #     （`_acc` 47 / `_disp_row` 15 / `_sell` 21 ✓ 也不小 ✓）。
+    #     那几个闭包用 `nonlocal` 改**十几个**局部变量 ✓ ⇒ 再抽必须先把状态收进一个对象 ✗
+    #     （不是"再切一刀"能解决的 ✓ —— 这次是**量过**才这么说的 ✓，见 v2.11.28 的教训 ⚠）。
+    "signals/period_roll.py::run_period_roll": 399,
     # ★★ v2.11.3~2.11.4（技术债 P1-#3 第九、十刀 ✓）：`single_factor_test` **391 → 299** ✓
     #   两刀抽出 `factors_single_validate.py`（入参校验 77 行 ✓）与
     #   `factors_single_state.py`（运行态契约 ✓）⇒ **降到警戒线以下 ⇒ 本条下线** ✓。

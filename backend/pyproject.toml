@@ -154,6 +154,8 @@ files = [
     "app/signals/period_roll_exit_prep.py",
     # ★ v2.11.7：批次 → 调仓日 → 目标名单（保序去重 ✓）
     "app/signals/period_roll_buckets.py",
+    # ★ v2.11.29：`period_roll` 逐日循环的初始状态（含"持有天数按票记"的口径 ✓）
+    "app/signals/period_roll_state.py",
     # ★ v2.11.12：`batch_even` 的信号折叠（纯函数 ✓）
     "app/signals/batch_execs.py",
     # ★ v2.11.13：逐日循环的初始状态（含"按票记持有天数"的口径 ✓）

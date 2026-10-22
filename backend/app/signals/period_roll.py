@@ -43,6 +43,8 @@ from .engine import BtResult, _limit_ctx, _perf, _prepare, _trades_frame
 from .period_roll_exit_prep import align_exit_inputs
 # ★ v2.11.7（第十三刀）：批次 → 调仓日 → 目标名单（保序去重 ✓）
 from .period_roll_buckets import build_targets
+# ★ v2.11.29（第十九刀）：逐日循环的初始状态（含"持有天数按票记"的口径 ✓）
+from .period_roll_state import init_roll_state
 
 MODE = "period_roll"
 _LABEL = "每期全仓滚动（调仓日按当期名单等权重建）"
@@ -104,43 +106,24 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         signals, pos=pos, lag=lag, n_row=n_row, col_of=col_of)
 
     # ---------- ② 逐日：调仓日重建全仓，期中不动 ----------
-    cash = float(capital)
-    sh: Dict[int, int] = {}                     # 列号 → 股数
-    drop: set = set()                           # 该卖出但（跌停/停牌）没卖成的
-    tgt_now: List[int] = []                      # 当前批次的目标（顺延卖出时要继续用 ✓）
-    # ★ v2.4.3：离场通道 —— "卖不掉 ⇒ 顺延"队列 + 五类计数 ✓（统计走 stats ✓）
-    pending_exit: set = set()
-    exit_signals = exit_sells = exit_deferrals = exit_ignored = exit_overridden = 0
-    nav_vals: List[float] = []
-    trades: List[tuple] = []
-    rejects: List[tuple] = []
-    fee_sum = 0.0
-    min_cash = cash
-    # ★★ v2.1.50：**已实现持有天数 / 胜率 / 平仓笔数** ✗→✓ —— 用户 2026-10-12 报：
-    #   「每期全仓滚动」那张卡片显示 `平均持有 = null 日`、`已实现胜率 = -` ✗（"不是 60 天调仓么" ✓）。
-    #   根因：本模块当初把这三个字段**写死为 None/0** ✗（见文件末尾的 stats ✓）—— 它是**附加统计**，
-    #   没人先做 ✓。现在按**移动平均成本法**实时记账（与主引擎 `engine.py` 的
-    #   `avg_hold_days` / `win_rate` / `closed_trades` **同义** ✓）：
-    #     · 建仓（持仓 0 → >0）记 `_entry_i`；期内加仓（`roll_in`）/减仓（`roll_trim`）**不改起点** ✓；
-    #     · 持仓**归零** ⇒ 视为平仓 ⇒ 计入 `hold_sum / hold_n`，并按该笔**净额**判胜负 ✓。
-    #   ⚠ 天数用**交易日数**（`i − entry_i` ✓，与主引擎的 `60 日` 量纲一致 ✓）。
-    _entry_i: Dict[int, int] = {}
-    _qty: Dict[int, float] = {}
-    _basis: Dict[int, float] = {}
-    _pnl: Dict[int, float] = {}
-    hold_sum = 0.0
-    hold_n = 0
-    wins = 0
-    losses = 0
-    # ★★ v2.6.0：**入场价向量**（用户 2026-10-15 要的 `ENTRY_PRICE` / `ENTRY_FIRST` ✓）——
-    #   只在传了 `exit_rule` 时才维护 ✓（不勾离场 ⇒ 连数组都不动 ⇒ 零成本 ✓）。
-    #     · `avg_px[c]`   = 移动平均成本（含买入费 ✓ = 券商"成本价"；**卖出不改变** ✓）；
-    #     · `first_px[c]` = **首次建仓那一笔**的每股成本（含费 ✓；清仓后再买重新起算 ✓）；
-    #     · 未持有 ⇒ `NaN` ⇒ 规则里与它比较恒为假 ✓（不会凭空触发 ✓）。
-    _track_entry = exit_rule is not None
-    _rule_provided = exit_rule is not None          # 供 diag/stats 回显 ✓（中途关掉也如实报 ✓）
-    avg_px = np.full(len(codes), np.nan, dtype=np.float64)
-    first_px = np.full(len(codes), np.nan, dtype=np.float64)
+    # ★ v2.11.29（技术债 P1-#3 第十九刀 ✓）：初始状态搬去
+    #   `signals/period_roll_state.init_roll_state` ✓（三条口径写在那儿 ✓）。
+    #   ⚠⚠ 解包出来的是**局部变量** ✓ —— 循环里的 `nonlocal` 改的就是它们 ✓
+    #     （**不要**回头读 `_RS[...]` ✗：那是初始值，v2.11.28 就这么错过一次 ✓）。
+    _RS = init_roll_state(capital, len(codes), track_entry=exit_rule is not None)
+    cash = _RS["cash"]
+    sh, drop, tgt_now = _RS["sh"], _RS["drop"], _RS["tgt_now"]
+    pending_exit = _RS["pending_exit"]
+    exit_signals, exit_sells = _RS["exit_signals"], _RS["exit_sells"]
+    exit_deferrals = _RS["exit_deferrals"]
+    exit_ignored, exit_overridden = _RS["exit_ignored"], _RS["exit_overridden"]
+    nav_vals, trades, rejects = _RS["nav_vals"], _RS["trades"], _RS["rejects"]
+    fee_sum, min_cash = _RS["fee_sum"], _RS["min_cash"]
+    _entry_i, _qty, _basis, _pnl = _RS["_entry_i"], _RS["_qty"], _RS["_basis"], _RS["_pnl"]
+    hold_sum, hold_n = _RS["hold_sum"], _RS["hold_n"]
+    wins, losses = _RS["wins"], _RS["losses"]
+    _track_entry, _rule_provided = _RS["_track_entry"], _RS["_rule_provided"]
+    avg_px, first_px = _RS["avg_px"], _RS["first_px"]
 
     def _acc(c: int, dq: int, gross: float, fee: float, i: int) -> None:
         """★ v2.1.50：平仓台账（移动平均成本法 ✓）。`dq > 0` = 买入、`dq < 0` = 卖出 ✓。
