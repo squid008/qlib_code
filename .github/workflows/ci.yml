@@ -133,6 +133,21 @@ jobs:
       - name: TypeScript 类型检查
         run: npx tsc --noEmit -p tsconfig.json
 
+      # ★★ v2.11.24（2026-10-22 ✓）：**终于有前端 linter 了** ✓ —— 用 **biome** 而不是 eslint ✓
+      #   为什么不是 eslint：`npm i -D eslint …` 在这台机器上反复装不上 ✗
+      #   （本项目 eslint 这条债挂了很久 ✓）；**biome 是单二进制** ✓（`@biomejs/biome` ✓ 一次装上 ✓），
+      #   不需要 eslint 那一堆 plugin/parser 组合 ✓。
+      #   ⚠ 规则是**显式白名单**（`recommended: false` ✗ 不用推荐全集 ✓）：
+      #     推荐全集在本仓报 **148 errors / 191 warnings** ✗（绝大多数是风格/import 扩展名 ✓），
+      #     直接开会变成"上线即红"✗ 或"关掉大半"✗。现在只开**能抓真 bug** 的十余条 ✓：
+      #     `noUnusedImports/Variables`（死代码 ✓）、`noSwitchDeclarations`、`noUnreachable`、
+      #     `noDoubleEquals`、`noDuplicateObjectKeys`、`noAsyncPromiseExecutor`、`noSelfCompare`、
+      #     `noFallthroughSwitchClause` ✓。
+      #   ⚠ `useExhaustiveDependencies`（React hooks 依赖）**暂时关掉** ✗ —— 历史代码有几十处 ✓，
+      #     修它要逐条确认"漏依赖是不是故意的"✓（另开一轮 ✓）；关它**不影响**本步的价值 ✓。
+      - name: 前端 lint（biome）
+        run: npm run lint
+
       # ★ v2.9.17（2026-10-18 ✓）：**前端单测**接进 CI ✓
       #   首个用例集 = `sftLogic`（结论判定 / 预测周期解析 / K 档 / 导出表头 ✓ 11 条 ✓）。
       #   ⚠ vitest 版本要跟着 vite 走 ✗：项目 vite 5 ⇒ **vitest 2.1.x** ✓（5.x 会报

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.2/schema.json",
+  "files": {
+    "includes": ["src/**", "e2e/**", "!**/dist/**", "!**/coverage/**", "!**/_cov/**"]
+  },
+  "formatter": {
+    "enabled": false
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": false,
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error",
+        "noSwitchDeclarations": "error",
+        "noUnreachable": "error",
+        "useExhaustiveDependencies": "off"
+      },
+      "suspicious": {
+        "noDoubleEquals": "error",
+        "noDuplicateObjectKeys": "error",
+        "noAsyncPromiseExecutor": "error",
+        "noSelfCompare": "error",
+        "noFallthroughSwitchClause": "error"
+      }
+    }
+  },
+  "assist": {
+    "enabled": false
+  }
+}

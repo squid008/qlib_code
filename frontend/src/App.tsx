@@ -804,7 +804,7 @@ export default function App() {
       startPolling()
       // 续测后立即刷新历史：源目录被续测任务占用（is_task_running=true），删除按钮禁用、未完成标签更新
       setHistoryRefreshKey((k) => k + 1)
-    } catch (e) {
+    } catch (_e) {
       setError('续跑提交失败，请确认后端服务已启动')
     }
   }
@@ -1115,7 +1115,7 @@ export default function App() {
       }, 200)
       // 提交后立即刷新历史列表（新任务尽早出现在历史面板，避免要手动点"刷新"）
       setHistoryRefreshKey((k) => k + 1)
-    } catch (e) {
+    } catch (_e) {
       setError('提交回测失败，请确认后端服务已启动')
     } finally {
       setLoading(false)

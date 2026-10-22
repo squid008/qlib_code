@@ -1,13 +1,14 @@
 {
   "name": "qlib-backtest-frontend",
   "private": true,
-  "version": "2.11.23",
+  "version": "2.11.24",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "lint": "biome lint src",
     "test:e2e": "playwright test",
     "test:cov": "vitest run --coverage"
   },
@@ -20,6 +21,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.2",
     "@playwright/test": "^1.64.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",

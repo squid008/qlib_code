@@ -24,6 +24,33 @@
 
 ---
 
+## [2.11.24] - 2026-10-22
+
+### Chore（**清偿技术债 P2-#6：前端终于有 linter** ✓ —— 用 **biome** 不是 eslint ✓）
+
+- **为什么不用 eslint** ✗：在这个环境里 `npm i -D eslint…` **反复装不上** ✓（这条债挂了很久 ✓）。
+  **biome 是单二进制** ✓（`@biomejs/biome` 一次装上 ✓，2.6.2 ✓），不需要 eslint 那套 plugin/parser 组合 ✓。
+- **⭐⭐ 规则是"显式白名单"，不用推荐全集** ✓ —— 先量了一下：
+  `biome lint src` 用推荐集报 **148 errors / 191 warnings** ✗（绝大多数是风格、import 扩展名、
+  事件绑定 a11y ✓）⇒ 直接开会变成"**上线即红**"✗ 或"关掉大半"✗（等于装了个摆设 ✓）。
+  ⇒ 只开**能抓真 bug** 的十余条 ✓：`noUnusedImports` / `noUnusedVariables` / `noSwitchDeclarations` /
+  `noUnreachable` / `noDoubleEquals` / `noDuplicateObjectKeys` / `noAsyncPromiseExecutor` /
+  `noSelfCompare` / `noFallthroughSwitchClause` ✓。
+- **顺手修掉 4 处真问题** ✓：`catch (_e) {` 的**未使用绑定** ✓（ES2019 允许省略 ⇒ 改 `catch {` ✓）
+  —— 这类是纯死代码 ✓，改完 `tsc` 与 **261 条前端用例全绿** ✓。
+- **⚠ 两条自己踩的坑**（都写进配置注释 ✓）：
+  1. 第一版配置报 **`unknown key noConstantCondition`** ✗ —— biome v2 的规则分组与 v1 不同 ✓；
+  2. 还有 2 条 `Tailwind-specific syntax is disabled` ✗ ⇒ 要在 `css.parser.tailwindDirectives` 里开 ✓
+     （本项目 `index.css` 用了 `@tailwind` ✓）。
+- **⚠ 一条**故意**关掉的规则** ✗：`useExhaustiveDependencies`（React hooks 依赖）——
+  历史代码有几十处 ✓，修它要逐条确认"漏依赖是不是故意的"✓（那是另一轮的事 ✓）。
+  **关它不影响本步的价值** ✓（死代码 / unreachable / 重复 key 已经能抓 ✓）。
+- **接进 CI** ✓：`npm run lint` 作为前端 job 的一步 ✓（在 tsc 之后 ✓）——
+  **91 个文件 / 59ms** ✓，比跑一次 tsc 还快 ✓。
+- **实测** ✓：`biome lint src` **exit 0** ✓（91 文件）｜ `tsc -b` **0 错误** ✓ ｜
+  前端 **261 passed** ✓ ｜ CI ✓。
+- **技术债** ✓：在册 **5 → 4** 条 ｜ 已清偿 **15 → 16** 条 ✓。
+
 ## [2.11.23] - 2026-10-22
 
 ### Test（**绝对性能护栏：4 条基准** ✓ —— 性能护栏 **7.8 → 9.0** ✓）
