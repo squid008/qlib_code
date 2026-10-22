@@ -24,6 +24,33 @@
 
 ---
 
+## [2.11.38] - 2026-10-22
+
+### Fixed（**最后一批零碎的类型错：4 个文件 13 条清零** ✓ —— mypy **100/112（89%）** ✓）
+
+- **`factors_formulas`(4)** ✓：两个函数签名写 `exclude_id: str = None` ✗ ⇒ `Optional[str]` ✓
+  （连带下游 `mark_dependents_stale(exclude_id=item.get("id"))` 的 `Any | None` 一起解决 ✓）；
+  `FACTOR_PROVIDERS` 未标类型 ⇒ 取出来是 `object` ✗ ⇒ 不能 `.lower()` ✓ ⇒ `str(...)` ✓。
+- **`catalog`(3)** ✓：两个 dict 字面量**混型**（`group` 是 str、`fields` 是 list ✓）⇒ 被推成
+  `dict[str, Sequence[Collection[str]]]` ✗ ⇒ `g158["fields"] + g360["fields"]` 报
+  "左操作数不支持 +" ✗ ⇒ 显式 `Dict[str, Any]` ✓；`reg["provider"]()` 是 `object` ⇒
+  `cast(Callable[[], List[dict]], ...)` ✓。
+- **`factors_single`(4)** ✓：`idx.get(expr, h, _c[0], ...)` 的 `kind` 可能是 `None` ✗
+  ⇒ `_c[0] or ""` ✓（给 `""` 与给 `None` 的**结果一致** ✓ —— 字典查不到就是查不到 ✓）；
+  `_exit_pre_mats(..., panel, ...)` 里 `panel` 可能为 `None` ⇒ `panel or {}` ✓；
+  ⭐ **`except Exception as e:` 套 `except Exception as e:`** ✗ ⇒ 内层改 `_e2` ✓
+  （否则外层 `e` 被删 ⇒ 下面 `return {"error": repr(e)}` 读不到 ✓，**又一颗定时炸弹** ✓）。
+- **`calc_date`(2)** ✓：`np.datetime64("<日期串>", "D")` 与 `(int, "D")` 在**运行时完全合法** ✓
+  （官方用法 ✓），只是 **numpy 存根**没列这两个重载 ✗ ⇒ 用 `# type: ignore[call-overload]` ✓
+  **并写明理由** ✓（本项目少数几处 ignore ✓ —— 必须是"存根不全"而不是"我不想改"✗）。
+- **⚠ 两次自己造的坑（都当场被静态检查抓住）** ✗→✓：
+  1. 用**内联 `python -c`** 改四文件（第 6 次踩）✗ ⇒ PowerShell 撕碎引号 ⇒ 白跑 ✓；
+  2. 把 `# type: ignore` 注释放进了**多行表达式中间** ✗ ⇒ `invalid-syntax: Expected ','` ✓
+     （注释把行尾的 `)` 吞掉了 ✓）⇒ 改成"先把括号闭合、注释放行尾" ✓。
+- **实测** ✓：`mypy` **100 个源文件 0 错误** ✓（4 个模块入闸门 ✓）｜
+  factor/formula/catalog/date/router 回归 **350 passed** ✓ ｜ `ruff` **0** ✓ ｜ CI ✓。
+- **账面** ✓：mypy **96 → 100 个文件（≈89%）** ✓ ｜ 类型安全 **9.8 → 9.9** ✓。
+
 ## [2.11.37] - 2026-10-22
 
 ### Fixed（**`artifacts_service`(7) + `factors_event`(5) 清零** ✓ —— mypy **96/112（86%）**）

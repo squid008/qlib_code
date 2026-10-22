@@ -78,7 +78,9 @@ def to_serial(yyyymmdd: int) -> int:
     i = int(yyyymmdd)
     y, m, d = i // 10000, i // 100 % 100, i % 100
     try:
-        return int(np.datetime64("%04d-%02d-%02d" % (y, m, d), _EPOCH_DAYS).astype(np.int64))
+        # ⚠ `type: ignore[call-overload]` = **numpy 存根的限制** ✓（不是"不想改"✗）：
+        #   `np.datetime64("<日期串>", "D")` 运行时完全合法（官方用法 ✓），存根没列 `(str, str)` 重载 ✗。
+        return int(np.datetime64("%04d-%02d-%02d" % (y, m, d), _EPOCH_DAYS).astype(np.int64))  # type: ignore[call-overload]
     except Exception as exc:                                   # noqa: BLE001
         raise ValueError(
             "不是合法日期：%s —— 请写 8 位 YYYYMMDD（如 20070901），"
@@ -87,7 +89,8 @@ def to_serial(yyyymmdd: int) -> int:
 
 def from_serial(serial: Union[int, float]) -> int:
     """日序号 → YYYYMMDD（查看/测试用 ✓）。"""
-    d = np.datetime64(int(serial), _EPOCH_DAYS).astype("datetime64[D]").item()
+    # ⚠ 同上：`(int, str)` 也在运行时合法 ✓，存根未列 ✓ ⇒ 压制（理由见 `to_serial`）
+    d = np.datetime64(int(serial), _EPOCH_DAYS).astype("datetime64[D]").item()  # type: ignore[call-overload]
     return int(d.year) * 10000 + int(d.month) * 100 + int(d.day)
 
 

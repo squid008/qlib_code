@@ -22,7 +22,7 @@
 注意：因子表达式使用 qlib 的 Field/表达式语法（Ref/Mean/Std/Corr 等），
 必须能被 qlib 的 loader 正确解析。可参考 qlib/data/ops.py。
 """
-from typing import Dict, List
+from typing import Any, Callable, Dict, List, cast
 
 
 def _alpha158_raw_config():
@@ -129,8 +129,11 @@ def get_mixed_catalog() -> Dict[str, object]:
     """
     from .handler import MIX_PREFIX_ALPHA158, MIX_PREFIX_ALPHA360
 
-    g158 = {"group": "Alpha158 (前缀 A158_)", "fields": _prefix_records(_alpha158_provider(), MIX_PREFIX_ALPHA158)}
-    g360 = {"group": "Alpha360 (前缀 A360_)", "fields": _prefix_records(_alpha360_provider(), MIX_PREFIX_ALPHA360)}
+    # ★ v2.11.38：显式注解 ✓ —— 不注解时这两个 dict 被推成
+    #   `dict[str, Sequence[Collection[str]]]` ✗（`group` 是 str、`fields` 是 list ✓ 混型 ✓）
+    #   ⇒ 下面 `g158["fields"] + g360["fields"]` 报"左操作数不支持 +" ✗。
+    g158: Dict[str, Any] = {"group": "Alpha158 (前缀 A158_)", "fields": _prefix_records(_alpha158_provider(), MIX_PREFIX_ALPHA158)}
+    g360: Dict[str, Any] = {"group": "Alpha360 (前缀 A360_)", "fields": _prefix_records(_alpha360_provider(), MIX_PREFIX_ALPHA360)}
     flat = g158["fields"] + g360["fields"]
     return {
         "dataset": "mixed",
@@ -145,8 +148,9 @@ def get_catalog(dataset: str = "Alpha158") -> Dict[str, object]:
     if dataset.lower() == "mixed":
         return get_mixed_catalog()
     for reg in FACTOR_PROVIDERS:
-        if reg["dataset"].lower() == dataset.lower():
-            records = reg["provider"]()
+        # ★ v2.11.38：`FACTOR_PROVIDERS` 未标类型 ⇒ 取出来是 `object` ✗ ⇒ 不能 `.lower()` / 不能调用 ✓
+        if str(reg["dataset"]).lower() == dataset.lower():
+            records = cast(Callable[[], List[dict]], reg["provider"])()
             break
     else:
         # 未知数据集：尝试用 qlib 的 Alpha360 全量目录兜底

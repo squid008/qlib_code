@@ -87,8 +87,11 @@ def _period_roll_pick(hk_state: dict, row: dict, item: dict) -> tuple:
              ("decile", 0, tc.get("default_quantile")),
              ("decile", 0, None)]
     lists = None
+    # ★ v2.11.38：`kind` 归一成 `str` ✓ —— `item.get("kind")` 可能是 `None` ✗，
+    #   而 `HoldingsIndex.get` 的第 3 参要求 `str` ✓。给 `""` 与给 `None` 的**结果一致** ✓
+    #   （字典查不到就是查不到 ✓），只是让类型说得通 ✓。
     for _c in cands:
-        lists = idx.get(expr, h, _c[0], _c[1], _c[2])
+        lists = idx.get(expr, h, _c[0] or "", _c[1], _c[2])
         if lists:
             break
     if not lists:
@@ -96,7 +99,7 @@ def _period_roll_pick(hk_state: dict, row: dict, item: dict) -> tuple:
         for _e, _v in (idx.factors or {}).items():
             if str(h) in (_v or {}):
                 for _c in cands:
-                    lists = idx.get(_e, h, _c[0], _c[1], _c[2])
+                    lists = idx.get(_e, h, _c[0] or "", _c[1], _c[2])
                     if lists:
                         expr = _e
                         break
@@ -246,7 +249,7 @@ def _attach_signal_roll(req, row: dict, evs: dict, progress_cb=None,
                     try:
                         _rule = EntryRule(_it0["skel"], _it0.get("pre_exprs") or [],
                                           float(req.exit_threshold),
-                                          _exit_pre_mats(_it0.get("pre_series") or [], panel,
+                                          _exit_pre_mats(_it0.get("pre_series") or [], panel or {},
                                                          exit_cache, ei=_ei))
                     except Exception as _e:                          # noqa: BLE001
                         _rule = None
@@ -381,7 +384,7 @@ def _attach_period_roll(req, hk_state: dict, row: dict, progress_cb=None,
                 try:
                     _rule = EntryRule(_it0["skel"], _it0.get("pre_exprs") or [],
                                       float(req.exit_threshold),
-                                      _exit_pre_mats(_it0.get("pre_series") or [], panel,
+                                      _exit_pre_mats(_it0.get("pre_series") or [], panel or {},
                                                      exit_cache, ei=_ei))
                 except Exception as _e:                          # noqa: BLE001
                     _rule = None
@@ -689,9 +692,8 @@ def _panel_period_roll_nav(req, hk_state: dict, row: dict, item: Optional[dict] 
         try:
             from ..logger import get_logger
             get_logger("factors").warning("period_roll 面板侧计算失败: %r", e)
-        except Exception as e:
-            _log_swallowed("factors_single.py", e)
-            pass
+        except Exception as _e2:            # ★ v2.11.38：不能再用 e ✗（会遮蔽外层 e ⇒ 下方读不到 ✓）
+            _log_swallowed("factors_single.py", _e2)
         return {"error": repr(e)}
 
 def _sft_render_view(state: dict) -> tuple:

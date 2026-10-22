@@ -201,6 +201,11 @@ files = [
     # ★ v2.11.37：`artifacts_service`(7) + `factors_event`(5) 清零
     "app/services/artifacts_service.py",
     "app/routers/factors_event.py",
+    # ★ v2.11.38：最后一批零碎的（catalog / calc_date / factors_formulas / factors_single ✓）
+    "app/factors/catalog.py",
+    "app/factors/calc_date.py",
+    "app/routers/factors_formulas.py",
+    "app/routers/factors_single.py",
     # ★ v2.11.12：`batch_even` 的信号折叠（纯函数 ✓）
     "app/signals/batch_execs.py",
     # ★ v2.11.13：逐日循环的初始状态（含"按票记持有天数"的口径 ✓）

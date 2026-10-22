@@ -23,6 +23,8 @@
 """
 import uuid
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -54,7 +56,7 @@ class CustomFormulaBody(BaseModel):
     allow_duplicate: bool = False   # ★ v1.20.82：明知同名也要新建一条 ⇒ 跳过查重提示 ✓
 
 
-def _formula_library(exclude_id: str = None) -> dict:
+def _formula_library(exclude_id: Optional[str] = None) -> dict:
     """公式库（供「公式间调用」，v1.19.87）：已保存公式的 `名 → 原文`。
 
     ⚠ 编辑某条公式时要**把自己排除**（`exclude_id`）—— 否则它引用同名公式会立刻变成
@@ -64,7 +66,7 @@ def _formula_library(exclude_id: str = None) -> dict:
     return build_library([i.get("text", "") for i in items if i.get("id") != exclude_id])
 
 
-def _compile_formula_or_400(formula: str, patchable: bool = False, exclude_id: str = None):
+def _compile_formula_or_400(formula: str, patchable: bool = False, exclude_id: Optional[str] = None):
     """编译公式；成功返回 TranslatedFactor，失败抛 HTTPException(400)。"""
     if not formula or not formula.strip():
         raise HTTPException(status_code=400, detail="公式不能为空")
@@ -188,7 +190,8 @@ def create_saved_formula(req: CustomFormulaBody):
     item = _create_custom_formula(t.name, req.formula.strip(), t.expression)
     # ★ v1.20.87：**自动**把引用了本公式的其它公式标为待重编 ✓（用户 2026-10-09：
     #   「改被调用公式的正文，依赖它的公式必须重存一遍」能不能避免 ⇒ 现在从机制上避免了 ✓）
-    _mark_dependents_stale(t.name, exclude_id=item.get("id"))
+    # ★ v2.11.38：`str(... or "")` ✓ —— 该函数签名要求 `str` ✓，而 `item.get("id")` 是 `Any | None` ✗
+    _mark_dependents_stale(t.name, exclude_id=str(item.get("id") or ""))
     # ★ v1.20.89：被物化引用 ⇒ 当场提示"物化值已过期" ✓（用户实测"看不到提示" ✓）
     item["materialize_warning"] = _market_impact_warning(t.name, item.get("text") or req.formula)
     return item
@@ -268,7 +271,8 @@ def list_datasets():
 @router.get("/catalog", summary="获取特征集因子目录")
 def get_factor_catalog(dataset: str = "Alpha158"):
     """返回某特征集的因子目录：{dataset, total, groups:[{group, fields:[{name,expression,category,description}]}], flat:[...]}"""
-    available = {reg["dataset"].lower() for reg in FACTOR_PROVIDERS}
+    # ★ v2.11.38：`str(...)` ✓ —— `FACTOR_PROVIDERS` 未标类型 ⇒ 取出来是 `object` ✗，不能 `.lower()` ✓
+    available = {str(reg["dataset"]).lower() for reg in FACTOR_PROVIDERS}
     if dataset.lower() not in ("mixed",) and dataset.lower() not in available and dataset.lower() != "alpha360":
         raise HTTPException(status_code=404, detail=f"未知特征集: {dataset}")
     return get_catalog(dataset)
