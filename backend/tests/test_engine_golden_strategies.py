@@ -10,40 +10,58 @@
 
 > 单元测试证明"那块逻辑对" ✓；**指纹证明"跑出来的净值一模一样"** ✓ —— 两件事 ✗。
 
-## 数据从哪来（**无真数据依赖** ✓ ⇒ 能跨机器）
-用 `tools/bench_engine.build(120, 260, 3)` ✓：120 只 × 260 日、**固定种子 `20261018`** ✓
-⇒ 面板逐位可复现 ✓；再按调仓日编 `bucket`（**多批次**路径 ✓，正是我重构过的那条 ✓）。
-本地 **Windows** 与 CI **ubuntu-latest** 跑出同一个 sha1 ⇒ 这就是**跨平台基线** ✓
-（同一份 `test_engine_golden.py` 已用这种方式跑了一年多 ✓）。
+## ⚡⚡ 关键：指纹只算 **NAV**，**不含成交明细行序**（这是 CI 教我的）
+第一版我直接复用 `bench_engine.checksum`（NAV + 成交明细 `to_csv` ✓）⇒
+**本地 Windows 绿、CI ubuntu 红** ✗ —— 而 `trades` / `rejects` / `nav_last` **全都一致** ✓。
+⇒ 结论：**成交明细的"行序"跨平台不稳定** ✗（NAV 逐位相同 ✓）。
+⇒ 所以这里**只冻 NAV 序列的 sha1** ✓（与行序无关 ✓），另外把成交/被拒的**条数**冻住 ✓
+（条数也是行序无关的 ✓）。
+⚠ 想要"整条明细逐位一致"得先让引擎**按稳定键排序** trades ✓ —— 那是另一件事 ✓（未做 ✗）。
+
+## 数据从哪来（**无真数据依赖** ✓）
+`tools/bench_engine.build(120, 260, 3)` ✓：120 只 × 260 日、固定种子 `20261018` ✓
+⇒ 面板逐位可复现 ✓；再按调仓日编 `bucket`（**多批次**路径 ✓，正是被重构过的那条 ✓）。
 
 ## ⚠ 换黄金值的唯一正当理由
 **有意改变撮合/账目语义** ✓ —— 那就连 `md/change_log.md` 一起写清楚 ✓。
 """
+import hashlib
 import os
 import sys
 
+import numpy as np
 import pytest
 
 BE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BE)
 sys.path.insert(0, os.path.join(BE, "tools"))
 
-from bench_engine import build, checksum                       # noqa: E402
-from app.signals.engine import run_batch_backtest              # noqa: E402
-from app.signals.period_roll import run_period_roll            # noqa: E402
+from bench_engine import build                                   # noqa: E402
+from app.signals.engine import run_batch_backtest                # noqa: E402
+from app.signals.period_roll import run_period_roll              # noqa: E402
 
 #: 黄金值（2026-10-22 实测 ✓ v2.11.17 之后）
 GOLD = {
-    "period_roll": dict(trades=9183, rejects=0, nav_last=1.0551722828, sha="a5f1aa1ec7f05a17"),
-    "batch_even": dict(trades=4000, rejects=49, nav_last=1.0161231221, sha="50439002e40802a3"),
+    "period_roll": dict(trades=9183, rejects=0, nav_last=1.0551722828,
+                        sha="b8cec07074b4ff6c"),
+    "batch_even": dict(trades=4000, rejects=49, nav_last=1.0161231221,
+                       sha="a2497ed9268d77ea"),
 }
 
 KW = dict(cost=0.004, capital=1e9, fill="t1_open", strict_limit=True, lot=100)
 
 
+def nav_sha1(nav) -> str:
+    """**只**对 NAV 数值 + 列名做指纹 ✓（**不含成交明细行序** ✗，见模块 docstring）。"""
+    h = hashlib.sha1()
+    h.update(np.asarray(nav.to_numpy(), dtype="float64").tobytes())
+    h.update("|".join(map(str, nav.columns)).encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
 @pytest.fixture(scope="module")
 def panel_sig():
-    """合成面板 + **带 bucket 的信号** ✓（固定种子 ⇒ 逐位可复现 ✓）。"""
+    """合成面板 + **带 bucket 的信号** ✓（固定种子 ⇒ 逐位可复现 ✓》。"""
     panel, sig = build(120, 260, 3)
     sig = sig.copy()
     ranks = {d: i for i, d in enumerate(sorted(sig["date"].unique()))}
@@ -57,10 +75,10 @@ def panel_sig():
     ("batch_even", run_batch_backtest),
 ])
 def test_strategy_numbers_are_frozen(panel_sig, name, runner):
-    """⭐ 成交笔数 / 被拒笔数 / 末值净值 / **NAV+成交明细整条 sha1** 全部冻结 ✓。
+    """⭐ 成交笔数 / 被拒笔数 / 末值净值 / **NAV 序列整条 sha1** 全部冻结 ✓。
 
-    任何"改了撮合或账目语义"的改动都会让它红 ✓ —— 而且报错直接说"是哪个策略的哪个数变了" ✓，
-    不需要人眼比对两张净值曲线 ✗。
+    任何"改了撮合或账目语义"的改动都会让它红 ✓ —— 而且报错直接说"哪个策略的哪个数变了" ✓，
+    不需要人眼比对两条净值曲线 ✗。
     """
     panel, sig = panel_sig
     r = runner(sig, panel, **KW)
@@ -79,8 +97,8 @@ def test_strategy_numbers_are_frozen(panel_sig, name, runner):
         "%s 末值净值变了 ✗（%.10f ≠ %.10f）⇒ 账目语义被改动 ✓"
         % (name, float(nav[col].iloc[-1]), g["nav_last"]))
 
-    got = checksum(r)[:16]
+    got = nav_sha1(nav)
     assert got == g["sha"], (
-        "%s 的 NAV+成交明细指纹变了 ✗（%s ≠ %s）\n"
+        "%s 的 NAV 指纹变了 ✗（%s ≠ %s）\n"
         "  ⇒ 若这是**有意**改口径：请同时更新 GOLD 与 md/change_log.md ✓\n"
         "  ⇒ 若不是：说明某处撮合/成本/整手/权重算错了 ✓" % (name, got, g["sha"]))

@@ -1,7 +1,7 @@
 {
   "name": "qlib-backtest-frontend",
   "private": true,
-  "version": "2.11.18",
+  "version": "2.11.19",
   "type": "module",
   "scripts": {
     "dev": "vite",
