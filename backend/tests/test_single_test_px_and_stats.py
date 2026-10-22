@@ -116,3 +116,34 @@ def test_continuous_stats_survives_board_exclusion(flag):
     kw["result"] = res
     S._continuous_stats(**kw)      # 不抛即通过 ✓
     assert isinstance(res, dict)
+
+
+def test_continuous_stats_survives_price_column_fetch_failure():
+    """⭐⭐ 搬价格列（`CLOSE_FF`/`OPEN_FF`）失败 ⇒ **必须继续算** ✓ ——
+    源码注释记着这个坑的后果（v2.1.25）：
+    「只搬了收盘价 ⇒ `t1_open` 时取不到 `OPEN` ⇒ 期初价全 NaN ⇒ `_perf_of` 早退
+      ⇒ **年化/回撤/夏普整块消失** ✗」⇒ 所以这里**两个 except 都要吞掉并继续** ✓
+    （抛了 = 整段统计全没了 ✗；而且这是**辅助列**，主结论不该依赖它 ✓）。"""
+    kw = _cs_kwargs()
+    df = kw["df"]
+    df["CLOSE_FF"] = 10.0
+    df["OPEN_FF"] = 10.0
+
+    def _frame_boom(_pos, cols):
+        cols = [cols] if isinstance(cols, str) else list(cols)
+        if any(c in ("CLOSE_FF", "OPEN_FF") for c in cols):
+            raise RuntimeError("boom")
+        return df[[c for c in cols if c in df.columns]]
+
+    kw["_frame"] = _frame_boom
+    res = {"is_binary": False}
+    kw["result"] = res
+    S._continuous_stats(**kw)          # 不许抛 ✓
+    assert isinstance(res, dict)
+
+
+# ⚠ 原本还想钉 `result["topk_curves_error"]`（1781-1783 ✓：TopK 曲线出错要**降级但留痕** ✓）。
+#   但试过之后**够不到** ✗ —— 要走到那段需要"分组 / 分位矩阵 `_dec_mat` / 成本曲线都就绪" ✓，
+#   而最小夹具只到"搬价格列"就结束了 ✓。
+#   ⇒ 按规矩**不写一条永远 `skip` 的测试** ✗（那比不写更糟：它会让人以为"这里测过了" ✓）。
+#   该分支留待**有真面板**的用例 ✓，已记进本文件头。
