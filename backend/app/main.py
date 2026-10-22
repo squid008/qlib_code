@@ -14,7 +14,7 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from . import config, __version__
 from .logger import get_logger
@@ -64,8 +64,14 @@ def create_app() -> FastAPI:
         return resp
 
     @app.get("/api/metrics", summary="进程内指标（计数器 + 耗时）")
-    def _metrics() -> dict:
-        """给"这台机器现在什么情况"一个**不用翻日志**的答案 ✓（见 `app/metrics.py` 的取舍说明）。"""
+    def _metrics(format: str = "json"):
+        """给"这台机器现在什么情况"一个**不用翻日志**的答案 ✓（见 `app/metrics.py` 的取舍说明）。
+
+        ★ v2.11.41：`?format=text` ⇒ **Prometheus 文本格式** ✓（直接给 scrape 用 ✓，
+        不用写 exporter ✓）。
+        """
+        if format == "text":
+            return PlainTextResponse(REGISTRY.to_prometheus_text())
         return REGISTRY.snapshot()
 
     # 确保工作目录存在

@@ -148,6 +148,15 @@ jobs:
       - name: 前端 lint（biome）
         run: npm run lint
 
+      # ★★ v2.11.41：**前端依赖漏洞闸门** ✓ —— 此前只有后端 `pip-audit` ✓，
+      #   前端 **`package.json` 一堆依赖完全没审计过** ✗（供应链的另一半 ✓）。
+      #   ⚠ 只卡 **critical** ✓：本仓生产依赖里 `xlsx`（SheetJS）有 **2 个 high 且「No fix available」**
+      #     ✗ —— SheetJS 已不在 npm 维护 ✓ ⇒ 卡 high 就会"上线即红"✗，
+      #     而那条**只能靠换库解决**（不在本轮范围 ✓，已记入技术债 ✓）。
+      #   ⇒ 卡 critical 是"**能守住的那条线**" ✓：真出现 critical 必须当场停下 ✓。
+      - name: 前端依赖漏洞（npm audit，只卡 critical）
+        run: npm audit --omit=dev --audit-level=critical
+
       # ★ v2.9.17（2026-10-18 ✓）：**前端单测**接进 CI ✓
       #   首个用例集 = `sftLogic`（结论判定 / 预测周期解析 / K 档 / 导出表头 ✓ 11 条 ✓）。
       #   ⚠ vitest 版本要跟着 vite 走 ✗：项目 vite 5 ⇒ **vitest 2.1.x** ✓（5.x 会报

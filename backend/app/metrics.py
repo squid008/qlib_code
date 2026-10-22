@@ -69,6 +69,35 @@ class Registry:
             "timers": timers,
         }
 
+    def to_prometheus_text(self) -> str:
+        """**Prometheus 文本格式** ✓（★ v2.11.41）—— 让"接监控"这件事变成**零改动** ✓。
+
+        为什么加这个（模块 docstring 里说过"将来真要接 Prometheus，映射一下就行 ✓"）：
+        · `json` 适合**人**看 ✓（`curl /api/metrics | jq` ✓）；
+        · `text` 适合**机器**抓 ✓（Prometheus 的 `scrape_config` 直接吃 ✓，不用写 exporter ✓）。
+        ⚠ 名字按 Prometheus 约定加单位后缀 ✓（`_total` 计数、`_seconds` 秒 ✓）——
+        以后接真监控时，**dashboard 的查询语句就不用再改一遍** ✓。
+        """
+        snap = self.snapshot()
+        lines = [
+            "# HELP qlib_uptime_seconds 进程运行时长（秒）",
+            "# TYPE qlib_uptime_seconds gauge",
+            "qlib_uptime_seconds %s" % snap["uptime_s"],
+        ]
+        for name, n in (snap["counters"] or {}).items():
+            metric = "qlib_" + name.replace(".", "_") + ("_total" if not name.endswith("_total") else "")
+            lines.append("%s %d" % (metric, n))
+        for name, t in (snap["timers"] or {}).items():
+            # ⚠ 不能写 `.rstrip("s")` ✗ —— 那会把结尾所有 s 都剥掉（`duration_` ✗）。
+            #   只精确切掉 `_s` 这个单位后缀 ✓（`duration_s` → `duration` ✓）。
+            n2 = name.replace(".", "_")
+            base = "qlib_" + (n2[:-2] if n2.endswith("_s") else n2)
+            lines.append("# TYPE %s_seconds summary" % base)
+            lines.append("%s_seconds_count %d" % (base, int(t["count"])))
+            lines.append("%s_seconds_sum %s" % (base, t["sum"]))
+            lines.append("%s_seconds_max %s" % (base, t["max"]))
+        return "\n".join(lines) + "\n"
+
     def reset(self) -> None:
         """清空（**只给测试用** ✓ —— 生产里清指标等于把历史抹掉 ✗）。"""
         with self._lock:

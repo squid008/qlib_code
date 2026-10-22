@@ -80,6 +80,37 @@ def test_metrics_endpoint_reports_requests():
     assert d and d["count"] >= 2 and d["max"] >= 0
 
 
+def test_prometheus_text_format_is_scrape_ready():
+    """⭐ `?format=text` ⇒ **Prometheus 文本格式** ✓（v2.11.41）—— 接监控零改动 ✓。
+
+    口径：计数器带 `_total` 后缀、耗时带 `_seconds` 后缀 + `count/sum/max` ✓ ——
+    这样以后接真监控时，**dashboard 的查询语句不用再改一遍** ✓。
+    """
+    REGISTRY.reset()
+    client.get("/api/version")
+    r = client.get("/api/metrics", params={"format": "text"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    body = r.text
+    assert "qlib_uptime_seconds " in body, "缺运行时长 ✓"
+    assert "qlib_http_requests_total " in body, "计数器应带 _total 后缀 ✓"
+    assert "qlib_http_duration_seconds_count " in body, "耗时要有 count ✓"
+    assert "qlib_http_duration_seconds_max " in body, "耗时要有 max ✓"
+
+
+def test_text_format_parses_as_metric_lines():
+    """⭐⭐ 每一行都得是 `名字 数值` 或 `#` 注释 ✓ —— 否则 Prometheus 抓过去会**整段丢弃** ✗。"""
+    REGISTRY.reset()
+    client.get("/api/version")
+    body = client.get("/api/metrics", params={"format": "text"}).text
+    for ln in body.strip().splitlines():
+        if not ln or ln.startswith("#"):
+            continue
+        parts = ln.split(" ")
+        assert len(parts) == 2, "格式不对 ✗（应为『名字 数值』）：%r" % ln
+        float(parts[1])            # 数值必须可解析 ✓（不然 scrape 直接报 malformed ✗）
+
+
 def test_counters_have_low_cardinality():
     """⭐⭐ 计数器名里**不许出现 task_id / 日期 / 数字 id** ✓ ——
     按路径分桶会让指标**无限增长** ✗（每个任务一个新键 ✓，进程跑久了内存一直涨 ✓）。
