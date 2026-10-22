@@ -39,6 +39,9 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # noqa: E402 —— 这个 import 故意放在常量区之后（保持原文件结构 ✓）；
 # ⚠ 别把说明写进 `noqa:` 里面 ✗（ruff 会报 "Invalid noqa directive" ✓，2026-10-18 实测 ✓）。
+# ★ v2.11.12（技术债 P1-#3 第十四刀）：`batch_even` 的信号折叠（纯函数 ✓）
+from .batch_execs import build_batch_execs  # noqa: E402
+
 from .matching import (                       # noqa: E402
     FILL_LAG as _FILL_LAG,
     FILL_PRICE as _FILL_PRICE,
@@ -975,45 +978,14 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     #   ⚠ 影响面：**后复权**（f≥1）下本方案的历史数字会变 ✓（f=1 的不复权口径**逐位不变** ✓）。
     _lot_arr = np.fromiter((_lot_of(c, lot) for c in codes), dtype=np.int64, count=len(codes))
 
-    bkt = (signals["bucket"].astype(str).fillna("") if "bucket" in signals.columns
-           else pd.Series([""] * len(signals), index=signals.index))
-    wts = (pd.to_numeric(signals["weight"], errors="coerce").fillna(1.0)
-           if "weight" in signals.columns else pd.Series(1.0, index=signals.index))
-    per: Dict[Tuple[str, int], Dict[int, float]] = {}
-    defer = beyond = 0
-    for dt, code, side, b, ww in zip(signals["date"], signals["code"], signals["side"], bkt, wts):
-        if int(side) <= 0:
-            continue            # 清单驱动：卖出由"移出名单"自动产生，入参里的卖出信号忽略
-        c = col_of.get(code)
-        if c is None:
-            continue
-        d = pd.Timestamp(dt)
-        if n_row == 0 or d < cal[0]:
-            beyond += 1
-            continue
-        p = int(cal.searchsorted(d))
-        if p >= n_row:
-            beyond += 1
-            continue
-        if cal[p] != d:
-            defer += 1
-        lst = per.setdefault((str(b), p), {})
-        lst[c] = lst.get(c, 0.0) + max(1e-9, float(ww))
-    if not per:
-        return BtResult(diag={"error": "batch_even：没有可用的买入信号"})
-
-    buckets = sorted({b for (b, _p) in per})
+    # ★ v2.11.12（技术债 P1-#3 第十四刀 ✓）：信号折叠搬去
+    #   `signals/batch_execs.build_batch_execs` ✓ —— 那里写清了四条语义（卖出信号忽略 /
+    #   `defer` 只是统计不丢弃 / 执行日钳到最后一根 / 同(批次,日)权重累加 ✓）。
+    buckets, execs, i_start, defer, beyond, _n_mapped, _n_refresh, _sig_err = build_batch_execs(
+        signals, col_of=col_of, cal=cal, n_row=n_row, lag=lag)
+    if _sig_err:
+        return BtResult(diag={"error": _sig_err})
     share = 1.0 / max(1, len(buckets))
-    seq: Dict[str, List[Tuple[int, Dict[int, float]]]] = {}
-    for (b, p), lst in per.items():
-        seq.setdefault(b, []).append((p, lst))
-    for b in seq:
-        seq[b].sort(key=lambda x: x[0])
-    execs: Dict[int, List[Tuple[str, Dict[int, float], int]]] = {}
-    for b, items in seq.items():
-        for p, lst in items:
-            execs.setdefault(min(n_row - 1, p + lag), []).append((b, lst, p))
-    i_start = min(execs)
 
     cash = {b: float(capital) * share for b in buckets}
     sh: Dict[str, Dict[int, int]] = {b: {} for b in buckets}
@@ -1289,11 +1261,11 @@ def run_batch_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         "fill": fill, "cost": cost, "capital": capital, "hold_days": None,
         "strict_limit": bool(strict_limit), "lot": lot, "n_codes": len(codes),
         "missing_codes": prep["missing"][:20],
-        "signals_mapped": int(sum(len(l) for l in per.values())),
+        "signals_mapped": _n_mapped,
         "signals_deferred": defer, "signals_beyond_data": beyond,
         "limits_from": "inferred" if "_limits_inferred" in panel else "exchange_tag",
         "batch": {"mode": mode, "n_batches": len(buckets), "share_each": round(share, 4),
-                  "batches": buckets[:12], "refreshes": len(per),
+                  "batches": buckets[:12], "refreshes": _n_refresh,
                   "cash_end": {b: round(float(cash[b]), 2) for b in buckets[:12]},
                   "holdings_end": {b: len(sh[b]) for b in buckets[:12]}},
     }

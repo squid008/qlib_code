@@ -140,6 +140,8 @@ files = [
     "app/signals/period_roll_exit_prep.py",
     # ★ v2.11.7：批次 → 调仓日 → 目标名单（保序去重 ✓）
     "app/signals/period_roll_buckets.py",
+    # ★ v2.11.12：`batch_even` 的信号折叠（纯函数 ✓）
+    "app/signals/batch_execs.py",
     "app/factors/event_study_stages.py",
     "app/factors/event_study.py",
     "app/factors/seg_ops.py",

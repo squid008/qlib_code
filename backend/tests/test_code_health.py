@@ -45,7 +45,10 @@ BIG_DEBT = {
     #   两刀抽出 `factors_single_validate.py`（入参校验 77 行 ✓）与
     #   `factors_single_state.py`（运行态契约 ✓）⇒ **降到警戒线以下 ⇒ 本条下线** ✓。
     #   （这是棘轮第 **2** 次真正下线一条 ✓，第 1 次是 `run_event_study` ✓。）
-    "signals/engine.py::run_batch_backtest": 367,
+    # ★ v2.11.12（第十四刀 ✓）：`batch_even` 的信号折叠抽去 `signals/batch_execs.py` ✓
+    #   ⇒ **367 → 336** ✓。⚠ 搬的时候漏了两个下游引用（`per` 被 diag 用 ✓）——
+    #   `ruff` 的 **F821** 当场点名 ✓（这类"搬家漏依赖"靠通读查不出来 ✗）。
+    "signals/engine.py::run_batch_backtest": 336,
     # ★★ v2.11.1~2.11.2（技术债 P1-#3 第七、八刀 ✓）：`run_event_study` **326 → 293** ✓
     #   两刀抽出 `event_study_stages.py`（预热解析 / 缓存查表 / 触发样本+剔除 ✓）
     #   ⇒ **已降到警戒线 300 以下** ✓ ⇒ **本条从棘轮里下线** ✓（只减不增 ✓）。
