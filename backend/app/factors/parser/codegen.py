@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from typing import List
+from typing import Any, Callable, Dict, List
 
 from .ast import Expr, Num, Str, Field, Var, BinOp, UnaryOp, FuncCall
 from .lexer import LexerError
@@ -22,7 +22,10 @@ from ..calc_date import is_date_literal, is_date_name, to_serial
 #   它们没有"常量答案" ✓，塞进来会让常量折叠算出错误结果 ✗。
 # 语义必须与 `codegen`/`ops_ext` 里对应算子**逐位一致** ✓（例如 `MOD` 用 `math.fmod` ✓
 # —— 符号随被除数 ✓，与我们的 `Mod` 算子同口径 ✓，而 Python 的 `%` 是符号随除数 ✗）。
-_CONST_FOLD_FUNCS = {
+# ★ v2.11.32：**显式注解** ✓ —— 不注解时值是 `object` ✗ ⇒ 调用处 `fn(*vals)` 报
+#   "Cannot call function of unknown type" ✓。用 `Any` 而非 `float` 作返回类型 ✓：
+#   `SGN` 那种 lambda 返回 int/bool ✓，而结果马上被 `float(r)` 归一 ✓。
+_CONST_FOLD_FUNCS: Dict[str, Callable[..., Any]] = {
     "ABS": abs,
     "SQRT": math.sqrt,                     # 负值 ⇒ ValueError ⇒ **不折** ✓
     "LOG": math.log, "LN": math.log,       # ≤0 ⇒ ValueError ⇒ 不折 ✓
@@ -833,10 +836,18 @@ class CodeGen:
         #   面板侧**不会**单独求值它（单独出现就直接报错 ✓，避免用户手写出个"没头没尾"的引用）。
         if name in (RECUR_OPS["OUT"], "__RECUR_OUT"):
             args = e.args
-            if len(args) < 2 or not all(isinstance(a, Num) for a in args[:2]) \
-                    or len(args) != int(args[1].value) + 2:
+            # ★ v2.11.32：**显式 isinstance 收窄** ✓ —— 原来写成
+            #   `all(isinstance(a, Num) for a in args[:2])` ✓，mypy **穿不过推导式** ✗
+            #   ⇒ 下面 `args[1].value` 报 "Expr has no attribute value" ✓。
+            #   语义**完全等价** ✓（同样是"前两个参数都必须是 Num"✓），只是拆成两步 ✓。
+            if len(args) < 2:
                 raise CodeGenError("递推组编译结果异常（RecurOut 参数不匹配）—— 请把公式反馈给开发 ✓")
-            idx, n = int(args[0].value), int(args[1].value)
+            _a0, _a1 = args[0], args[1]
+            if not (isinstance(_a0, Num) and isinstance(_a1, Num)):
+                raise CodeGenError("递推组编译结果异常（RecurOut 参数不匹配）—— 请把公式反馈给开发 ✓")
+            if len(args) != int(_a1.value) + 2:
+                raise CodeGenError("递推组编译结果异常（RecurOut 参数不匹配）—— 请把公式反馈给开发 ✓")
+            idx, n = int(_a0.value), int(_a1.value)
             if not (0 <= idx < n):
                 raise CodeGenError("递推组成员下标越界（%d/%d）—— 请把公式反馈给开发 ✓" % (idx, n))
             return "%s(%s)" % (RECUR_OPS["OUT"], ",".join(self._g(a) for a in args))
@@ -995,10 +1006,12 @@ class CodeGen:
         if name == "COST":
             if len(e.args) != 1 or not isinstance(e.args[0], Num):
                 raise CodeGenError("COST 需要 1 个**常量**参数：COST(q)，q 为成本分位（百分数），如 COST(95)")
-            q = float(e.args[0].value)
-            if not (0.0 < q < 100.0):
+            # ★ v2.11.32：改叫 `qcost` ✓ —— 同一个函数里 `q` 前面已当过 **str**（FINANCE 那段 ✓），
+            #   复用它会让 mypy 报 "float 赋给 str" ✗ / "str 与 float 不能比" ✗（连带 3 条）。
+            qcost = float(e.args[0].value)
+            if not (0.0 < qcost < 100.0):
                 raise CodeGenError("COST 的参数需在 (0,100) 之间，例如 COST(95)")
-            return "$chip_cost_%g" % q
+            return "$chip_cost_%g" % qcost
         if name == "WINNER":
             if len(e.args) != 1:
                 raise CodeGenError("WINNER 需要 1 个参数：WINNER(P)，P 用现价/最高价/最低价（如 WINNER(C)）")
@@ -1018,25 +1031,27 @@ class CodeGen:
                 raise CodeGenError(
                     "FINANCE 需要 1~2 个参数：FINANCE(q) 或 FINANCE(q,口径)，q 为指标编号（常量整数）：\n"
                     + finance_help())
-            q = _const_fold(e.args[0], allow_div=True)
-            if q is None or not float(q).is_integer():
+            # ★ v2.11.32：改叫 `qn` —— 同函数里 `q` 前面是 **str**（算子名），
+            #   复用会报 int 赋给 str（连带 3 条）。
+            qn = _const_fold(e.args[0], allow_div=True)
+            if qn is None or not float(qn).is_integer():
                 raise CodeGenError(
                     "FINANCE(q) 的 q 必须是**常量整数**（不能是行情字段/变量）：\n" + finance_help()
                     + "\n  例：`PE:=FINANCE(1); 因子:PE<20;`")
-            q = int(q)
-            if not (1 <= q <= len(FINANCE_FIELDS)):
+            qn = int(qn)
+            if not (1 <= qn <= len(FINANCE_FIELDS)):
                 raise CodeGenError(
                     "FINANCE(q) 的 q 需在 1~%d 之间，当前为 %d：\n%s"
-                    % (len(FINANCE_FIELDS), q, finance_help()))
+                    % (len(FINANCE_FIELDS), qn, finance_help()))
             if len(e.args) == 1:
                 tier = 1
-            elif q in FINANCE_SINGLE_TIER_Q:
+            elif qn in FINANCE_SINGLE_TIER_Q:
                 # 友好错：PE/PB 本身就一档，别让用户以为自己写错了口径编号 ✓
                 raise CodeGenError(
                     "FINANCE(%d) 只有一档（%s），**不能传第二参数**：\n"
                     "  · 市盈率TTM / 市净率本身就是一档（没有单季/年化/TTM 之分 ✓）；\n"
                     "  · 只有 3~%d（增长率 / 比率 / 每股收益 / 自由现金流）才有 1 单季 / 2 年化 / 3 TTM ✓。"
-                    % (q, FINANCE_FIELDS[q - 1][1], len(FINANCE_FIELDS)))
+                    % (qn, FINANCE_FIELDS[qn - 1][1], len(FINANCE_FIELDS)))
             else:
                 tv = _const_fold(e.args[1], allow_div=True)
                 if tv is None or not float(tv).is_integer():
@@ -1048,7 +1063,7 @@ class CodeGen:
                     raise CodeGenError(
                         "FINANCE(q,口径) 的口径需在 1~3 之间（1 单季 / 2 年化 / 3 TTM），当前为 %d：\n%s"
                         % (tier, finance_help()))
-            return "$" + finance_field_name(q, tier)
+            return "$" + finance_field_name(qn, tier)
         # 基本面（通达信源）：FINANCE_TDX(q) **已下线**（2026-10-10，用户第 4 项 ✓）
         # ⚠ 保留它的字段表（`FINANCE_TDX_FIELDS`）与 bin 数据（供多源复核 ✓），但**公式语言里不再提供** ✗
         #   —— 两个函数本来就编号/含义完全一致 ⇒ 留着等于多一条会漂移的口径 ✓。

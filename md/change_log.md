@@ -24,6 +24,26 @@
 
 ---
 
+## [2.11.32] - 2026-10-22
+
+### Fixed（**`parser/codegen` 的 8 条类型错清零** ✓ —— 全在**公式编译器**里 ✓）
+
+- **8 条分三类** ✓：
+  1. **`_CONST_FOLD_FUNCS` 没注解** ✗ ⇒ 值是 `object` ⇒ 调用处 `fn(*vals)` 报
+     "Cannot call function of unknown type" ✓。补 `Dict[str, Callable[..., Any]]` ✓
+     （用 `Any` 而非 `float` ✓：`SGN` 那种 lambda 返回 int/bool ✓，结果马上被 `float(r)` 归一 ✓）。
+  2. **`all(isinstance(a, Num) ...)` mypy 穿不过推导式** ✗ ⇒ `args[1].value` 报
+     "Expr has no attribute value" ✓（**递推组 RecurOut 那段** ✓）。拆成显式两步 isinstance ✓，
+     **语义完全等价** ✓（同样是"前两个参数都必须是 Num"✓）。
+  3. ⭐ **变量名复用冲突** ✗（`q` 在同一函数里既是**算子名（str）**又是**指标编号（int）**）⇒
+     连带 4 条错 ✓（`int` 赋给 `str` / `str` 与 `float` 不能比 / 字符串插值类型不符 ✓）。
+     ⇒ FINANCE 与 COST 两块的局部量改名 `qn` / `qcost` ✓（**避开字符串里的 `FINANCE(q)`** ✓，
+     所以是按**精确代码行**替换、不是全局替换 ✗）。
+- **⚠ 这是**编译器**✓ ⇒ 验证按最高标准**：`mypy` **88 个源文件 0 错误** ✓ ｜
+  parser/codegen/formula/expr/finance/chip 回归 **439 passed** ✓（编译产物零变化 ✓）｜
+  `ruff` **0** ✓ ｜ CI ✓。
+- **账面** ✓：mypy **87 → 88 个文件（≈79%）** ✓。
+
 ## [2.11.31] - 2026-10-22
 
 ### Fixed（**`panel_expr` 的 11 条类型错清零** ✓ —— 顺带补了 **4 条真 bug 防线** ✓）
