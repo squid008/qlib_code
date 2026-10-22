@@ -9,6 +9,7 @@ FastAPI 应用入口。
 from __future__ import annotations
 
 import os
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -17,6 +18,8 @@ from fastapi.responses import JSONResponse
 
 from . import config, __version__
 from .logger import get_logger
+# ★ v2.11.25：进程内指标（技术债 P2-#8 第一步 ✓）
+from .metrics import REGISTRY
 from .routers import (backtest, data, datasets, export_xlsx, factors, factors_event,
                       factors_formulas, factors_single, signal_test)
 
@@ -41,6 +44,29 @@ def create_app() -> FastAPI:
         # ⚠ 不 expose 的话浏览器**读不到**自定义响应头 ✗（跨源下默认只放行少数几个 ✓）。
         expose_headers=["X-Export-Filename"],
     )
+
+    # ★ v2.11.25（技术债 P2-#8 第一步 ✓）：**进程内指标** —— 只记总数 + 状态码 + 耗时 ✓。
+    #   ⚠ 刻意**不按 URL 路径分桶** ✗（路径里有 task_id/日期等高基数片段 ⇒ 指标本身会变成内存泄漏 ✓）。
+    #   要定位"哪个接口慢"，看日志的 `[吞]` 与响应里的 `timings` ✓。
+    @app.middleware("http")
+    async def _metrics_mw(request, call_next):
+        t0 = time.perf_counter()
+        try:
+            resp = await call_next(request)
+        except Exception:
+            REGISTRY.inc("http.requests")
+            REGISTRY.inc("http.status.500")
+            REGISTRY.observe("http.duration_s", time.perf_counter() - t0)
+            raise
+        REGISTRY.inc("http.requests")
+        REGISTRY.inc("http.status.%d" % int(getattr(resp, "status_code", 0) or 0))
+        REGISTRY.observe("http.duration_s", time.perf_counter() - t0)
+        return resp
+
+    @app.get("/api/metrics", summary="进程内指标（计数器 + 耗时）")
+    def _metrics() -> dict:
+        """给"这台机器现在什么情况"一个**不用翻日志**的答案 ✓（见 `app/metrics.py` 的取舍说明）。"""
+        return REGISTRY.snapshot()
 
     # 确保工作目录存在
     os.makedirs(config.WORK_DIR, exist_ok=True)
