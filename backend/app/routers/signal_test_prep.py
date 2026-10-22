@@ -70,6 +70,30 @@ def resolve_price_tables(panel, align) -> Tuple[Dict, Dict[str, pd.DataFrame], l
     return panel, px_es, warns, pa, pr
 
 
+def build_only_perf_block(res, nav_rows, elapsed: float) -> Dict:
+    """模式③（只上传《收益概述》⇒ 只画官方净值 ✓，**无需行情** ✓ 秒出）的响应块 ✓。
+
+    ## 这条路径为什么值得单独成函数
+    它是三模式里**唯一不取行情**的 ✓（只把 CSV 里的逐日净值画出来 ✓）⇒
+    **能起一个端到端测试** ✓（`POST /api/signal-test/run` 传一份收益概述即可 ✓，
+    不用数据集 ✓）。而另外两个模式要真行情 ✗ ⇒ 测不动 ✓。
+
+    ⚠ `bench_nav` **可能整列为空** ✓（用户只上传策略收益 ✓）⇒ 只在 `notna().any()` 时才加基准列 ✓；
+    无条件加会让前端画出一条**全 NaN 的基准线** ✓（图例里有、曲线上没有 ✗）。
+    """
+    pf = res.perf
+    nav = pf.set_index("date")[["nav"]].rename(columns={"nav": "nav_official"})
+    if pf["bench_nav"].notna().any():
+        nav["nav_official_bench"] = pf.set_index("date")["bench_nav"]
+    return {
+        "official": {"stats": res.stats, "issues": res.issues[:50]},
+        "replay": {"stats": {}, "diag": {"mode": "only_perf",
+                                         "note": "只有官方净值（未提供成交明细）"},
+                   "nav": nav_rows(nav)},
+        "elapsed": round(elapsed, 3),
+    }
+
+
 def resolve_exclude_flags(req, align) -> Dict[str, bool]:
     """→ `{开关: bool}` ✓（优先级见模块 docstring ②）。"""
     al = align or {}

@@ -29,7 +29,8 @@ from ..signals.replay import replay_trades
 
 from ..logger import _log_swallowed  # noqa: E402
 # ★ v2.11.14（技术债 P1-#3 第十六刀）：回灌口径解析（复权选价 + 剔除开关优先级 ✓）
-from .signal_test_prep import resolve_exclude_flags, resolve_price_tables  # noqa: E402
+from .signal_test_prep import (build_only_perf_block, resolve_exclude_flags,  # noqa: E402
+                                resolve_price_tables)
 
 
 router = APIRouter(prefix="/api/signal-test", tags=["signal-test"])
@@ -327,18 +328,11 @@ def run(req: SignalTestRequest) -> Dict:
                                 "options": [{"code": c, "name": n} for c, n in BENCHMARKS]}}
 
     # ================= 模式③：只上传《收益概述》⇒ 只画官方净值（无需行情，秒出）=================
+    # ★ v2.11.15（技术债 P1-#3 第十七刀 ✓）：响应块搬去
+    #   `signal_test_prep.build_only_perf_block` ✓ —— 它是三模式里**唯一不取行情**的 ✓
+    #   ⇒ 现在有**端到端测试**了（`tests/test_routers_signal_run_perf.py` ✓）。
     if res.kind == "jq_perf":
-        pf = res.perf
-        nav = pf.set_index("date")[["nav"]].rename(columns={"nav": "nav_official"})
-        if pf["bench_nav"].notna().any():
-            nav["nav_official_bench"] = pf.set_index("date")["bench_nav"]
-        resp.update({
-            "official": {"stats": res.stats, "issues": res.issues[:50]},
-            "replay": {"stats": {}, "diag": {"mode": "only_perf",
-                                             "note": "只有官方净值（未提供成交明细）"},
-                       "nav": _nav_rows(nav)},
-            "elapsed": round(time.perf_counter() - t_all, 3),
-        })
+        resp.update(build_only_perf_block(res, _nav_rows, time.perf_counter() - t_all))
         return resp
 
     # ================= 模式②：聚宽成交明细 =================

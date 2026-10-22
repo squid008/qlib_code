@@ -24,6 +24,31 @@
 
 ---
 
+## [2.11.15] - 2026-10-22
+
+### Refactor + Test（**第十七刀：`signal_test.run` 508 → 501** ✓ ＋ **`/run` 首个端到端测试** ✓）
+
+- **这刀的真价值不在行数（只 −7）** ✓，而在：**`/run` 第一次有了端到端覆盖** ✓。
+  · 该端点三模式里两个要**真行情**（几十秒 ✗）⇒ `test_routers_smoke` 明写"**刻意不测** `/signal-test/run`" ✗
+    ⇒ 此前**零端到端覆盖** ✓；
+  · 但**模式③（只上传《收益概述》）不取行情** ✓ ⇒ 可以起真请求 ✓（`TestClient` ✓）。
+- **抽走** ✓：模式③的响应块 → `signal_test_prep.build_only_perf_block` ✓（含一条细节：
+  `bench_nav` **可能整列为空** ✓ ⇒ 只在 `notna().any()` 时才加基准列 ✓，
+  无条件加会在前端画出一条**全 NaN 的基准线** ✓ —— 图例里有、曲线上没有 ✗）。
+- **3 条端到端** ✓（`tests/test_routers_signal_run_perf.py`）：
+  1. ⭐ 只传收益概述 ⇒ 200 + `mode=jq_perf` + `replay.nav` 非空 ✓ + `diag.mode=only_perf` ✓
+     （前端据此提示"只有官方净值"✓）；
+  2. ⭐⭐ **`nav = 1 + 收益/100`** ✓ —— 用源码 docstring 里那次**实测对拍**当断言：
+     末日 `策略收益 767.62%` ⇒ 净值 **8.6762** ✓（写成"直接拿百分数当净值"✗ ⇒ 图纵轴到 767 ✓，
+     而数据"看着有" ✗）；
+  3. ⭐ 空内容 ⇒ **4xx**（我们明确拒绝 ✓），不许 500 ✓。
+- **⚠ 顺带发现一个未来的坑** ✓（记下来，未修 ✗）：跑这 3 条时会冒
+  `FutureWarning: Downcasting object dtype arrays on .fillna`（`signals/parsers/jq_perf.py:96/97` ✓）
+  —— pandas **未来版本**会改这个行为 ✓ ⇒ 到时 `buy_total` / `sell_total` 可能静默变 `NaN` ✓。
+  修法是把 `fillna(0)` 换成 `pd.to_numeric(...).fillna(0)` ✓（低风险 ✓ 但改的是解析口径 ⇒ 另开一轮 ✓）。
+- **实测** ✓：本文件 **3 passed**（5 秒 ✓，一次通过 ✓）｜ signal/router/体检回归 **240 passed** ✓ ｜
+  `mypy` **61 个源文件 0 错误** ✓ ｜ `ruff` **0** ✓ ｜ CI ✓。
+
 ## [2.11.14] - 2026-10-22
 
 ### Refactor（**拆巨型文件第十六刀：`routers/signal_test.py::run` 539 → 508** ✓ ＋ 7 条测试 ✓）

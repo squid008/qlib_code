@@ -36,7 +36,11 @@ BIG_DEBT = {
     #   `routers/signal_test_prep.py` ✓ ⇒ **539 → 508** ✓。
     #   ⚠ 这个端点**没有端到端测试**（`test_routers_smoke` 明写"刻意不测重计算端点"✗）
     #   ⇒ 所以这刀**只抽纯口径逻辑** ✓，不动三种模式的分派结构 ✓。
-    "routers/signal_test.py::run": 508,
+    # ★ v2.11.15（第十七刀 ✓）：模式③（只有官方净值，**唯一不取行情**的路径 ✓）抽去
+    #   `signal_test_prep.build_only_perf_block` ✓ ⇒ **508 → 501** ✓，
+    #   并且**首次给 `/run` 补了端到端测试** ✓（`test_routers_signal_run_perf.py` 3 条 ✓）——
+    #   另两个模式要真行情 ✗，所以以前整条端点零端到端覆盖 ✗。
+    "routers/signal_test.py::run": 501,
     "factors/single_test.py::run_single_factor_tests": 539,
     # ★ v2.11.6（技术债 P1-#3 第十二刀 ✓）：离场输入准备 50 行抽去
     #   `signals/period_roll_exit_prep.py` ✓ ⇒ **477 → 438** ✓（棘轮收紧 ✓）。
