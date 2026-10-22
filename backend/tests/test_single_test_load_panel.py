@@ -168,14 +168,33 @@ def test_cancel_propagates_instead_of_falling_back(monkeypatch):
 
 
 # ---------------------------------------------------------------- 并行路径
-def test_parallel_path_column_count_mismatch_falls_back(monkeypatch, _clean_env):
-    """⭐⭐ **并行路径把列数不符吞成 None** ✓（`except Exception` 在它外面 ✓）——
-    而**单进程路径是抛** ✗ ⇒ 这是**两条路径的不对称** ✓（已记技术债 P2-#19 ✓）。
-    测试钉的是**现状**（不是"应该这样"✗）：并行路径会**静默回退 qlib** ✓。"""
+def test_parallel_path_column_count_mismatch_raises(monkeypatch):
+    """⭐⭐ **技术债 P2-#19 已清偿（v2.11.0）**：并行路径对"列数不符"也**上抛** ✓ ——
+    与单进程路径**同口径** ✓。
+
+    ⚠ 原来是**吞成 None**（静默回退 qlib）✗ ⇒ 同一个数据错 **中小池报错、全 A 静默变慢几倍** ✓，
+    全 A 用户只会觉得"今天怎么这么慢"✗。源码已论证列数不符是"**必然错位**"✓
+    ⇒ 静默回退等于把 bug 藏成变慢 ✗ ⇒ 现在两条路径都**响亮失败** ✓。
+    """
     monkeypatch.setenv("QLIB_SFT_PANEL_MAX", "1")          # 1 只以上 ⇒ 走并行 ✓
     monkeypatch.setattr(PE, "panel_features_parallel", lambda *a, **k: _pdf(ALL_COLS[:2]))
+    with pytest.raises(ValueError) as ei:
+        _call(instruments=["SH600000", "SZ000001"])
+    assert "列数不符" in str(ei.value)
+
+
+def test_parallel_path_fetch_error_still_falls_back(monkeypatch, _clean_env):
+    """⭐⭐ 但**取数本身失败**仍旧回退 ✓ —— 这是有意的降级：并行是"加速器"✓，
+    它坏了应该退到 qlib 慢跑 ✓，而**不该让整次测试失败** ✗。
+    这条与上面那条（列错位必须上抛 ✓）一起，把 #19 的口径钉死 ✓。"""
+    monkeypatch.setenv("QLIB_SFT_PANEL_MAX", "1")
+
+    def boom(*a, **k):
+        raise RuntimeError("parallel boom")
+
+    monkeypatch.setattr(PE, "panel_features_parallel", boom)
     assert _call(instruments=["SH600000", "SZ000001"]) is None
-    assert _clean_env and "列数不符" in str(_clean_env[0])
+    assert _clean_env and "parallel boom" in str(_clean_env[0])
 
 
 def test_parallel_path_success_reorders_columns(monkeypatch):

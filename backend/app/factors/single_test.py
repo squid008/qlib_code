@@ -862,7 +862,13 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
             progress_cb(None, 30.0, "特征数据就绪")
         return pdf
 
-    # 超大池（> _max_stocks）：并行面板（按股票切块多进程）；失败回退 qlib
+    # 超大池（> _max_stocks）：并行面板（按股票切块多进程）；**只有取数失败**才回退 qlib
+    # ★★ v2.11.0（技术债 P2-#19 清偿 ✓）：**校验块移出 `try`** ✗→✓ ——
+    #   原来校验写在 try 里 ⇒ "列数不符"的 `ValueError` 被外层 `except Exception` **吞成 None**
+    #   ⇒ **中小池报错、全 A 静默回退 qlib（慢几倍）** ✗ —— 同一个数据错，两种表现 ✓，
+    #   全 A 用户只会觉得"今天怎么这么慢"✓，不会想到是列错位 ✓。
+    #   现在与单进程路径**同口径**：列数不符 / 缺列 ⇒ **上抛** ✓（源码已论证"必然错位"✓，
+    #   静默回退等于把 bug 藏成"变慢" ✗）；只有 `panel_features_parallel` **自己抛**才回退 ✓。
     try:
         from .panel_expr import panel_features_parallel
 
@@ -876,41 +882,41 @@ def _load_feature_panel(instruments, fields, all_cols, start_date, load_end,
                                       progress_cb=lambda p, m: progress_cb(None, p, m) if progress_cb else None,
                                       cancel_cb=_cancel_probe,
                                       warmup_days=warmup_days)
-        if pdf is None or len(pdf) == 0:
-            return None
-        pdf = pdf.copy()
-        # ⚠ v1.19.97：**列一致性校验** ✗ —— `fields` 与 `all_cols` 靠**位置**对齐，
-        #   一旦面板层对列做去重/改名/重排（**裸字段名**如 `$preclose` 最易触发 ✗）就会
-        #   **整表错位** ⇒ 因子列拿到价格列 ⇒ 价格比爆炸（实测 nav 1.86e32、年化 172 万倍 ✗）。
-        #   长度不符**直接报错**（必然错位 ✓）；名字/顺序不符先**记日志**（防误报 ✓）。
-        if len(pdf.columns) != len(all_cols):
-            raise ValueError("面板列数不符：实际 %d ≠ 期望 %d ⇒ 列会错位、统计不可信 ✗"
-                             % (len(pdf.columns), len(all_cols)))
-        _got_cols = [str(c) for c in pdf.columns]
-        if _got_cols != list(all_cols):
-            _dump_sft_error(RuntimeError(
-                "面板列顺序与 all_cols 不一致（已按名字重排 ✓）：期望 %s ｜实际 %s"
-                % (list(all_cols), _got_cols)))
-        _missing = [c for c in all_cols if c not in pdf.columns]
-        if _missing:
-            raise ValueError("面板缺列 %s ⇒ 无法按名字取列 ✗" % (_missing,))
-        # ⚠⚠⚠ v1.19.97 **关键修复**：**绝不能用 `pdf.columns = all_cols` 按位置改名** ✗ ——
-        #   qlib 返回的列顺序**不保证**与传入一致（实测：因子列 `F0` 被排到最后 ✗，
-        #   实际列序 = [LABEL, CLOSE, ..., F0]）；按位置改名会把**数据也搬错位**
-        #   （`F0` 列里装进 `T1_IS_ST` 的值 ✗）⇒ 因子变成 ST 标签（0/1）⇒ **信号从十几万掉到几百、
-        #   触发/未触发收益统计整块消失** ✗✗（用户 2026-09-18 实测报障 ✓）。
-        #   安全做法：**按名字取列**（下面的 `pdf = pdf[list(all_cols)]` ✓）⇒ 顺序自然正确 ✓。
-        #   以前之所以没暴露：`forward` 不替换表达式、列名是长表达式串 ⇒ qlib 恰好保序 ✓。
-        # 对齐列顺序（panel_features 顺序与 fields/all_cols 一致，此处兜底）
-        pdf = pdf[list(all_cols)]
-        if progress_cb:
-            progress_cb(None, 30.0, "特征数据就绪")
-        return pdf
     except FactorTestCancelled:
         raise
     except Exception as e:
         _dump_sft_error(e)
         return None
+    if pdf is None or len(pdf) == 0:
+        return None
+    pdf = pdf.copy()
+    # ⚠ v1.19.97：**列一致性校验** ✗ —— `fields` 与 `all_cols` 靠**位置**对齐，
+    #   一旦面板层对列做去重/改名/重排（**裸字段名**如 `$preclose` 最易触发 ✗）就会
+    #   **整表错位** ⇒ 因子列拿到价格列 ⇒ 价格比爆炸（实测 nav 1.86e32、年化 172 万倍 ✗）。
+    #   长度不符**直接报错**（必然错位 ✓）；名字/顺序不符先**记日志**（防误报 ✓）。
+    if len(pdf.columns) != len(all_cols):
+        raise ValueError("面板列数不符：实际 %d ≠ 期望 %d ⇒ 列会错位、统计不可信 ✗"
+                         % (len(pdf.columns), len(all_cols)))
+    _got_cols = [str(c) for c in pdf.columns]
+    if _got_cols != list(all_cols):
+        _dump_sft_error(RuntimeError(
+            "面板列顺序与 all_cols 不一致（已按名字重排 ✓）：期望 %s ｜实际 %s"
+            % (list(all_cols), _got_cols)))
+    _missing = [c for c in all_cols if c not in pdf.columns]
+    if _missing:
+        raise ValueError("面板缺列 %s ⇒ 无法按名字取列 ✗" % (_missing,))
+    # ⚠⚠⚠ v1.19.97 **关键修复**：**绝不能用 `pdf.columns = all_cols` 按位置改名** ✗ ——
+    #   qlib 返回的列顺序**不保证**与传入一致（实测：因子列 `F0` 被排到最后 ✗，
+    #   实际列序 = [LABEL, CLOSE, ..., F0]）；按位置改名会把**数据也搬错位**
+    #   （`F0` 列里装进 `T1_IS_ST` 的值 ✗）⇒ 因子变成 ST 标签（0/1）⇒ **信号从十几万掉到几百、
+    #   触发/未触发收益统计整块消失** ✗✗（用户 2026-09-18 实测报障 ✓）。
+    #   安全做法：**按名字取列**（下面的 `pdf = pdf[list(all_cols)]` ✓）⇒ 顺序自然正确 ✓。
+    #   以前之所以没暴露：`forward` 不替换表达式、列名是长表达式串 ⇒ qlib 恰好保序 ✓。
+    # 对齐列顺序（panel_features_parallel 顺序与 fields/all_cols 一致，此处兜底）
+    pdf = pdf[list(all_cols)]
+    if progress_cb:
+        progress_cb(None, 30.0, "特征数据就绪")
+    return pdf
 
 
 def _ff_label_px_col(df, lab_px: str) -> str:
