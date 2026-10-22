@@ -32,7 +32,11 @@ BIG_DEBT = {
     #   没有一行新逻辑 ✓；棘轮仍成立 ✓（更新的数字就是新上限 ✓，再涨就红 ✗）。
     "factors/single_test.py::_quantile_curve_block": 597,
     # ⚠ 2026-10-18：P2-A 收尾给这两处各加了几行日志（+5 / +3 ✓），上限随之上调 ✓
-    "routers/signal_test.py::run": 539,
+    # ★ v2.11.14（第十六刀 ✓）：复权口径选价 + 剔除开关优先级抽去
+    #   `routers/signal_test_prep.py` ✓ ⇒ **539 → 508** ✓。
+    #   ⚠ 这个端点**没有端到端测试**（`test_routers_smoke` 明写"刻意不测重计算端点"✗）
+    #   ⇒ 所以这刀**只抽纯口径逻辑** ✓，不动三种模式的分派结构 ✓。
+    "routers/signal_test.py::run": 508,
     "factors/single_test.py::run_single_factor_tests": 539,
     # ★ v2.11.6（技术债 P1-#3 第十二刀 ✓）：离场输入准备 50 行抽去
     #   `signals/period_roll_exit_prep.py` ✓ ⇒ **477 → 438** ✓（棘轮收紧 ✓）。

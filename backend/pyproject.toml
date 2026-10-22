@@ -134,6 +134,8 @@ files = [
     # ★ v2.11.3：从 `routers/factors_single.py` 抽出的入参校验层 ✓（新模块第一天进闸门 ✓）
     "app/routers/factors_single_validate.py",
     "app/routers/factors_single_state.py",
+    # ★ v2.11.14：信号回灌的口径解析（复权选价 + 剔除开关优先级 ✓）
+    "app/routers/signal_test_prep.py",
     # ★ v2.11.5：覆盖率口径（纯函数 ✓，新模块第一天进闸门 ✓）
     "app/factors/single_test_coverage.py",
     # ★ v2.11.6：离场输入准备（列轴对齐 / 整手 / 形状自检 ✓）

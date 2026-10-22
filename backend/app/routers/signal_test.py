@@ -28,6 +28,8 @@ from ..signals.pricing import (fill_limits, load_bench_wide, load_close_wide,
 from ..signals.replay import replay_trades
 
 from ..logger import _log_swallowed  # noqa: E402
+# ★ v2.11.14（技术债 P1-#3 第十六刀）：回灌口径解析（复权选价 + 剔除开关优先级 ✓）
+from .signal_test_prep import resolve_exclude_flags, resolve_price_tables  # noqa: E402
 
 
 router = APIRouter(prefix="/api/signal-test", tags=["signal-test"])
@@ -532,48 +534,17 @@ def run(req: SignalTestRequest) -> Dict:
     #       ⇒ 净值会被系统性打崩 ✗（与是否"跟随文件"无关 ✓：那是**财务上错误**的口径 ✓）。
     #   ⇒ 现在：**只把真实价表交给事件研究** ✓（`_px_es` ✓），`panel` **原封不动** ✓
     #     留给引擎/净值（= 后复权 ✓ ⇒ 与面板净值同口径 ✓）。
-    _pa = str((_al or {}).get("price_adjust") or "").strip().lower()
-    # ★ v2.1.74：**「按分取整」也跟着文件走** ✗→✓（审计 #2 ✓：`price_round` 过去没进文件 ⇒
-    #   本侧只能硬编码 `.round(2)` ✗ ⇒ 用户若关过它，回灌与面板差一个取整 ✓）。
-    #   文件没记（v2.1.74 之前的文件 ✓）⇒ 按面板默认 `True` ✓（与当年一致 ✓）。
-    _prv = (_al or {}).get("price_round")
-    _pr = True if _prv is None else bool(_prv)
-    _px_es: Dict[str, "pd.DataFrame"] = {}
-    if _pa == "none":
-        _cr = panel.get("CLOSE_RAW")
-        if _cr is not None and len(_cr):
-            _px_es["CLOSE"] = _cr.ffill().round(2) if _pr else _cr.ffill()   # 真实价（按分取整 ✓）
-            _orr = panel.get("OPEN_RAW")
-            if _orr is not None and len(_orr):
-                _px_es["OPEN"] = _orr.ffill().round(2) if _pr else _orr.ffill()
-            # ★★ v2.1.79（用户 2026-10-13 拍板 ✓）：**不复权时"实盘/回测"也要用不复权** ✗→✓
-            #   —— 他要的是"**与聚宽对齐**"：一个口径走全链（因子/事件研究/回测/净值 ✓）。
-            #   ⇒ 把真实价**同时**灌给 `panel`（引擎/净值/持仓都读它 ✓）：
-            #     ⚠ **先浅拷贝** ✗→✓（`load_price_panel` 的返回可能被别处引用 ✓，就地改会外溢 ✓）；
-            #     ⚠ `CLOSE_RAW`/`OPEN_RAW` **不动** ✓（停牌判定与"真实价 vs 涨跌停价"比对仍按它 ✓）。
-            #   ⚠ 这推翻了我 v2.1.73 的"金额类永远后复权"✗ —— 那条是**我按"财务正确"自己定的** ✓，
-            #     与用户的**对齐口径**目标冲突 ✓ ⇒ 以用户为准 ✓（他要在聚宽/益盟的"不复权"下逐位对拍 ✓）。
-            panel = dict(panel)
-            for _k2, _v2 in _px_es.items():
-                panel[_k2] = _v2
-            warnings.append("已按导出文件的复权口径取价：**不复权**（真实价%s ✓）"
-                            "⇒ **因子/事件研究/回测/净值 全链同口径** ✓（与聚宽「不复权」对齐 ✓）"
-                            % ("+ 按分取整" if _pr else "（未取整，按文件的 price_round=False ✓）"))
-        else:
-            warnings.append("文件要求「不复权」，但本次取价没有真实价列 ⇒ 退回复权价 ✗"
-                            "（事件研究会与面板有差异 ✓）")
+    # ★ v2.11.14（技术债 P1-#3 第十六刀 ✓）：复权口径选价搬去
+    #   `routers/signal_test_prep.resolve_price_tables` ✓（那里写了 v2.1.72/74/79 三个用户报障的来历 ✓）
+    panel, _px_es, _px_warns, _pa, _pr = resolve_price_tables(panel, _al)
+    warnings.extend(_px_warns)
     # ★★ v2.1.54：**按「剔除开关」裁触发样本** ✗→✓（用户 2026-10-12："要修。估计是这里有问题" ✓）
     #   优先级：**请求显式给 > 导出文件里记的 > False** ✓ ——
     #   ① 新文件（v2.1.54+ 导出）自带开关 ⇒ 自动对齐弹窗口径 ✓ ⇒ "导出的 = 复现的" ✓；
     #   ② 老文件没有这几个键（`_al` 取到 None ✓）⇒ 退回**不剔除** ✓ = 它当年的口径 ✓
     #      （实测老文件仍得 4.8419% ✓ 与改动前逐位一致 ✓，不改动历史结果 ✓）。
-    _fl: Dict[str, bool] = {}
-    for _k in ("exclude_limit_up_signal", "exclude_limit_up_trade", "exclude_suspended",
-               "exclude_st_t1", "exclude_stock_gem", "exclude_stock_kcb"):
-        _v = getattr(req, _k, None)
-        if _v is None:
-            _v = _al.get(_k)
-        _fl[_k] = bool(_v)
+    # ★ v2.11.14：优先级（请求 > 文件 > False）搬去 `resolve_exclude_flags` ✓
+    _fl: Dict[str, bool] = resolve_exclude_flags(req, _al)
     # ★★ v2.1.64：**导出的信号本来就是「已剔除」的那批 ⇒ 回灌不得再剔一次** ✗→✓
     #   （用户 2026-10-12 的轨迹日志把这条钉死了 ✓）：
     #   · 轨迹显示本次运行 `事件=140`（v2.1.63 后 142）✗，而弹窗/秒开是 **183** ✓；
