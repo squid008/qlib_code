@@ -11,6 +11,13 @@
 > 这条不是理论：v2.11.28 拆 `batch_even` 的装配时，我从同类 dict 里读计数器 ✓
 > ⇒ `avg_hold_days` / `fees_paid` 全变 0 ✓，被 `test_avg_hold_days_is_reported` 当场抓到 ✗。
 
+## ⚠⚠⚠ 为什么必须是 `TypedDict`（v2.11.33 补的教训）
+第一版返回**普通 `dict`** ✗ ⇒ 每个键取出来都是 `object` ✓ ⇒ 调用方
+`period_roll.py` 里 **108 条 mypy 错**（`"object" has no attribute "get"` /
+`Unsupported target for indexed assignment` …）✗✗。
+> 这正是我在 `batch_state.py` 里**已经记录过、又犯了一次**的坑 ✓：
+> **抽"状态字典"必须带 `TypedDict`** ✗ —— 否则等于把类型信息扔掉 ✓。
+
 ## ⭐ 三条口径（写在这儿，省得以后又"优化"回去）
 1. **`cash` 从 `capital` 起**（本方案是**一个**组合 ✓，不分批次 ✓）；
 2. ⭐⭐ **持有天数按「票」记**（`_entry_i` ✓，移动平均成本法）：
@@ -24,13 +31,45 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Set, Tuple, TypedDict
 
 import numpy as np
 
 
-def init_roll_state(capital: float, n_codes: int, *, track_entry: bool) -> Dict[str, object]:
-    """→ 初始状态 dict ✓（键名与 `run_period_roll` 的局部变量一一对应 ✓）。"""
+class RollState(TypedDict):
+    """逐日循环的初始状态（键名与 `run_period_roll` 的局部变量一一对应 ✓）。"""
+
+    cash: float
+    sh: Dict[int, float]
+    drop: Set[int]
+    tgt_now: List[int]
+    pending_exit: Set[int]
+    exit_signals: int
+    exit_sells: int
+    exit_deferrals: int
+    exit_ignored: int
+    exit_overridden: int
+    nav_vals: List[float]
+    trades: List[tuple]
+    rejects: List[tuple]
+    fee_sum: float
+    min_cash: float
+    _entry_i: Dict[int, int]
+    _qty: Dict[int, float]
+    _basis: Dict[int, float]
+    _pnl: Dict[int, float]
+    hold_sum: float
+    hold_n: int
+    wins: int
+    losses: int
+    _track_entry: bool
+    _rule_provided: bool
+    avg_px: np.ndarray
+    first_px: np.ndarray
+
+
+def init_roll_state(capital: float, n_codes: int, *, track_entry: bool) -> RollState:
+    """→ 初始状态 ✓（键名与 `run_period_roll` 的局部变量一一对应 ✓）。"""
     cash = float(capital)
     return {
         "cash": cash,
@@ -63,4 +102,4 @@ def init_roll_state(capital: float, n_codes: int, *, track_entry: bool) -> Dict[
     }
 
 
-__all__ = ["init_roll_state"]
+__all__ = ["RollState", "init_roll_state"]

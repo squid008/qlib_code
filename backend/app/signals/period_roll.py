@@ -125,7 +125,7 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     _track_entry, _rule_provided = _RS["_track_entry"], _RS["_rule_provided"]
     avg_px, first_px = _RS["avg_px"], _RS["first_px"]
 
-    def _acc(c: int, dq: int, gross: float, fee: float, i: int) -> None:
+    def _acc(c: int, dq: float, gross: float, fee: float, i: int) -> None:
         """★ v2.1.50：平仓台账（移动平均成本法 ✓）。`dq > 0` = 买入、`dq < 0` = 卖出 ✓。
 
         ⚠ 只在**持仓归零**那一刻结算一笔（与主引擎"平仓交易"口径一致 ✓）——
@@ -208,7 +208,7 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
         trades.append((i, c, -1, _sh_d, _px_d, reason, MODE))
         return True
 
-    def _buy(i: int, c: int, q: int, reason: str) -> bool:
+    def _buy(i: int, c: int, q: float, reason: str) -> bool:
         nonlocal cash, fee_sum
         bad = can_buy(i, c)
         if bad:
@@ -333,7 +333,7 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
             n = len(tgt_now)
             if n and equity > 0:
                 want_val = equity / n
-                need_buy: List[Tuple[int, int]] = []
+                need_buy: List[Tuple[int, float]] = []
                 for c in tgt_now:
                     px = float(PX[i, c])
                     if px != px:

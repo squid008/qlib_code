@@ -24,6 +24,32 @@
 
 ---
 
+## [2.11.33] - 2026-10-22
+
+### Fixed（**`period_roll.py` 108 → 0 条类型错** ✓ —— ⚠ **这 108 条是我自己 2.11.29 造成的** ✓）
+
+- **先认账** ✗：这 108 条**不是历史遗留**，而是我 **v2.11.29 抽状态时**把
+  `init_roll_state` 写成返回**普通 `dict`** ✗ ⇒ 每个键取出来都是 `object`
+  ⇒ `"object" has no attribute "get"` / `Unsupported target for indexed assignment` … ✗✗。
+  > 而这正是我在 `batch_state.py` 里**已经记录过、又犯了一次**的坑：
+  > **抽"状态字典"必须带 `TypedDict`** ✗ —— 否则等于把类型信息扔掉 ✓。
+  > ⚠ 更该记的是：`period_roll.py` **当时不在 mypy 闸门里** ✓ ⇒ CI **看不见**这个退步 ✓
+  > （只有"探明未收录模块"时才暴露 ✓）。
+- **修法** ✓：`init_roll_state` 改返回 **`RollState(TypedDict)`** ✓（27 个键全标类型 ✓）
+  ⇒ **108 条一次塌到 4 条** ✓。
+- **剩下 4 条是**真的类型不符** ✓（不是噪音）**：`sh`（股数）在数学上是 **float**
+  （`_fit_real_lots` 返回浮点 ✓）而我注解写成 `int` ✗ ⇒ 连带 `_acc(dq=...)` / `_buy(q=...)`
+  参数类型不符 ✓。⇒ 按**实际情况**把 `sh: Dict[int, float]`、`_acc(dq: float)`、
+  `_buy(q: float)`、`need_buy: List[Tuple[int, float]]` 改对 ✓（**放宽注解，不改逻辑** ✓）。
+- **验证** ✓（改了函数签名，必须验数值）：
+  `test_engine_golden_strategies` 的 **4 条指纹全绿且值未变** ✓（`period_roll` 的
+  `nav_sha` / `trades_sha` / 笔数 ✓ ⇒ 归一化没动任何数字 ✓）｜
+  period_roll/信号/引擎/Nav/体检回归 **406 passed** ✓ ｜
+  `mypy` **89 个源文件 0 错误** ✓ ｜ `ruff` **0** ✓ ｜ CI ✓。
+- **⚠ 顺手清了一次 `.mypy_cache`** ✓ —— 前一轮 `_buy` 改完仍报错，是**缓存**在骗人 ✓；
+  清掉后当场 0 条 ✓（**注解改动后 mypy 偶发不清缓存 ⇒ 别信第一次结果** ✓）。
+- **账面** ✓：mypy **88 → 89 个文件（≈79%）** ✓。
+
 ## [2.11.32] - 2026-10-22
 
 ### Fixed（**`parser/codegen` 的 8 条类型错清零** ✓ —— 全在**公式编译器**里 ✓）
