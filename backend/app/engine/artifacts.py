@@ -743,7 +743,7 @@ def _save_train_signature(dir_path: str, req) -> None:
             "price_adjust=" + str(getattr(req, "price_adjust", "none") or "none"),
         ]
         raw = "||".join(parts)
-        return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
+        return hashlib.md5(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
     try:
         sig = {
@@ -754,7 +754,8 @@ def _save_train_signature(dir_path: str, req) -> None:
             "price_adjust": getattr(req, "price_adjust", "none") or "none",
             "feature_fingerprint": _feature_fingerprint(),
             "params_md5": hashlib.md5(
-                json.dumps(req.model_dump(), sort_keys=True, default=str).encode("utf-8")
+                json.dumps(req.model_dump(), sort_keys=True, default=str).encode("utf-8"),
+                usedforsecurity=False,
             ).hexdigest()[:16],
         }
         with open(os.path.join(dir_path, "train_signature.json"), "w", encoding="utf-8") as f:

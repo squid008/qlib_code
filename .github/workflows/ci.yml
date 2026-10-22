@@ -160,6 +160,28 @@ jobs:
         #   凭感觉设一个数，闸门要么一上线就红 ✗、要么松到没意义 ✗。
         run: npm run test:cov
 
+  # ★ v2.11.27（技术债"无 SAST"清偿 ✓）：**代码安全扫描** —— 补上"只有依赖漏洞扫描（pip-audit）、
+  #   没有源码级扫描"的缺口 ✓。
+  #   ⚠ 只跑**中/高危**（`-ll` ✓）：全量跑在本仓噪声爆炸 ✗（本项目公式求值天然用 `eval` 类机制 ✓）。
+  #   ⚠ 规则跳过写在 `backend/pyproject.toml` 的 `[tool.bandit]` ✓ ——
+  #     **原因写在配置里**而不是散在各处的 `# nosec` ✓（分散的原因没人会读到 ✗）。
+  #   实测：修完 10 处 md5/sha1 的 `usedforsecurity=False` 后 ⇒ **No issues identified** ✓。
+  security-scan:
+    name: 代码安全扫描（bandit）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: 安装 bandit
+        run: pip install -r backend/requirements-dev.txt -c backend/constraints.txt
+      - name: bandit（只报中/高危）
+        working-directory: backend
+        run: python -m bandit -ll -r app -c pyproject.toml
+
+
   # ★ v2.10.5（2026-10-20 ✓）：三件事里的第 ③ 件 —— **E2E 冒烟骨架** ✓
   #
   # 为什么单开一个 job ✗→✓：

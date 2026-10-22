@@ -18,5 +18,9 @@ mypy>=1.10
 # 依赖漏洞扫描（★ v2.10.23 新加 ✓ —— 见 .github/workflows/ci.yml 的 audit 步骤 ✓）
 pip-audit>=2.7
 
+# 代码安全扫描（SAST，★ v2.11.27 新加 ✓ —— 补技术债"无 SAST"✓）
+#   ⚠ 用 `-ll` 只报中/高危 ✓；规则跳过见 `pyproject.toml` 的 `[tool.bandit]` ✓
+bandit>=1.7
+
 # 图表（`engine/charts.py` 生成 PNG 快照要用 ✓，CI 里也必须装 ✓）
 matplotlib>=3.8

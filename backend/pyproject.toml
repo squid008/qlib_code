@@ -45,6 +45,18 @@ precision = 2
 #   当成"必填参数" ✓ ⇒ `BacktestResult()` 会报 12 条 `Missing named argument` ✗
 #   （这类假阳性会把闸门变成噪声 ✓，最后被人关掉 ✗）。
 # ---------------------------------------------------------------------------
+# ★ v2.11.27（技术债"无 SAST"清偿 ✓）：bandit 只跑**中/高危**（`-ll` ✓）
+#   ⚠ 跳过 `B301`（pickle）—— 本项目的 pickle **只用于自家缓存文件** ✓：
+#     `engine/feature_cache.py` / `factors/event_study_cache.py` / `engine/artifacts.py` ✓
+#     路径都来自 `config.WORK_DIR` 下的固定子目录 ✓，**从不反序列化用户上传的内容** ✓
+#     （用户上传的是 CSV/Excel ✓，走 `signals/parsers/` ✓，不碰 pickle ✓）。
+#   ⚠ 但**跳过不等于不重要** ✓：哪天真的 pickle 了外部/用户数据 ⇒ 必须回来删掉这个 skip ✓
+#     （所以原因写在这里，而不是塞一个 `# nosec` 到 9 个调用点 ✗ —— 分散的原因没人会读到 ✓）。
+#   `B324`（md5）**没有跳过** ✓：9 处全部显式加了 `usedforsecurity=False` ✓
+#     （都是缓存键/指纹 ✓，声明意图比跳过规则好 ✓，也兼容 FIPS 环境 ✓）。
+[tool.bandit]
+skips = ["B301"]
+
 [tool.mypy]
 python_version = "3.10"
 plugins = ["pydantic.mypy"]

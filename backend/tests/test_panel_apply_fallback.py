@@ -60,32 +60,33 @@ def test_list_inputs_behave_like_ndarray():
     assert list(got) == [4.0, 6.0]
 
 
-# ---------------------------------------------------------------- 已知缺陷（钉现状）
-@pytest.mark.parametrize("op", ["Greater", "Less"])
-def test_known_gap_elementwise_max_min_rejects_arrays(op):
-    """⚠⚠ **已知缺陷 P2-#20**：`Greater`/`Less`（= **逐点取大/小** ✓）对 `ndarray` 入参会抛
-    `ValueError: truth value of an array ... is ambiguous` ✗。
+# ---------------------------------------------------------------- P2-#20 已清偿（v2.11.27）
+@pytest.mark.parametrize("op,want", [
+    ("Greater", [3.0, 4.0]),      # 逐点取大 ✓
+    ("Less", [1.0, 2.0]),         # 逐点取小 ✓
+])
+def test_elementwise_max_min_now_accepts_arrays(op, want):
+    """✅ **技术债 P2-#20 已清偿（v2.11.27）**：`Greater`/`Less`（= **逐点取大/小** ✓）
+    对 `ndarray` 入参**现在能算了** ✓（原来抛 `truth value of an array … is ambiguous` ✗）。
 
-    真因：标量快路径里它们是 `max(_af, _bf)` / `min(_af, _bf)` ✓（Python 内建 ✓），
-    对数组就退化成一堆元素逐个比大小 ✗。
-
-    ⚠ 本用例钉的是**现状**（`pytest.raises`）✓ —— **不是**"这样是对的" ✗。
-    现在**走不到**（兜底只在递推组内部出现 ✓），但一旦有人传数组进来 ⇒
-    **抛异常 ⇒ 整块面板回退 qlib** ✓（慢、日志还难懂 ✗）。修它要先确认调用面 ✓。
+    真因：标量分支原先只判"两侧都不是 Series" ✗ ⇒ 数组也进来了 ✓，
+    落到内建 `max(_af, _bf)` 就炸 ✗。现在**必须是"两侧都是标量"才走那条** ✓，
+    数组改走 pandas 兜底的 `np.where` 路径 ✓（与 Series 路径**同一套语义** ✓）。
     """
-    with pytest.raises(ValueError, match="ambiguous"):
-        _call(op, (np.array([1.0, 2.0]), np.array([3.0, 4.0])))
+    got = _call(op, (np.array([1.0, 2.0]), np.array([3.0, 4.0])))
+    assert list(got) == want
 
 
-def test_known_gap_ndarray_with_series_raises():
-    """⚠⚠ **已知缺陷 P2-#20（同一笔）**：`ndarray` 与 `Series` 混用 ⇒ `TypeError` ✗。
+def test_ndarray_with_series_now_works():
+    """✅ **P2-#20（同一笔）已清偿**：`ndarray` 与 `Series` 混用**现在能算** ✓（原来 `TypeError` ✗）。
 
-    真因：兜底里 `template = a if isinstance(a, pd.Series) else b` ✓ ——
-    两侧都不是 Series 时 `template` 成了 `ndarray` ✓ ⇒ `_as_series(x, template)` 拿它当**索引** ✗。
-    同样**走不到**（内部要么全 Series、要么全数组 ✓），钉现状 ✓。
+    真因：兜底里 `template = a if Series else b` ✗ ⇒ 两侧都不是 Series 时
+    `template` 成了**数组** ✓ ⇒ `_as_series` 取不到 `.index` ✗。
+    现在 `template` 取法改成"第一个 Series，否则 `None`" ✓，
+    而 `_as_series` 支持数组 ⇒ 会给它造 `RangeIndex` ✓（按位置对齐 ✓）。
     """
-    with pytest.raises(TypeError):
-        _call("Add", (np.array([1.0, 2.0]), pd.Series([3.0, 4.0], index=pd.Index(["a", "b"]))))
+    got = _call("Add", (np.array([1.0, 2.0]), pd.Series([3.0, 4.0], index=pd.Index(["a", "b"]))))
+    assert list(got) == [4.0, 6.0], "按长度对齐 ✓（ndarray 拿 Series 的 index ✓）"
 
 
 # ---------------------------------------------------------------- 布尔：索引不同

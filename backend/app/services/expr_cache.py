@@ -94,7 +94,10 @@ def key(feature_dir: str, instruments: Sequence[str], fields: Sequence[Tuple[str
         "|".join(insts),
         "|".join("%s=%s" % (e, n) for e, n in flds),
     ])
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    # ★ v2.11.27：显式声明**非安全用途** ✓（bandit B324 报的 High ✓）——
+    #   这是**缓存键**（参数指纹 ✓），不是签名/口令哈希 ✓。
+    #   写 `usedforsecurity=False` 比 `# nosec` 好 ✓：既声明意图 ✓，又让 FIPS 环境能跑 ✓。
+    return hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def _path(k: str) -> str:

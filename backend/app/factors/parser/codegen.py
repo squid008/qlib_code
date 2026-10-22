@@ -444,7 +444,7 @@ def formula_key(formula_name: str) -> str:
     """被调公式名 → 可做文件名的短键（中文名也安全：保留 ASCII 部分 + 名字哈希）。"""
     name = (formula_name or "").strip()
     safe = re.sub(r"[^0-9a-zA-Z_]+", "", name).lower()[:24]
-    h = hashlib.md5(name.encode("utf-8")).hexdigest()[:6]
+    h = hashlib.md5(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
     return (safe or "f") + "_" + h
 
 

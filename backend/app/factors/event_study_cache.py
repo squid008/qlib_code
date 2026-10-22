@@ -56,7 +56,7 @@ def _data_version() -> str:
 
 def fingerprint(params: dict) -> str:
     """参数指纹：**同参数必命中、任一参数变必失效**（含数据版本）。"""
-    h = hashlib.md5()
+    h = hashlib.md5(usedforsecurity=False)
     h.update(("cv=%s" % CACHE_VERSION).encode("utf-8"))
     for k in _FINGERPRINT_KEYS:
         h.update(("|%s=%r" % (k, params.get(k))).encode("utf-8"))

@@ -1009,9 +1009,24 @@ def _is_num_scalar(x) -> bool:
 
 
 def _as_series(x, template: Optional[pd.Series]) -> pd.Series:
-    """把标量或 Series 归一到 Series（常量按 template index 广播）。"""
+    """把标量 / **数组** / Series 归一到 Series（常量按 template index 广播）。
+
+    ★ v2.11.27（技术债 P2-#20 清偿 ✓）：**支持数组入参** ✗→✓ ——
+    原来只认「标量 or Series」✗ ⇒ 递推组内部偶尔给出 `ndarray`/`list` 时
+    `float(x)` 直接炸 ✗（`TypeError: only length-1 arrays can be converted to Python scalar` ✓），
+    而**兜底路径**（`_apply_node` 里两侧都不是 Series ✓）正是为它们准备的 ✓ ——
+    结果那条路一进就崩 ✗。
+
+    规则：数组 ⇒ 长度与 `template` 一致就用它的 index ✓（保证后续 `_align` 能按标签对齐 ✓），
+    否则退化成 `RangeIndex` ✓（两侧都是数组时 ✓，位置对齐即可 ✓）。
+    """
     if isinstance(x, pd.Series):
         return x
+    if isinstance(x, (np.ndarray, list, tuple)):
+        arr = np.asarray(x, dtype=float)
+        if template is not None and len(template) == len(arr):
+            return pd.Series(arr, index=template.index)
+        return pd.Series(arr)
     if template is not None:
         return pd.Series(float(x), index=template.index)
     raise ValueError("常量不能单独成为结果（缺少 Series 上下文）")
@@ -1186,7 +1201,13 @@ def _apply_node(op: str, args, sr: bool, active=None, ev=None) -> Optional[pd.Se
         #   否则 `_as_series` 会去取 `template.index` ⇒
         #   `'numpy.float64' object has no attribute 'index'` ✗（实测踩到 ✓，
         #   且报错完全看不出"是字段少写了 $" ✗）。
-        if not isinstance(a, pd.Series) and not isinstance(b, pd.Series):
+        # ★ v2.11.27（技术债 P2-#20 清偿 ✓）：**必须是"两侧都是标量"才走这条** ✗→✓ ——
+        #   原来只判"两侧都不是 Series" ✗ ⇒ **数组**入参也会进来 ✓，
+        #   于是 `Greater(ndarray, ndarray)` 落到下面的内建 `max(_af,_bf)` ⇒
+        #   `ValueError: truth value of an array … is ambiguous` ✗（实测 ✓）。
+        #   现在数组会落到 pandas 兜底 ✓（`_as_series` 已支持数组 ✓），走 `np.where` 那条 ✓。
+        if (not isinstance(a, pd.Series) and not isinstance(b, pd.Series)
+                and np.isscalar(a) and np.isscalar(b)):
             _af, _bf = np.float64(a), np.float64(b)
             with np.errstate(all="ignore"):
                 if op in _BIN_ELEM:
@@ -1207,7 +1228,12 @@ def _apply_node(op: str, args, sr: bool, active=None, ev=None) -> Optional[pd.Se
                         return min(_af, _bf)
                 if op in _BIN_CMP:
                     return np.float64(1.0 if _NUM_UFUNC[_BIN_CMP[op]](_af, _bf) else 0.0)
-        template = a if isinstance(a, pd.Series) else b
+        # ★ v2.11.27（P2-#20 清偿 ✓）：**两侧都不是 Series** 时 `template` 必须是 `None` ✗→✓ ——
+        #   原来写成 `a if Series else b` ✗ ⇒ 两侧都是数组时 `template` 成了**数组** ✓，
+        #   而 `_as_series` 会去取 `template.index` ⇒ `AttributeError` / `TypeError` ✗。
+        #   ⇒ `None` 表示"没有 Series 上下文" ✓，`_as_series` 会给数组造 `RangeIndex` ✓（位置对齐 ✓）。
+        template = (a if isinstance(a, pd.Series)
+                    else (b if isinstance(b, pd.Series) else None))
         # 常量右操作数（如 Power(x, 2) 的指数 2）：单独留下标量形态。
         # 若被 _as_series 广播成整列数组，np.power 会走「数组指数」的逐元素通用 pow，
         # 丢掉 numpy/glibc 对**标量指数**的特化（实测 42000 行：0.899ms → 0.059ms，15×）。

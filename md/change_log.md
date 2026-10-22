@@ -24,6 +24,45 @@
 
 ---
 
+## [2.11.27] - 2026-10-22
+
+### Fixed + Chore（**清偿 P2-#20 ＋ 上源码级 SAST** ✓ —— 代码健康 **8.2 → 8.5**、安全 **8.0 → 8.5** ✓）
+
+#### ① 清偿 P2-#20：`_apply_node` 兜底路径两个缺陷（代码健康 ✓）
+
+- **缺陷 ①** ✓：**数组入参进了标量分支** ✗ —— 那段条件只判"两侧都不是 Series"✗，
+  于是 `Greater(ndarray, ndarray)` 落到**内建** `max(_af, _bf)` ⇒
+  `ValueError: truth value of an array … is ambiguous` ✗（实测 ✓）。
+  ⇒ 条件补成"**必须两侧都是标量**"✓（`np.isscalar(a) and np.isscalar(b)` ✓）⇒
+  数组改走 pandas 兜底的 `np.where` 那条 ✓（与 Series 路径**同一套语义** ✓）。
+- **缺陷 ②** ✓：`template = a if Series else b` ✗ ⇒ 两侧都不是 Series 时
+  `template` 成了**数组** ✓ ⇒ `_as_series` 取不到 `.index` ✗。
+  ⇒ 改成"**第一个 Series，否则 `None`**"✓，并让 `_as_series` **支持数组** ✓
+  （长度与 template 一致就用它的 index ✓，否则造 `RangeIndex` 按位置对齐 ✓）。
+- **两条"钉现状"的用例改成"钉正确行为"** ✓（原来用 `pytest.raises` 记录 bug ✗ ——
+  修掉后必须改断言 ✓，否则测试会**替错误行为背书** ✗）。
+- **验证** ✓：本文件 **9 passed** ✓ ｜ 算子层回归 **519 passed** ✓ ⇒ **现有路径行为零变化** ✓。
+
+#### ② 安全：`bandit` 进 CI（独立 job ✓）
+
+- **先量噪声** ✓：全量跑只报 **19 条中/高危**（10× `B324` md5/sha1、9× `B301` pickle ✓）⇒ 可治理 ✓
+  （这与我之前判断"bandit 在本仓噪声爆炸"**不一样** ✗ —— 当时没实测 ✓）。
+- **`B324` 全部真修** ✓（10 处）：显式加 **`usedforsecurity=False`** ✓ ——
+  这些都是**缓存键/指纹** ✓，不是签名/口令 ✓。写参数比 `# nosec` 好 ✓：
+  既声明意图 ✓，又让 **FIPS 环境**能跑 ✓。
+  ⚠ `usedforsecurity` **不改摘要值** ⇒ 缓存键不变 ✓（**20 条指纹全绿**为证 ✓）。
+- **`B301`（pickle）唯一 skip** ✓：本项目的 pickle **只用于自家缓存文件** ✓
+  （`feature_cache` / `event_study_cache` / `artifacts` ✓，路径都来自 `config.WORK_DIR` 固定子目录 ✓，
+  **从不反序列化用户上传内容** ✓）。**原因写在 `pyproject.toml` 的 `[tool.bandit]`** ✓
+  而不是散成 9 个 `# nosec` ✗（分散的原因没人读到 ✓）。
+- **⚠ 一个自己踩的坑** ✗：插新 job 时把**前端 `vitest` 步骤吞进了 `security-scan`** ✗ ——
+  因为 `- name:` 缩进一样 ✓ ⇒ 新 job 的键在前端 job 的 steps 中间**提前终止**了列表 ✓。
+  用 `yaml.safe_load` 逐 job 列 steps 才发现 ✓（**看 YAML 结构比看 diff 靠谱** ✓）。
+- **实测** ✓：`bandit -ll -r app -c pyproject.toml` ⇒ **No issues identified**（exit 0 ✓）｜
+  cache/expr/artifact/event 相关回归 **473 passed** ✓ ｜ `ruff` **0** ✓。
+- **技术债** ✓：在册 **4 → 3** 条（P1-#2 / P1-#3 / P2-#4）｜ 已清偿 **16 → 17** 条 ✓。
+- **评分** ✓：代码健康 **8.2 → 8.5** ✓、安全 **8.0 → 8.5** ✓、12 维平均 **8.9 → 9.0** ✓。
+
 ## [2.11.26] - 2026-10-22
 
 ### Docs（**评分表按 CI 实测校正** ✓ —— 顺带被自己的闸门抓了一次）

@@ -247,7 +247,7 @@ def load_close_wide(codes: Sequence[str], start: str, end: str,
     want = sorted({str(c).upper() for c in codes if str(c).strip()})
     if not want:
         return None
-    h = hashlib.md5()
+    h = hashlib.md5(usedforsecurity=False)
     _px = str(price or "$close")
     h.update(("%s|%s|%s|%s|%d" % (_POOL_WIDE_VERSION, _px, start, end, len(want))).encode("utf-8"))
     # ★★ v2.1.61：**取价源码也进 key** ✗→✓（用户 2026-10-12："没有加版本的哈希校验？" ✓）

@@ -235,7 +235,7 @@ def _cache_path(instruments, exprs, names, start_time, end_time, extra="") -> st
         str(extra or ""),
     ]
     raw = "|".join(parts)
-    return os.path.join(_CACHE_DIR, hashlib.md5(raw.encode("utf-8")).hexdigest()[:24] + ".pkl")
+    return os.path.join(_CACHE_DIR, hashlib.md5(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:24] + ".pkl")
 
 
 # ---------------------------------------------------------------------------

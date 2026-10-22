@@ -261,7 +261,7 @@ def formula_fingerprints(specs: Optional[Sequence[Spec]] = None) -> Dict[str, st
         except Exception as e:  # noqa: BLE001  公式没了 ⇒ 由别的检查报 ✓
             _log_swallowed("market_stat.py", e)
             continue
-        out[str(name)] = hashlib.md5(expr.encode("utf-8")).hexdigest()[:12]
+        out[str(name)] = hashlib.md5(expr.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
     return out
 
 
@@ -333,7 +333,7 @@ def materialize_impact(name: str) -> List[str]:
         _f = specs[0].formula
         if not _f:
             return []
-        now = hashlib.md5(formula_expression(_f).encode("utf-8")).hexdigest()[:12]
+        now = hashlib.md5(formula_expression(_f).encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
     except Exception as e:  # noqa: BLE001
         _log_swallowed("market_stat.py", e)
         return []
