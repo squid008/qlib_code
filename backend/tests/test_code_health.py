@@ -38,7 +38,9 @@ BIG_DEBT = {
     #   `signals/period_roll_exit_prep.py` ✓ ⇒ **477 → 438** ✓（棘轮收紧 ✓）。
     #   ⚠ 它仍是 438 行的逐日循环本体 ✓ ⇒ 要过 300 还得再抽 3~4 块
     #     （内层闭包 `_acc`/`_sell`/`_buy` 与逐日循环强耦合 ✗，是后面几轮的事）。
-    "signals/period_roll.py::run_period_roll": 438,
+    # ★ v2.11.7（第十三刀 ✓）：批次 → 调仓日 → 目标名单（27 行）抽去
+    #   `signals/period_roll_buckets.py` ✓ ⇒ **438 → 418** ✓（棘轮继续收紧 ✓，**只减不增** ✓）。
+    "signals/period_roll.py::run_period_roll": 418,
     # ★★ v2.11.3~2.11.4（技术债 P1-#3 第九、十刀 ✓）：`single_factor_test` **391 → 299** ✓
     #   两刀抽出 `factors_single_validate.py`（入参校验 77 行 ✓）与
     #   `factors_single_state.py`（运行态契约 ✓）⇒ **降到警戒线以下 ⇒ 本条下线** ✓。

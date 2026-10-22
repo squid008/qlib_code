@@ -41,6 +41,8 @@ from .matching import (LOT_DEFAULT, REJECT_TEXT, FILL_LAG as _FILL_LAG,
 from .engine import BtResult, _limit_ctx, _perf, _prepare, _trades_frame
 # ★ v2.11.6（技术债 P1-#3 第十二刀）：离场输入准备（列轴对齐 / 整手股数 / 形状自检 ✓）
 from .period_roll_exit_prep import align_exit_inputs
+# ★ v2.11.7（第十三刀）：批次 → 调仓日 → 目标名单（保序去重 ✓）
+from .period_roll_buckets import build_targets
 
 MODE = "period_roll"
 _LABEL = "每期全仓滚动（调仓日按当期名单等权重建）"
@@ -95,31 +97,11 @@ def run_period_roll(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,
     )
 
     # ---------- ① 批次 → 调仓日 → 目标名单（列号，保序去重 ✓）----------
-    sig = signals
-    if "bucket" not in sig.columns or sig["bucket"].isna().all():
-        # 没有批次列：**每个"有信号的日期"自成一个批次** ✓ ——
-        # 我们导出的"每期组合"正是这种形状（只在调仓日有信号 ✓），语义完全对应 ✓。
-        bucket_s = sig["date"].astype(str)
-    else:
-        bucket_s = sig["bucket"].astype(str)
-    targets: Dict[int, List[int]] = {}          # 成交日位置 → 目标列号
-    for _b, grp in sig.groupby(bucket_s, sort=True):
-        day = pd.Timestamp(grp["date"].min())
-        if day not in pos:
-            continue
-        i_exec = pos[day] + lag
-        if i_exec >= n_row:
-            continue
-        seen: set = set()
-        cols: List[int] = []
-        for code in grp["code"].astype(str):
-            c = col_of.get(code)
-            if c is None or c in seen:
-                continue
-            seen.add(c)
-            cols.append(c)
-        if cols:
-            targets.setdefault(i_exec, []).extend([c for c in cols if c not in targets.get(i_exec, [])])
+    # ★ v2.11.7（技术债 P1-#3 第十三刀 ✓）：整块搬去 `signals/period_roll_buckets.build_targets` ✓
+    #   —— 那里写清了"同一执行日被多个批次命中必须去重合并"（不去重 ⇒ 同一只票被加两次仓 ✓，
+    #   总仓位仍 100% ⇒ 别的票被挤少、净值看着正常但权重全错 ✗）。
+    targets: Dict[int, List[int]] = build_targets(
+        signals, pos=pos, lag=lag, n_row=n_row, col_of=col_of)
 
     # ---------- ② 逐日：调仓日重建全仓，期中不动 ----------
     cash = float(capital)
