@@ -317,7 +317,19 @@ def _trades_frame(rows, date_arr, codes, half):
         cols["reason"].append(_r)
         cols["mode"].append(_m)
     # ⚠ 空输入保持 `pd.DataFrame()`（= 旧 `pd.DataFrame([])` ⇒ 0×0 ✓，不是 0×9 ✗）
-    return pd.DataFrame(cols) if rows else pd.DataFrame()
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(cols)
+    # ★★ v2.11.21（技术债 P2-#21 清偿 ✓）：**按全列稳定排序** ✗→✓ ——
+    #   原来直接返回引擎**追加顺序** ✓，而 v2.11.18 的跨平台指纹实测发现：
+    #   **同一个策略、同一份数据，Windows 与 ubuntu 的明细行序不同** ✗
+    #   （NAV 逐位相同 ✓、行序无关的哈希也相同 ✓ ⇒ 内容一样、只是顺序 ✗）。
+    #   影响：导出的 XLSX「成交明细」页**行序在不同机器上不同** ✓ ——
+    #   数值全对 ✓，但"逐位对比两份导出文件"会失败 ✗（对账/回归都受影响 ✓）。
+    #   ⇒ 按**全部列**排序（`kind="stable"` ✓）：排序键完整 ⇒ **完全确定** ✓；
+    #     完全相同的行互相交换也无影响 ✓（它们本来就一样 ✓）。
+    #   ⚠ 只影响**输出行序** ✓，**不碰 NAV / 成交笔数 / 任何金额** ✓（指纹可证 ✓）。
+    return out.sort_values(by=list(out.columns), kind="stable").reset_index(drop=True)
 
 
 def run_backtest(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame], *,

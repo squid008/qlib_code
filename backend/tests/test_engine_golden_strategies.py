@@ -126,3 +126,29 @@ def test_strategy_numbers_are_frozen(panel_sig, name, runner):
         "%s 的成交明细内容变了 ✗（行序无关哈希 %s ≠ %s）\n"
         "  ⇒ 相比 v2.11.19 只数条数，这一条能抓住\"条数没变但某笔数量/价格/费用变了\" ✓\n"
         "  ⇒ 有意改口径就同步更新 GOLD ✓" % (name, got_tr, g["trades_sha"]))
+
+
+@pytest.mark.parametrize("name,runner", [
+    ("period_roll", run_period_roll),
+    ("batch_even", run_batch_backtest),
+])
+def test_trades_are_sorted_for_determinism(panel_sig, name, runner):
+    """⭐⭐ **技术债 P2-#21 已清偿（v2.11.21）**：成交明细**必须已按全列排序** ✓。
+
+    为什么（v2.11.18 跨平台指纹实测 ✓）：原来返回引擎**追加顺序** ⇒
+    **同一策略、同一份数据，Windows 与 ubuntu 的明细行序不同** ✗
+    （NAV 逐位相同 ✓、行序无关哈希也相同 ✓ ⇒ 内容一样、只是顺序 ✗）。
+    影响：导出的 XLSX「成交明细」页**行序跨机器不同** ✓ ——
+    数值全对 ✓，但"逐位对比两份导出文件"会失败 ✗（对账/回归都受影响 ✓）。
+
+    这里断言"`trades` 已经是有序的" ✓（拿它自己再排一遍必须不变 ✓）——
+    这样**换任何平台跑都是同一个顺序** ✓。
+    """
+    panel, sig = panel_sig
+    tr = runner(sig, panel, **KW).trades
+    assert tr is not None and len(tr), "%s 没有成交 ✗" % name
+    again = tr.sort_values(by=list(tr.columns), kind="stable").reset_index(drop=True)
+    assert tr.equals(again), (
+        "%s 的成交明细**没有排序** ✗ ⇒ 跨机器行序会不同 ✓（见技术债 P2-#21）" % name)
+    # 主键单调：日期非递减 ✓（人读导出时也顺 ✓）
+    assert tr["date"].is_monotonic_increasing, "%s 的成交明细应按日期非递减 ✓" % name
