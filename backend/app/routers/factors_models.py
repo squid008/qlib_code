@@ -116,7 +116,9 @@ class EventStudyRequest(BaseModel):
 
 class EventNavRequest(BaseModel):
     """「事件研究」面板里再画一条净值曲线（两种资金方案 + 基准 + 未触发组等权）。"""
-    task_id: str
+    # ★ v2.11.39：**删掉这里的 `task_id: str`** ✗→✓ —— 下面（v1.19.61 允许为空那段）
+    #   又声明了一次 `task_id: str = ""` ✓ ⇒ mypy 报 `Name "task_id" already defined` ✗。
+    #   保留**带默认值**的那一条 ✓（它才是最终语义 ✓）。
     # ★★ T1（v2.8.6，用户 2026-10-16 拍板 ✓）：**涨停判定口径**（审计 ② ✓）——
     #   `None`/`"legacy"`（默认 ✓）＝ 老口径（成交日**收盘**涨停也拒 ⇒ 保守 ✓，历史逐位一致 ✓）；
     #   `"open_only"` ＝ 新口径（**只拒「开盘一字涨停/停牌」** ✓，更贴实盘 ✓）。

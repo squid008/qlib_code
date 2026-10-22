@@ -18,7 +18,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, cast
 
 import pandas as pd
 
@@ -58,7 +58,9 @@ def buy_signals_from_trades(trades: Optional[pd.DataFrame],
             continue
         d = getattr(row, "date", None)
         out.append({
-            "date": d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10],
+            # ★ v2.11.39：`cast(Any, d)` ✓ —— `d` 是 `getattr` 出来的 `Any | None` ✗，
+            #   `hasattr` 只能给运行时兜底 ✓、mypy 不据此收窄 ✗（它认为可能是 None ✓）。
+            "date": cast(Any, d).strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10],
             "code": str(getattr(row, "code", "")),
             "mode": str(getattr(row, "mode", "")) if has_mode else "",
         })

@@ -144,8 +144,13 @@ def _xlsx_response(data: bytes, filename: str) -> Response:
     )
 
 
-def _find_row(items: List[dict], req: TopkExportRequest) -> dict:
-    """在任务结果里定位该因子（+ 该预测周期）那一行 ✓。"""
+def _find_row(items: List[dict], req: Any) -> dict:
+    """在任务结果里定位该因子（+ 该预测周期）那一行 ✓。
+
+    ★ v2.11.39：`req` 原来标成 `TopkExportRequest` ✗ —— 但它**只读**
+    `req.factor_id` / `req.horizon` ✓，而**离场曲线导出**（`ExitCurveExportRequest` ✓）
+    也调它 ✓ ⇒ 注解写窄了会误报 ✓ ⇒ 放宽成 `Any` ✓（比造 Protocol 轻 ✓）。
+    """
     want = str(req.factor_id or "")
 
     def _hit(row: dict, strict_h: bool) -> bool:

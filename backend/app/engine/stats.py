@@ -30,7 +30,7 @@ def acf(x: np.ndarray, k: int) -> float:
     return float(np.sum(xc[: n - k] * xc[k:]) / denom)
 
 
-def hac_t(x: np.ndarray, maxlags: int = None) -> Optional[float]:
+def hac_t(x: np.ndarray, maxlags: Optional[int] = None) -> Optional[float]:
     """Newey-West HAC 稳健 t 统计量（修正自相关 + 异方差）。
 
     maxlags 默认按 Newey-West 建议：int(4 * (n/100)^(2/9))。

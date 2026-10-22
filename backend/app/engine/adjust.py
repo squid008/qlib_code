@@ -133,7 +133,7 @@ def adjust_label(expr: str, mode: str) -> str:
     return adjust_expr(expr, mode)
 
 
-def quote_adjust_factors(mode: str, end_time=None) -> Tuple[str, str]:
+def quote_adjust_factors(mode: str, end_time=None) -> Tuple[str, bool]:
     """返回回测 quote 层取价方式（BoardAwareExchange 内部使用；本函数保留供参考/兼容）。
 
     数据 $close 原生为后复权价：

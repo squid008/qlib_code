@@ -192,7 +192,9 @@ def _patch_recorder_end_run() -> None:
             _log_swallowed("qlib_parallel.py", e)
             pass
 
-    _end_run._patched_by_qlib_parallel = True
+    # ★ v2.11.39：用 `setattr` ✓ —— 函数对象上挂标记 ✓，直接 `.attr =` 会报
+    #   "Callable 没有该属性" ✗（mypy 不知道这是给函数贴标签 ✓）。
+    setattr(_end_run, "_patched_by_qlib_parallel", True)
     MLflowRecorder.end_run = _end_run
 
 

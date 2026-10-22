@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 from . import spec, xl
 from .topk import TopkExportDoc
@@ -281,13 +281,17 @@ def build_doc(src: PanelSource) -> TopkExportDoc:
     # ---------- 成本敏感度表 ----------
     dk = sens.get("default_k")
     sens_rows: List[List[Any]] = []
-    for r in (sens.get("rows") or []):
-        k = r.get("k")
-        ann, eaten = r.get("ann_cost") or {}, r.get("cost_eaten") or {}
+    # ★ v2.11.39：`cast` ✓ —— `sens` 是普通 dict ⇒ `.get("rows")` 取出来是 `object` ✗，
+    #   被推成 `list[Any]` 的元素类型后 `r.get(...)` 就报"list 没有 get" ✗（4 条 ✓）。
+    # ⚠ 循环变量叫 `_row` 而不是 `r` ✗→✓ —— 本函数前面已经把 `r` 用作 **list** ✓，
+    #   同名复用会让 mypy 认为它还是 `list[Any]` ⇒ `r.get(...)` 报"list 没有 get" ✗。
+    for _row in cast(List[dict], sens.get("rows") or []):
+        _k = _row.get("k")
+        _ann, _eaten = _row.get("ann_cost") or {}, _row.get("cost_eaten") or {}
         sens_rows.append([
-            ("%s（默认 10%%）" % k) if (dk is not None and int(k) == int(dk)) else k,
-            r.get("avg_turnover"), ann.get("0.0040"), ann.get("0.0080"),
-            eaten.get("0.0040"), r.get("gross_per_period"),
+            ("%s（默认 10%%）" % _k) if (dk is not None and int(_k or 0) == int(dk)) else _k,
+            _row.get("avg_turnover"), _ann.get("0.0040"), _ann.get("0.0080"),
+            _eaten.get("0.0040"), _row.get("gross_per_period"),
         ])
     sens_note = ("%s　年化按 %s 交易日；持仓只数与明细曲线的固定档一一对应。"
                  % (sens.get("note") or "", sens.get("trading_days") or 252))

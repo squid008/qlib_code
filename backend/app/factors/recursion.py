@@ -43,7 +43,7 @@ BS:IF(UP AND NOT REF(UP,1), 2, IF(NOT UP AND REF(UP,1), -2, IF(UP,1,-1)));
 """
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Sequence, Tuple, cast
 
 import numpy as np
 
@@ -154,7 +154,8 @@ def eval_skeleton(node: Skel, i: int, pre: Sequence[np.ndarray],
                 % hint) if hint else "请改写为逐元素写法 ✓"))
     vals = [eval_skeleton(a, i, pre, out, default) for a in node[1]]
     with np.errstate(all="ignore"):
-        return fn(*vals)
+        # ★ v2.11.39：`cast` ✓ —— `fn` 来自白名单 dict（值类型 `object` ✗）⇒ 不可直接调用 ✓
+        return cast("Callable[..., Any]", fn)(*vals)
 
 
 def run_group(skels: Sequence[Skel], n_members: int, pre: Sequence[np.ndarray],

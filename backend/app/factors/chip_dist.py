@@ -45,7 +45,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Optional, Sequence
+from typing import Dict, Iterable, Optional, Sequence, Union
 
 import numpy as np
 
@@ -139,7 +139,11 @@ def chip_run(close: np.ndarray, high: np.ndarray, low: np.ndarray,
              #   **「每个赢家价基准一个数组」的列表** ✓（`prices=pmat`，pmat 由 wins 生成 ✓）
              #   ⇒ 原来标成 `Optional[np.ndarray]` ✗ ⇒ mypy 报 "list 传给 ndarray" ✓。
              #   ⚠ 只改注解，**运行时行为不变** ✓。
-             prices: Optional[Sequence[np.ndarray]] = None, bins: int = DEFAULT_BINS,
+             # ★ v2.11.39：再加回**单矩阵** ✓ —— 函数体 L201 本来就写着
+    #   `list(prices) if isinstance(prices, (list, tuple)) else [prices]` ✓
+    #   ⇒ 单个 `np.ndarray` 是**合法入参** ✓（`winner()` 包装就是这么调的 ✓）
+    #   ⇒ 上次把注解收窄成 `Sequence[...]` 反而写窄了 ✗ ⇒ 现在如实写成「矩阵 或 矩阵序列」✓。
+    prices: Optional[Union[np.ndarray, Sequence[np.ndarray]]] = None, bins: int = DEFAULT_BINS,
              pad: float = DEFAULT_PAD, decay: float = 1.0, peak: str = "hl2",
              shape: str = "tri", open_: Optional[np.ndarray] = None,
              turn_unit: str = "auto") -> Dict[str, np.ndarray]:

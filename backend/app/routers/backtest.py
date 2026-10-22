@@ -112,7 +112,9 @@ def get_backtest(task_id: str):
                 try:
                     req = manager.get_req(task_id)
                     if req and getattr(req, "resume_task_id", None):
-                        adir = artifacts_service.find_artifact_dir(req.resume_task_id)
+                        # ★ v2.11.39：`str(... or "")` ✓ —— `resume_task_id` 是 `Any | None` ✗，
+                        #   而 `find_artifact_dir` 要求 `str` ✓（传空串 ⇒ 找不到 ⇒ 与原来的 None 等价 ✓）
+                        adir = artifacts_service.find_artifact_dir(str(req.resume_task_id or ""))
                 except Exception as e:
                     _log_swallowed("backtest.py", e)
                     adir = None
@@ -200,6 +202,10 @@ def get_backtest_image(task_id: str, name: str):
         fpath = artifacts_service.resolve_image_path(task_id, name)
     except artifacts_service.ArtifactNotFoundError as e:
         raise _map_artifact_error(e)
+    # ★ v2.11.39：**判空** ✓ —— `resolve_image_path` 返回 `Optional[str]` ✗，
+    #   直接传给 `FileResponse` 会在运行时抛得莫名其妙 ✓ ⇒ 这里给一句能照做的错 ✓。
+    if not fpath:
+        raise HTTPException(status_code=404, detail="该任务没有这张图片（产物可能已被清理）")
     return FileResponse(fpath, media_type="image/png")
 
 

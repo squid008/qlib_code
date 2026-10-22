@@ -24,6 +24,36 @@
 
 ---
 
+## [2.11.39] - 2026-10-22
+
+### Chore（**mypy 闸门改成"整个 `app`"** ✓ —— **覆盖率 89% → 100%，0 错误** ✓ ｜ 技术债 P2-#4 清偿）
+
+- **最后 18 条（13 个文件）清完** ✓，然后做了这一步：`files = [逐文件白名单…]` ⇒ **`files = ["app"]`** ✓
+  ⇒ mypy **123 个源文件 0 错误** ✓。
+  ⚠ 顺序很重要 ✓：**先**清到"未进闸门的模块 0 个有错" ✓（探针实测 ✓），**再**整包纳入 ✓ ——
+  反过来就是"一改就满屏红"✗。
+  > 这一步之后：**以后新增模块默认就在闸门里** ✓，不会再出现"新代码悄悄没有类型检查" ✗。
+- **这批修的 13 个文件里，值得记的 5 类** ✓：
+  1. ⭐ **同名变量跨类型复用**（3 处）：`topk_doc` 的 `r`（先当 list、后当 dict ✓）、
+     `signal_list` 的 `key`（先 str、后 tuple ✓）、`replay` 的 `pos`（没注解 ⇒ `dict[Never, Never]` ✓）；
+  2. ⭐ **注解写窄了**（2 处，都是**代码是对的、注解落后**✓）：
+     `chip_dist.chip_run(prices=…)` —— 函数体里本来就写着
+     `list(prices) if isinstance(...) else [prices]` ✓ ⇒ 单个 `np.ndarray` **合法** ✓，
+     而注解只有 `Sequence[...]` ✗；`export_xlsx._find_row(req)` 只读 `factor_id`/`horizon` ✓，
+     注解却写成 `TopkExportRequest` ✗ ⇒ 离场曲线导出调它就误报 ✓；
+  3. **白名单 dict 取出来是 `object`** ⇒ 不能直接调用 ✓（`exit_rules` / `recursion` 的算子表 ✓）
+     ⇒ `cast(Callable[..., Any], fn)(...)` ✓；
+  4. **`str | None` 传进要求 `str` 的地方**（`backtest` 的 `resume_task_id` / `FileResponse(fpath)` ✓）
+     ⇒ 判空 + 能照做的 404 ✓；
+  5. **`setattr` 替代 `.attr =`**（给函数对象贴标记 ✓，`qlib_parallel` ✓）。
+- **⚠ 又一次被自己的"注解"反咬** ✗→✓：`replay.pos` 我先标成 `Dict[str, int]` ✗ ⇒ 直接冒出
+  2 条新错（股数在回放里是 **float** ✓）⇒ 改成 `Dict[str, float]` ✓。
+  > 规律：**不清楚实际类型时，先看它被赋什么值** ✗ —— 别凭名字猜 ✓。
+- **实测** ✓：`mypy` **123 个源文件 0 错误** ✓（整包 ✓）｜
+  stats/adjust/replay/export/position/parser/router/体检 回归 **279 passed** ✓ ｜
+  `ruff` **0** ✓ ｜ CI ✓。
+- **账面** ✓：类型安全 **9.9 → 10** ✓ ｜ 技术债 **P2-#4 清偿** ✓（在册 **3 → 2**、已清偿 **17 → 18**）✓。
+
 ## [2.11.38] - 2026-10-22
 
 ### Fixed（**最后一批零碎的类型错：4 个文件 13 条清零** ✓ —— mypy **100/112（89%）** ✓）

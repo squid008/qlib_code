@@ -47,7 +47,8 @@ def parse_signal_list(raw, filename: str = "") -> ParseResult:
         res.stats.update(rows_total=int(len(df)), rows_valid=0, dropped=1, stocks=0)
         return res
 
-    rows, issues = [], []
+    rows: list = []
+    issues: list = []      # ★ v2.11.39：显式注解（元组解包带不了注解 ⇒ 会被推成 list[Never] ✗）
     # ⚠ 重复行**不再丢掉**（用户 2026-09-16：「重复行是有意加仓」）⇒ 合并成**份数** `weight`：
     #   同一 (日期, 批次, 标的) 出现 2 次 = 2 份 ⇒ 与同事 `目标资金占比 = 0.2 ÷ 行数` 完全一致；
     #   主引擎的 event_even/cash_even 忽略 weight（仍按去重后的名单等权），`batch_even` 用它做批内等权。
@@ -96,8 +97,10 @@ def parse_signal_list(raw, filename: str = "") -> ParseResult:
             if bucket_col:
                 bv = rec.get(bucket_col)
                 b = "" if str(bv).strip().lower() in ("nan", "none", "") else str(bv).strip()
-            key = (dt, info.qlib_code, side, b)
-            hit = agg.get(key)
+            # ★ v2.11.39：改名 `_akey` ✓ —— 本函数前面（L79）已把 `key` 用作 **str** ✗，
+            #   复用同名会让 mypy 认为这里也是 str ⇒ 元组赋值报错 ✓。
+            _akey = (dt, info.qlib_code, side, b)
+            hit = agg.get(_akey)
             if hit is not None:
                 hit["weight"] += 1.0                  # 有意加仓 ⇒ 份数 +1（不再丢弃这一行）
                 n_dup += 1
@@ -108,7 +111,7 @@ def parse_signal_list(raw, filename: str = "") -> ParseResult:
                 n_buy += 1
             else:
                 n_sell += 1
-            agg[key] = {"date": dt, "code": info.qlib_code, "side": side, "name": info.name,
+            agg[_akey] = {"date": dt, "code": info.qlib_code, "side": side, "name": info.name,
                         "raw_date": str(raw_date), "raw_code": str(tok), "bucket": b,
                         "weight": 1.0}
 

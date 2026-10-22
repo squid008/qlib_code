@@ -136,7 +136,9 @@ def replay_trades(trades: pd.DataFrame, close: pd.DataFrame, *, capital: float,
 
     def _sim(kind: str) -> Dict:
         """kind: `sim_fee`(A) / `my_cost`(B) / `exact`(C)。"""
-        cash, pos, nav, neg, fees, n_fill = float(capital), {}, [], 0, 0.0, 0
+        # ★ v2.11.39：`pos` 单独注解 ✓（元组解包没法带注解 ⇒ 会被推成 `dict[Never, Never]` ✗）
+        cash, nav, neg, fees, n_fill = float(capital), [], 0, 0.0, 0
+        pos: Dict[str, float] = {}      # ⚠ 股数在回放里是 **float**（按金额折算 ✓），不是 int ✗
         code_scale = 1.0 if kind == "exact" else rs_flag
         for d in win:
             i = pos_of[d]

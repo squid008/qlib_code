@@ -38,7 +38,7 @@ CLOSE < ENTRY_PRICE*0.95 AND TURNOVERRATE > 2
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Callable, List, Optional, cast
 
 import numpy as np
 
@@ -195,7 +195,8 @@ def _eval(node, i: int, pre: List, avg: np.ndarray, first: np.ndarray):
     if op is None:
         raise UnsupportedExitError("离场骨架里的「%s」不支持 ✗（内部错误，请反馈 ✓）" % kind)
     with np.errstate(all="ignore"):
-        return op(*vals)
+        # ★ v2.11.39：`cast` ✓ —— `op` 来自白名单 dict（值类型 `object` ✗）⇒ 不可直接调用 ✓
+        return cast(Callable[..., Any], op)(*vals)
 
 
 def split_entry_rule(expr: str, threshold: float = 0.0) -> Optional[EntryRule]:
