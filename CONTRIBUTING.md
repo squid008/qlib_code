@@ -47,8 +47,8 @@ QLIB_PROVIDER_URI_FORCE=1 QLIB_PROVIDER_URI=$PWD/../data/_synth_ci pytest -m syn
 ```
 
 - ⚠ **`QLIB_PROVIDER_URI_FORCE=1` 不能省** —— 若本机有 `data/active_dataset.json`，它**优先于**环境变量。
-- `synthdata` = 「**只需合成数据就能跑**」的 **6 条**（CI 的 `synth-data` job 跑的就是它）；
-  `datareq` 里另外 15 条要真实数据**特有的性质**（物化 `chip_*` bin / 真复权因子 / 真标的），
+- `synthdata` = 「**只需合成数据就能跑**」的 **4 条**（CI 的 `synth-data` job 跑的就是它）；
+  `datareq` 里另外 17 条要真实数据**特有的性质**（或面板取数，见技术债 #23）（物化 `chip_*` bin / 真复权因子 / 真标的），
   **不要**为了"让 CI 全绿"去改它们的断言 —— 那会把真问题藏起来。
 - 生成物 `data/_synth_ci` 已被 `.gitignore` 忽略，不要提交。
 
