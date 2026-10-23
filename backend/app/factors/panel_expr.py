@@ -201,7 +201,24 @@ def _feature_dir() -> str:
         from app.config import QLIB_PROVIDER_URI
 
         if QLIB_PROVIDER_URI:
-            return os.path.join(QLIB_PROVIDER_URI, "features")
+            _cand = os.path.join(QLIB_PROVIDER_URI, "features")
+            # ★ v2.11.43（技术债 P2-#23 的经验 ✓）：**目录不存在就别静默返回** ✗→✓ ——
+            #   原来是"解析出路径就直接用"✓，若那个路径不存在（换了数据集 / 数据没同步 /
+            #   用合成数据但 env 没生效 ✓）⇒ 面板侧**读到 0 行、不报错** ✗
+            #   ⇒ 上层只看到空 DataFrame ✓（CI 上就是 `(0, 13020)` 这种诡异断言 ✗）。
+            #   现在打一条**只警告一次**的日志 ✓ —— 让"静默空"变成"看得见" ✓
+            #   （⚠ 不抛异常：有些调用方确实允许"数据未就绪"✓，抛错会改变既有行为 ✗）。
+            if not os.path.isdir(_cand) and _cand not in _MISSING_WARNED:
+                _MISSING_WARNED.add(_cand)
+                try:
+                    from ..logger import get_logger
+
+                    get_logger("factors").warning(
+                        "面板取数的 feature 目录不存在：%s ⇒ 将返回空结果"
+                        "（检查 QLIB_PROVIDER_URI / 数据集是否已同步 ✓）", _cand)
+                except Exception as e:  # noqa: BLE001
+                    _log_swallowed("panel_expr.py", e)
+            return _cand
     except Exception as e:
         _log_swallowed("panel_expr.py", e)
         pass
