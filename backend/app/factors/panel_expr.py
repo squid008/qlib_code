@@ -202,12 +202,8 @@ def _feature_dir() -> str:
 
         if QLIB_PROVIDER_URI:
             _cand = os.path.join(QLIB_PROVIDER_URI, "features")
-            # ★ v2.11.43（技术债 P2-#23 的经验 ✓）：**目录不存在就别静默返回** ✗→✓ ——
-            #   原来是"解析出路径就直接用"✓，若那个路径不存在（换了数据集 / 数据没同步 /
-            #   用合成数据但 env 没生效 ✓）⇒ 面板侧**读到 0 行、不报错** ✗
-            #   ⇒ 上层只看到空 DataFrame ✓（CI 上就是 `(0, 13020)` 这种诡异断言 ✗）。
-            #   现在打一条**只警告一次**的日志 ✓ —— 让"静默空"变成"看得见" ✓
-            #   （⚠ 不抛异常：有些调用方确实允许"数据未就绪"✓，抛错会改变既有行为 ✗）。
+            # ★ v2.11.43：目录不存在就**告警一次**（原来静默 ⇒ 面板 0 行不报错 ✗，见 P2-#23）。
+            #   ⚠ 不抛异常：有些调用方允许"数据未就绪"✓。
             if not os.path.isdir(_cand) and _cand not in _MISSING_WARNED:
                 _MISSING_WARNED.add(_cand)
                 try:
@@ -251,7 +247,7 @@ def reset_caches() -> None:
     _SEG_CACHE.clear()
     _SEG_RC_CACHE.clear()
     _MISSING_WARNED.clear()
-    _INST_DIR_CACHE.clear()      # ★ v2.11.47：`features/<inst>` 大小写归一缓存也要清 ✓
+    INST_DIR_CACHE.clear()       # ★ v2.11.47：`features/<inst>` 大小写归一缓存也要清 ✓
 
 
 # ---------------- 特征合并层（features_merged/，v1.18.42 / T2 §7.7-E #7）----------------
@@ -366,43 +362,8 @@ def _merged_values(inst: str, field: str):
     return int(e[2]), np.asarray(mm[off + 1: off + cnt], dtype=np.float64)
 
 
-# ★★ v2.11.47（技术债 P2-#23 根因修复 ✓）：features 下的股票目录要**大小写归一** ✗→✓
-#
-#   症状：`panel_features` 在 **Linux CI 上返回 0 行**，Windows 本地正常 ✓（`(0, 13020)`）。
-#   根因（CI 上三层诊断钉死 ✓）：`_union_layout → _field_bin_meta → _dir_meta` 一路都用
-#   **调用方传进来的 instrument 原样**拼 `features/<inst>` ✗，而 bin 目录名是**全小写** ✓；
-#   调用方传的是 `SH600000`（大写 ↑ ✓）。
-#     · **Windows/NTFS 大小写不敏感** ⇒ 大写路径照样命中小写目录 ⇒ 本地永远看不出来 ✗✗
-#     · **Linux 大小写敏感** ⇒ 找不到 ⇒ `layout=[]` ⇒ 面板 0 行 ✗（而 `D.features` 内部
-#       会 `lower()` ⇒ qlib 侧 13020 行 ✓，于是只看到"两边行数不一致"这种怪现象 ✗）
-#   ⇒ 这里是**真 bug**（任何 Linux 部署都会踩 ✓），不是测试环境问题 ✓。
-_INST_DIR_CACHE: Dict[str, str] = {}
-
-
-def _inst_dir(inst: str) -> str:
-    """→ `features/<inst>` 的**实际目录**（大小写归一 ✓，结果按 inst 缓存 ✓）。
-
-    依次试：**小写 → 原样 → 大写**（兼容不同 dump 工具的命名习惯 ✓）。
-    ⚠ **小写排第一是为了两端一致** ✗→✓：Windows 大小写不敏感 ⇒ 若先试原样，
-    会返回 `features/SH600000` ✓（Windows 能用 ✓）而 Linux 返回 `features/sh600000` ✓
-    ⇒ **同一个函数在两平台返回不同字符串** ✗，回归测试也就没法只写一份 ✓。
-    都不存在时返回"小写"路径 ✓（调用方照旧返回 None ✓ 语义不变 ✓）。
-    ⚠ 只在**首次**做 3 次 `isdir` ✓（之后走缓存 ✓），`reset_caches()` 会清掉 ✓。
-    """
-    hit = _INST_DIR_CACHE.get(inst)
-    if hit is not None:
-        return hit
-    base = _feature_dir()
-    for cand in (inst.lower(), inst, inst.upper()):
-        d = os.path.join(base, cand)
-        if os.path.isdir(d):
-            _INST_DIR_CACHE[inst] = d
-            return d
-    d = os.path.join(base, inst.lower())
-    _INST_DIR_CACHE[inst] = d          # 否定结果也缓存 ✓（目录后建时由 reset_caches 清 ✓）
-    return d
-
-
+from .panel_paths import INST_DIR_CACHE                      # noqa: E402
+from .panel_paths import inst_dir as _inst_dir_impl          # noqa: E402
 def _read_field_bin(inst: str, field: str):
     """读 .day.bin → (start_idx, float64 数组)；缺失返回 None。
 
@@ -429,7 +390,7 @@ def _read_field_bin(inst: str, field: str):
             start, vals = r
             _put_bin_cache(key0, mtime, start, vals)
             return start, vals
-    p = os.path.join(_inst_dir(inst), f"{field}.day.bin")
+    p = os.path.join(_inst_dir_impl(inst, _feature_dir()), f"{field}.day.bin")
     try:
         st = os.stat(p)
     except OSError:
@@ -570,7 +531,7 @@ def _dir_meta(inst: str):
     TTL 内命中 → 零 syscall；过期 → 用目录 mtime 校验后顺延 TTL；
     Windows 上 `DirEntry.stat()` 复用 scandir 已取得的属性，故重建也远快于逐字段 os.stat。
     """
-    d = _inst_dir(inst)
+    d = _inst_dir_impl(inst, _feature_dir())
     hit = _DIR_META_CACHE.get(inst)
     now = time.monotonic()
     if hit is not None:
@@ -644,7 +605,7 @@ def _field_bin_meta(inst: str, field: str):
     if hit is not None and hit[0] == mtime_ns:
         _BIN_META_CACHE.move_to_end(key)
         return hit
-    p = os.path.join(_inst_dir(inst), f"{field}.day.bin")
+    p = os.path.join(_inst_dir_impl(inst, _feature_dir()), f"{field}.day.bin")
     try:
         with open(p, "rb") as fh:
             start = int(np.frombuffer(fh.read(4), dtype="<f4")[0])
