@@ -52,6 +52,16 @@
   **401 进指标（验证中间件顺序）** ✓／错误信息不泄露 token ✓。
 - ⚠ **写测试时踩的坑**：我从"直觉"写了 `/api/signals/options` ⇒ **404** ⇒ 4 条测试红得莫名其妙 ✗；
   真实前缀是 `APIRouter(prefix="/api/signal-**test**")` ✓（**路径别猜，去读 router** ✓）。
+- ⚠⚠ **被 CI 抓了一次（值得记，而且是我第二次犯同款）** ✗→✓：
+  我把 `_guard_mw` 写成 `create_app` **内部的闭包** ⇒ `create_app` 圈复杂度 **16 → 23**（阈值 20）
+  ⇒ **`tests/test_complexity.py` 当场红** ✓。
+  > 更该记的是**为什么本地没拦住** ✗：我本地只跑了 `version_sync / code_health / security / layering`
+  > 四件套 ✓，**没跑 `complexity`** ✗ ⇒ "本地全绿、CI 红" ✓。
+  > 教训：**改动碰了 app 装配（main.py）就必须跑全量棘轮** ✓ —— 棘轮之间有分工，
+  > 少跑一把就等于少一道门 ✓（v2.11.50 那次"ruff 漏了 tools 目录"是同一个病 ✗）。
+  - 修法（**不是放宽阈值** ✗）：把 `_guard_mw` 与 `_metrics_mw` 都**提到模块级** ✓
+    ⇒ `create_app` 只剩装配 ✓、复杂度回到阈值内 ✓，而且中间件本身也更好读了 ✓。
+
 - **实测** ✓：`test_security` **15 passed** ｜ 相关回归 **109 passed** ｜
   `ruff app tests tools` 0（`--fix` 顺手修了 main.py 的 import 排序 ✓）｜ `mypy` **125 文件 0 错误** ｜ CI ✓。
 

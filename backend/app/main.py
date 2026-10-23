@@ -57,6 +57,58 @@ def _warn_if_slow(request, status: int, seconds: float) -> None:
         _log_swallowed("main.py", e)
 
 
+async def _guard_mw(request: Request, call_next):
+    """**可选**鉴权 + 限流（★ v2.11.67；开关与口径见 `app/security.py`）。
+
+    ⚠ 提到模块级是为了**把 `create_app` 的圈复杂度压回去** ✗→✓ ——
+    写成 `create_app` 内部的闭包时，它把 `create_app` 推到 **23**（阈值 20）
+    ⇒ `tests/test_complexity.py` 红 ✓（CI 抓到的 ✓）。
+    """
+    path = request.url.path
+    if not path.startswith("/api") or security.is_public(path):
+        return await call_next(request)
+    if not security.token_ok(request.headers.get("authorization")):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "需要 API token：请求头加 `Authorization: Bearer <BACKEND_API_TOKEN>` ✓"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    allowed, wait = security.LIMITER.check(security.client_key(
+        request.client.host if request.client else None))
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "请求过于频繁（上限 %d 次/分钟）⇒ 请等 %d 秒"
+                               % (security.RATE_LIMIT_RPM, wait)},
+            headers={"Retry-After": str(wait)},
+        )
+    return await call_next(request)
+
+
+async def _metrics_mw(request: Request, call_next):
+    """**进程内指标**（★ v2.11.25 / 技术债 P2-#8 第一步 ✓）—— 只记总数 + 状态码 + 耗时 ✓。
+
+    ⚠ 刻意**不按 URL 路径分桶** ✗（路径里有 `task_id`/日期等高基数片段 ⇒
+    指标本身会变成内存泄漏 ✓）。要定位"哪个接口慢"，看日志的 `[吞]` 与响应里的 `timings` ✓。
+    """
+    t0 = time.perf_counter()
+    try:
+        resp = await call_next(request)
+    except Exception:
+        REGISTRY.inc("http.requests")
+        REGISTRY.inc("http.status.500")
+        _el = time.perf_counter() - t0
+        REGISTRY.observe("http.duration_s", _el)
+        _warn_if_slow(request, 500, _el)
+        raise
+    _el = time.perf_counter() - t0
+    REGISTRY.inc("http.requests")
+    REGISTRY.inc("http.status.%d" % int(getattr(resp, "status_code", 0) or 0))
+    REGISTRY.observe("http.duration_s", _el)
+    _warn_if_slow(request, int(getattr(resp, "status_code", 0) or 0), _el)
+    return resp
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Qlib 量化回测平台",
@@ -80,48 +132,11 @@ def create_app() -> FastAPI:
     #   ⚠ 注册顺序有讲究 ✗→✓：Starlette 里**后注册的中间件在外层**（先执行 ✓），
     #   所以这里先注册 guard、后面注册 metrics ⇒ **metrics 包在 guard 外面** ✓
     #   ⇒ 401/429 也会被计入指标 ✓（否则"被拦了多少"这个数根本看不到 ✗）。
-    @app.middleware("http")
-    async def _guard_mw(request, call_next):
-        path = request.url.path
-        if path.startswith("/api") and not security.is_public(path):
-            if not security.token_ok(request.headers.get("authorization")):
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "需要 API token：请求头加 `Authorization: Bearer <BACKEND_API_TOKEN>` ✓"},
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            allowed, wait = security.LIMITER.check(security.client_key(
-                request.client.host if request.client else None))
-            if not allowed:
-                return JSONResponse(
-                    status_code=429,
-                    content={"detail": "请求过于频繁（上限 %d 次/分钟）⇒ 请等 %d 秒"
-                                       % (security.RATE_LIMIT_RPM, wait)},
-                    headers={"Retry-After": str(wait)},
-                )
-        return await call_next(request)
-
-    # ★ v2.11.25（技术债 P2-#8 第一步 ✓）：**进程内指标** —— 只记总数 + 状态码 + 耗时 ✓。
-    #   ⚠ 刻意**不按 URL 路径分桶** ✗（路径里有 task_id/日期等高基数片段 ⇒ 指标本身会变成内存泄漏 ✓）。
-    #   要定位"哪个接口慢"，看日志的 `[吞]` 与响应里的 `timings` ✓。
-    @app.middleware("http")
-    async def _metrics_mw(request, call_next):
-        t0 = time.perf_counter()
-        try:
-            resp = await call_next(request)
-        except Exception:
-            REGISTRY.inc("http.requests")
-            REGISTRY.inc("http.status.500")
-            _el = time.perf_counter() - t0
-            REGISTRY.observe("http.duration_s", _el)
-            _warn_if_slow(request, 500, _el)
-            raise
-        _el = time.perf_counter() - t0
-        REGISTRY.inc("http.requests")
-        REGISTRY.inc("http.status.%d" % int(getattr(resp, "status_code", 0) or 0))
-        REGISTRY.observe("http.duration_s", _el)
-        _warn_if_slow(request, int(getattr(resp, "status_code", 0) or 0), _el)
-        return resp
+    #   ⚠⚠ 两个中间件都必须是**模块级函数**（见文件下方 ✓）—— 放进 `create_app` 里会让它的
+    #   **圈复杂度**从 ~16 涨到 **23** ✗ ⇒ `tests/test_complexity.py` 当场红 ✓
+    #   （CI 抓到的那次：我本地只跑了 version/code_health/security/layering，**漏了 complexity** ✗）。
+    app.middleware("http")(_guard_mw)
+    app.middleware("http")(_metrics_mw)
 
     @app.get("/api/metrics", summary="进程内指标（计数器 + 耗时）")
     def _metrics(format: str = "json"):
