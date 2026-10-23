@@ -173,7 +173,12 @@ def test_slow_request_is_warned_once_per_request(monkeypatch):
     """
     import app.metrics as _m
 
-    monkeypatch.setattr(_m, "SLOW_REQUEST_S", 0.001)
+    # ⚠⚠ 阈值必须设成**极小但为正**（`1e-9`）✗→✓ —— 我先写 `0.001`（1ms）✗，
+    #   结果 **CI（ubuntu）上偶发假红** ✓：`/api/version` 在快机器上**跑不到 1ms** ✗
+    #   ⇒ `should_warn_slow` 返回 False ⇒ 断言"应恰好告警一次，实际 0 次" ✗✗。
+    #   ⇒ 用 `1e-9`：仍然满足 `SLOW_REQUEST_S > 0`（不是"关闭"✓），而任何真实请求都必然超过它 ✓
+    #   （**时间相关断言永远别用"接近真实量级"的阈值** ✗）。
+    monkeypatch.setattr(_m, "SLOW_REQUEST_S", 1e-9)
     calls = _stub_logger(monkeypatch)
     REGISTRY.reset()
 
