@@ -24,6 +24,50 @@
 
 ---
 
+## [2.11.55] - 2026-10-23
+
+### Fix（**夜间 job 第一次真跑 = 立刻红了两次** ✓ —— 两个 bug，都不是"测试失败"）
+
+> 上一版（2.11.54）把 `nightly.yml` 写好就发版了 ✓，但**从没真跑过** ✗。
+> 这轮手动 `gh workflow run nightly.yml` 触发 3 次，**前两次红、第三次绿** ✓。
+
+#### ① `working-directory` 继承 ⇒ 脚本路径错
+
+```
+python: can't open file '.../qlib_code/backend/scripts/check_datareq_baseline.py': [Errno 2] No such file
+```
+
+- **真因**：job 级 `defaults.run.working-directory: backend`（给装依赖/pytest 用的 ✓）
+  会**继承到所有 step** ✗ ⇒ 那一步的 `scripts/...` 被解析成 `backend/scripts/...` ✗。
+- **修法**：给那一步显式 `working-directory: .` ✓
+  （脚本内部自己会 `cwd=backend` 跑 pytest ✓，所以它只需要站在仓库根 ✓）。
+- ⚠ **这类 bug 本地不可能发现** ✗ —— 只有真在 Actions 上跑一次才会露头 ✓
+  （又一次印证：**写好的 workflow 不等于验证过的 workflow** ✓）。
+
+#### ② ⭐ 更值钱的：基线清单**共用一份 ⇒ 假绿**
+
+- 第一次真跑的实测数字：**`failed=10 passed=13`**，而我的基线清单是**本地采的 16 条** ✓
+  ⇒ 脚本提示「有 **6** 条已不再失败」✓ —— 那 6 条在 CI（ubuntu + 真 qlib）上**是通过的** ✓。
+- **假绿风险**（这才是关键 ✗）：若 CI 上这 6 条里的某条**从通过变成失败** ✓，
+  它仍落在"本地 16 条"的更宽清单里 ⇒ 比对时**不算新增** ⇒ **抓不到真回归** ✗。
+- **修法**：基线**按环境分档** ✓
+  · `scripts/datareq_known_failures.txt`（本地/Windows，**16** 条）
+  · `scripts/datareq_known_failures.ci.txt`（CI/ubuntu，**10** 条）
+  · 脚本按 **`GITHUB_ACTIONS`** 环境变量自动选档 ✓（Actions 上一定有，不用额外传参 ✓）
+- **第三次真跑（验证修复）** ✓：
+  ```
+  档位 = ci（基线文件 datareq_known_failures.ci.txt）
+  本轮：failed=10  passed=13
+  ✓ 与已知清单一致（无新增失败）
+  4 passed (7.3s)        ← ② 真后端 E2E
+  ```
+  ⇒ 不再有"6 条已不再失败"的提示 ✓，**同样的失败数现在就是真绿灯** ✓。
+
+- **本次改动的价值**：夜间 job 从"写好了"变成"**验证过、且失败集合是窄的**" ✓ ——
+  窄才抓得到回归 ✓；宽清单只会让"红"变成"绿"一个假象 ✓。
+- **实测** ✓：夜间 job **success**（第 3 次，约 3 分钟）✓ ｜ datareq 看门狗 `10/13` ✓ ｜
+  真后端 E2E **4 passed** ✓ ｜ 本地档 `failed=16 passed=7` 且 **exit 0** ✓。
+
 ## [2.11.54] - 2026-10-23
 
 ### Feat + Test（**补掉绝对评分里最低的两维** ✓ —— CI/CD 7.0→**9.2**、测试 7.2→**7.8**，总分 7.90→**8.15**）
