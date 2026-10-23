@@ -196,6 +196,7 @@ def test_panel_matches_qlib_cwh():
 
 
 @pytest.mark.datareq
+@pytest.mark.synthdata
 def test_panel_warmup_days():
     """预热缓冲（warmup_days，v1.18.6）语义回归：
 
@@ -247,6 +248,7 @@ def test_panel_warmup_days():
 
 
 @pytest.mark.datareq
+@pytest.mark.synthdata
 def test_panel_matches_qlib_sr_continuous():
     """SR 包裹的连续因子（面板预热 + SR active 压缩语义）panel vs qlib 逐位对齐。
 

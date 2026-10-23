@@ -251,6 +251,7 @@ def reset_caches() -> None:
     _SEG_CACHE.clear()
     _SEG_RC_CACHE.clear()
     _MISSING_WARNED.clear()
+    _INST_DIR_CACHE.clear()      # ★ v2.11.47：`features/<inst>` 大小写归一缓存也要清 ✓
 
 
 # ---------------- 特征合并层（features_merged/，v1.18.42 / T2 §7.7-E #7）----------------
@@ -365,6 +366,43 @@ def _merged_values(inst: str, field: str):
     return int(e[2]), np.asarray(mm[off + 1: off + cnt], dtype=np.float64)
 
 
+# ★★ v2.11.47（技术债 P2-#23 根因修复 ✓）：features 下的股票目录要**大小写归一** ✗→✓
+#
+#   症状：`panel_features` 在 **Linux CI 上返回 0 行**，Windows 本地正常 ✓（`(0, 13020)`）。
+#   根因（CI 上三层诊断钉死 ✓）：`_union_layout → _field_bin_meta → _dir_meta` 一路都用
+#   **调用方传进来的 instrument 原样**拼 `features/<inst>` ✗，而 bin 目录名是**全小写** ✓；
+#   调用方传的是 `SH600000`（大写 ↑ ✓）。
+#     · **Windows/NTFS 大小写不敏感** ⇒ 大写路径照样命中小写目录 ⇒ 本地永远看不出来 ✗✗
+#     · **Linux 大小写敏感** ⇒ 找不到 ⇒ `layout=[]` ⇒ 面板 0 行 ✗（而 `D.features` 内部
+#       会 `lower()` ⇒ qlib 侧 13020 行 ✓，于是只看到"两边行数不一致"这种怪现象 ✗）
+#   ⇒ 这里是**真 bug**（任何 Linux 部署都会踩 ✓），不是测试环境问题 ✓。
+_INST_DIR_CACHE: Dict[str, str] = {}
+
+
+def _inst_dir(inst: str) -> str:
+    """→ `features/<inst>` 的**实际目录**（大小写归一 ✓，结果按 inst 缓存 ✓）。
+
+    依次试：**小写 → 原样 → 大写**（兼容不同 dump 工具的命名习惯 ✓）。
+    ⚠ **小写排第一是为了两端一致** ✗→✓：Windows 大小写不敏感 ⇒ 若先试原样，
+    会返回 `features/SH600000` ✓（Windows 能用 ✓）而 Linux 返回 `features/sh600000` ✓
+    ⇒ **同一个函数在两平台返回不同字符串** ✗，回归测试也就没法只写一份 ✓。
+    都不存在时返回"小写"路径 ✓（调用方照旧返回 None ✓ 语义不变 ✓）。
+    ⚠ 只在**首次**做 3 次 `isdir` ✓（之后走缓存 ✓），`reset_caches()` 会清掉 ✓。
+    """
+    hit = _INST_DIR_CACHE.get(inst)
+    if hit is not None:
+        return hit
+    base = _feature_dir()
+    for cand in (inst.lower(), inst, inst.upper()):
+        d = os.path.join(base, cand)
+        if os.path.isdir(d):
+            _INST_DIR_CACHE[inst] = d
+            return d
+    d = os.path.join(base, inst.lower())
+    _INST_DIR_CACHE[inst] = d          # 否定结果也缓存 ✓（目录后建时由 reset_caches 清 ✓）
+    return d
+
+
 def _read_field_bin(inst: str, field: str):
     """读 .day.bin → (start_idx, float64 数组)；缺失返回 None。
 
@@ -391,7 +429,7 @@ def _read_field_bin(inst: str, field: str):
             start, vals = r
             _put_bin_cache(key0, mtime, start, vals)
             return start, vals
-    p = os.path.join(_feature_dir(), inst, f"{field}.day.bin")
+    p = os.path.join(_inst_dir(inst), f"{field}.day.bin")
     try:
         st = os.stat(p)
     except OSError:
@@ -532,7 +570,7 @@ def _dir_meta(inst: str):
     TTL 内命中 → 零 syscall；过期 → 用目录 mtime 校验后顺延 TTL；
     Windows 上 `DirEntry.stat()` 复用 scandir 已取得的属性，故重建也远快于逐字段 os.stat。
     """
-    d = os.path.join(_feature_dir(), inst)
+    d = _inst_dir(inst)
     hit = _DIR_META_CACHE.get(inst)
     now = time.monotonic()
     if hit is not None:
@@ -606,7 +644,7 @@ def _field_bin_meta(inst: str, field: str):
     if hit is not None and hit[0] == mtime_ns:
         _BIN_META_CACHE.move_to_end(key)
         return hit
-    p = os.path.join(_feature_dir(), inst, f"{field}.day.bin")
+    p = os.path.join(_inst_dir(inst), f"{field}.day.bin")
     try:
         with open(p, "rb") as fh:
             start = int(np.frombuffer(fh.read(4), dtype="<f4")[0])
