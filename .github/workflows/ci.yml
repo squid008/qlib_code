@@ -304,6 +304,43 @@ jobs:
         working-directory: .
         run: python scripts/make_synth_qlib.py --out data/_synth_ci --verify
 
+      # ⚠⚠ **临时诊断（v2.11.46，定位完就删）** —— P2-#23 最后一层：
+      #   本地冷启动 + 合成数据实测 `_union_layout` **129 行** ✓、`panel_features` **129 行** ✓，
+      #   而 CI 上 `panel_features` 是 0 行 ⇒ 同一入参同一数据 ⇒ 只剩**环境差异**。
+      #   这轮把三层（layout / evaluator._full / panel_features）行数 + 依赖版本一起打出来 ✓。
+      - name: 诊断（P2-#23 第三层）
+        env:
+          QLIB_PROVIDER_URI_FORCE: "1"
+          QLIB_PROVIDER_URI: ${{ github.workspace }}/data/_synth_ci
+        run: |
+          python -c "
+          import os, sys
+          sys.path.insert(0, '.')
+          import numpy, pandas
+          print('numpy', numpy.__version__, '| pandas', pandas.__version__)
+          import qlib
+          print('qlib', getattr(qlib, '__version__', '?'))
+          from app.engine.qlib_engine import _ensure_qlib_init
+          from app.engine.utils import _default_qlib_uri
+          _ensure_qlib_init(_default_qlib_uri())
+          from app.factors import panel_expr as PE
+
+          inst, S, E = 'SH600000', '2025-01-01', '2025-06-30'
+          print('warm =', PE._warm_days(['\$close']),
+                '| read_start =', PE._shift_calendar_start(S, PE._warm_days(['\$close'])))
+
+          res = PE._union_layout([inst], S, E, ['close'])
+          print('_union_layout 行数 =', len(res[0]), '| layout =', res[1][:1])
+
+          ev = PE.PanelEvaluator([inst], S, E, ['close'],
+                                 read_start=PE._shift_calendar_start(S, PE._warm_days(['\$close'])))
+          print('evaluator._full 行数 =', len(ev._full))
+          col = ev.eval_expr('\$close')
+          print('eval_expr 行数 =', len(col), '| 非NaN =', int(pandas.notna(col).sum()))
+
+          p = PE.panel_features([inst], [('\$close', 'CLOSE')], S, E, warmup_days=0)
+          print('panel_features 行数 =', len(p))
+          "
       - name: pytest（真实数据链路，4 条）
         env:
           # ⚠ 本机可能有 `active_dataset.json` 占优先 ✓ ⇒ 必须 FORCE 才让环境变量生效 ✓
