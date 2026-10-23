@@ -7,7 +7,9 @@ import {
   getSingleFactorTestTasks,
   clearSingleFactorTest,
   getFactorCatalog,
+  exportAoaXlsx,   // ★ v2.11.68：导出改由**后端**生成 xlsx（前端零 Excel 依赖 ✓）
 } from '../api'
+import { saveBlob } from '../downloadFile'
 import type {
   EventStudyRequest,
   EventStudyResult,
@@ -626,16 +628,16 @@ export default function SingleFactorTestPanel({
   // 导出当前展示结果到 Excel（一个文件两个工作表，纯前端生成不占后端）：
   //   Sheet1 "因子指标"：与界面表格一致的指标（含 error 行，错误信息放"结论"列）
   //   Sheet2 "因子与公式"：因子名 + 用户保存公式/目录表达式（按 因子×来源 去重，仅首个周期行）
-  // xlsx 用动态 import（点击才加载）：同事 pull 后未 npm install 时其余功能不受影响，导出给出明确提示；
-  // 同时把 ~200KB 的 xlsx 移出首屏包，仅导出时按需下载该 chunk。
+  // ★★ v2.11.68：导出改由**后端 openpyxl 生成** ✗→✓
+  //   原来这里是 `await import('xlsx')`（在**前端**写 Excel ✓）—— 而 npm 的 SheetJS
+  //   **已停止维护** ✗ ⇒ 两条 high **无 fix**（原型链污染 / ReDoS）✓。
+  //   换 `exceljs` 试过，**更差** ✗（185 个包、审计变 3 漏洞含 1 high ✓）。
+  //   ⇒ 走本项目既有约定（导出后端生成 ✓）：前端只把"算好的二维行"交出去 ✓，零 Excel 依赖 ✓。
   const handleExport = async () => {
     if (results.length === 0) return
     setExporting(true)
     setError('')
     try {
-      // CJS 模块的 namespace 兼容 default / 具名两种形态（不同打包/预构建环境下取 utils 都可靠）
-      const mod: any = await import('xlsx')
-      const XLSX = mod.default ?? mod
       // Q 列数 = 实际分位组数（默认十分位 10；至少 5 列，避免 0/1 信号行的列数与历史不一致）
       const qCols = Math.max(5, ...results.map((r) => r.quintile_ret?.length ?? 0))
       const headers = exportHeaders(qCols)
@@ -760,22 +762,25 @@ export default function SingleFactorTestPanel({
           exRows++
         }
       }
-      const wb = XLSX.utils.book_new()
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), '因子指标')
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(fAoa), '因子与公式')
-      if (exRows > 0) {
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(exAoa), '离场矩阵')
-      }
       const now = new Date()
       const pad = (n: number) => String(n).padStart(2, '0')
-      XLSX.writeFile(
-        wb,
-        `单因子测试结果_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.xlsx`,
-      )
+      const filename =
+        `单因子测试结果_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+        `_${pad(now.getHours())}${pad(now.getMinutes())}.xlsx`
+      // 交给后端落盘 ✓：页名清洗（Excel 不许 `[]:*?/\`）、单元格 32767 上限、数字保类型
+      // 都由后端兜 ✓（模板里 `aoa/fAoa/exAoa` 只是**行数据** ✓，语义留在这里 ✓）。
+      const { blob, filename: suggested } = await exportAoaXlsx({
+        filename,
+        sheets: [
+          { name: '因子指标', rows: aoa },
+          { name: '因子与公式', rows: fAoa },
+          ...(exRows > 0 ? [{ name: '离场矩阵', rows: exAoa }] : []),
+        ],
+      })
+      saveBlob(blob, suggested || filename)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
-      // 动态 import 失败（同事未 npm install）时 e.message 为依赖解析错误，直接提示可操作步骤
-      setError(`导出失败：${msg}。若提示缺少 xlsx，请在 frontend 目录执行 npm install 后重试`)
+      setError(`导出失败：${msg}`)
     } finally {
       setExporting(false)
     }
@@ -1319,7 +1324,7 @@ export default function SingleFactorTestPanel({
             type="button"
             onClick={handleExport}
             disabled={exporting}
-            title="导出当前展示结果到 Excel（.xlsx，纯前端生成）：工作表1「因子指标」含每行指标与结论；工作表2「因子与公式」为各因子与其保存公式"
+            title="导出当前展示结果到 Excel（.xlsx，后端生成）：工作表1「因子指标」含每行指标与结论；工作表2「因子与公式」为各因子与其保存公式；有离场时多一页「离场矩阵」"
             className="px-2 py-1 rounded border text-[11px] text-blue-600 border-blue-300 hover:bg-blue-50 dark:text-blue-400 dark:border-blue-700 dark:hover:bg-blue-950 disabled:opacity-50"
           >
             {exporting ? '导出中...' : '导出结果'}

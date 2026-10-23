@@ -136,3 +136,24 @@ export async function blobErrorDetail(err: unknown): Promise<string> {
   }
   return '导出失败（后端未返回可读原因，请查看后端日志）'
 }
+
+
+/**
+ * **通用二维表导出**：把「若干页 × 若干行」交给**后端**落成 xlsx（★ v2.11.68）。
+ *
+ * ## 为什么改成后端生成（而不是前端用 SheetJS 写）
+ * npm 的 `xlsx`（SheetJS）**已停止维护** ✗ ⇒ 两条 high **无 fix**（原型链污染 / ReDoS）✓。
+ * 试过换 `exceljs`：更差 ✗（185 个包、审计变 3 漏洞含 1 high ✓）。
+ * ⇒ 回到本项目**已有约定**：导出由后端 `openpyxl` 生成 ✓（三条导出接口早就是这样 ✓）
+ * ⇒ 前端**零 Excel 依赖** ✓，`npm audit` 归零 ✓。
+ *
+ * ⚠ 行的**语义**仍在前端（哪些列、怎么格式化 ✓）—— 后端只搬运 + 保类型 ✓，
+ *   不做业务判断（它不知道"ICIR"和"结论"有什么关系 ✓）。
+ */
+export async function exportAoaXlsx(payload: {
+  filename?: string
+  /** 每页：`rows[0]` 自己就是表头 ✓（后端不猜语义 ✓） */
+  sheets: Array<{ name: string; rows: Array<Array<string | number | null>> }>
+}): Promise<{ blob: Blob; filename: string | null }> {
+  return postXlsx('/factors/export/aoa-xlsx', payload)
+}

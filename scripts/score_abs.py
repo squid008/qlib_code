@@ -159,7 +159,13 @@ def main() -> int:
     # 9. 安全性
     s9 = [
         (10, "bandit 中/高危 0 + gitleaks 全历史 ✓"),
-        (7, "xlsx 2 个 high 无 fix（已记债）"),
+        # ★ v2.11.68：**前端零 Excel 依赖** ✓ —— 原来 npm `xlsx`(SheetJS) 2 条 high **无 fix** ✗
+        #   （npm 上停维护 ✓），换 exceljs 更差 ✗（185 包 / 3 漏洞含 1 high ✓）
+        #   ⇒ 正解是"**不用库**"：导出交后端 openpyxl ✓ ⇒ `npm audit --omit=dev` 归零 ✓，
+        #   CI 的 `--audit-level` 也从 critical **收紧到 high** ✓。
+        ((10, "前端零 Excel 依赖 ✓（导出走后端 openpyxl；npm audit 归零、CI 卡 high ✓）")
+         if (not m.get("fe_excel_lib_dep") and m.get("has_aoa_export"))
+         else (7, "xlsx 2 个 high 无 fix（已记债）")),
         # ★ v2.11.67：**默认关**的可选鉴权 + 限流 ✓ —— 本机单用户零行为变化 ✓，
         #   一旦 `BACKEND_HOST=0.0.0.0` 开给别人用，两个环境变量就能把门关上 ✓。
         ((9, "可选 token 鉴权 + 滑动窗口限流 ✓（默认关；公开路径豁免 ✓）")

@@ -167,7 +167,11 @@ jobs:
       #     而那条**只能靠换库解决**（不在本轮范围 ✓，已记入技术债 ✓）。
       #   ⇒ 卡 critical 是"**能守住的那条线**" ✓：真出现 critical 必须当场停下 ✓。
       - name: 前端依赖漏洞（npm audit，只卡 critical）
-        run: npm audit --omit=dev --audit-level=critical
+        # ★ v2.11.68：**critical → high 收紧** ✓ —— 原来只卡 critical 是因为
+        #   `xlsx`(SheetJS) 有 2 条 high **无 fix** ✗（npm 上停维护 ✓），不放开就永远红 ✓。
+        #   现在那个依赖**已移除** ✓（导出改走后端 openpyxl ✓）⇒ `npm audit --omit=dev` 归零 ✓
+        #   ⇒ 终于可以把闸门抬到 high ✓（这才是安全债清偿的真实收益 ✓）。
+        run: npm audit --omit=dev --audit-level=high
 
       # ★ v2.9.17（2026-10-18 ✓）：**前端单测**接进 CI ✓
       #   首个用例集 = `sftLogic`（结论判定 / 预测周期解析 / K 档 / 导出表头 ✓ 11 条 ✓）。

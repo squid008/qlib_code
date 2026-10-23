@@ -163,6 +163,13 @@ def main():
     mainpy = read(os.path.join(BE, "app", "main.py"))
     out["has_auth"] = "API_TOKEN" in sec and "token_ok" in sec and "_guard_mw" in mainpy
     out["has_rate_limit"] = "RATE_LIMIT_RPM" in sec and "LIMITER.check" in mainpy
+
+    # ★ v2.11.68：前端**是否还挂着 Excel 库**（xlsx 已停维护 2 high 无 fix ✓；exceljs 更差 ✗）
+    #   证据取 `package.json`（离线、确定 ✓）—— 真正的漏洞数由 CI 的 `npm audit --audit-level=high` 守 ✓。
+    pkg = read(os.path.join(FE, "package.json"))
+    out["fe_excel_lib_dep"] = ('"xlsx"' in pkg) or ('"exceljs"' in pkg)
+    #: 后端是否有「通用二维表导出」端点（前端不引 Excel 库的**前提** ✓）
+    out["has_aoa_export"] = "export/aoa-xlsx" in read(os.path.join(BE, "app", "routers", "export_xlsx.py"))
     # ★ v2.11.61：**指标抓取端**（拉 + 算人类关心的数 + 超阈值退出码 ✓）——
     #   "有点位但没人抓"和"有抓取端"是两件事 ✓（外部评审点过 ✓）。
     scrape = os.path.join(ROOT, "scripts", "scrape_metrics.py")

@@ -1,8 +1,18 @@
 /// <reference types="vite/client" />
 /**
- * **前端只许「写」xlsx，不许「解析」xlsx**（★ v2.11.49，技术债 P2-#22 的防线）。
+ * **前端不许再碰 Excel 库**（★ v2.11.68 升级 —— 原来是「只许写、不许解析」✓）。
  *
- * ## 为什么要这条守卫
+ * ## v2.11.68：依赖已**彻底移除**（技术债 P2-#22 已清偿 ✓）
+ * 正解不是"换库"，而是"**不用库**" ✓：
+ * · 前端唯一那处 `await import('xlsx')`（单因子结果导出）已改成
+ *   `POST /api/factors/export/aoa-xlsx` ⇒ **后端 openpyxl 生成** ✓（本项目既有约定：三条导出接口早就是这样）；
+ * · `npm audit --omit=dev` 现在 **0 vulnerabilities** ✓ ⇒ CI 的 npm audit 从
+ *   "只卡 critical" **收紧到 high** ✓（闸门变严才是真收益 ✓）；
+ * · 换 `exceljs` 试过但**更差** ✗（185 个包、审计变 3 漏洞含 1 high ✓）。
+ * ⇒ 本文件现在守两件事：① **不许引入任何 Excel 库**（本文件末尾那条）
+ *   ② 若将来真引回来，**不许解析**（下面这条原样保留 ✓）。
+ *
+ * ## 为什么要这条守卫（原委，保留）
  * `package.json` 里的 `xlsx`（SheetJS）在 npm 上**永远停在 0.18.5（2022）** ✗ ——
  * 官方把后续版本发到自家 CDN 了，所以 `npm audit` 对它有 **2 条 high 且「No fix available」**：
  *   · GHSA-4r6h-8v6p-xvw6 —— **原型链污染**（解析恶意表格时）
@@ -108,4 +118,43 @@ it('⭐ 确实扫到了源码（防止 glob 写错 ⇒ 空集恒绿 ✗）', () 
   // 实测 47 个（2026-10-23 ✓）；阈值只做"别是空集"的下限保护 ✓，不锁具体数字 ✗
   // （锁具体数字会在每次加文件时误报 ✓，而这条要防的是"glob 写错 ⇒ 空集恒绿" ✗）
   expect(n, '扫到的源码文件太少 ⇒ glob 模式写错了 ✗').toBeGreaterThan(30)
+})
+
+
+/** 任何 Excel 库的**引入**形态（静态 / 动态 / CJS 全算）—— ★ v2.11.68 新增守卫 ✓。 */
+const EXCEL_LIB_IMPORT =
+  /(?:from\s+['"](?:xlsx|exceljs|excel4node)['"]|import\(\s*['"](?:xlsx|exceljs|excel4node)['"]\s*\)|require\(\s*['"](?:xlsx|exceljs|excel4node)['"]\s*\))/i
+
+it('⭐⭐ v2.11.68 起：前端**不得再引入任何 Excel 库**（导出已交后端）', () => {
+  const offenders: string[] = []
+  for (const [path, source] of Object.entries(SOURCES)) {
+    if (path.includes('__tests__')) continue
+    source.split('\n').forEach((ln, i) => {
+      // ⚠⚠ **必须先剥注释** ✗→✓ —— 我第一版直接测原文 ⇒ 把"说明里举的例子"当成引入
+      //   ⇒ 报 `SingleFactorTestPanel.tsx:L632 // 原来这里是 await import('xlsx')` ✗
+      //   （那是一条**解释为什么删掉**的注释 ✓）。守卫误报会被当噪音删掉 ✗ —— 本文件
+      //   docstring 里自己写过这条风险 ✓，结果我还是踩了 ✓。
+      const t = ln.trim()
+      // 三种注释形态都直接跳过（`//` 行注释 / `*` 与 `/*` 块注释体）✓
+      if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) return
+      const code = ln.replace(/\/\/.*$/, '').replace(/\/\*.*?\*\//g, '')
+      if (EXCEL_LIB_IMPORT.test(code)) offenders.push(`${path}:L${i + 1} ${t.slice(0, 70)}`)
+    })
+  }
+  expect(
+    offenders,
+    '前端又在引入 Excel 库 ✗ —— 导出请走后端 `POST /api/factors/export/aoa-xlsx` ✓\n' +
+      '（npm 的 SheetJS 已停维护 ⇒ 2 条 high 无 fix；exceljs 更差 ⇒ 185 个包）\n' +
+      offenders.join('\n'),
+  ).toEqual([])
+})
+
+it('⭐ 新守卫自身有效（正/负样本各测一遍）', () => {
+  // 正样本：**正是 v2.11.68 删掉的那一行** ✓
+  expect(EXCEL_LIB_IMPORT.test("const mod: any = await import('xlsx')")).toBe(true)
+  expect(EXCEL_LIB_IMPORT.test('import * as XLSX from "xlsx"')).toBe(true)
+  expect(EXCEL_LIB_IMPORT.test("const X = require('exceljs')")).toBe(true)
+  // 负样本：走新接口**不能**误报（否则守卫会被当噪音删掉 ✗）
+  expect(EXCEL_LIB_IMPORT.test('await exportAoaXlsx({ filename, sheets })')).toBe(false)
+  expect(EXCEL_LIB_IMPORT.test("const p = '/api/factors/export/aoa-xlsx'")).toBe(false)
 })

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -672,3 +673,68 @@ def _money(v: Any) -> str:
         return "{:,.0f}".format(float(v))
     except (TypeError, ValueError):
         return "-"
+
+
+# ---------------------------------------------------------------- 通用二维表导出（★ v2.11.68）
+#: ⚠ 单次导出**必须有上限** ✗ —— 导出是用户动作 ✓，但"无界"等于"一次 POST 就能把服务撑爆"✗。
+#:   200 万单元格 ≈ 40MB 内存量级 ✓，远超真实用途（单因子结果几千行 × 40 列 ≈ 十几万 ✓）。
+_AOA_MAX_CELLS = 2_000_000
+_AOA_MAX_SHEETS = 20
+
+
+class SheetDump(BaseModel):
+    """一页：表名 + 二维行（**第一行自己就是表头** ✓，后端不猜语义 ✓）。"""
+
+    name: str = ""
+    rows: List[List[Any]] = []
+
+
+class AoaExportRequest(BaseModel):
+    filename: Optional[str] = None
+    sheets: List[SheetDump] = []
+
+
+def _sheet_title(raw: Any, idx: int) -> str:
+    """Excel 的标题约束 ✓：**≤31 字符**、不许 `[]:*?/\\` ✓（否则 openpyxl 直接抛 ✗）。"""
+    t = re.sub(r"[\[\]:*?/\\]", "_", str(raw or "")).strip()[:31]
+    return t or ("Sheet%d" % idx)
+
+
+def _cell(v: Any):
+    """单元格值归一 ✓：数字保持数字（否则 Excel 里全是文本、没法排序/求和 ✗）。"""
+    if v is None:
+        return None
+    if isinstance(v, bool) or isinstance(v, (int, float)):
+        return v
+    return str(v)[: spec.CELL_MAX]
+
+
+@router.post("/export/aoa-xlsx", summary="通用二维表导出（前端算好行，后端落成 xlsx）")
+def export_aoa_xlsx(req: AoaExportRequest) -> Response:
+    """把「若干页 × 若干行」原样写成 xlsx ✓（前端不再需要任何 Excel 库 ✓）。
+
+    ⚠ 只做**搬运 + 保类型** ✗ 不做业务加工 —— 样式/列宽/图表这些"好看"的事留给
+    `exports/xl.py` 的专用导出接口 ✓（它们知道语义 ✓，这里不知道 ✓）。
+    """
+    sheets = [s for s in req.sheets if s.rows]
+    if not sheets:
+        raise HTTPException(status_code=400, detail="没有可导出的内容")
+    if len(sheets) > _AOA_MAX_SHEETS:
+        raise HTTPException(status_code=400, detail="工作表太多（上限 %d）" % _AOA_MAX_SHEETS)
+    cells = sum(len(s.rows) * max((len(r) for r in s.rows), default=0) for s in sheets)
+    if cells > _AOA_MAX_CELLS:
+        raise HTTPException(
+            status_code=400,
+            detail="内容过大（%d 单元格，上限 %d）⇒ 请减小筛选范围" % (cells, _AOA_MAX_CELLS))
+
+    wb, first = xl.new_workbook(_sheet_title(sheets[0].name, 1))
+    for i, sh in enumerate(sheets):
+        ws = first if i == 0 else wb.create_sheet(_sheet_title(sh.name, i + 1))
+        for r_i, row in enumerate(sh.rows, start=1):
+            for c_i, v in enumerate(row, start=1):
+                cv = _cell(v)
+                if cv is None or cv == "":
+                    continue
+                ws.cell(row=r_i, column=c_i, value=cv)
+    name = req.filename or ("导出_%s.xlsx" % time.strftime("%Y%m%d_%H%M"))
+    return _xlsx_response(xl.workbook_bytes(wb), name)
