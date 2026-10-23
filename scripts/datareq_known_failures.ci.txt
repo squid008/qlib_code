@@ -1,0 +1,15 @@
+# ⚠ **CI 专用**的已知失败清单（★ v2.11.54）—— 由 `python scripts/check_datareq_baseline.py --rebaseline`
+# 在 **GitHub Actions 环境**下采集；本机（Windows）用同目录的 `datareq_known_failures.txt` ✓。
+# 为什么要分档：两边失败集合不同（本机 16 / CI 10）⇒ 共用一份会**假绿** ✗
+# （CI 上那条"从通过变失败"仍落在更宽的本地清单里 ⇒ 不算新增 ⇒ 抓不到 ✗）。
+# 脚本按 `GITHUB_ACTIONS` 环境变量自动选档 ✓。
+test_chip_field::test_chip_fields_on_real_data
+test_daily_bars_adjust::test_none_and_hfq_really_differ
+test_daily_bars_adjust::test_volume_not_scaled
+test_e2e_backtest.TestE2ERollingBacktest::test_single_split_run
+test_e2e_backtest.TestE2ERollingBacktest::test_two_segment_rolling_run
+test_golden_regression.TestDataGolden::test_sr_vanke_resumption
+test_panel_expr::test_panel_parallel_matches_single
+test_recursion::test_panel_recursion_runs_and_counts_bars
+test_signal_pool_wide::test_close_wide_cache_hit_is_fast_and_equal
+test_signal_pool_wide::test_close_wide_matches_price_panel_bitwise

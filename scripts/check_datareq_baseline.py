@@ -33,7 +33,16 @@ import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND = os.path.join(ROOT, "backend")
-BASELINE = os.path.join(ROOT, "scripts", "datareq_known_failures.txt")
+
+# ⚠⚠ **基线必须按环境分档** ✗→✓ —— 两边的失败集合不一样：
+#   本机（Windows + 合成数据）**16 条**失败 ✓；CI（ubuntu + 合成数据 + 真 qlib）只有 **10 条** ✓。
+#   共用一份会**假绿** ✗：CI 上某条"从通过变失败"时，它仍落在更宽的本地清单里
+#   ⇒ 比对时不算新增 ⇒ **抓不到真回归** ✗（这正是棘轮类工具最危险的失效方式 ✓）。
+#   ⇒ `GITHUB_ACTIONS` 环境变量在 Actions 上一定存在 ✓，用它自动选档 ✓，不用额外传参。
+_PROFILE = "ci" if os.environ.get("GITHUB_ACTIONS") else "local"
+BASELINE = os.path.join(
+    ROOT, "scripts",
+    "datareq_known_failures.ci.txt" if _PROFILE == "ci" else "datareq_known_failures.txt")
 
 
 def run_pytest(pytest_args: str) -> tuple[list[str], list[str], str]:
@@ -66,6 +75,7 @@ def main() -> int:
     a = ap.parse_args()
 
     failed, passed, tail = run_pytest(a.pytest_args)
+    print("  档位 = %s（基线文件 %s）" % (_PROFILE, os.path.basename(BASELINE)))
     print("  本轮：failed=%d  passed=%d" % (len(failed), len(passed)))
     if not failed and not passed:
         print("✗ 一条都没收集到 —— 参数或数据环境有问题 ✗\n" + tail)
