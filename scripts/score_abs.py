@@ -85,7 +85,12 @@ def main() -> int:
     dim("代码质量与可读性", *s2)
 
     # 3. 测试与验证（**含能力项** —— 只看覆盖率不公平 ✓）
-    n_dr_ratio = base.get("datareq_auto_ratio", 0.29)
+    # ★ v2.11.69：**不再用手写死值** ✗→✓ —— 原来 `base["datareq_auto_ratio"] = 0.29`
+    #   是拍的数字 ✓，而夜间实测是 `passed=13 / failed=10 / skipped=15`（共 38 条）
+    #   ⇒ 真实自动化率 **13/38 = 34.2%** ✓（0.29 偏低了 5pp，正好卡在 30% 档下方 ✗）。
+    #   ⇒ 现在由 `scripts/check_datareq_baseline.py` 在**夜间真跑后自动回写** ✓，
+    #     本地值只是"上次实测"的快照 ✓（谁都能用 `--rebaseline` 复算 ✓）。
+    n_dr_ratio = float(base.get("datareq_auto_ratio", 0.0))
     s3 = [
         B(be_cov, [(90, 10), (80, 9), (70, 8), (60, 7), (50, 6)], "后端覆盖 %.1f%%" % be_cov),
         B(fe_cov, [(90, 10), (80, 9), (70, 8), (60, 7), (50, 6)], "前端覆盖 %.1f%%" % fe_cov),
