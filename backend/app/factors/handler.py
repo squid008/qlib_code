@@ -251,7 +251,7 @@ class FormulaHandler(DataHandlerLP):
         start_time=None,
         end_time=None,
         freq="day",
-        infer_processors=[],
+        infer_processors=None,
         learn_processors=None,
         fit_start_time=None,
         fit_end_time=None,
@@ -265,6 +265,12 @@ class FormulaHandler(DataHandlerLP):
     ):
         # 注册自定义算子（BARSCOUNT/BARSSINCEN），幂等
         ensure_ops_registered()
+        # ★ v2.11.56（ruff **B006** 抓到的真问题 ✗→✓）：原来是 `infer_processors=[]`
+        #   ⇒ **可变默认参数** ✓ ⇒ 所有 Handler 实例共享**同一个 list** ✗，
+        #   谁 `append` 过一次就会**污染后续所有实例** ✓（这种 bug 只在"跑两次"时出现 ✗，
+        #   单测里往往看不出来 ✓）。改成 `None` + 就地归一 ✓（交给 super 的仍是 list ✓）。
+        if infer_processors is None:
+            infer_processors = []
         # 翻译公式 → (expressions, names)
         self._formulas = formulas or []
         self._label_horizon = max(1, int(label_horizon or 2))

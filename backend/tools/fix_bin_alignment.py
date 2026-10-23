@@ -84,7 +84,7 @@ def main():
         # ---- 步骤 1：头被减了 28 的 ⇒ 加回来（值不动 ✓）----
         if first + n == base_len - 28:
             if args.apply:
-                for f, (p, s, v) in bins.items():
+                for _f, (p, s, v) in bins.items():
                     write_bin(p, s + 28, v)
             first += 28
             fixed += 1
@@ -92,7 +92,7 @@ def main():
         #      它的值从索引 0 对齐、真数据到 10/08（索引 6482）⇒ 尾部多出 28 个空槽 ⇒ **截掉尾部** ✓
         elif first + n == base_len + 28:
             if args.apply:
-                for f, (p, s, v) in bins.items():
+                for _f, (p, s, v) in bins.items():
                     write_bin(p, s, v[:base_len - s])
             n = base_len - first
             fixed += 1                      # 计入"修过"（头部加回 / 尾部截断 都算 ✓）

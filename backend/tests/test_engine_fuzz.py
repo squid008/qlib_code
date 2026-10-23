@@ -48,7 +48,7 @@ ALLOC = [("event_even", "cash_even"), ("event_even",), ("cash_even",)]
 def _cases():
     rng = np.random.default_rng(SEED)
     out = []
-    for i in range(N_CASES):
+    for _i in range(N_CASES):
         out.append(dict(
             hold_days=int(rng.choice(HOLD)),
             cost=float(rng.choice(COST)),

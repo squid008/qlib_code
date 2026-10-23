@@ -180,7 +180,7 @@ def main():
                 new_vals["adjclose"][i] = float(r["close"]) * adjs[d]
         # pre* = **未复权**前一日价 ✓（新日期的"前一日"要么是上一个新日期、要么是锚定日 ✓）
         prev = anchor
-        for i, d in enumerate(days):
+        for i, _d in enumerate(days):
             if True:          # ⚠ 原来写的是 `if c in raws:` ✗ —— raws 的键是**日期**不是股票，
                               #   该条件恒假 ⇒ pre* 全没写进去（实测 preclose 变 NaN ✗）。这里只
                               #   需要"该股这一天有没有行"由 r 决定 ✓（下面 i>0 分支用 raws[days[i-1]] ✓）

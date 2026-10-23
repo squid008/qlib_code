@@ -193,7 +193,10 @@ def _patch_recorder_end_run() -> None:
 
     # ★ v2.11.39：用 `setattr` ✓ —— 函数对象上挂标记 ✓，直接 `.attr =` 会报
     #   "Callable 没有该属性" ✗（mypy 不知道这是给函数贴标签 ✓）。
-    setattr(_end_run, "_patched_by_qlib_parallel", True)
+    # ⚠⚠ v2.11.56：ruff 的 `B010` 自动修**正好把它改成了 `.attr = True`** ✗ ⇒ mypy 立刻报
+    #   `attr-defined` ✓（**自动修也会改坏东西** ✓ —— 所以 `--fix` 之后必须再过 mypy ✓）。
+    #   这里是**故意**用 `setattr` 给函数对象贴标记 ✓ ⇒ 显式放过 B010 ✓。
+    setattr(_end_run, "_patched_by_qlib_parallel", True)  # noqa: B010
     MLflowRecorder.end_run = _end_run
 
 

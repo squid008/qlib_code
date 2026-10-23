@@ -142,6 +142,14 @@ def main():
     all_wf = "".join(read(os.path.join(wf_dir, f)) for f in os.listdir(wf_dir) if f.endswith(".yml"))
     out["ci_has_schedule"] = "schedule:" in all_wf
     out["has_nightly_workflow"] = os.path.isfile(os.path.join(wf_dir, "nightly.yml"))
+    # ★ v2.11.56：发版脚本是否**顺手建 GitHub Release**（notes 自动生成 ✓）——
+    #   只看"有没有 release"会随时间漂 ✗，看"脚本里有没有这一步"才是能力 ✓。
+    out["has_auto_release_notes"] = "release create" in read(os.path.join(ROOT, "scripts", "tag_release.ps1"))
+
+    # ★ v2.11.56：**实测** ruff 启用了多少条规则 —— 原来这个数写在 `score_baseline.json` 里 ✗，
+    #   改了 `select` 却忘了改基线 ⇒ 分数不动 ✓（"数字靠人维护"必然漂 ✗）。现在从配置里数 ✓。
+    sel = re.search(r"^select\s*=\s*\[(.+?)\]", read(os.path.join(BE, "pyproject.toml")), re.M | re.S)
+    out["ruff_rules"] = len(re.findall(r'"\w+"', sel.group(1))) if sel else 0
     out["perf_gates"] = len(re.findall(r'^\s{4}"[^"]+":\s*[\d.]+',
                                        read(os.path.join(BE, "tests", "test_perf_absolute.py")), re.M))
     out["complexity_frozen"] = len(re.findall(r'^\s+"[^"]+::', read(os.path.join(BE, "tests", "test_complexity.py")), re.M))

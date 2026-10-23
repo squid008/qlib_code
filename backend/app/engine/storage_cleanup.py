@@ -333,7 +333,7 @@ def _clean_mlruns(root: str, detail: bool = False):
     if total > quota:
         # 只从**未受保护**的里删，最旧优先 ✓
         queue = sorted([r for r in runs if not r[3]], key=lambda x: x[1])
-        for size, _latest, rd, _p in queue:
+        for _size, _latest, rd, _p in queue:
             if total <= quota:
                 break
             real = _dir_total(rd)

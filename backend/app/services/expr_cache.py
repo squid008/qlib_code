@@ -196,7 +196,7 @@ def prune(ttl_days: "float | None" = None, max_files: "int | None" = None,
             keep.append((mt, size, p))
         # ② 个数 ✓（按最近使用保留最新的 N 个 ✓）
         keep.sort(reverse=True)
-        for mt, size, p in keep[keep_n:]:
+        for _mt, _size, p in keep[keep_n:]:
             try:
                 os.remove(p)
                 n += 1
@@ -207,7 +207,7 @@ def prune(ttl_days: "float | None" = None, max_files: "int | None" = None,
         # ③ 总量 ✓（从最旧的删起 ✓）
         total = sum(s for _, s, _ in keep) / (1024.0 * 1024.0)
         if total > keep_mb:
-            for mt, size, p in sorted(keep):
+            for _mt, size, p in sorted(keep):
                 if total <= keep_mb:
                     break
                 try:

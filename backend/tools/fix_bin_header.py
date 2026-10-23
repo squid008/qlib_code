@@ -71,7 +71,7 @@ def main():
             k = -want
             if k > 0 and all(np.all(np.isnan(v[:k])) for _p, _s, v in bins.values()):
                 if args.apply:
-                    for f, (p, s, v) in bins.items():
+                    for _f, (p, _s, v) in bins.items():
                         write_bin(p, 0, v[k:])
                 fixed += 1
                 if not args.apply and len(samples) < 3:
@@ -90,7 +90,7 @@ def main():
             skip_gate += 1
             continue
         if args.apply:
-            for f, (p, s, v) in bins.items():
+            for _f, (p, _s, v) in bins.items():
                 write_bin(p, want, v)
             fixed += 1
         else:

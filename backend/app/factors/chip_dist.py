@@ -235,7 +235,7 @@ def chip_run(close: np.ndarray, high: np.ndarray, low: np.ndarray,
         s = chips.sum(axis=1, keepdims=True)
         chips = np.divide(chips, np.where(s > _EPS, s, 1.0))
         cum = np.cumsum(chips, axis=1)
-        for j, q in enumerate(qs_arr):
+        for _j, q in enumerate(qs_arr):
             out[("cost_%g" % q)][t] = _levels_at(edges, cum, np.full(n_stk, q / 100.0))
         # WINNER(当日最高价)：最高价之下的筹码占比（"当日成交价全在盈亏线之上"的粗略上限）
         # ⚠ 停牌日（价格 NaN）筹码**冻结** ⇒ COST 仍有值（上面），但"当日获利盘"无意义 ⇒ NaN

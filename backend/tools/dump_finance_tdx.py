@@ -159,7 +159,7 @@ def build_events(cw_dir: str, code_map: Dict[str, str], since: int = 19991231,
     hist: Dict[str, Dict[str, Dict[str, float]]] = {}          # code -> 报告期 -> 指标
     ytd: Dict[str, Dict[int, Dict[str, float]]] = {}           # code -> 年 -> 年内累计（单季累加）
     packs = [p for p in list_packs(cw_dir) if p[0] >= since]
-    for n, (rd, path) in enumerate(packs, 1):
+    for n, (_rd, path) in enumerate(packs, 1):
         report_date, d = read_pack(path)
         q = quarter_of(report_date)
         y, qn = int(q[:4]), int(q[-1])

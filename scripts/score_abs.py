@@ -108,11 +108,13 @@ def main() -> int:
 
     # 5. 静态检查
     s5 = [
-        B(base.get("ruff_rules", 6), [(10, 10), (8, 9), (6, 7), (0, 5)], "ruff 规则 %s 条"),
+        # ⚠ 规则数改为**从 pyproject 实测**（`abs_metrics.py` 数 `select`）✓ ——
+        #   原来读 `score_baseline.json` 的死值 ✗ ⇒ 改了配置分数不动 ✓（人维护的数字必然漂 ✗）。
+        B(m.get("ruff_rules", 6), [(10, 10), (8, 9), (6, 7), (0, 5)], "ruff 规则 %s 条"),
         B(base.get("biome_rules", 10), [(10, 10), (8, 9), (6, 7), (0, 5)], "biome 规则 %s 条"),
         (5, "无格式化强制（与行数棘轮冲突 ✗）"),
     ]
-    s5[0] = (s5[0][0], "ruff 规则 %d 条" % base.get("ruff_rules", 6))
+    s5[0] = (s5[0][0], "ruff 规则 %d 条（从 pyproject 实测）" % m.get("ruff_rules", 6))
     s5[1] = (s5[1][0], "biome 规则 %d 条" % base.get("biome_rules", 10))
     dim("静态检查", *s5)
 
@@ -176,7 +178,8 @@ def main() -> int:
         (10, "tag 与版本同步（脚本自动打）✓"),
         (9, "CONTRIBUTING 9 条硬规矩 + PR/issue 模板 + CODEOWNERS ✓"),
         (5, "单人 + 直接推 main（review 形式大于实质）✗"),
-        (4, "无自动 release notes ✗"),
+        ((9, "自动 release notes（tag 脚本建 Release + 指向 change_log ✓）")
+         if m.get("has_auto_release_notes") else (4, "无自动 release notes ✗")),
     ]
     dim("协作与变更", *s12)
 

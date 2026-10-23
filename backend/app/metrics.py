@@ -82,7 +82,7 @@ class Registry:
         with self._lock:
             counters = dict(sorted(self._counters.items()))
             timers = {k: dict(v) for k, v in sorted(self._timers.items())}
-        for k, v in timers.items():
+        for _k, v in timers.items():
             v["avg"] = round(v["sum"] / v["count"], 6) if v["count"] else 0.0
             v["sum"] = round(v["sum"], 6)
             v["max"] = round(v["max"], 6)

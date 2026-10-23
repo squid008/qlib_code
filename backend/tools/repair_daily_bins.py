@@ -143,7 +143,7 @@ def main():
                     print("  [超长] %-9s first %d→%d 丢前 %d 个值 | 末值 %.4f vs 缓存复权 %.4f ✓"
                           % (c, first, new_first, drop, got, exp))
             else:
-                for f, (p, s, v) in bins.items():
+                for _f, (p, _s, v) in bins.items():
                     write_bin(p, new_first, v[drop:])
                 n_write += 1
                 n_over += 1

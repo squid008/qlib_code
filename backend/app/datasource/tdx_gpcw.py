@@ -137,5 +137,5 @@ def quarter_of(report_date: int) -> str:
 
 
 def iter_packs(cw_dir: str = DEFAULT_CW_DIR) -> Iterator[Tuple[int, Dict[str, np.ndarray]]]:
-    for report_date, path in list_packs(cw_dir):
+    for _report_date, path in list_packs(cw_dir):
         yield read_pack(path)

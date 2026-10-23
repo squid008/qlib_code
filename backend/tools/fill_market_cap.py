@@ -136,7 +136,7 @@ def main():
         print("   闸门不过样例（本地 vs 源，比值应≈1 ✓）：%s" % gate_bad[:5])
     if n_ok:
         ex = list(plan.items())[:3]
-        for c, (hdr, v, vals, last, miss, nd) in ex:
+        for c, (_hdr, _v, vals, last, miss, nd) in ex:
             print("   例 %s：本地末 %s ⇒ 补 %d 天（源缺 %d 天 ✓）｜ 新值 %s"
                   % (c, cal[last], nd, miss, [round(x, 1) for x in vals[:3]]))
     src_missing = sum(1 for _c, (_h, _v, _x, _l, miss, nd) in plan.items() if miss == nd)
