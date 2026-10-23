@@ -52,7 +52,15 @@ def read(path: str) -> str:
 
 
 def run(cmd, cwd, timeout=900):
-    """跑命令 → (rc, 输出)。Windows 上 `npx` 实为 `npx.cmd` ⇒ 先用 which 解析 ✓。"""
+    """跑命令 → (rc, 输出)。Windows 上 `npx` 实为 `npx.cmd` ⇒ 先用 which 解析 ✓。
+
+    ⚠⚠ **已知局限（实测踩过）**：`subprocess.run(capture_output=True, timeout=…)` 在
+    "子进程又拉起孙进程、且孙进程继承了 stdout 管道"时会**死锁** ✗ —— `timeout` 只杀直接子进程 ✓，
+    而 `communicate()` 仍在等管道关闭 ✓ ⇒ 整个评分**静默挂死**（实测卡了 9 分钟、输出 0 字节 ✗）。
+    本项目最容易触发的是 **pytest（spawn 子进程）** ✓。
+    ⇒ 所以：`--full` **不是无脑能跑通的** ✓ —— 若发现长时间 0 输出，先看进程里有没有残留
+    `score.py` ✓，必要时**把两条重腿分开手工跑**（`pytest … --junit-xml` / `npx vitest run --coverage`）✓。
+    """
     exe = shutil.which(cmd[0])
     if exe is None and os.name == "nt":
         exe = shutil.which(cmd[0] + ".cmd") or shutil.which(cmd[0] + ".exe")
@@ -140,9 +148,11 @@ def main() -> int:
         for f in (cov_json, junit):
             if os.path.exists(f):
                 os.remove(f)
+        # ⚠ 必须给**显式超时** ✗→✓ —— 实测某次 pytest 卡住不返回（进程在、无输出）✗，
+        #   默认 900s 会让整个评分"静默挂死"✓ ⇒ 超时即判红并写明 ✓（卡住也是一种失败 ✓）。
         rc, out = run([sys.executable, "-m", "pytest", "tests", "-q", "-m", "not datareq",
                        "--cov=app", "--cov-report=json:%s" % cov_json, "--cov-report=",
-                       "--junit-xml=%s" % junit, "--tb=no"], BACKEND)
+                       "--junit-xml=%s" % junit, "--tb=no"], BACKEND, timeout=420)
         n_tot = n_fail = 0
         try:
             root = ET.parse(junit).getroot()
@@ -173,10 +183,16 @@ def main() -> int:
         # 前端测试 + 实测覆盖
         vc = os.path.join(FRONTEND, "_score_cov")
         rc, out = run(["npx", "vitest", "run", "--coverage",
-                       "--coverage.reporter=json", "--coverage.reportsDirectory=_score_cov"], FRONTEND)
-        fe_pass = (re.search(r"Tests\s+(\d+) passed", out) or [0, 0])[1]
-        check(MEASURED, "前端 vitest **全绿**（含覆盖率门槛）",
-              rc == 0, "%s passed" % fe_pass)
+                       "--coverage.reporter=json", "--coverage.reportsDirectory=_score_cov"],
+                      FRONTEND, timeout=300)
+        # ⚠ vitest 的输出带 **ANSI 颜色码**（`Tests  \x1b[1m\x1b[32m310 passed`）✗
+        #   ⇒ 不先剥掉就永远匹配不到 ⇒ 证据里出现 "0 passed 却 ✓" ✓（**证据不实比没证据更糟** ✗）。
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", out)
+        fe_pass = int((re.search(r"Tests\s+(\d+)\s+passed", plain) or [0, 0])[1] or 0)
+        # ⚠ 判定**不依赖计数解析成功** ✗→✓（解析不到就如实写"rc=0，计数未解析"✓），
+        #   否则"输出格式一变 ⇒ 闸门假红"✗。覆盖率另有一条独立闸门盯着 ✓。
+        check(MEASURED, "前端 vitest **全绿**（含覆盖率门槛）", rc == 0,
+              ("%d passed" % fe_pass) if fe_pass else "rc=0（计数未解析）")
         fe_cov = 0.0
         try:
             with open(os.path.join(vc, "coverage-final.json"), encoding="utf-8") as f:
