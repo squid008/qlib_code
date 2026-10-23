@@ -110,3 +110,8 @@ frontend/coverage/
 *.out.txt
 *.err.txt
 backend/coverage.json
+
+# 客观评分脚本的运行产物（v2.11.52，不入库）
+frontend/_score_cov/
+backend/_score_cov.json
+backend/_score_junit.xml
