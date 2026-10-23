@@ -24,7 +24,6 @@ from typing import Optional
 
 from ..logger import _log_swallowed  # noqa: E402
 
-
 # ⚠ 口径/算法变更必须 +1（见模块 docstring）
 CACHE_VERSION = "v1"
 

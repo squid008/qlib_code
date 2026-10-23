@@ -2,8 +2,8 @@
 """滚动训练分段生成的单元测试。"""
 import pytest
 
-from app.models.backtest import BacktestRequest
 from app.engine.qlib_engine import _gen_rolling_segments
+from app.models.backtest import BacktestRequest
 
 
 def _req(start, end, train_win=12, train_unit="month", test_win=3, test_unit="month", step_win=None, step_unit=None):

@@ -75,8 +75,18 @@ $env:QLIB_TASK_JOBS = '4'
 $env:PYTHONIOENCODING = 'utf-8'
 $env:PYTHONUTF8 = '1'
 
+# ★ v2.11.50：**默认只绑本机回环** ✗→✓ —— 原来是 `--host 0.0.0.0` ✗，
+#   等于"同一局域网的任何机器都能打开本服务"✓，而服务**没有鉴权 / 没有限流** ✗
+#   （安全评审点 ✓）。本项目定位是**本机单用户工具** ✓ ⇒ 默认 `127.0.0.1` ✓。
+#   ⚠ 真要在局域网里给别的机器用，显式设环境变量即可 ✓（不隐藏这个能力 ✓）：
+#       $env:BACKEND_HOST = '0.0.0.0' ; scripts\restart_backend.ps1
+#   ⚠ 配套：`frontend/vite.config.ts` 的代理目标同步成 `127.0.0.1` ✓ ——
+#     否则 `localhost` 可能先解析到 `::1` ⇒ 打不通 ✓（Windows 上实测过这种情况 ✓）。
+$bindHost = if ($env:BACKEND_HOST) { $env:BACKEND_HOST } else { '127.0.0.1' }
+Write-Host "binding backend to $bindHost`:8001"
+
 $p = Start-Process -FilePath 'D:\miniconda3\envs\qlib\python.exe' `
-    -ArgumentList '-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', '8001' `
+    -ArgumentList '-m', 'uvicorn', 'app.main:app', '--host', $bindHost, '--port', '8001' `
     -WorkingDirectory (Join-Path $ROOT 'backend') `
     -WindowStyle Hidden `
     -RedirectStandardOutput $logOut `

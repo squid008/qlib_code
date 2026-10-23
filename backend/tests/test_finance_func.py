@@ -21,7 +21,9 @@ import pytest
 
 from app.factors.parser import translate_formula
 from app.factors.parser.codegen import (
-    FINANCE_FIELDS, FINANCE_TIER_SUFFIX, CodeGenError,
+    FINANCE_FIELDS,
+    FINANCE_TIER_SUFFIX,
+    CodeGenError,
     finance_tiered_field_names,
 )
 from app.factors.parser.semantic import SemanticError

@@ -30,7 +30,6 @@ from typing import Dict, List, Optional
 
 from ..logger import _log_swallowed  # noqa: E402
 
-
 ROOT = Path(__file__).resolve().parents[3]                 # <repo>/
 DATA = ROOT / "data"
 ACTIVE_FILE = DATA / "active_dataset.json"

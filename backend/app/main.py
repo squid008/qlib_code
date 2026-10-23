@@ -16,14 +16,45 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import config, __version__
-from .logger import get_logger
+from . import __version__, config
+from . import metrics as _metrics_mod
+from .logger import _log_swallowed, get_logger
+
 # ★ v2.11.25：进程内指标（技术债 P2-#8 第一步 ✓）
-from .metrics import REGISTRY
-from .routers import (backtest, data, datasets, export_xlsx, factors, factors_event,
-                      factors_formulas, factors_single, signal_test)
+# ★ v2.11.50：加慢请求告警（`should_warn_slow` ✓）
+from .metrics import REGISTRY, should_warn_slow
+from .routers import (
+    backtest,
+    data,
+    datasets,
+    export_xlsx,
+    factors,
+    factors_event,
+    factors_formulas,
+    factors_single,
+    signal_test,
+)
 
 logger = get_logger(__name__)
+
+
+def _warn_if_slow(request, status: int, seconds: float) -> None:
+    """**慢请求当场告警一条** ✓（★ v2.11.50）—— 阈值与取舍见 `app/metrics.py` 的 `SLOW_REQUEST_S`。
+
+    ⚠ 只记**路径**、不记 query ✗ —— query 里可能有参数/时间戳 ✓，
+    日志里塞一堆动态串既难检索、也可能带上不该留的东西 ✓。
+    ⚠ 阈值从模块读（`_metrics_mod.SLOW_REQUEST_S` ✓）而不是从 import 拷贝 ✓ ——
+    测试会 monkeypatch 它 ✓，拷贝的副本会让测试看到的和实际用的不一致 ✗。
+    """
+    if not should_warn_slow(seconds):
+        return
+    try:
+        get_logger("http").warning(
+            "慢请求 %.2fs ≥ %.2fs（阈值）：%s %s ⇒ %s",
+            seconds, _metrics_mod.SLOW_REQUEST_S,
+            request.method, request.url.path, status)
+    except Exception as e:      # noqa: BLE001 —— 日志失败绝不能影响响应 ✓
+        _log_swallowed("main.py", e)
 
 
 def create_app() -> FastAPI:
@@ -56,11 +87,15 @@ def create_app() -> FastAPI:
         except Exception:
             REGISTRY.inc("http.requests")
             REGISTRY.inc("http.status.500")
-            REGISTRY.observe("http.duration_s", time.perf_counter() - t0)
+            _el = time.perf_counter() - t0
+            REGISTRY.observe("http.duration_s", _el)
+            _warn_if_slow(request, 500, _el)
             raise
+        _el = time.perf_counter() - t0
         REGISTRY.inc("http.requests")
         REGISTRY.inc("http.status.%d" % int(getattr(resp, "status_code", 0) or 0))
-        REGISTRY.observe("http.duration_s", time.perf_counter() - t0)
+        REGISTRY.observe("http.duration_s", _el)
+        _warn_if_slow(request, int(getattr(resp, "status_code", 0) or 0), _el)
         return resp
 
     @app.get("/api/metrics", summary="进程内指标（计数器 + 耗时）")

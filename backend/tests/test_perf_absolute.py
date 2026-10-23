@@ -40,10 +40,11 @@ BE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BE)
 sys.path.insert(0, os.path.join(BE, "tools"))
 
-from bench_engine import build                                   # noqa: E402
-from app.signals.engine import run_backtest, run_batch_backtest   # noqa: E402
-from app.signals.period_roll import run_period_roll              # noqa: E402
-from app.factors import panel_expr as P                          # noqa: E402
+from bench_engine import build  # noqa: E402
+
+from app.factors import panel_expr as P  # noqa: E402
+from app.signals.engine import run_backtest, run_batch_backtest  # noqa: E402
+from app.signals.period_roll import run_period_roll  # noqa: E402
 
 #: 本地基线（秒）—— 2026-10-22 实测 ✓
 BASE = {

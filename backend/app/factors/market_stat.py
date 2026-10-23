@@ -41,13 +41,16 @@ import numpy as np
 import pandas as pd
 
 from ..config import QLIB_PROVIDER_URI
+from ..logger import _log_swallowed  # noqa: E402
 from .panel_expr import PanelEvaluator, _calendar, _collect_field_names
 from .parser.codegen import (
-    BLOCK_KEYS, INSUM_CALC_TYPES, block_key, blocksetnum_field, formula_key, insum_field,
+    BLOCK_KEYS,
+    INSUM_CALC_TYPES,
+    block_key,
+    blocksetnum_field,
+    formula_key,
+    insum_field,
 )
-
-from ..logger import _log_swallowed  # noqa: E402
-
 
 # 口径语义版本：改板块口径 / 聚合方式 / 字段命名 ⇒ **必须递增**并重跑物化
 MARKET_SEMANTICS = "1.0.0"
@@ -248,7 +251,7 @@ def formula_fingerprints(specs: Optional[Sequence[Spec]] = None) -> Dict[str, st
     ⚠ 指纹取**编译后的 expression**（不是原文 ✓）：改注释/空行/缩进**不会**误报 ✓，
       只有**语义真的变了**（生成结果不同）才报 ✓。
     """
-    import hashlib                                   # noqa: PLC0415  局部导入：本函数极少调用 ✓
+    import hashlib  # noqa: PLC0415  局部导入：本函数极少调用 ✓
     out: Dict[str, str] = {}
     try:
         todo = list(specs if specs is not None else discover_specs())
@@ -271,7 +274,7 @@ def stale_formula_names() -> List[str]:
     读不到 meta / meta 里没有指纹（老物化，本次之前跑的 ✓）⇒ 返回空 ✓（不误报 ✓，此时
     `/api/version` 仍会给出"口径戳缺失/需重跑"的既有提示 ✓）。
     """
-    import json                                      # noqa: PLC0415
+    import json  # noqa: PLC0415
     try:
         with open(market_meta_path(), "r", encoding="utf-8") as f:
             stored = (json.load(f) or {}).get("formula_fingerprints") or {}
@@ -323,7 +326,7 @@ def materialize_impact(name: str) -> List[str]:
     old = stored.get(key)
     if not old:
         return []
-    import hashlib                                   # noqa: PLC0415
+    import hashlib  # noqa: PLC0415
     try:
         # ★ v2.10.81：**先收窄再调用** ✓ —— `specs[0].formula` 是 `str | None` ✓，
         #   原来直接传给要求 `str` 的 `formula_expression` ✗ ⇒ mypy 报 arg-type ✓。
@@ -344,7 +347,7 @@ def materialize_impact(name: str) -> List[str]:
 
 def materialized_fields() -> set:
     """`_market_meta.json` 里**已物化**的字段名集合（读不到 / 没物化过 ⇒ 空集 ✓）。"""
-    import json                                      # noqa: PLC0415
+    import json  # noqa: PLC0415
     try:
         with open(market_meta_path(), "r", encoding="utf-8") as f:
             meta = json.load(f) or {}
@@ -375,7 +378,7 @@ def missing_materialized_fields(text: str) -> List[str]:
 
 def _stored_fingerprints() -> Dict[str, str]:
     """读 `_market_meta.json` 里存的被调公式指纹（读不到 ⇒ 空 dict ✓，调用方据此**不提示** ✓）。"""
-    import json                                      # noqa: PLC0415
+    import json  # noqa: PLC0415
     try:
         with open(market_meta_path(), "r", encoding="utf-8") as f:
             return (json.load(f) or {}).get("formula_fingerprints") or {}
@@ -427,7 +430,7 @@ def compute_field_inline(field: str) -> Optional[pd.Series]:
     if field in _INLINE_CACHE:
         return _INLINE_CACHE[field]
     _INLINE_CACHE[field] = None                      # 占位：算失败也不反复重算 ✓
-    import json                                      # noqa: PLC0415
+    import json  # noqa: PLC0415
     spec: Optional[Spec] = None
     start = DEFAULT_START
     try:

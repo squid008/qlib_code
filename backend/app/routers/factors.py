@@ -16,27 +16,45 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..factors.catalog import get_catalog, FACTOR_PROVIDERS
-from ..factors.parser import (
-    translate_formula, build_library, LexerError, ParseError, SemanticError, CodeGenError,
-)
-from ..services.custom_formulas import (
-    list_custom_formulas as _list_custom_formulas,
-    create_custom_formula as _create_custom_formula,
-    update_custom_formula as _update_custom_formula,
-    delete_custom_formula as _delete_custom_formula,
-    find_live_by_name as _find_live_by_name,          # ★ v1.20.82：保存查重 ✓
-    mark_dependents_stale as _mark_dependents_stale,  # ★ v1.20.87：依赖自动失效 ✓
-    set_pinned as _set_pinned,                        # ★ v2.1.45：置顶/取消置顶 ✓
-)
 from .. import config
 from ..engine.task_manager import get_task_manager
-from ..factors.single_test import FactorTestCancelled, _bad_date_arg, run_single_factor_tests
+from ..factors.catalog import FACTOR_PROVIDERS, get_catalog
 from ..factors.event_study import run_event_study
-from ..factors.holdings_index import HoldingsIndex      # v2.1.0：每期持仓索引（XLSX 导出用 ✓）
+
 # ★ v2.7.0：含入场价（ENTRY_PRICE / ENTRY_FIRST）的离场公式 ⇒ 拆成「预计算列 + 骨架」✓
 #   （与入场价无关的部分当普通字段列由面板算 ⇒ 任意字段/算子都能用 ✓，骨架回测逐日代入 ✓）
 from ..factors.exit_rules import EntryRule, split_entry_rule, uses_entry
+from ..factors.holdings_index import HoldingsIndex  # v2.1.0：每期持仓索引（XLSX 导出用 ✓）
+from ..factors.parser import (
+    CodeGenError,
+    LexerError,
+    ParseError,
+    SemanticError,
+    build_library,
+    translate_formula,
+)
+from ..factors.single_test import FactorTestCancelled, _bad_date_arg, run_single_factor_tests
+from ..services.custom_formulas import (
+    create_custom_formula as _create_custom_formula,
+)
+from ..services.custom_formulas import (
+    delete_custom_formula as _delete_custom_formula,
+)
+from ..services.custom_formulas import (
+    find_live_by_name as _find_live_by_name,  # ★ v1.20.82：保存查重 ✓
+)
+from ..services.custom_formulas import (
+    list_custom_formulas as _list_custom_formulas,
+)
+from ..services.custom_formulas import (
+    mark_dependents_stale as _mark_dependents_stale,  # ★ v1.20.87：依赖自动失效 ✓
+)
+from ..services.custom_formulas import (
+    set_pinned as _set_pinned,  # ★ v2.1.45：置顶/取消置顶 ✓
+)
+from ..services.custom_formulas import (
+    update_custom_formula as _update_custom_formula,
+)
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])
 
@@ -71,22 +89,6 @@ router = APIRouter(prefix="/api/factors", tags=["factors"])
 
 # ---------- 单因子测试异步任务：POST 提交返回 task_id，GET 轮询进度/结果 ----------
 # 进度存储为进程内内存 dict（本地单用户工具，无需持久化）；任务完成后保留最近 _SFT_MAX_TASKS 条。
-from .factors_state import (  # noqa: E402  ★ P1-A-2：状态层已抽到 factors_state ✓
-    _SFT_MAX_TASKS, _SFT_RESULT_KEEP, _SFT_TASKS, _SFT_LOCK,
-    _sft_store, _sft_trim_results, _sft_get, est_export_state,
-    sft_export_state, _EST_TASKS, _EST_LOCK, _EST_RESULT_KEEP,
-    _est_get, _est_store, _est_trim, _UNTRIG_CACHE,
-    _UNTRIG_LOCK, _UNTRIG_CAP, _NAV_PANEL_CACHE, _NAV_PANEL_LOCK,
-    _NAV_BT_CACHE, _NAV_BT_LOCK, _NAV_BT_CAP, _NAV_BT_STASH,
-    _NAV_BT_STASH_CAP, _PR_BT_STASH, _PR_BT_CAP, _pr_key,
-    pr_bt_stash_put, pr_bt_stash_get, clear_nav_caches, _nav_stash_key,
-    nav_bt_stash_get, _NAV_REQ_SEQ, _NAV_REQ_LOCK, _NAV_REQ_KEEP,
-    _NavCancelled, _ev_fingerprint, _nav_req_key, _nav_req_begin,
-    _nav_req_current, _NAV_CANCEL, _NAV_CANCEL_MAX, _nav_bt_key,
-    _nav_cache_key, _nav_panel_cached,
-    _json_safe,
-)
-
 # ★ P1-A-2（2026-10-18 ✓）：事件研究组与请求模型已拆出 ✓ 这里**再导出**一次，
 #   避免仓库里 `from .routers.factors import ...` 的老引用断掉 ✓（渐进迁移 ✓）。
 # ⚠★ 必须**显式列出**、绝不能用 `import *` ✗ —— 星号导入会连 `router` 一起覆盖 ✓
@@ -94,28 +96,84 @@ from .factors_state import (  # noqa: E402  ★ P1-A-2：状态层已抽到 fact
 #     （实测：`Duplicate Operation ID event_study…` 12 条警告 ✗）
 #   ⇒ 且本文件自己的端点会挂在**没人引用的旧 router 对象**上 ⇒ 静默消失 ✗。
 from .factors_event import (  # noqa: F401,E402
-    EventNavCancelRequest, EventNavRequest, EventStudyRequest, _untrig_nav_series,
-    event_study, event_study_cancel, event_study_clear, event_study_nav,
-    event_study_nav_cancel, event_study_progress,
+    EventNavCancelRequest,
+    EventNavRequest,
+    EventStudyRequest,
+    _untrig_nav_series,
+    event_study,
+    event_study_cancel,
+    event_study_clear,
+    event_study_nav,
+    event_study_nav_cancel,
+    event_study_progress,
 )
 from .factors_models import SingleFactorTestFactor, SingleFactorTestRequest  # noqa: F401,E402
 from .factors_single import (  # noqa: F401,E402  ★ 显式列名（**绝不用 import \*** ✗）
-    _period_roll_pick,
-    _signal_exit_nav,
-    _attach_signal_roll,
-    _attach_period_roll,
-    _exit_list,
     _apply_exit_validation,
+    _attach_period_roll,
+    _attach_signal_roll,
+    _exit_list,
     _exit_matrix,
     _exit_pre_mats,
     _panel_period_roll_nav,
+    _period_roll_pick,
     _sft_render_view,
     _sft_touch,
+    _signal_exit_nav,
     single_factor_test,
-    single_factor_test_progress,
     single_factor_test_cancel,
     single_factor_test_clear,
+    single_factor_test_progress,
     single_factor_test_tasks,
+)
+from .factors_state import (  # noqa: E402  ★ P1-A-2：状态层已抽到 factors_state ✓
+    _EST_LOCK,
+    _EST_RESULT_KEEP,
+    _EST_TASKS,
+    _NAV_BT_CACHE,
+    _NAV_BT_CAP,
+    _NAV_BT_LOCK,
+    _NAV_BT_STASH,
+    _NAV_BT_STASH_CAP,
+    _NAV_CANCEL,
+    _NAV_CANCEL_MAX,
+    _NAV_PANEL_CACHE,
+    _NAV_PANEL_LOCK,
+    _NAV_REQ_KEEP,
+    _NAV_REQ_LOCK,
+    _NAV_REQ_SEQ,
+    _PR_BT_CAP,
+    _PR_BT_STASH,
+    _SFT_LOCK,
+    _SFT_MAX_TASKS,
+    _SFT_RESULT_KEEP,
+    _SFT_TASKS,
+    _UNTRIG_CACHE,
+    _UNTRIG_CAP,
+    _UNTRIG_LOCK,
+    _est_get,
+    _est_store,
+    _est_trim,
+    _ev_fingerprint,
+    _json_safe,
+    _nav_bt_key,
+    _nav_cache_key,
+    _nav_panel_cached,
+    _nav_req_begin,
+    _nav_req_current,
+    _nav_req_key,
+    _nav_stash_key,
+    _NavCancelled,
+    _pr_key,
+    _sft_get,
+    _sft_store,
+    _sft_trim_results,
+    clear_nav_caches,
+    est_export_state,
+    nav_bt_stash_get,
+    pr_bt_stash_get,
+    pr_bt_stash_put,
+    sft_export_state,
 )
 # 内存治理：任务列表最多保留 _SFT_MAX_TASKS 条元信息；但完整 result（items 含全部因子的
 # 大 dict）只保留最近 _SFT_RESULT_KEEP 个已完成任务，更早的 result 置 None 释放长驻内存

@@ -23,10 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from . import xl
-
 from ..logger import _log_swallowed  # noqa: E402
-
+from . import xl
 
 SHEET_SHOT = "曲线截图"                  # 第 1 页（用户指定：第一页是截图 ✓）
 COL_SHOT = 10                            # 第 1 页用到的列数（分区标题/说明块合并到这一列 ✓）

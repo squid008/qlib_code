@@ -11,10 +11,9 @@ import math
 import re
 from typing import Any, Callable, Dict, List
 
-from .ast import Expr, Num, Str, Field, Var, BinOp, UnaryOp, FuncCall
-from .lexer import LexerError
 from ..calc_date import is_date_literal, is_date_name, to_serial
-
+from .ast import BinOp, Expr, Field, FuncCall, Num, Str, UnaryOp, Var
+from .lexer import LexerError
 
 # ---- ★ v1.20.55：可**常量折叠**的纯数学函数表 ----
 # 只放"**无状态、逐元素、纯函数**"的 ✓（结果只依赖参数值 ⇒ 常量参数必有常量答案 ✓）。

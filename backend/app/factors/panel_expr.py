@@ -34,6 +34,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple, cast
 import numpy as np
 import pandas as pd
 
+from ..logger import _log_swallowed  # noqa: E402
 from .calc_date import DATE_FIELD, serial_array
 
 # ★ v2.9.56：筹码换手那组已搬到 `chip_turn.py` ✓ —— 这里**显式再导出** ✓，
@@ -43,13 +44,16 @@ from .chip_turn import _CHIP_BASE_FIELDS, _chip_turn_proxy, chip_turn_of  # noqa
 # ★ v2.9.57：分段/滚动算子已搬到 `seg_ops.py` ✓ —— 这里**显式引回** ✓
 #   （本文件自己的求值路径还要用 ✓；**不是** `import *` ✗）。
 from .seg_ops import (  # noqa: F401,E402
-    _SEG_CACHE, _SEG_RC_CACHE,
-    _by_group, _seg_arrays, _seg_grid, _seg_roll, _seg_roll_vanherk,
-    _seg_window_op, _segment_bnd,
+    _SEG_CACHE,
+    _SEG_RC_CACHE,
+    _by_group,
+    _seg_arrays,
+    _seg_grid,
+    _seg_roll,
+    _seg_roll_vanherk,
+    _seg_window_op,
+    _segment_bnd,
 )
-
-from ..logger import _log_swallowed  # noqa: E402
-
 
 # CWH 这类巨型公式嵌套可达数百~上千层，提高递归上限（模块级，全局一次）
 if sys.getrecursionlimit() < 20000:
@@ -202,18 +206,7 @@ def _feature_dir() -> str:
 
         if QLIB_PROVIDER_URI:
             _cand = os.path.join(QLIB_PROVIDER_URI, "features")
-            # ★ v2.11.43：目录不存在就**告警一次**（原来静默 ⇒ 面板 0 行不报错 ✗，见 P2-#23）。
-            #   ⚠ 不抛异常：有些调用方允许"数据未就绪"✓。
-            if not os.path.isdir(_cand) and _cand not in _MISSING_WARNED:
-                _MISSING_WARNED.add(_cand)
-                try:
-                    from ..logger import get_logger
-
-                    get_logger("factors").warning(
-                        "面板取数的 feature 目录不存在：%s ⇒ 将返回空结果"
-                        "（检查 QLIB_PROVIDER_URI / 数据集是否已同步 ✓）", _cand)
-                except Exception as e:  # noqa: BLE001
-                    _log_swallowed("panel_expr.py", e)
+            warn_missing(_cand)                 # ★ 目录不存在就告警一次（见 panel_paths ✓）
             return _cand
     except Exception as e:
         _log_swallowed("panel_expr.py", e)
@@ -248,6 +241,7 @@ def reset_caches() -> None:
     _SEG_RC_CACHE.clear()
     _MISSING_WARNED.clear()
     INST_DIR_CACHE.clear()       # ★ v2.11.47：`features/<inst>` 大小写归一缓存也要清 ✓
+    WARNED.clear()               # ★ v2.11.50："目录不存在"的告警去重集合 ✓
 
 
 # ---------------- 特征合并层（features_merged/，v1.18.42 / T2 §7.7-E #7）----------------
@@ -362,8 +356,14 @@ def _merged_values(inst: str, field: str):
     return int(e[2]), np.asarray(mm[off + 1: off + cnt], dtype=np.float64)
 
 
-from .panel_paths import INST_DIR_CACHE                      # noqa: E402
-from .panel_paths import inst_dir as _inst_dir_impl          # noqa: E402
+from .panel_paths import (  # noqa: E402
+    INST_DIR_CACHE,
+    WARNED,
+    warn_missing,  # noqa: E402
+)
+from .panel_paths import inst_dir as _inst_dir_impl  # noqa: E402
+
+
 def _read_field_bin(inst: str, field: str):
     """读 .day.bin → (start_idx, float64 数组)；缺失返回 None。
 

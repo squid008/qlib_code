@@ -21,9 +21,32 @@
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Dict
+
+#: **慢请求阈值（秒）** ✓ —— 超过就告警一条日志 ✓（★ v2.11.50）。
+#:
+#: 为什么加它：`/api/metrics` 只解决了"**事后**去查"✗，而最需要的是
+#: "**某次请求慢到该看一眼**"时**当场**留一条痕迹 ✓。
+#: 没有它的时候：用户报"卡了" ⇒ 只能翻全部日志猜是哪个接口 ✓（本项目真发生过 ✓）。
+#:
+#: · 默认 **3.0s** ✓（任务类接口都是**异步提交、立刻返回** ✓，
+#:   真正同步跑几秒的只有面板/产物类 ⇒ 3s 已能抓住"异常变慢" ✓）；
+#: · `SLOW_REQUEST_S=0` 或负数 ⇒ **关掉** ✓（压测时不想被刷屏 ✓）；
+#: · 用环境变量而不是写死 ✓ —— CI / 压测 / 用户机器可以有不同界值 ✓。
+SLOW_REQUEST_S: float = float(os.environ.get("SLOW_REQUEST_S") or 3.0)
+
+
+def should_warn_slow(seconds: float) -> bool:
+    """这次请求要不要告警 ✓（`SLOW_REQUEST_S <= 0` 表示关闭 ✓）。
+
+    ⚠ 读的是**模块级变量**（而不是闭包捕获的常量 ✓）⇒ 测试可以
+    `monkeypatch.setattr(metrics, "SLOW_REQUEST_S", 0.001)` 来验证 ✓，
+    不用真等 3 秒 ✗（否则这条测试要么很慢、要么只能测到"没触发" ✓）。
+    """
+    return SLOW_REQUEST_S > 0 and seconds >= SLOW_REQUEST_S
 
 _START = time.time()
 

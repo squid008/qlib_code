@@ -28,6 +28,7 @@ import pandas as pd
 
 from ..engine.limits import mark_limit_up  # noqa: E402
 from ..logger import _log_swallowed  # noqa: E402
+
 # ⚠ 必须从 **`engine/limits.py`**（真正出处 ✓）取 `mark_limit_up`，
 #   而**不能** `from .event_study import mark_limit_up` ✗ ——
 #   后者会造成 **`event_study` ↔ `event_study_stages` 循环引用**
@@ -65,7 +66,7 @@ def _build_triggers(df, *, exclude_limit_up_signal: bool, exclude_limit_up_trade
     · 剔除后空 ⇒ 触发了但全被涨停/停牌/ST/板块过滤掉（**是过滤太严** ✓）。
     合成一句话的话，用户会照着错的方向排查 ✗。
     """
-    from .single_test import _inst_codes       # 懒导入：避免 `single_test` ↔ 本模块的循环引用 ✓
+    from .single_test import _inst_codes  # 懒导入：避免 `single_test` ↔ 本模块的循环引用 ✓
 
     sub = df[df["F0"].notna()]
     trig = sub[sub["F0"] > 0.5]

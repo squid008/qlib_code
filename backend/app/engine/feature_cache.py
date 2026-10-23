@@ -24,11 +24,9 @@ import re
 import time
 
 import pandas as pd
-
 from qlib.data.dataset.loader import QlibDataLoader
 
 from ..logger import _log_swallowed  # noqa: E402
-
 
 try:
     from ..config import WORK_DIR

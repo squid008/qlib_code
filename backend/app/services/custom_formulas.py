@@ -52,11 +52,11 @@ from typing import Dict, List, Optional, Tuple
 
 from ..config import WORK_DIR
 from ..factors.parser.codegen import CODEGEN_SEMANTICS
-from ..logger import _Utf8SafeStream                    # ★ v1.20.63：安全打印（GBK 下不抛 ✓）
-from . import formula_git_sync as _formula_git_sync      # ★ v1.20.63：写盘后自动提交+推送 ✓
-
-from ..logger import _log_swallowed  # noqa: E402
-
+from ..logger import (
+    _log_swallowed,  # noqa: E402
+    _Utf8SafeStream,  # ★ v1.20.63：安全打印（GBK 下不抛 ✓）
+)
+from . import formula_git_sync as _formula_git_sync  # ★ v1.20.63：写盘后自动提交+推送 ✓
 
 # ⚠⚠ 本模块的消息**必须**走 `_log()`：Windows 下后端 stdout 常是 **GBK** ✗ ⇒ 直接
 #   `print()` 带 `⚠ ⇢ ✓ ↻` 会抛 `UnicodeEncodeError` ✗✓ —— 2026-09-24 实测：

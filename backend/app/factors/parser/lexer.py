@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
-
 # ---- Token 类型 ----
 TT_NUM = "NUM"          # 数字
 TT_IDENT = "IDENT"      # 标识符 / 函数名 / 变量名（可能含中文）

@@ -26,9 +26,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.factors.parser import CodeGenError, translate_formula
 from app.factors.panel_expr import PanelEvaluator, _roll
-
+from app.factors.parser import CodeGenError, translate_formula
 
 # ---------------------------------------------------------------------------
 # ① 翻译层

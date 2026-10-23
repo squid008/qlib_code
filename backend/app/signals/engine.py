@@ -26,6 +26,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from ..logger import _log_swallowed  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # ★★ v2.9.7（P0-B，2026-10-18 ✓）：**撮合原子已抽到 `signals/matching.py`** ✗→✓
 #
@@ -41,23 +43,36 @@ import pandas as pd
 # ⚠ 别把说明写进 `noqa:` 里面 ✗（ruff 会报 "Invalid noqa directive" ✓，2026-10-18 实测 ✓）。
 # ★ v2.11.12（技术债 P1-#3 第十四刀）：`batch_even` 的信号折叠（纯函数 ✓）
 from .batch_execs import build_batch_execs  # noqa: E402
-# ★ v2.11.13（第十五刀）：逐日循环的初始状态（含"按票记持有天数"的口径 ✓）
-from .batch_state import init_batch_state  # noqa: E402
+
 # ★ v2.11.28（第十八刀）：结果装配（纯装配 ✓，见该模块的两条口径 ⚠）
 from .batch_result import build_batch_result  # noqa: E402
 
-from .matching import (                       # noqa: E402
+# ★ v2.11.13（第十五刀）：逐日循环的初始状态（含"按票记持有天数"的口径 ✓）
+from .batch_state import init_batch_state  # noqa: E402
+from .matching import (  # noqa: E402
     FILL_LAG as _FILL_LAG,
+)
+from .matching import (
     FILL_PRICE as _FILL_PRICE,
-    LOT_DEFAULT, LOT_KCB, MIN_FEE, REJECT_TEXT,
+)
+from .matching import (
+    LOT_DEFAULT,
+    LOT_KCB,
+    MIN_FEE,
+    REJECT_TEXT,
+)
+from .matching import (
     fee_of as _fee_of,
+)
+from .matching import (
     fit_lots as _fit_lots,
+)
+from .matching import (
     fit_real_lots as _fit_real_lots,
+)
+from .matching import (
     lot_of as _lot_of,
 )
-
-from ..logger import _log_swallowed  # noqa: E402
-
 
 
 def _split_mode(spec: str) -> Tuple[str, Optional[float], str]:

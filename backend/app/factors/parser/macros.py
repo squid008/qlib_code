@@ -29,15 +29,21 @@ from __future__ import annotations
 import re
 from typing import Dict, List, Tuple
 
+from ...logger import _log_swallowed  # noqa: E402
 from .ast import (
-    Formula, Assign, Output, Expr, Num, Var, BinOp, UnaryOp, FuncCall,
+    Assign,
+    BinOp,
+    Expr,
+    Formula,
+    FuncCall,
+    Num,
+    Output,
+    UnaryOp,
+    Var,
 )
 from .lexer import LexerError
-from .parser import parse_formula, ParseError
-from .semantic import SemanticError, resolve_vars, inline_variables
-
-from ...logger import _log_swallowed  # noqa: E402
-
+from .parser import ParseError, parse_formula
+from .semantic import SemanticError, inline_variables, resolve_vars
 
 # `参数 K=1, N=20;` 声明行（整行；可写"参数"/"PARAM"/"PARAMS"，大小写不敏感）
 _PARAM_LINE_RE = re.compile(r"^[ \t]*(?:参数|PARAMS?)[ \t]*([^;]*);[ \t]*$",

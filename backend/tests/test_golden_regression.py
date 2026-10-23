@@ -248,8 +248,9 @@ class TestDataGolden:
         """万科 2016 停牌半年：SR 语义下复牌首日 Ref(close,1)=停牌前收盘；
         官方语义（不包 SR）为 NaN。"""
         from qlib.data import D
-        from app.services.qlib_runtime import ensure_qlib_init
+
         from app.engine.utils import _default_qlib_uri
+        from app.services.qlib_runtime import ensure_qlib_init
 
         ensure_qlib_init(_default_qlib_uri())
         win = dict(instruments=["SZ000002"], start_time="2016-07-04", end_time="2016-07-04")
@@ -269,8 +270,9 @@ class TestDataGolden:
         if not os.path.isfile(mf_bin):
             pytest.skip("moneyflow bin 未生成（需先跑 tools/dump_moneyflow.py）")
         from qlib.data import D
-        from app.services.qlib_runtime import ensure_qlib_init
+
         from app.engine.utils import _default_qlib_uri
+        from app.services.qlib_runtime import ensure_qlib_init
 
         ensure_qlib_init(_default_qlib_uri())
         df = D.features(

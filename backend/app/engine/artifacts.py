@@ -11,12 +11,12 @@
 import os
 from typing import Any, Dict, List, Optional
 
-from ..logger import get_logger
+from ..logger import (
+    _log_swallowed,  # noqa: E402
+    get_logger,
+)
 from ..models.backtest import BacktestRequest, BacktestResult
 from .context import get_artifact_dir
-
-from ..logger import _log_swallowed  # noqa: E402
-
 
 logger = get_logger(__name__)
 
@@ -479,8 +479,8 @@ def _load_model_object(task_id: str, model_name: str, seg_no=None):
     seg_no 指定时，加载滚动训练的对应段模型（segment_{seg_no}/model.pkl）；
     否则加载主目录模型（single 模式）。
     """
-    import pickle
     import glob
+    import pickle
     try:
         from ..config import WORK_DIR
         artifacts_root = os.path.join(WORK_DIR, "artifacts")

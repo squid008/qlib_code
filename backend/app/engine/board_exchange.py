@@ -17,15 +17,12 @@ qlib 原版 limit_threshold 是全局一个浮点数，用 $change 统一判断�
 from typing import Any, Optional, Union
 
 import pandas as pd
-
 from qlib.backtest.decision import Order
 from qlib.backtest.exchange import Exchange
 
-from .limits import mark_limit_down, mark_limit_up
-from .adjust import normalize_mode
-
 from ..logger import _log_swallowed  # noqa: E402
-
+from .adjust import normalize_mode
+from .limits import mark_limit_down, mark_limit_up
 
 #: 冲击成本的**倍数封顶**（v2.8.5 ✓）：本单金额 / 当日成交额 的上限 ✓
 IMPACT_RATIO_CAP = 1.0

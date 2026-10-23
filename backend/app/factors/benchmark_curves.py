@@ -20,7 +20,6 @@ from app.engine.perf_metrics import compute_perf
 
 from ..logger import _log_swallowed  # noqa: E402
 
-
 # (代码, 展示名)。⚠ 只放确有行情的；新增前先确认 `data/cn_data/features/<code 小写>` 存在
 BENCHMARKS = (
     ("SH000300", "沪深300"),

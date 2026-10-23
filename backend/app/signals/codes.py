@@ -31,7 +31,6 @@ import pandas as pd
 
 from ..logger import _log_swallowed  # noqa: E402
 
-
 # ---- 市场后缀 → 内部市场码（大写，不含点）----
 _SUFFIX_MAP = {
     "XSHG": "SH", "SHSE": "SH", "SS": "SH", "SH": "SH",

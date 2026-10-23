@@ -8,15 +8,15 @@
 - 新数据源只需继承 DataSource 基类并实现对应方法即可接入
 """
 from .base import (
-    DataSource,
     BarData,
     DailyBar,
-    MinuteBar,
-    FinancialData,
-    IndustryData,
-    IndexConstituent,
-    DataSourceError,
     DataNotAvailableError,
+    DataSource,
+    DataSourceError,
+    FinancialData,
+    IndexConstituent,
+    IndustryData,
+    MinuteBar,
 )
 
 __all__ = [

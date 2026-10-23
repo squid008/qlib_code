@@ -6,11 +6,11 @@ CROSS 展开、外挂算子占位、Level2 留接口、错误分支。
 """
 import pytest
 
-from app.factors.parser import translate_formula, TranslatedFactor
+from app.factors.parser import TranslatedFactor, translate_formula
+from app.factors.parser.codegen import CodeGenError
 from app.factors.parser.lexer import LexerError
 from app.factors.parser.parser import ParseError
 from app.factors.parser.semantic import SemanticError
-from app.factors.parser.codegen import CodeGenError
 
 
 class TestTranslateBasics:

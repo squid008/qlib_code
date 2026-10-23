@@ -43,9 +43,10 @@ from typing import Any, Callable, List, Optional, cast
 import numpy as np
 
 from .panel_expr import Node, parse_expr
+
 # ⚠ 逐元素算子表**直接复用递推内核那张**（`recursion._OPS` ✓）—— 两边语义必须逐位一致 ✓
 #   （NaN 比较恒假、AND/OR 先 fillna(0)、IF 的 NaN 取 a…都是同一条口径 ✓）。
-from .recursion import _nan0, _OPS
+from .recursion import _OPS, _nan0
 
 #: 两个"入场价"字段 → 取值下标（`0` = 平均成本 ✓、`1` = 首次入场 ✓）
 ENTRY_FIELDS = {"$entry_price": 0, "$entry_first": 1}

@@ -17,7 +17,9 @@ import pytest
 
 from app.factors.parser import translate_formula
 from app.factors.parser.codegen import (
-    FINANCE_FIELDS, FINANCE_TDX_FIELDS, CodeGenError,
+    FINANCE_FIELDS,
+    FINANCE_TDX_FIELDS,
+    CodeGenError,
 )
 
 _DUMP_TOOL = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tools", "dump_finance_tdx.py"))

@@ -10,7 +10,14 @@ from __future__ import annotations
 from typing import Dict
 
 from .ast import (
-    Formula, Expr, Var, BinOp, UnaryOp, FuncCall, Num, Field,
+    BinOp,
+    Expr,
+    Field,
+    Formula,
+    FuncCall,
+    Num,
+    UnaryOp,
+    Var,
 )
 
 # ===========================================================================

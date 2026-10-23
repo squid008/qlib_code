@@ -10,8 +10,8 @@
     patch_cancel_callbacks()
 """
 
-from .qlib_parallel import patch_qlib_parallel, _ThreadLocalQlibRecorder
 from .cancel_train import patch_cancel_callbacks
+from .qlib_parallel import _ThreadLocalQlibRecorder, patch_qlib_parallel
 from .serial_load import install_serial_load, kill_and_reset_loky_pool, serial_enabled
 
 # 取数串行化（进程级、幂等）在**导入本包时**就装上：凡是会走 joblib/loky 取数的路径

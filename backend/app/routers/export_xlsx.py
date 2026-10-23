@@ -26,14 +26,21 @@ from .. import __version__
 from ..exports import spec, xl
 from ..exports.event_study import EventStudyExportDoc, build_event_study_workbook, contract_params
 from ..exports.event_study import param_pairs_from as es_param_pairs
+
 # ★ v2.8.8b（用户 2026-10-16 ✓）：「离场曲线」导出（**第 1 页截图 + 每个离场一页调仓记录** ✓）
 from ..exports.exit_curve import ExitCurveDoc, ExitRunDoc, build_exit_curve_workbook, trade_rows
 from ..exports.topk import build_topk_workbook
-from ..exports.topk_doc import PanelSource, TIER_KEYS, build_doc
+from ..exports.topk_doc import TIER_KEYS, PanelSource, build_doc
 from ..factors.holdings_index import HoldingsIndex
 from ..signals.positions import buy_signals_from_trades, positions_from_trades
-from .factors import (EventNavRequest, est_export_state, event_study_nav, nav_bt_stash_get,
-                      pr_bt_stash_get, sft_export_state)
+from .factors import (
+    EventNavRequest,
+    est_export_state,
+    event_study_nav,
+    nav_bt_stash_get,
+    pr_bt_stash_get,
+    sft_export_state,
+)
 
 router = APIRouter(prefix="/api/factors", tags=["exports"])
 

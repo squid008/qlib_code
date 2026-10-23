@@ -9,6 +9,7 @@ from typing import List, Optional
 import numpy as np
 from pydantic import BaseModel
 
+
 class SingleFactorTestFactor(BaseModel):
     id: str = ""            # 前端标识（自定义公式 id 或 因子名）
     name: str = ""

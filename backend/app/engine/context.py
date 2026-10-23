@@ -9,12 +9,10 @@
   - 当前任务产物目录（按 task_id 组织）
   - 取消检查函数（返回 True 表示任务被取消）
 """
+import contextvars
 from typing import Optional
 
-import contextvars
-
 from ..logger import _log_swallowed  # noqa: E402
-
 
 _progress_cb: contextvars.ContextVar = contextvars.ContextVar("_progress_cb", default=None)
 _artifact_dir: contextvars.ContextVar = contextvars.ContextVar("_artifact_dir", default=None)

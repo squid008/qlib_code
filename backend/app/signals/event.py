@@ -22,9 +22,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from ..factors.event_study import build_event_stats, compute_baseline_curves
-
 from ..logger import _log_swallowed  # noqa: E402
-
 
 
 def _event_cache_dir() -> str:

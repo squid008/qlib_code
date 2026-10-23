@@ -24,6 +24,7 @@ import pytest
 
 from app.signals.engine import _interleave_rejects, _split_mode, attach_benchmark, nav_rows
 
+
 # ------------------------------------------------------------------ _split_mode
 def test_split_mode_plain():
     assert _split_mode("event_even") == ("event_even", None, "event_even")

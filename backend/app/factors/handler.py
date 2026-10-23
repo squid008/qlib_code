@@ -9,12 +9,12 @@
 from typing import List, Optional
 
 import numpy as np
-from qlib.contrib.data.handler import Alpha158, Alpha360, Alpha158DL, Alpha360DL
+from qlib.contrib.data.handler import Alpha158, Alpha158DL, Alpha360, Alpha360DL
 from qlib.data.dataset.handler import DataHandlerLP
 
-from .parser import translate_formula, build_library, CodeGenError
-from .ops_ext import ensure_ops_registered
 from ..engine.adjust import adjust_expr, normalize_mode
+from .ops_ext import ensure_ops_registered
+from .parser import CodeGenError, build_library, translate_formula
 
 
 class CleanInf:
@@ -72,7 +72,7 @@ class SelectedAlpha158(DataHandlerLP):
         price_adjust: str = "backward",      # v1.19.97：默认改后复权
         **kwargs,
     ):
-        from qlib.contrib.data.handler import check_transform_proc, _DEFAULT_LEARN_PROCESSORS
+        from qlib.contrib.data.handler import _DEFAULT_LEARN_PROCESSORS, check_transform_proc
 
         if infer_processors is None:
             infer_processors = []
@@ -167,7 +167,7 @@ class SelectedAlpha360(DataHandlerLP):
         price_adjust: str = "backward",      # v1.19.97：默认改后复权
         **kwargs,
     ):
-        from qlib.contrib.data.handler import check_transform_proc, _DEFAULT_LEARN_PROCESSORS
+        from qlib.contrib.data.handler import _DEFAULT_LEARN_PROCESSORS, check_transform_proc
 
         if infer_processors is None:
             infer_processors = []
@@ -386,7 +386,7 @@ class MixedHandler(DataHandlerLP):
         **kwargs,
     ):
         ensure_ops_registered()
-        from qlib.contrib.data.handler import check_transform_proc, _DEFAULT_LEARN_PROCESSORS
+        from qlib.contrib.data.handler import _DEFAULT_LEARN_PROCESSORS, check_transform_proc
 
         if infer_processors is None:
             infer_processors = []

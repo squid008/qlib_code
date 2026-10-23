@@ -30,10 +30,10 @@ import os
 import threading
 from typing import List
 
-from ...logger import get_logger
-
-from ...logger import _log_swallowed  # noqa: E402
-
+from ...logger import (
+    _log_swallowed,  # noqa: E402
+    get_logger,
+)
 
 logger = get_logger(__name__)
 
@@ -76,7 +76,7 @@ def install_serial_load() -> bool:
             # 同线程嵌套（已持有闸门）⇒ 直接执行，避免自锁
             if getattr(_depth, "n", 0) > 0:
                 return _orig_call(self, *args, **kwargs)
-            from ..context import check_cancel                     # 延后 import：避免循环依赖
+            from ..context import check_cancel  # 延后 import：避免循环依赖
             while not _LOAD_LOCK.acquire(timeout=_POLL_SEC):
                 # 排队等闸门期间检查取消：被取消就抛 TaskCancelledError（不干等）
                 check_cancel()

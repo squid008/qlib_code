@@ -6,10 +6,8 @@
 import os
 from typing import List, Optional
 
-from ..models.backtest import BacktestRequest
-
 from ..logger import _log_swallowed  # noqa: E402
-
+from ..models.backtest import BacktestRequest
 
 
 def _default_qlib_uri() -> str:
@@ -84,6 +82,7 @@ def _offset_date(date_str: str, days: int) -> str:
 def _add_period(date_str: str, amount: int, unit: str) -> str:
     """按 day/week/month 对日期加减，返回新日期字符串。amount 可为负。"""
     from datetime import datetime
+
     from dateutil.relativedelta import relativedelta
     d = datetime.strptime(date_str, "%Y-%m-%d")
     unit = (unit or "day").lower()

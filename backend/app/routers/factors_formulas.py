@@ -22,7 +22,6 @@
 **不 import** `factors.py` ✓（所以不会与它循环 ✓）。
 """
 import uuid
-
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -31,15 +30,32 @@ from pydantic import BaseModel
 
 from ..factors.catalog import FACTOR_PROVIDERS, get_catalog
 from ..factors.parser import (
-    CodeGenError, LexerError, ParseError, SemanticError, build_library, translate_formula,
+    CodeGenError,
+    LexerError,
+    ParseError,
+    SemanticError,
+    build_library,
+    translate_formula,
 )
 from ..services.custom_formulas import (
     create_custom_formula as _create_custom_formula,
+)
+from ..services.custom_formulas import (
     delete_custom_formula as _delete_custom_formula,
+)
+from ..services.custom_formulas import (
     find_live_by_name as _find_live_by_name,
+)
+from ..services.custom_formulas import (
     list_custom_formulas as _list_custom_formulas,
+)
+from ..services.custom_formulas import (
     mark_dependents_stale as _mark_dependents_stale,
+)
+from ..services.custom_formulas import (
     set_pinned as _set_pinned,
+)
+from ..services.custom_formulas import (
     update_custom_formula as _update_custom_formula,
 )
 
@@ -250,7 +266,7 @@ def pin_saved_formula(formula_id: str, req: PinFormulaBody):
 @router.get("/operators", summary="列出翻译器支持的算子分类")
 def list_operators():
     """返回翻译器支持的算子分类清单（供前端公式编辑器提示/灰显）。"""
-    from ..factors.parser.codegen import PATCHED_OPS, LEVEL2_OPS, IGNORED_OPS, FUNC_QLIB
+    from ..factors.parser.codegen import FUNC_QLIB, IGNORED_OPS, LEVEL2_OPS, PATCHED_OPS
     return {
         "supported": sorted(FUNC_QLIB.keys()),           # 直接映射到 qlib 的算子
         "patched_need_impl": sorted(PATCHED_OPS.keys()),  # 有状态算子（M3 待实现外挂）

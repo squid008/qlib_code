@@ -12,8 +12,8 @@ P2-C 是"提速但**数字一位都不许变**"✓。这类改动的风险很阴
 
 ⚠ 换成新黄金值的唯一正当理由：**有意改变口径** ✓ —— 那就连 `md/change_log.md` 一起写清楚 ✓。
 """
-import sys
 import os
+import sys
 
 import numpy as np
 import pytest
@@ -22,8 +22,9 @@ BE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BE)
 sys.path.insert(0, os.path.join(BE, "tools"))
 
-from app.signals.engine import run_backtest          # noqa: E402
-from bench_engine import build                      # noqa: E402
+from bench_engine import build  # noqa: E402
+
+from app.signals.engine import run_backtest  # noqa: E402
 
 #: 黄金值（2026-10-18 实测 ✓ v2.9.34 之后）
 GOLD = {

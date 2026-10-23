@@ -29,7 +29,6 @@ import threading
 
 from ...logger import _log_swallowed  # noqa: E402
 
-
 _PATCHED = threading.Lock()
 _APPLIED = False
 

@@ -20,8 +20,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.factors.exit_rules import (EntryRule, UnsupportedExitError, split_entry_rule,
-                                    uses_entry)
+from app.factors.exit_rules import EntryRule, UnsupportedExitError, split_entry_rule, uses_entry
 from app.signals.period_roll import run_period_roll
 
 CODES = ["S00", "S01"]

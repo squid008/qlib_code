@@ -100,23 +100,50 @@ npm run dev            # → http://127.0.0.1:5173
 **数据路径**：`data/active_dataset.json` 记录的**当前数据集优先** ✓（环境变量 `QLIB_PROVIDER_URI`
 默认不压过它 —— 要强制生效需设 `QLIB_PROVIDER_URI_FORCE=1` ✓）。换机器/部署数据见 [`md/deploy.md`](./md/deploy.md)。
 
-## 提交前必过（五道闸门，CI 里全都在拦）
+## 当前基线（一眼看数；详细来源见 [`md/开发记录.md`](./md/开发记录.md) 顶部）
+
+| 项 | 数 |
+|---|---|
+| 版本 | **2.11.50** |
+| 后端用例 / 覆盖率 | **1900+ passed** ｜ **67%**（门槛 **65**） |
+| 前端用例 / 覆盖率 | **264 passed** ｜ **48%**（门槛 **47**） |
+| `mypy` | **整个 `app`（124 个源文件）0 错误** —— 新模块默认就在闸门里 |
+| `ruff` | 0（`E9/F821/F811/F823` + **`I001` import 排序** + **`W291` 行尾空白**） |
+| `bandit` | 中/高危 0（规则跳过只 1 条，原因写在 `backend/pyproject.toml`） |
+| 数值指纹 | **20 条**（引擎 16 + 策略 4；跨 Windows/ubuntu 同 sha） |
+| 绝对性能门 | 4 条（合成数据，阈值 `3×基线+0.2s`） |
+| 技术债 | 在册 3（`P1-#2`/`P1-#3`/`P2-#22`）+ 已清偿 19 |
+
+⚠ **行数是硬的**：`tests/test_code_health.py` 卡「大文件 ≤ 上限、`>300` 行函数**只减不增**」，
+`tests/test_complexity.py` 卡圈复杂度（`FROZEN` 冻结 31 个函数，**变复杂也红**）。
+⇒ 想在贴着上限的函数里加几行，**必须同时等量抽走** ✗；也正因为这条，
+**本项目没有上 `ruff format`**（格式化的本质是把长行拆多行 ⇒ 实测会让 4 个函数涨回 300+ ✗）。
+
+## 提交前必过（六个 CI job，本地这几条与之对齐）
 
 ```bash
 # 后端（cd backend）
-python -m mypy                                # 19 个源文件，0 错误
-python -m pytest tests -m "not datareq" -q    # 纯逻辑用例（含引擎 NAV 指纹、相对性能门）
-python -m ruff check app tests tools
-python -m pip_audit -r requirements.txt       # 依赖漏洞（阻断式）
+python -m mypy                                 # 整个 app，0 错误
+python -m ruff check app tests                 # 静态检查（含 import 排序 / 行尾空白）
+python -m pytest tests -m "not datareq" -q     # 纯逻辑用例（覆盖率门槛 65%）
+python -m pip_audit -r requirements.txt        # 依赖漏洞（阻断式）
+python -m bandit -ll -r app -c pyproject.toml  # 源码 SAST（只报中/高危）
 
 # 前端（cd frontend）
-npx tsc -b                                    # strict
-npm test                                      # vitest
-npm run test:cov                              # 覆盖率门槛 47%（CI 实测 47.34%）
-npm run test:e2e                              # Playwright（需先 npx playwright install chromium）
+npx tsc -b                                     # strict（⚠ vitest 不查类型，必须单独跑）
+npm run lint                                   # biome（显式白名单，只开能抓真 bug 的规则）
+npm test                                       # vitest（264 条）
+npm run test:cov                               # 覆盖率门槛 47%（CI 实测 48%）
+npm run test:e2e                               # Playwright（需先 npx playwright install chromium）
 ```
 
+CI 的六个 job：`backend`（ruff+mypy+pytest+cov≥65+pip-audit）｜`frontend`（tsc+biome+vitest+cov≥47+
+`npm audit --audit-level=critical`）｜`security-scan`（`bandit -ll`）｜`e2e`｜`secret-scan`（gitleaks）
+｜**`synth-data`**（现造合成 qlib 数据，跑 6 条真实链路用例 ✗ 其余 15 条需真实行情）。
+
 - ⚠ **`-m "not datareq"` 不能去掉** ✗：带 `datareq` 标的用例要真实行情数据，本地没数据会失败 —— CI 也只跑这个子集。
+  其中**只需合成数据**的 6 条另打了 `synthdata` 标记 ✓，CI 的 `synth-data` job 会现造数据跑它们
+  （做法见 [`CONTRIBUTING.md`](./CONTRIBUTING.md) 的「真实数据链路怎么跑」✓）。
 - ⚠ **密钥扫描在 CI 里跑**（`gitleaks`，本地不必装 ✓）：`pip-audit` 管的是**依赖漏洞**，
   它管的是**我们自己写进仓库的密钥/令牌** —— 后者一旦发生就得**轮换**，而且 `git rm` 之后**历史里还在**。
 - ⚠ **改数值口径**（净值/成本/复利/回撤/换手）**必须跑** `tests/test_engine_golden.py`（6 配置精确 NAV 指纹）——
@@ -174,7 +201,8 @@ npm run test:e2e                              # Playwright（需先 npx playwrig
 
 | 文档 | 说明 |
 |---|---|
-| [`md/开发记录.md`](./md/开发记录.md) | **顶部是「当前基线」**（版本 / 用例数 / 覆盖率门槛 / 模块覆盖 / 故意停手处）—— 开工先看这几行 |
+| **[`CONTRIBUTING.md`](./CONTRIBUTING.md)** | **贡献指南**：跑法 / 提交前五道 / **9 条硬规矩**（全是踩过的坑）/ 真实数据链路怎么跑 / 测试优先级 |
+| [`md/开发记录.md`](./md/开发记录.md) | **顶部是「当前基线」**（版本 / 用例数 / 覆盖率门槛 / 模块覆盖 / 12 维评分 / 故意停手处）—— 开工先看这几行 |
 | **[`md/技术债.md`](./md/技术债.md)** | **已知债务清单**（每条带证据 / 影响 / 还法 / 成本 + 「已清偿」档案）—— 想动刀先看它 |
 | [`md/change_log.md`](./md/change_log.md) | 版本更新记录（Keep a Changelog；更早已按卷归档在 `md/change_log/`） |
 | [`md/deploy.md`](./md/deploy.md) | 部署指南（新机器、Python 环境、数据部署、物化字段） |

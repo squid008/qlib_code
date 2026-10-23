@@ -17,7 +17,39 @@
   ⇒ 只看到"两边行数不一致"这种**看不出因果**的现象 ✗。
 """
 import os
-from typing import Dict, Tuple
+from typing import Dict, Set, Tuple
+
+#: 已经告警过的目录（同一进程只喊一次 ✓ —— 每次求值都刷一行日志会淹掉真正的问题 ✗）
+WARNED: Set[str] = set()
+
+
+def warn_missing(features_dir: str) -> None:
+    """`features` 目录不存在时**告警一次** ✓（★ v2.11.50 从 `panel_expr` 搬过来）。
+
+    为什么需要它（P2-#23 的经验 ✓）：`_feature_dir()` 解析出的路径若不存在 ✓，
+    面板侧会**读到 0 行、不报错** ✗ ⇒ 上层只看到空 DataFrame ✓（CI 上就是
+    `(0, 13020)` 那种看不出因果的断言 ✗）。
+    ⚠ **不抛异常** ✓：有些调用方确实允许"数据未就绪"✓，抛错会改既有行为 ✗。
+
+    ⚠ 为什么不在 `panel_expr` 里就地写 ✗：那个文件有 **2600 行棘轮上限**
+    （`test_code_health`，只减不增 ✗），而这段要 12 行 ✓ ⇒ 搬到这里是**净减 11 行** ✓。
+    """
+    if os.path.isdir(features_dir) or features_dir in WARNED:
+        return
+    WARNED.add(features_dir)
+    try:
+        from ..logger import get_logger
+
+        get_logger("factors").warning(
+            "面板取数的 feature 目录不存在：%s ⇒ 将返回空结果"
+            "（检查 QLIB_PROVIDER_URI / 数据集是否已同步 ✓）", features_dir)
+    except Exception as e:       # noqa: BLE001 —— 日志失败绝不能拦住取数 ✓
+        # ⚠ 必须走 `_log_swallowed` **留痕** ✗→✓ —— 写裸 `pass` 会被
+        #   `tests/test_except_ratchet.py` 判成"静默吞异常"+1 ✗
+        #   （那个棘轮口径：except body 只有 pass/continue/break/... 且无日志痕迹 ⇒ 算静默 ✓）
+        from ..logger import _log_swallowed
+
+        _log_swallowed("panel_paths.py", e)
 
 #: `(features_dir, inst)` → 解析出的目录（含**否定结果** ✓，避免每次 3 次 isdir ✗）
 #: ⚠ 键里**必须带 features_dir** ✗→✓ —— 只按 inst 做键时，

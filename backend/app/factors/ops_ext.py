@@ -31,8 +31,8 @@ import threading
 import numpy as np
 import pandas as pd
 from qlib.data.base import Expression, ExpressionOps
-from qlib.data.ops import Operators
 from qlib.data.ops import EMA as _QLIB_EMA
+from qlib.data.ops import Operators
 
 __all__ = [
     "BARSLAST", "BARSCOUNT", "BARSSINCEN",
@@ -1404,31 +1404,30 @@ from .ops_rightmost import (  # noqa: E402
     _rightmost_bars_seg,
 )
 
-
 # ★ v2.10.87（2026-10-21 ✓）：段感知族（10 个 `*_seg`）+ 它们共用的 6 个 helper
 #   已搬去 `ops_seg.py` ✓（约 350 行，单向依赖 ✓，有 14 条'与非段版逐位一致'的测试 ✓）。
 #   ⚠ 这里**回导**：非 seg 的 `_dyn_rmq_vec` / `_dyn_arg_idx_vec` / `_dyn_window_prefix`
 #     也在用那几个 helper ✓ ⇒ 调用点一行都不用改 ✓。
 from .ops_seg import (  # noqa: E402
-    _build_sparse,
-    _win_lens_vec,
-    _dyn_geom,
-    _make_dyn_ext,
-    _dyn_best_idx_ext,
-    _build_argmax_sparse,
-    barsincen_vec_seg,
-    filter_vec_seg,
-    _dyn_scratch,
-    _dyn_arange,
-    dyn_ref_vec_seg,
-    _dyn_rmq_vec_seg,
-    dyn_window_sum_vec_seg,
-    dyn_window_count_vec_seg,
-    _dyn_arg_idx_vec_seg,
-    dyn_bars_vec_seg,
-    _arange_cached,
-    _merge_adjacent_vals,
     _ARANGE_CACHE,
+    _arange_cached,
+    _build_argmax_sparse,
+    _build_sparse,
+    _dyn_arange,
+    _dyn_arg_idx_vec_seg,
+    _dyn_best_idx_ext,
+    _dyn_geom,
+    _dyn_rmq_vec_seg,
+    _dyn_scratch,
+    _make_dyn_ext,
+    _merge_adjacent_vals,
+    _win_lens_vec,
+    barsincen_vec_seg,
+    dyn_bars_vec_seg,
+    dyn_ref_vec_seg,
+    dyn_window_count_vec_seg,
+    dyn_window_sum_vec_seg,
+    filter_vec_seg,
 )
 
 

@@ -11,8 +11,7 @@ from io import BytesIO
 from openpyxl import load_workbook
 
 from app.exports import spec
-from app.exports.event_study import (EventStudyExportDoc, build_event_study_workbook,
-                                      contract_params, param_pairs_from)
+from app.exports.event_study import EventStudyExportDoc, build_event_study_workbook, contract_params, param_pairs_from
 
 
 def _png(w: int = 200, h: int = 80) -> bytes:

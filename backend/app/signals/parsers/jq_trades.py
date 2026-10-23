@@ -22,9 +22,23 @@ from typing import Any, Dict
 import pandas as pd
 
 from ..codes import normalize_code, parse_date, parse_time
-from .base import (AMOUNT_ALIASES, CODE_ALIASES, DATE_ALIASES, FEE_ALIASES, PRICE_ALIASES,
-                   QTY_ALIASES, STATUS_ALIASES, SIDE_ALIASES, TIME_ALIASES, ParseResult,
-                   decode_bytes, num, pick_col, read_table, side_of)
+from .base import (
+    AMOUNT_ALIASES,
+    CODE_ALIASES,
+    DATE_ALIASES,
+    FEE_ALIASES,
+    PRICE_ALIASES,
+    QTY_ALIASES,
+    SIDE_ALIASES,
+    STATUS_ALIASES,
+    TIME_ALIASES,
+    ParseResult,
+    decode_bytes,
+    num,
+    pick_col,
+    read_table,
+    side_of,
+)
 
 
 def parse_jq_trades(raw, filename: str = "") -> ParseResult:

@@ -21,70 +21,75 @@ import time as _time
 import warnings
 from typing import Any, Dict, List, Optional
 
+from ..datasource.factory import get_data_source, list_data_sources
+
+# 导入即注册自定义算子 + patch register_all_ops（必须在 qlib.init() 之前生效）
+from ..factors.ops_ext import ensure_ops_registered as _ensure_ops_registered
+from ..logger import _log_swallowed  # noqa: E402
 from ..logger import get_logger as _get_logger
 from ..models.backtest import BacktestRequest, BacktestResult
-from .context import (
-    set_progress_callback,
-    set_artifact_dir,
-    set_cancel_check,
-    reset_progress,
-    get_artifact_dir as _get_artifact_dir,
-    check_cancel as _check_cancel,
-    report as _report,
-)
-from .utils import (
-    _default_qlib_uri,
-    _default_exp_uri,
-    _pick_benchmark,
-    _fallback_benchmark,
-    _offset_date,
-    _add_period,
-    _sanitize_name,
-    _make_artifact_dir,
-)
 from .analysis import (
-    _get_pred_label,
-    _compute_benchmark_returns,
-    _compute_layers,
-    _compute_ic,
     _compute_analysis,
-)
-from .metrics import (
-    _aggregate_from_nav,
-    _extract_result,
-    _find_report_fallback,
-    normalize_benchmark_curve,
-    anchor_benchmark_start,
-    _get_segment_end_account,
-    _extract_trades,
-    _extract_end_position,
+    _compute_benchmark_returns,
+    _compute_ic,
+    _compute_layers,
+    _get_pred_label,
 )
 from .artifacts import (
-    _extract_model_artifacts,
+    _dataset_feature_names,
     _extract_feature_importance,
+    _extract_model_artifacts,
+    _load_model_object,
+    _read_train_feature_names,
+    _sanitize_json,
+    _save_backtest_params,
+    _save_compose_attr,
     _save_model_artifacts,
     _save_model_object,
-    _read_train_feature_names,
-    _dataset_feature_names,
+    _save_result_json,
+    _save_train_signature,
+    _task_has_segment_models,
     _verify_reuse_feature_order,
     _verify_reuse_train_semantics,
-    _load_model_object,
-    _task_has_segment_models,
-    _sanitize_json,
-    _save_result_json,
-    _save_backtest_params,
-    _save_train_signature,
-    _save_compose_attr,
 )
 from .charts import (
     _save_curve_snapshot,
 )
-from ..datasource.factory import get_data_source, list_data_sources
-# 导入即注册自定义算子 + patch register_all_ops（必须在 qlib.init() 之前生效）
-from ..factors.ops_ext import ensure_ops_registered as _ensure_ops_registered
-
-from ..logger import _log_swallowed  # noqa: E402
-
+from .context import (
+    check_cancel as _check_cancel,
+)
+from .context import (
+    get_artifact_dir as _get_artifact_dir,
+)
+from .context import (
+    report as _report,
+)
+from .context import (
+    reset_progress,
+    set_artifact_dir,
+    set_cancel_check,
+    set_progress_callback,
+)
+from .metrics import (
+    _aggregate_from_nav,
+    _extract_end_position,
+    _extract_result,
+    _extract_trades,
+    _find_report_fallback,
+    _get_segment_end_account,
+    anchor_benchmark_start,
+    normalize_benchmark_curve,
+)
+from .utils import (
+    _add_period,
+    _default_exp_uri,
+    _default_qlib_uri,
+    _fallback_benchmark,
+    _make_artifact_dir,
+    _offset_date,
+    _pick_benchmark,
+    _sanitize_name,
+)
 
 warnings.filterwarnings("ignore")
 
@@ -456,7 +461,7 @@ def _build_dataset(req: BacktestRequest, instruments: list, train_seg, test_seg)
     #   ⇒ 取训练窗口**最后 ~20%** 作验证集 ✓，并把它从 `train` 里**剔除** ✓（否则仍被污染 ✗）。
     #   ⚠ 训练窗太短（<40 天）时**退回旧行为**（valid == train ✓）并在日志说明 ✓ ——
     #     宁可退化也不让 LightGBM 因验证集过小而训不出来 ✓（护住"能跑"这条底线 ✓）。
-    import pandas as _pd                                # ⚠ 本模块不全局 import pandas，按需引入 ✓
+    import pandas as _pd  # ⚠ 本模块不全局 import pandas，按需引入 ✓
     _ts_, _te_ = _pd.Timestamp(str(train_start)), _pd.Timestamp(str(train_end))
     _vdays_ = int(max(0, (_te_ - _ts_).days) * 0.2)
     if _vdays_ >= 27:                       # ≥27 个自然日 ≈ 20 个交易日 ✓
@@ -711,9 +716,9 @@ def _maybe_compose_signal(req, dataset, model, recorder, seg_label: str | None =
 def _run_single(req: BacktestRequest, instruments: list, benchmark: str) -> BacktestResult:
     """一次性训练回测：用回测前 train 窗口训练，整个回测区间测试。"""
     import qlib
-    from qlib.utils import init_instance_by_config, flatten_dict
+    from qlib.utils import flatten_dict, init_instance_by_config
     from qlib.workflow import R
-    from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
+    from qlib.workflow.record_temp import PortAnaRecord, SignalRecord
 
     # 训练窗口：默认回测开始前 380 天（约 1 年），可用 train_win/train_unit 覆盖
     train_window_days = 380
@@ -1089,12 +1094,12 @@ def _run_rolling(req: BacktestRequest, instruments: list, benchmark: str) -> Bac
     从而保证净值连续（每段期初 = 上一段期末）。
     """
     import qlib
-    from qlib.utils import init_instance_by_config, flatten_dict
-    from qlib.workflow import R
-    from qlib.workflow.record_temp import SignalRecord, PortAnaRecord
 
     # 用交易日历生成滚动分段
     from qlib.data import D
+    from qlib.utils import flatten_dict, init_instance_by_config
+    from qlib.workflow import R
+    from qlib.workflow.record_temp import PortAnaRecord, SignalRecord
     cal = D.calendar(start_time=req.start_date, end_time=req.end_date)
     if len(cal) == 0:
         raise ValueError("回测区间内没有交易日，请检查日期范围")

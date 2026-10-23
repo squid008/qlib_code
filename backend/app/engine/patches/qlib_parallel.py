@@ -27,11 +27,10 @@ import os
 import threading
 from typing import Optional
 
-from qlib.workflow import QlibRecorder, ExpManager
+from qlib.workflow import ExpManager, QlibRecorder
 from qlib.workflow.expm import MLflowExpManager
 
 from ...logger import _log_swallowed  # noqa: E402
-
 
 _PATCHED = threading.Lock()
 _APPLIED = False
@@ -133,7 +132,7 @@ def _patch_recorder_end_run() -> None:
 
     背景：qlib `Recorder.end_run` 里 `mlflow.end_run(status)` 依赖 mlflow 的**全局**
     `_active_run_stack`（进程级），多任务并发时各线程的 run 互相覆盖，`mlflow.end_run`
-    会取到**别的线程**的 run_id 去 set_terminated → 在 store 里找不到 → 
+    会取到**别的线程**的 run_id 去 set_terminated → 在 store 里找不到 →
     `MlflowException: Run with id=xxx not found`（回测在 R.start 退出时失败）。
 
     修复：改用 recorder 自身的 `client`（线程独立 sqlite uri）+ `id`（本线程 run_id）

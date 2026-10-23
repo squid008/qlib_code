@@ -11,8 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from app.routers.factors import SingleFactorTestFactor, SingleFactorTestRequest, \
-    _attach_signal_roll, _signal_exit_nav
+from app.routers.factors import SingleFactorTestFactor, SingleFactorTestRequest, _attach_signal_roll, _signal_exit_nav
 
 CODES = ["SH600000", "SZ000001"]
 CAL = pd.bdate_range("2024-01-01", periods=12)

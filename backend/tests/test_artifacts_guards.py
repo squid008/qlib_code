@@ -25,6 +25,7 @@ import pytest
 
 from app.engine import artifacts as A
 
+
 # ------------------------------------------------------------------ _sanitize_json
 def test_sanitize_replaces_nan_and_inf_with_none():
     assert A._sanitize_json(float("nan")) is None

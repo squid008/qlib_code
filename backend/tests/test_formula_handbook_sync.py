@@ -16,9 +16,9 @@ import re
 
 import pytest
 
-from app.factors.parser.semantic import BUILTIN_FUNCS
-from app.factors.parser.parser import FIELD_MAP as PARSER_FIELD_MAP
 from app.factors.parser.codegen import FIELD_MAP as CODEGEN_FIELD_MAP
+from app.factors.parser.parser import FIELD_MAP as PARSER_FIELD_MAP
+from app.factors.parser.semantic import BUILTIN_FUNCS
 
 _HANDBOOK = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "src", "formulaHandbook.ts")

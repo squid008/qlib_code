@@ -16,8 +16,8 @@
 ⚠ 面板也小（80 只 × 200 日 ✓）⇒ 12 组跑两遍 ≈ **几秒** ✓，能进 CI ✓。
 """
 import hashlib
-import sys
 import os
+import sys
 
 import numpy as np
 import pytest
@@ -26,8 +26,9 @@ BE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BE)
 sys.path.insert(0, os.path.join(BE, "tools"))
 
-from app.signals.engine import run_backtest          # noqa: E402
-from bench_engine import build                      # noqa: E402
+from bench_engine import build  # noqa: E402
+
+from app.signals.engine import run_backtest  # noqa: E402
 
 N_CASES = 12
 SEED = 20261019

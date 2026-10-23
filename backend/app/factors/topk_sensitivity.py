@@ -27,8 +27,7 @@
 import numpy as np
 import pandas as pd
 
-from app.engine.cost_curves import (TRADING_DAYS_PER_YEAR, _annualize_cost,
-                                    _turnover_by_k)
+from app.engine.cost_curves import TRADING_DAYS_PER_YEAR, _annualize_cost, _turnover_by_k
 
 BASE_KS = (1, 2, 3, 5, 10, 20, 50, 100, 200)  # 固定候选（只数）；另加 10%/20% 两档
 # ⚠ 与前端 K 预设（`SingleFactorTestPanel.K_PRESETS` = 1/2/3/5/10/20/50/100/10%/20%）保持

@@ -6,7 +6,6 @@ import h5py
 import numpy as np
 import pytest
 
-
 SPEC = importlib.util.spec_from_file_location(
     "_finance_pit_mapping", Path(__file__).parents[1] / "tools" / "dump_finance.py"
 )

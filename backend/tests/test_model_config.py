@@ -2,8 +2,8 @@
 """模型配置构造函数的单元测试。"""
 import pytest
 
-from app.models.backtest import BacktestRequest
 from app.engine.qlib_engine import _model_config
+from app.models.backtest import BacktestRequest
 
 
 def _req(model="LightGBM", model_params=None):

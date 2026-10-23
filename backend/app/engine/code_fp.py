@@ -24,7 +24,6 @@ from typing import Iterable
 
 from ..logger import _log_swallowed  # noqa: E402
 
-
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 

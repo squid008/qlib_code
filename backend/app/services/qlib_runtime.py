@@ -20,7 +20,6 @@ from typing import Optional
 
 from ..logger import _log_swallowed  # noqa: E402
 
-
 _QLIB_INIT_LOCK = threading.Lock()
 _QLIB_INITIALIZED = False
 
@@ -37,8 +36,8 @@ def ensure_qlib_init(provider_uri: Optional[str] = None) -> None:
 
     with _QLIB_INIT_LOCK:
         if not _QLIB_INITIALIZED:
-            from ..factors.ops_ext import _ALL_OPS as _custom_ops
             from ..config import QLIB_PROVIDER_URI
+            from ..factors.ops_ext import _ALL_OPS as _custom_ops
 
             qlib.init(
                 provider_uri=provider_uri or QLIB_PROVIDER_URI,
@@ -72,6 +71,7 @@ def _restore_custom_ops() -> None:
     """校验并写回 C.custom_ops（被其他 qlib.init 清空时立即恢复）。"""
     try:
         from qlib.config import C
+
         from ..factors.ops_ext import _ALL_OPS as _custom_ops
 
         if not getattr(C, "custom_ops", None):

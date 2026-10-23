@@ -126,3 +126,72 @@ def test_counters_have_low_cardinality():
             assert code.isdigit() and len(code) == 3, "状态码键形态异常：%s" % k
         else:
             assert not any(ch.isdigit() for ch in k), "计数器名里出现了数字 ⇒ 可能是高基数键：%s" % k
+
+# ---------------------------------------------------------------- 慢请求告警（★ v2.11.50）
+def test_should_warn_slow_boundary(monkeypatch):
+    """阈值边界：**恰好等于**阈值就该告警 ✓（`>=` 而不是 `>` ✓ —— 界值属于"已经够慢"✓）。"""
+    import app.metrics as _m
+
+    monkeypatch.setattr(_m, "SLOW_REQUEST_S", 3.0)
+    assert _m.should_warn_slow(2.99) is False
+    assert _m.should_warn_slow(3.0) is True
+    assert _m.should_warn_slow(30.0) is True
+
+
+def test_should_warn_slow_can_be_disabled(monkeypatch):
+    """`SLOW_REQUEST_S <= 0` ⇒ **完全关掉** ✓（压测时不想被刷屏 ✓）。"""
+    import app.metrics as _m
+
+    for off in (0.0, -1.0):
+        monkeypatch.setattr(_m, "SLOW_REQUEST_S", off)
+        assert _m.should_warn_slow(999.0) is False, "阈值 %r 时应关闭告警" % (off,)
+
+
+def _stub_logger(monkeypatch):
+    """把 `main.get_logger` 换成记录器 ✓。
+
+    ⚠ 不能用 `caplog` ✗ —— 本项目的 logger 设了 **`propagate = False`**
+    （见 `app/logger.py` ✓），记录**不会**传到 root ⇒ caplog 永远是空的 ✗
+    （我第一版就这么写的，实测 `实际 0 次` ✓）。打桩才确定 ✓。
+    """
+    import app.main as _main
+
+    calls = []
+
+    class _Rec:
+        def warning(self, msg, *args):
+            calls.append(msg % args if args else msg)
+
+    monkeypatch.setattr(_main, "get_logger", lambda _name: _Rec())
+    return calls
+
+
+def test_slow_request_is_warned_once_per_request(monkeypatch):
+    """⭐⭐ 慢请求要**当场留一条日志** ✓（这是 `/api/metrics` 补不上的那一环）。
+
+    ⚠ 做法：把阈值压到 0.001s ⇒ 任何请求都算慢 ✓ —— **不真等 3 秒** ✗。
+    """
+    import app.metrics as _m
+
+    monkeypatch.setattr(_m, "SLOW_REQUEST_S", 0.001)
+    calls = _stub_logger(monkeypatch)
+    REGISTRY.reset()
+
+    client.get("/api/version")
+
+    assert len(calls) == 1, "应恰好告警一次（每次请求一条 ✓），实际 %d 次：%r" % (len(calls), calls)
+    assert "/api/version" in calls[0], "告警里必须带**路径**（否则不知道哪个接口慢 ✗）：%s" % calls[0]
+    assert "GET" in calls[0], "告警里必须带**方法**：%s" % calls[0]
+
+
+def test_no_warn_when_threshold_disabled(monkeypatch):
+    """关掉阈值（`<=0`）时**一条都不许有** ✓（否则压测/CI 会被刷屏 ✗）。"""
+    import app.metrics as _m
+
+    monkeypatch.setattr(_m, "SLOW_REQUEST_S", 0.0)
+    calls = _stub_logger(monkeypatch)
+    REGISTRY.reset()
+
+    client.get("/api/version")
+
+    assert calls == [], "阈值关闭时不应告警，实际：%r" % (calls,)

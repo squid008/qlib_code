@@ -39,10 +39,8 @@ from typing import Dict, Iterable, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from .panel_expr import _CHIP_BASE_FIELDS, PanelEvaluator, _calendar, chip_turn_of
-
 from ..logger import _log_swallowed  # noqa: E402
-
+from .panel_expr import _CHIP_BASE_FIELDS, PanelEvaluator, _calendar, chip_turn_of
 
 # 默认物化清单（覆盖用户公式用到的档位；要更多档位加进这个元组即可）
 DEFAULT_FIELDS = ("chip_cost_5", "chip_cost_30", "chip_cost_75", "chip_cost_95",

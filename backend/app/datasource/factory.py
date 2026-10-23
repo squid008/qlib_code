@@ -13,11 +13,10 @@ from __future__ import annotations
 import os
 from typing import Dict, Optional
 
+from .. import config
 from .base import DataSource
 from .qlib_source import QlibDataSource
 from .rqalpha_source import RQAlphaDataSource
-from .. import config
-
 
 # 默认 Qlib provider_uri，可通过环境变量/全局配置覆盖
 DEFAULT_QLIB_URI = config.QLIB_PROVIDER_URI

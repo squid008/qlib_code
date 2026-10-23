@@ -13,15 +13,12 @@ import copy
 from typing import Optional
 
 import numpy as np
-
+import pandas as pd
 from qlib.backtest.decision import Order, TradeDecisionWO
 from qlib.contrib.strategy.signal_strategy import BaseSignalStrategy
 from qlib.log import get_module_logger
 
-import pandas as pd
-
 from ..logger import _log_swallowed  # noqa: E402
-
 
 logger = get_module_logger(__name__)
 

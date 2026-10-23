@@ -408,6 +408,7 @@ def _compute_analysis(model, dataset, instruments, seg_label: str, benchmark: Op
     """
     # 分阶段计时（v1.19.39）：预测+label 加载 vs 分层/IC 各占多少（此前只有一个总时长）
     import time as _time
+
     from ..logger import get_logger as _get_logger
     _spans, _tick = [], _time.perf_counter()
 

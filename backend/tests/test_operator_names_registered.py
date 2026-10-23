@@ -52,6 +52,7 @@ def _mapped_names() -> set:
 def _prepare_registry():
     """注册 qlib 内置 + 本项目外挂算子（无需真实行情数据 ✓）。"""
     import qlib.data.ops as _ops
+
     from app.factors.ops_ext import ensure_ops_registered
 
     ensure_ops_registered(force=True)

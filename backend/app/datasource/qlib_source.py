@@ -12,13 +12,13 @@ from datetime import date, datetime
 from typing import Any, List, Optional
 
 from .base import (
-    DataSource,
     DailyBar,
-    FinancialData,
-    IndustryData,
-    IndexConstituent,
-    MinuteBar,
     DataNotAvailableError,
+    DataSource,
+    FinancialData,
+    IndexConstituent,
+    IndustryData,
+    MinuteBar,
 )
 
 

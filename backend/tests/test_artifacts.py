@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from app.engine.artifacts import _sanitize_json, _save_result_json, _save_backtest_params
+from app.engine.artifacts import _sanitize_json, _save_backtest_params, _save_result_json
 from app.engine.metrics import _aggregate_from_nav
 
 

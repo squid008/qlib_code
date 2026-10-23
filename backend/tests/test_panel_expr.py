@@ -8,9 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.factors.panel_expr import parse_expr, reconstruct
-from app.factors.panel_expr import _roll, _ref
-
+from app.factors.panel_expr import _ref, _roll, parse_expr, reconstruct
 
 # ---------------------------------------------------------------------------
 # 解析 / 重建
@@ -259,10 +257,10 @@ def test_panel_matches_qlib_sr_continuous():
     from qlib.config import C as _C
     from qlib.data import D as _D
 
-    from app.engine.qlib_engine import _ensure_qlib_init
-    from app.engine.utils import _default_qlib_uri
     from app.engine.adjust import adjust_expr, normalize_mode
     from app.engine.feature_cache import _sr_wrap_expr
+    from app.engine.qlib_engine import _ensure_qlib_init
+    from app.engine.utils import _default_qlib_uri
     from app.factors.panel_expr import panel_features
 
     _ensure_qlib_init(_default_qlib_uri())
@@ -320,10 +318,10 @@ def test_panel_parallel_matches_single():
     from qlib.config import C as _C
     from qlib.data import D as _D
 
-    from app.engine.qlib_engine import _ensure_qlib_init
-    from app.engine.utils import _default_qlib_uri
     from app.engine.adjust import adjust_expr, normalize_mode
     from app.engine.feature_cache import _sr_wrap_expr
+    from app.engine.qlib_engine import _ensure_qlib_init
+    from app.engine.utils import _default_qlib_uri
     from app.factors.panel_expr import panel_features, panel_features_parallel
 
     _ensure_qlib_init(_default_qlib_uri())
@@ -537,10 +535,10 @@ def test_panel_matches_qlib_ema_nested():
     from qlib.config import C as _C
     from qlib.data import D as _D
 
-    from app.engine.qlib_engine import _ensure_qlib_init
-    from app.engine.utils import _default_qlib_uri
     from app.engine.adjust import adjust_expr, normalize_mode
     from app.engine.feature_cache import _sr_wrap_expr
+    from app.engine.qlib_engine import _ensure_qlib_init
+    from app.engine.utils import _default_qlib_uri
     from app.factors.panel_expr import panel_features
 
     _ensure_qlib_init(_default_qlib_uri())

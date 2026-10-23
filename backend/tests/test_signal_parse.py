@@ -11,6 +11,7 @@ import pytest
 from app.signals.codes import is_index_code, normalize_code, parse_date, parse_time
 from app.signals.parsers import parse_csv
 
+
 # ---------------------------------------------------------------- 代码规范化
 @pytest.mark.parametrize("raw,want,is_index", [
     ("新宝股份(002705.XSHE)", "SZ002705", False),      # 聚宽/米筐后缀 + 中文名

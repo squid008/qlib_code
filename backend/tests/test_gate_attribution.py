@@ -17,7 +17,7 @@ import pytest
 
 pytest.importorskip("lightgbm")
 
-from app.engine import signal_compose as sc          # noqa: E402
+from app.engine import signal_compose as sc  # noqa: E402
 from app.engine.artifacts import _save_compose_attr  # noqa: E402
 
 

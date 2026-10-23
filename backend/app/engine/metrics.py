@@ -7,10 +7,8 @@
 import os
 from typing import Optional
 
-from ..models.backtest import BacktestResult
-
 from ..logger import _log_swallowed  # noqa: E402
-
+from ..models.backtest import BacktestResult
 
 
 def anchor_benchmark_start(nav: list) -> list:
@@ -358,6 +356,7 @@ def _extract_trades(par, recorder) -> list:
     """从回测的 Indicator 对象中提取逐日逐笔调仓记录（含成交价、成本、滑点）。"""
     import glob
     import pickle
+
     import pandas as pd
 
     def _load_from_file() -> object:

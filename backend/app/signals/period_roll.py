@@ -34,15 +34,21 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from .matching import (LOT_DEFAULT, REJECT_TEXT, FILL_LAG as _FILL_LAG,
-                       FILL_PRICE as _FILL_PRICE, fee_of as _fee_of,
-                       fit_lots as _fit_lots, fit_real_lots as _fit_real_lots,
-                       lot_of as _lot_of)
 from .engine import BtResult, _limit_ctx, _perf, _prepare, _trades_frame
-# ★ v2.11.6（技术债 P1-#3 第十二刀）：离场输入准备（列轴对齐 / 整手股数 / 形状自检 ✓）
-from .period_roll_exit_prep import align_exit_inputs
+from .matching import FILL_LAG as _FILL_LAG
+from .matching import FILL_PRICE as _FILL_PRICE
+from .matching import LOT_DEFAULT, REJECT_TEXT
+from .matching import fee_of as _fee_of
+from .matching import fit_lots as _fit_lots
+from .matching import fit_real_lots as _fit_real_lots
+from .matching import lot_of as _lot_of
+
 # ★ v2.11.7（第十三刀）：批次 → 调仓日 → 目标名单（保序去重 ✓）
 from .period_roll_buckets import build_targets
+
+# ★ v2.11.6（技术债 P1-#3 第十二刀）：离场输入准备（列轴对齐 / 整手股数 / 形状自检 ✓）
+from .period_roll_exit_prep import align_exit_inputs
+
 # ★ v2.11.29（第十九刀）：逐日循环的初始状态（含"持有天数按票记"的口径 ✓）
 from .period_roll_state import init_roll_state
 

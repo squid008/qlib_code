@@ -7,13 +7,13 @@
 import threading
 
 from app.engine.context import (
-    set_artifact_dir,
-    set_progress_callback,
-    set_cancel_check,
+    check_cancel,
     get_artifact_dir,
     report,
-    check_cancel,
     reset_progress,
+    set_artifact_dir,
+    set_cancel_check,
+    set_progress_callback,
 )
 
 

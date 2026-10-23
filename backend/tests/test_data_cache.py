@@ -2,7 +2,7 @@
 """进程内数据共享缓存的单元测试（阶段一）。"""
 import pandas as pd
 
-from app.engine.data_cache import DataCache, SHARED_CACHE
+from app.engine.data_cache import SHARED_CACHE, DataCache
 
 
 def _make_df(instruments, dates):

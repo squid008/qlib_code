@@ -7,11 +7,9 @@
 import os
 from typing import Any
 
+from ..logger import _log_swallowed  # noqa: E402
 from ..models.backtest import BacktestRequest, BacktestResult
 from .utils import _add_period
-
-from ..logger import _log_swallowed  # noqa: E402
-
 
 
 def _save_curve_snapshot(dir_path: str, req: BacktestRequest, result: BacktestResult):

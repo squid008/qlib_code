@@ -22,7 +22,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..logger import _log_swallowed  # noqa: E402
 
-
 # ---------------------------------------------------------------- 格式标识
 FORMAT_ID = "qlib-xlsx-export"
 FORMAT_VERSION = "1"                 # 契约版本：列/键有**不兼容**变更时必须 +1 ✓
@@ -207,7 +206,8 @@ def dataset_tag() -> Dict[str, str]:
     out = {"name": "", "label": "", "convention": ""}
     try:
         import os
-        from ..config import QLIB_PROVIDER_URI                     # 本地 import ✓（避免环）
+
+        from ..config import QLIB_PROVIDER_URI  # 本地 import ✓（避免环）
         d = str(QLIB_PROVIDER_URI or "")
         out["name"] = os.path.basename(d.rstrip("/\\"))
         p = os.path.join(d, ".dataset.json")

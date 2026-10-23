@@ -18,20 +18,23 @@ from typing import Dict, List, Optional
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 
-from ..factors.benchmark_curves import BENCHMARKS, BENCH_NAMES
-from ..signals.engine import attach_benchmark, nav_rows as _nav_rows, run_backtest
+from ..factors.benchmark_curves import BENCH_NAMES, BENCHMARKS
+from ..logger import _log_swallowed  # noqa: E402
+from ..signals.engine import attach_benchmark, run_backtest
+from ..signals.engine import nav_rows as _nav_rows
 from ..signals.event import coverage, normalize_events, run_event_study
 from ..signals.models import SignalTestRequest
 from ..signals.parsers import parse_csv
-from ..signals.pricing import (fill_limits, load_bench_wide, load_close_wide,
-                              load_price_panel, resolve_universe)
+from ..signals.pricing import fill_limits, load_bench_wide, load_close_wide, load_price_panel, resolve_universe
 from ..signals.replay import replay_trades
 
-from ..logger import _log_swallowed  # noqa: E402
 # ★ v2.11.14（技术债 P1-#3 第十六刀）：回灌口径解析（复权选价 + 剔除开关优先级 ✓）
-from .signal_test_prep import (build_only_perf_block, require_frame,  # noqa: E402
-                                resolve_exclude_flags, resolve_price_tables)
-
+from .signal_test_prep import (  # noqa: E402
+    build_only_perf_block,
+    require_frame,
+    resolve_exclude_flags,
+    resolve_price_tables,
+)
 
 router = APIRouter(prefix="/api/signal-test", tags=["signal-test"])
 
@@ -608,7 +611,7 @@ def run(req: SignalTestRequest) -> Dict:
         _p2 = None                                            # ★ v2.1.59：延尾后的触发面板 ✓
         _end_ext = end
         try:
-            from qlib.data import D as _Dq                     # 与 `load_price_panel` 同一日历 ✓
+            from qlib.data import D as _Dq  # 与 `load_price_panel` 同一日历 ✓
             _calt = pd.to_datetime(_Dq.calendar())
             _posx = int((_calt <= pd.Timestamp(end)).sum())
             _end_ext = str(_calt[min(_posx + int(horizon) + 3, len(_calt) - 1)].date())

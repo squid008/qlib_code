@@ -24,7 +24,6 @@ import pandas as pd
 from ..logger import _log_swallowed  # noqa: E402
 
 
-
 def _norm_midx(idx) -> pd.MultiIndex:
     inst = idx.get_level_values("instrument").astype(str)
     dt = pd.to_datetime(idx.get_level_values("datetime")).strftime("%Y-%m-%d")

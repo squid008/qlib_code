@@ -21,8 +21,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from app.routers.factors import (SingleFactorTestFactor, SingleFactorTestRequest,
-                                 _apply_exit_validation)
+from app.routers.factors import SingleFactorTestFactor, SingleFactorTestRequest, _apply_exit_validation
 
 
 def _f(name: str, expr: str) -> SingleFactorTestFactor:

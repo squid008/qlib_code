@@ -17,7 +17,6 @@ import pytest
 
 from app.services import datasets as D
 
-
 # 各数据集**默认**应有的口径标记（`convention="auto"` 时按名字取 ✓；显式给 None ⇒ 故意不写标记 ✓）
 DEFAULT_CONV = {"cn_data": "ricequant", "cn_data2": "tushare", "cn_data3": "qlib"}
 

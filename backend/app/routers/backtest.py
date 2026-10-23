@@ -13,13 +13,11 @@ import os
 
 from fastapi import APIRouter, HTTPException
 
-from ..engine.task_manager import get_task_manager
-from ..models.backtest import BacktestRequest, BacktestTask, TaskIdResponse
 from .. import config
-from ..services import artifacts_service
-
+from ..engine.task_manager import get_task_manager
 from ..logger import _log_swallowed  # noqa: E402
-
+from ..models.backtest import BacktestRequest, BacktestTask, TaskIdResponse
+from ..services import artifacts_service
 
 router = APIRouter(prefix="/api", tags=["backtest"])
 

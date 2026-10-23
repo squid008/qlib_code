@@ -11,13 +11,12 @@
 """
 
 import numpy as np
+
 # ⚠ `pd` 只出现在**字符串注解**里（`-> "pd.Series"` ✓）—— 但 ruff 会按名字解析注解 ✓
 #   ⇒ 不导入就是 F821 ✗（实测抓到 2 处 ✓）。
 import pandas as pd  # noqa: F401
 
-
 from ..logger import _log_swallowed  # noqa: E402
-
 
 # 筹码派生字段（`$chip_cost_*` / `$chip_win_*`）依赖的基础字段（v1.19.83）：
 #   close/high/low  → 当日价格区间（筹码注入的范围）

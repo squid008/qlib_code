@@ -30,35 +30,69 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..factors.catalog import get_catalog, FACTOR_PROVIDERS
-
+# ---- ★ P1-A-2 补遗（2026-10-18 ✓）：ruff F821 实测出来的 5 个依赖 ----
+from .. import config  # noqa: E402
+from ..engine.task_manager import get_task_manager  # noqa: E402
+from ..factors.catalog import FACTOR_PROVIDERS, get_catalog
+from ..factors.event_study import run_event_study  # noqa: E402
+from ..factors.single_test import FactorTestCancelled, _bad_date_arg  # noqa: E402
+from ..logger import _log_swallowed  # noqa: E402
 from .factors_models import (  # noqa: F401
-    SingleFactorTestFactor, SingleFactorTestRequest, EventStudyRequest, EventNavRequest,
     EventNavCancelRequest,
+    EventNavRequest,
+    EventStudyRequest,
+    SingleFactorTestFactor,
+    SingleFactorTestRequest,
 )
 from .factors_state import (  # noqa: F401
-    _SFT_MAX_TASKS, _SFT_RESULT_KEEP, _SFT_TASKS, _SFT_LOCK,
-    _sft_store, _sft_trim_results, _sft_get, est_export_state,
-    sft_export_state, _EST_TASKS, _EST_LOCK, _EST_RESULT_KEEP,
-    _est_get, _est_store, _est_trim, _UNTRIG_CACHE,
-    _UNTRIG_LOCK, _UNTRIG_CAP, _NAV_PANEL_CACHE, _NAV_PANEL_LOCK,
-    _NAV_BT_CACHE, _NAV_BT_LOCK, _NAV_BT_CAP, _NAV_BT_STASH,
-    _NAV_BT_STASH_CAP, _PR_BT_STASH, _PR_BT_CAP, _pr_key,
-    pr_bt_stash_put, pr_bt_stash_get, clear_nav_caches, _nav_stash_key,
-    nav_bt_stash_get, _NAV_REQ_SEQ, _NAV_REQ_LOCK, _NAV_REQ_KEEP,
-    _NavCancelled, _ev_fingerprint, _nav_req_key, _nav_req_begin,
-    _nav_req_current, _NAV_CANCEL, _NAV_CANCEL_MAX, _nav_bt_key,
-    _nav_cache_key, _nav_panel_cached,
+    _EST_LOCK,
+    _EST_RESULT_KEEP,
+    _EST_TASKS,
+    _NAV_BT_CACHE,
+    _NAV_BT_CAP,
+    _NAV_BT_LOCK,
+    _NAV_BT_STASH,
+    _NAV_BT_STASH_CAP,
+    _NAV_CANCEL,
+    _NAV_CANCEL_MAX,
+    _NAV_PANEL_CACHE,
+    _NAV_PANEL_LOCK,
+    _NAV_REQ_KEEP,
+    _NAV_REQ_LOCK,
+    _NAV_REQ_SEQ,
+    _PR_BT_CAP,
+    _PR_BT_STASH,
+    _SFT_LOCK,
+    _SFT_MAX_TASKS,
+    _SFT_RESULT_KEEP,
+    _SFT_TASKS,
+    _UNTRIG_CACHE,
+    _UNTRIG_CAP,
+    _UNTRIG_LOCK,
+    _est_get,
+    _est_store,
+    _est_trim,
+    _ev_fingerprint,
+    _json_safe,  # noqa: E402
+    _nav_bt_key,
+    _nav_cache_key,
+    _nav_panel_cached,
+    _nav_req_begin,
+    _nav_req_current,
+    _nav_req_key,
+    _nav_stash_key,
+    _NavCancelled,
+    _pr_key,
+    _sft_get,
+    _sft_store,
+    _sft_trim_results,
+    clear_nav_caches,
+    est_export_state,
+    nav_bt_stash_get,
+    pr_bt_stash_get,
+    pr_bt_stash_put,
+    sft_export_state,
 )
-# ---- ★ P1-A-2 补遗（2026-10-18 ✓）：ruff F821 实测出来的 5 个依赖 ----
-from .. import config                                              # noqa: E402
-from ..engine.task_manager import get_task_manager                 # noqa: E402
-from ..factors.event_study import run_event_study                  # noqa: E402
-from ..factors.single_test import FactorTestCancelled, _bad_date_arg  # noqa: E402
-from .factors_state import _json_safe                              # noqa: E402
-
-from ..logger import _log_swallowed  # noqa: E402
-
 
 router = APIRouter(prefix="/api/factors", tags=["factors"])  # noqa: E402
 
@@ -502,7 +536,7 @@ def event_study_nav(req: EventNavRequest):
                 nav = nav.copy()
                 nav["bench_equal"] = _s.reindex(nav.index).ffill()
                 try:
-                    from ..engine.perf_metrics import compute_perf      # 与上面净值统计同一个 ✓
+                    from ..engine.perf_metrics import compute_perf  # 与上面净值统计同一个 ✓
                     _ret = nav["bench_equal"].pct_change().fillna(0.0).to_numpy()
                     stats["bench_equal"] = compute_perf(_ret)
                 except Exception as e:  # noqa: BLE001

@@ -16,10 +16,8 @@ from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
 
-from ..codes import normalize_code, parse_date, parse_time, CodeInfo
-
 from ...logger import _log_swallowed  # noqa: E402
-
+from ..codes import CodeInfo, normalize_code, parse_date, parse_time
 
 # ---- 列名别名（小写去空格后匹配）----
 DATE_ALIASES: Sequence[str] = (
@@ -225,7 +223,7 @@ def parse_csv(raw, filename: str = "") -> ParseResult:
       只会读**第一页**、必然误判 ✗）⇒ 走专用适配器 ✓（见 `parsers/qlib_export.py`）。
       ⚠ 必须排在 `excel_to_csv_text` 之前：后者只取 `sheet_name=0` ✗。
     """
-    from .qlib_export import looks_like_export, parse_export   # 延迟 import：避免模块级成环 ✓
+    from .qlib_export import looks_like_export, parse_export  # 延迟 import：避免模块级成环 ✓
 
     if looks_like_export(raw):
         res = parse_export(raw, filename)

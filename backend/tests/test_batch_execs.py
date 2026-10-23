@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.signals.batch_execs import build_batch_execs, NO_SIGNAL_ERROR
+from app.signals.batch_execs import NO_SIGNAL_ERROR, build_batch_execs
 
 CAL = pd.DatetimeIndex(pd.bdate_range("2024-01-02", periods=5))   # 5 个交易日
 COL_OF = {"AAA": 0, "BBB": 1}

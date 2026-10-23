@@ -25,7 +25,7 @@ from typing import Any, Dict
 import numpy as np
 import pandas as pd
 
-from .base import ParseResult, decode_bytes, pick_col, read_table, num
+from .base import ParseResult, decode_bytes, num, pick_col, read_table
 
 COL_ALIAS = {
     "date": ("时间", "日期", "date", "time", "交易日"),

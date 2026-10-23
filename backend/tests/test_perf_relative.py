@@ -20,9 +20,10 @@
 """
 from __future__ import annotations
 
+from time import perf_counter
+
 import numpy as np
 import pytest
-from time import perf_counter
 
 from app.factors.ops_ext import barslast_vec, dyn_window_sum_vec
 

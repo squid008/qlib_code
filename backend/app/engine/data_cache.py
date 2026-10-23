@@ -25,7 +25,6 @@ import pandas as pd
 
 from ..logger import _log_swallowed  # noqa: E402
 
-
 _CACHE_LOCK = threading.Lock()
 
 

@@ -14,11 +14,11 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .parser import parse_formula, ParseError
+from .codegen import CodeGenError, generate
 from .lexer import LexerError
-from .semantic import resolve, SemanticError
-from .codegen import generate, CodeGenError
-from .macros import expand_calls, build_library, extract_params, apply_param_defaults
+from .macros import apply_param_defaults, build_library, expand_calls, extract_params
+from .parser import ParseError, parse_formula
+from .semantic import SemanticError, resolve
 
 # ---------------------------------------------------------------------------
 # 粘贴文本归一化（2026-09-16：用户贴「二浪加强」报"语法错误"，查实是**看不见/全角的字符**）

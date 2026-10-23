@@ -11,16 +11,16 @@ from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from ..datasource.factory import get_data_source, list_data_sources
 from ..datasource.base import (
-    DataSourceError,
-    DataNotAvailableError,
     DailyBar,
-    MinuteBar,
+    DataNotAvailableError,
+    DataSourceError,
     FinancialData,
-    IndustryData,
     IndexConstituent,
+    IndustryData,
+    MinuteBar,
 )
+from ..datasource.factory import get_data_source, list_data_sources
 
 router = APIRouter(prefix="/api", tags=["data"])
 

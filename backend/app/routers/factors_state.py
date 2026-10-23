@@ -21,8 +21,6 @@
 - **删除即 tombstone 式的"清理"** ✓：清理端点只清已完成任务 ✓（跑着的不动 ✓）。
 """
 
-from ..logger import _log_swallowed  # noqa: E402
-
 import hashlib
 import json
 import threading
@@ -33,7 +31,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from ..services import task_store   # ★ P1-C-2：任务表落盘 ✓（细节见该模块文件头 ✓）
+from ..logger import _log_swallowed  # noqa: E402
+from ..services import task_store  # ★ P1-C-2：任务表落盘 ✓（细节见该模块文件头 ✓）
 
 _SFT_MAX_TASKS = 50
 

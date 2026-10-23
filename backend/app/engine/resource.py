@@ -28,7 +28,6 @@ from typing import Optional
 
 from ..logger import _log_swallowed  # noqa: E402
 
-
 logger = None
 
 
@@ -384,7 +383,10 @@ def _patch_loky_nowin() -> None:
         from joblib.externals.loky.backend import popen_loky_win32 as _lp
         from joblib.externals.loky.backend import spawn as _lspawn
         from joblib.externals.loky.backend.popen_loky_win32 import (
-            _close_handles, _path_eq, get_command_line, WINENV,
+            WINENV,
+            _close_handles,
+            _path_eq,
+            get_command_line,
         )
 
         _orig_init = _lp.Popen.__init__
@@ -395,6 +397,7 @@ def _patch_loky_nowin() -> None:
             import sys as _sys
             from multiprocessing import util as _mp_util
             from multiprocessing.context import set_spawning_popen
+
             from joblib.externals.loky.backend import reduction as _lred
 
             prep_data = _lspawn.get_preparation_data(

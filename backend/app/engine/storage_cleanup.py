@@ -26,7 +26,6 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict
 
 from ..logger import _log_swallowed  # noqa: E402
 
-
 _FEATURE_CACHE_GB = float(os.environ.get("QLIB_FEATURE_CACHE_GB", "2.0"))
 # v1.19.12：artifacts 由「固定保留 40 个」改为**容量配额优先 + 条数兜底**（详见 _clean_artifacts）。
 _ARTIFACTS_GB = float(os.environ.get("QLIB_ARTIFACTS_GB", "30.0"))

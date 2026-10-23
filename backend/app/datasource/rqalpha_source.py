@@ -29,18 +29,16 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from .base import (
-    DataSource,
-    DailyBar,
-    FinancialData,
-    IndustryData,
-    IndexConstituent,
-    MinuteBar,
-    DataNotAvailableError,
-)
-
 from ..logger import _log_swallowed  # noqa: E402
-
+from .base import (
+    DailyBar,
+    DataNotAvailableError,
+    DataSource,
+    FinancialData,
+    IndexConstituent,
+    IndustryData,
+    MinuteBar,
+)
 
 
 class RQAlphaDataSource(DataSource):

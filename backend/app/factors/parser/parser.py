@@ -11,14 +11,36 @@ from __future__ import annotations
 
 from typing import List, NoReturn
 
+from ..calc_date import is_date_name
 from .ast import (
-    Formula, Assign, Output, Expr, Num, Str, Field, Var, BinOp, UnaryOp, FuncCall,
+    Assign,
+    BinOp,
+    Expr,
+    Field,
+    Formula,
+    FuncCall,
+    Num,
+    Output,
+    Str,
+    UnaryOp,
+    Var,
 )
 from .lexer import (
-    Lexer, Token, TT_NUM, TT_IDENT, TT_OP, TT_LPAREN, TT_RPAREN,
-    TT_SEMI, TT_COMMA, TT_COLON, TT_ASSIGN, TT_STR, TT_EOF, LexerError,
+    TT_ASSIGN,
+    TT_COLON,
+    TT_COMMA,
+    TT_EOF,
+    TT_IDENT,
+    TT_LPAREN,
+    TT_NUM,
+    TT_OP,
+    TT_RPAREN,
+    TT_SEMI,
+    TT_STR,
+    Lexer,
+    LexerError,
+    Token,
 )
-from ..calc_date import is_date_name
 
 # 行情字段（大写）→ qlib $field
 FIELD_MAP = {

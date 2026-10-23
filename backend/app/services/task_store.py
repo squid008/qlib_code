@@ -38,7 +38,6 @@ import shutil
 
 from ..config import WORK_DIR
 
-
 _logger = None
 
 

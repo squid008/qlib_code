@@ -26,12 +26,12 @@ import uuid
 from datetime import datetime
 from typing import Dict, Optional
 
-from ..logger import get_logger
-from ..models.backtest import BacktestRequest, BacktestTask, BacktestResult
+from ..logger import (
+    _log_swallowed,  # noqa: E402
+    get_logger,
+)
+from ..models.backtest import BacktestRequest, BacktestResult, BacktestTask
 from . import resource
-
-from ..logger import _log_swallowed  # noqa: E402
-
 
 
 def current_max_concurrent() -> int:
@@ -329,7 +329,7 @@ class TaskManager:
 
         # 应用 qlib 外挂补丁（monkey-patch，不改 qlib 内核）
         try:
-            from .patches import patch_qlib_parallel, patch_cancel_callbacks
+            from .patches import patch_cancel_callbacks, patch_qlib_parallel
             # 1) 多线程并行补丁：把全局 R 替换为线程本地版本，使多任务并发不冲突
             patch_qlib_parallel(base_dir=self._work_dir if self._work_dir else None)
             # 2) 训练中途可取消补丁：monkey-patch lightgbm/xgboost.train，注入每 N 轮取消检查

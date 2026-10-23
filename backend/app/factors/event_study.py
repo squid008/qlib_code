@@ -27,20 +27,19 @@ from __future__ import annotations
 import warnings
 from typing import Optional
 
-# ★ v2.11.1（技术债 P1-#3）：`run_event_study` 的两个前置阶段搬去独立模块 ✓
-from .event_study_stages import _build_triggers, _cache_lookup, _resolve_warmup
-
 import numpy as np
 import pandas as pd
 
 from ..engine.adjust import adjust_expr, normalize_mode
 from ..engine.feature_cache import _sr_wrap_expr
 from ..engine.limits import field_bin_available, mark_limit_up
+
 # v1.19.24：日配对稳定性（HAC t / 日胜率）走**零副作用**共用模块，与单因子测试同一实现
 from ..engine.stats import pair_stability
-
 from ..logger import _log_swallowed  # noqa: E402
 
+# ★ v2.11.1（技术债 P1-#3）：`run_event_study` 的两个前置阶段搬去独立模块 ✓
+from .event_study_stages import _build_triggers, _cache_lookup, _resolve_warmup
 
 
 def _q(x: np.ndarray, p: float) -> float:

@@ -2,9 +2,9 @@
 """数据源抽象层单元测试：代码转换、工厂分发、回测引擎数据源解析。"""
 import pytest
 
-from app.models.backtest import BacktestRequest
 from app.datasource.rqalpha_source import RQAlphaDataSource
 from app.engine import qlib_engine
+from app.models.backtest import BacktestRequest
 
 
 class TestCodeConversion:

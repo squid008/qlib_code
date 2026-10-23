@@ -10,7 +10,6 @@
 """
 import numpy as np
 import pandas as pd
-
 from qlib.data.base import ExpressionOps
 from qlib.data.ops import Corr as _QLIB_CORR
 

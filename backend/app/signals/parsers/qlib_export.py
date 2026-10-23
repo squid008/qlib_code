@@ -25,11 +25,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from ...exports import spec
+from ...logger import _log_swallowed  # noqa: E402
 from ..codes import normalize_code
 from .base import ParseResult
-
-from ...logger import _log_swallowed  # noqa: E402
-
 
 _KINDS = (spec.KIND_TOPK, spec.KIND_EVENT_STUDY)
 

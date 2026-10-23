@@ -164,7 +164,7 @@ def test_if_override_is_registered():
       `tests/test_operator_names_registered.py` 负责 ✓（它按 `_ALL_OPS` / `__all__` 核对 ✓）
       ⇒ 本测试只为"类本身可用"提供一条直连断言 ✓。
     """
-    from app.factors.ops_ext import If, _ALL_OPS, ensure_ops_registered
+    from app.factors.ops_ext import _ALL_OPS, If, ensure_ops_registered
 
     ensure_ops_registered()
     assert If in tuple(_ALL_OPS)          # 已进注册清单 ⇒ 会被 Operators.register 注册 ✓

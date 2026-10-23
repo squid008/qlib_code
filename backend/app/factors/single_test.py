@@ -25,24 +25,26 @@ if TYPE_CHECKING:                       # 仅类型标注用（有 `from __futur
 import numpy as np
 import pandas as pd
 
-from ..engine.perf_metrics import compute_perf
-from ..engine.limits import mark_limit_up, field_bin_available
 from ..engine.adjust import adjust_expr, normalize_mode
 from ..engine.feature_cache import _sr_wrap_expr
 from ..engine.inst_mask import _daily_member_mask, _inst_spans_path  # noqa: F401
+from ..engine.limits import field_bin_available, mark_limit_up
+from ..engine.perf_metrics import compute_perf
+
 # v1.19.24：`_acf` / `_hac_t` 搬到**零副作用轻量模块** `engine/stats.py`（事件研究也要用同一实现，
 # 算 per-k 日配对稳定性；而本模块 import 时会 `_engine_init`，事件研究绝不能反向 import 本模块）。
 # 这里保留原名（`_acf` / `_hac_t`）直接转发 ⇒ 行为与调用点逐位不变。
-from ..engine.stats import acf as _acf, hac_t as _hac_t  # noqa: F401
+from ..engine.stats import acf as _acf  # noqa: F401
+from ..engine.stats import hac_t as _hac_t
+from ..logger import _log_swallowed  # noqa: E402
 from .event_study import build_event_stats, compute_baseline_curves
+
 # ★ v2.7.0：离场公式若含"入场价"（ENTRY_PRICE / ENTRY_FIRST ⇒ 回测状态量 ✓）⇒ 拆成
 #   「预计算列（交给面板、任意字段/算子都能用 ✓）+ 骨架（回测逐日代入 ✓）」，见 factors/exit_rules.py ✓
 from .exit_rules import split_entry_rule, uses_entry
+
 # ★ v2.11.5：覆盖率口径（含那次"同因子不同覆盖率"事故的来历 ✓）搬去独立模块 ✓
 from .single_test_coverage import coverage_of
-
-from ..logger import _log_swallowed  # noqa: E402
-
 
 
 def _inst_codes(s: pd.DataFrame) -> pd.Series:
@@ -99,8 +101,8 @@ def _dump_sft_error(exc: Exception) -> None:
 
         import qlib
         import qlib.data.ops as _qlib_ops
-        from qlib.data.ops import Operators
         from qlib.config import C as _C
+        from qlib.data.ops import Operators
 
         backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         log_path = os.path.join(backend_dir, "workdir", "sft_error.log")

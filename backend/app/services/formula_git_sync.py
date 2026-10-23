@@ -50,10 +50,10 @@ import subprocess
 import sys
 import threading
 
-from ..logger import _Utf8SafeStream      # ★ v1.20.63：安全打印（GBK 下不抛 ✓）
-
-from ..logger import _log_swallowed  # noqa: E402
-
+from ..logger import (
+    _log_swallowed,  # noqa: E402
+    _Utf8SafeStream,  # ★ v1.20.63：安全打印（GBK 下不抛 ✓）
+)
 
 # ⚠ 本模块的日志**必须**走安全打印：后端 stdout 在 Windows 下常是 **GBK** ✗ ⇒
 #   `print("✓/✗ ...")` 会抛 `UnicodeEncodeError`（这两三个字符**不在 GBK 字符集**里 ✗✓）

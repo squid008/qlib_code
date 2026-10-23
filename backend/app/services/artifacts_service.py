@@ -17,10 +17,10 @@ import shutil
 from typing import Any, Dict, List, Optional, cast
 
 from .. import config
-from ..logger import get_logger
-
-from ..logger import _log_swallowed  # noqa: E402
-
+from ..logger import (
+    _log_swallowed,  # noqa: E402
+    get_logger,
+)
 
 logger = get_logger(__name__)
 
@@ -226,7 +226,7 @@ def build_feature_formulas(params: dict, feature_names: list) -> list:
     用途：前端「特征列表」出表 + 下载 CSV（`特征名,公式`）。
     """
     from ..factors.catalog import get_catalog
-    from ..factors.parser import translate_formula, build_library
+    from ..factors.parser import build_library, translate_formula
 
     def _flat(dataset: str) -> dict:
         try:
@@ -399,8 +399,8 @@ def scan_history() -> dict:
     同时附带 `is_task_running` 字段：从 task_manager 检查任务是否正在内存中运行，
     前端据此判断能否删除（未运行 → 可删除；运行中 → 禁用）。
     """
-    from ..engine.task_manager import get_task_manager  # 避免循环 import
     from .. import config as _config
+    from ..engine.task_manager import get_task_manager  # 避免循环 import
 
     root = artifacts_root()
     if not os.path.isdir(root):

@@ -15,8 +15,6 @@ import pandas as pd
 
 from ..logger import _log_swallowed  # noqa: E402
 
-
-
 # ★★ v1.20.46（用户 2026-09-22 审计 ✓）：**"静默降级"必须叫出声** ✗
 #   本模块 `_daily_member_mask` 的契约是"返回 None ⇒ 调用方**不筛**" ✓ ——
 #   而"不筛"正是 v1.18.50 修掉的**股票池未来函数/幸存者偏差**旧口径 ✗✗。

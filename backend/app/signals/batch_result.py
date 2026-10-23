@@ -46,7 +46,7 @@ def build_batch_result(*, nav_dates: List, nav_vals: List,
     ⇒ `avg_hold_days` 变成 `None`、`fees_paid` 变成 0 ✗
     （是 `test_signal_batch.py::test_avg_hold_days_is_reported` 当场抓到的 ✓）。
     """
-    from .engine import BtResult, _perf        # 懒导入：避开循环引用 ✓（见文件头 ⚠）
+    from .engine import BtResult, _perf  # 懒导入：避开循环引用 ✓（见文件头 ⚠）
 
     nav = pd.Series(nav_vals, index=pd.DatetimeIndex(nav_dates))
     out = BtResult()

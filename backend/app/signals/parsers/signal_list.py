@@ -21,9 +21,23 @@ from __future__ import annotations
 import pandas as pd
 
 from ..codes import normalize_code, parse_date, split_multi_codes
-from .base import (AMOUNT_ALIASES, BUCKET_ALIASES, CODE_ALIASES, DATE_ALIASES, FEE_ALIASES,
-                   PRICE_ALIASES, QTY_ALIASES, STATUS_ALIASES, SIDE_ALIASES, ParseResult,
-                   decode_bytes, pick_col, read_table, side_of, num)
+from .base import (
+    AMOUNT_ALIASES,
+    BUCKET_ALIASES,
+    CODE_ALIASES,
+    DATE_ALIASES,
+    FEE_ALIASES,
+    PRICE_ALIASES,
+    QTY_ALIASES,
+    SIDE_ALIASES,
+    STATUS_ALIASES,
+    ParseResult,
+    decode_bytes,
+    num,
+    pick_col,
+    read_table,
+    side_of,
+)
 
 
 def parse_signal_list(raw, filename: str = "") -> ParseResult:
