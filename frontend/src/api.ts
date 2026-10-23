@@ -847,8 +847,17 @@ export async function blobErrorDetail(err: unknown): Promise<string> {
   try {
     if (data instanceof Blob) {
       const text = await data.text()
-      const obj = JSON.parse(text) as { detail?: string }
-      if (obj?.detail) return obj.detail
+      // ★ v2.11.51（写契约测试时抓到的真 bug ✗→✓）：**`JSON.parse` 必须单独 try** ——
+      //   原来它和外层共用一个 try ✓ ⇒ 后端返回**纯文本**错误（不是 JSON ✓）时
+      //   `JSON.parse` 抛错 ⇒ 直接跳到外层 catch ✗ ⇒ 下面那行"原样截断"**是死代码** ✗
+      //   ⇒ 用户看到的是"导出失败（后端未返回可读原因）"✗，而后端其实**给了原因** ✓。
+      //   现在：解析不出来就退回原文 ✓（截 300 字 ✓ 防超长）。
+      try {
+        const obj = JSON.parse(text) as { detail?: string }
+        if (obj?.detail) return obj.detail
+      } catch {
+        // 不是 JSON ⇒ 往下走，用原文 ✓
+      }
       return text.slice(0, 300)
     }
     if (typeof data === 'object' && data && 'detail' in data) {
