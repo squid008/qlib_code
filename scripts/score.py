@@ -276,6 +276,18 @@ def main() -> int:
           "bandit -ll" in ci and "gitleaks" in ci and "audit-level=critical" in ci, "ci.yml")
     check(STATIC, "后端**默认绑回环**",
           "BACKEND_HOST" in rest and "'127.0.0.1'" in rest, "restart_backend.ps1")
+    # ★ v2.11.52c：`.ps1` 的**反引号续行后面不能有空行** ✗ —— PowerShell 会在那里断语句 ✓，
+    #   而"多一个空行"这种损坏**看起来完全正常** ✓（我把它写进去过一次：后端起不来，
+    #   但脚本语法校验还是 OK ✗）⇒ 用脚本盯住 ✓。
+    bad_cont = []
+    for name in ("restart_backend.ps1", "tag_release.ps1"):
+        ls = read(os.path.join(ROOT, "scripts", name)).replace("\r\n", "\n").split("\n")
+        for i, ln in enumerate(ls[:-1]):
+            if ln.rstrip().endswith("`") and not ls[i + 1].strip():
+                bad_cont.append("%s:%d" % (name, i + 1))
+    check(STATIC, "`.ps1` 反引号续行后无空行（否则语句会断 ✗）",
+          not bad_cont, "、".join(bad_cont[:3]) or "无")
+
     check(STATIC, "metrics + Prometheus 文本 + 慢请求告警",
           "/api/metrics" in mainpy and "_warn_if_slow" in mainpy, "main.py")
     check(STATIC, "版本三处一致",
