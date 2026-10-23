@@ -115,3 +115,6 @@ backend/coverage.json
 frontend/_score_cov/
 backend/_score_cov.json
 backend/_score_junit.xml
+
+# 绝对评分的中间产物（v2.11.53，可复算 ⇒ 不入库）
+scripts/abs_metrics.json

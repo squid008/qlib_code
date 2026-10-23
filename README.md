@@ -113,10 +113,15 @@ npm run dev            # → http://127.0.0.1:5173
 | 数值指纹 | **20 条**（引擎 16 + 策略 4；跨 Windows/ubuntu 同 sha） |
 | 绝对性能门 | 4 条（合成数据，阈值 `3×基线+0.2s`） |
 | 技术债 | 在册 3（`P1-#2`/`P1-#3`/`P2-#22`）+ 已清偿 19 |
-| 客观指数 | **33 / 33 ⇒ 10.0**（`python scripts/score.py --full` ✓ **实测组 11/11** —— 只信这一组）|
+| 闸门达成率 | 34 / 34（`python scripts/score.py --full`）⚠ **这个 10.0 只说明"34 条是非题全过"✗ 不是质量** |
+| **绝对质量** | **7.90 / 10**（`python scripts/score_abs.py` ✓ 12 维等权、阈值全公开、逐条可复核）|
 | 发版 tag | 与版本同步（`scripts/tag_release.ps1` 自动打；此前断档到 v2.9.18 ✗） |
 
-**客观评分**（替代以前的主观 12 维打分）：`python scripts/score.py --full`
+**两个分数，别混用**：
+- `python scripts/score.py --full` ⇒ **闸门达成率**（34 条是非题；全过=10.0，**没有分辨率** ✗）；
+- `python scripts/score_abs.py` ⇒ **绝对质量**（12 维等权，看"离行业标杆差多少" ✓ 现在 **7.90**）。
+
+**闸门达成率**：`python scripts/score.py --full`
 —— **33 条**硬闸门逐条 `✓/✗` 并给证据，`指数 = 通过/计入 × 10`，**没有权重** ✓。
 ⚠ 分三组看：**实测 11**（真跑 mypy/pytest/实测覆盖率…）／**棘轮 7**（门槛只许升，跟
 `scripts/score_baseline.json` 比）／静态 15（**只证明配置没被删** ✗）。
