@@ -133,7 +133,9 @@ def main() -> int:
     s7 = [
         B(m["doc_lines"], [(10000, 10), (5000, 9), (2000, 8), (500, 6)],
           "文档 %d 行 / %d 篇" % (m["doc_lines"], m["doc_files"])),
-        (4 if not m["has_arch_doc"] else 10, "无架构文档（依赖图/调用链 ✗）"),
+        # ⚠ 文案必须跟着分数走 ✗→✓（我上一版给了 10 分却仍显示"无架构文档"✗ —— 证据说谎比没证据糟 ✗）
+        ((10, "架构文档 ✓（md/architecture.md：实测依赖矩阵 + 2 条调用链 + 全局状态表）")
+         if m["has_arch_doc"] else (4, "无架构文档（依赖图/调用链 ✗）")),
         B(m["readme_lines"], [(300, 10), (200, 9), (100, 8)], "README %d 行" % m["readme_lines"]),
         (10, "技术债/踩坑库/api_index/数据口径 齐 ✓"),
     ]
@@ -143,7 +145,8 @@ def main() -> int:
     s8 = [
         (10, "metrics + Prometheus 文本 ✓"),
         (9, "慢请求阈值告警 ✓"),
-        (3, "无抓取端/看板/告警规则 ✗"),
+        ((9, "抓取端 ✓（scripts/scrape_metrics.py：拉取+汇总+超阈值退出码+Prometheus 配置生成）")
+         if m.get("has_scrape_tool") else (3, "无抓取端/看板/告警规则 ✗")),
         (9, "日志轮转 ✓"),
     ]
     dim("可观测性", *s8)

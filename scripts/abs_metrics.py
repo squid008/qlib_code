@@ -156,6 +156,10 @@ def main():
     #   这是"性能与资源"里唯一能进常规 CI 的硬指标 ✓（真压测要起服务 ✗）。
     mem_test = os.path.join(BE, "tests", "test_mem_baseline.py")
     out["has_mem_baseline"] = os.path.isfile(mem_test) and "tracemalloc" in read(mem_test)
+    # ★ v2.11.61：**指标抓取端**（拉 + 算人类关心的数 + 超阈值退出码 ✓）——
+    #   "有点位但没人抓"和"有抓取端"是两件事 ✓（外部评审点过 ✓）。
+    scrape = os.path.join(ROOT, "scripts", "scrape_metrics.py")
+    out["has_scrape_tool"] = os.path.isfile(scrape) and "--max-avg-ms" in read(scrape)
     out["complexity_frozen"] = len(re.findall(r'^\s+"[^"]+::', read(os.path.join(BE, "tests", "test_complexity.py")), re.M))
 
     dst = os.path.join(ROOT, "scripts", "abs_metrics.json")

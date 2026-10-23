@@ -81,7 +81,12 @@ def test_dash_inside_field_is_not_subtraction():
 @pytest.mark.parametrize("bad", ["Mean($close", "1 + ", "$", "Foo(", "", "()"])
 def test_bad_expressions_raise(bad):
     """坏表达式必须**抛** ✓（不能"解析出一棵残树、后面算出垃圾"✗）。"""
-    with pytest.raises(Exception):
+    # ★ v2.11.61（ruff **B017**）：原来是 `pytest.raises(Exception)` ✗ —— 那等于
+    #   "只要炸了就算对" ✓，连 `KeyError` / `TypeError` 这种**实现 bug** 也会被当成"预期行为" ✗。
+    #   实测（2026-10-23）这 6 个坏输入抛的是 `ValueError`（语法/语义层）或 `IndexError`（截断输入）✓
+    #   ⚠ `IndexError` 其实是个**小 wart** ✓ —— 解析器本该抛语法错误 ✓；
+    #     但改成 `SyntaxError` 会**改变调用方行为** ✗（有地方 catch `Exception`），留待专门一轮 ✓。
+    with pytest.raises((ValueError, IndexError)):
         parse_expr(bad)
 
 

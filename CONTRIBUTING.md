@@ -71,6 +71,18 @@ cd frontend && npm run test:e2e:real     # 会自动起 uvicorn（需 python 有
 - ⚠ `npm run test:e2e:real` 的本机后端**允许复用**（`reuseExistingServer: true`）✓，
   安全性由 spec 的**身份断言**兜住（`/api/version` + `qlib_uptime_seconds` ✓）。
 
+
+## 2.7 看指标 / 定告警（★ v2.11.61）
+
+```bash
+python scripts/scrape_metrics.py                      # 小看板：运行时长/请求数/5xx 占比/平均与最慢耗时
+python scripts/scrape_metrics.py --max-avg-ms 2000 --max-error-rate 5   # 超阈值 ⇒ 退出码 1（可挂 cron）
+python scripts/scrape_metrics.py --prometheus-config  # 打印 scrape_config + 两条告警规则（贴进 Prometheus 即可）
+```
+
+- ⚠ **别指望它自己定时** ✗：本项目是单进程单用户 ✓，内置抓取线程只会多一个"没人看的状态"✗；
+  要么挂 cron（一行 ✓），要么把生成的配置丢给 Prometheus ✓。
+
 ## 3. 硬规矩（都是踩过坑才立的）
 
 | 规矩 | 为什么 |
