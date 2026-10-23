@@ -12,9 +12,19 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import type { PerfMetrics, SingleFactorTestResult, TopKCurveItem } from '../api'
+// ⚠ `TopKCurveItem` 已随 `itemLabel` 搬去 `topkCurveLogic` ✓ ⇒ 这里不再需要 ✗（否则 tsc 报未使用 ✓）
+import type { PerfMetrics, SingleFactorTestResult } from '../api'
 import { blobErrorDetail, exportTopkCurveXlsx } from '../api'
 import { saveBlob, stamp } from '../downloadFile'
+// ★ v2.11.59：`pct/signedPct/nav/niceAxis/itemLabel/fmtRatio` 外提到 `./topkCurveLogic` ✓
+import {
+  fmtRatio,
+  itemLabel,
+  nav,
+  niceAxis,
+  pct,
+  signedPct,
+} from './topkCurveLogic'
 
 /**
  * 连续因子「持仓期收益曲线」弹窗（v1.18.45）。
@@ -43,50 +53,6 @@ interface Props {
 /** 点数上限：1211 个点 × 11 条线对 Recharts 偏重，按等间隔抽样（累计曲线形状不变）。 */
 const MAX_POINTS = 360
 
-const pct = (v: number | null | undefined, nd = 2) =>
-  v == null || !Number.isFinite(v) ? '-' : `${(v * 100).toFixed(nd)}%`
-
-/** 有符号百分数：原始小数 → `+134.22%` / `-3.10%`；空值给 `-`。 */
-const signedPct = (v: number | null | undefined, nd = 2) =>
-  v == null || !Number.isFinite(v) ? '-' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(nd)}%`
-
-/** 累计值 → **净值（从 1 开始）**；缺失保持 null（前端断线）。
- *  后端按口径给「复利累乘」（`curves_compound`/`cum_compound`，**默认**）或「算术累加」
- *  （`curves`/`cum`）的累计值（都是「净值 − 1」的形式），+1 只是为了读起来是净值口径。 */
-const nav = (v: number | null | undefined) =>
-  v == null || !Number.isFinite(v) ? null : 1 + v
-
-/** 把数据范围 `[lo, hi]` 化为「**整数百分比 + 均匀分段**」的 Y 轴（v1.19.9）。
- *
- *  用户要求：十分位图刻度要**整数百分比**且**等距**（不要 `−71%` / `128.8%` / `499.1%` 这种）。
- *  做法：先把上下界按 **1%** 向外取整，再选一个「好看的」步长（1/2/5/10/20/25/50/100…%）
- *  使刻度数落在 3~7 个；`domain` 与 `ticks` 都落在**整数百分比**上，且必然含 **0**
- *  （0 是任何 step 的整数倍）。返回的是**小数域**（`0.5` = 50%），recharts 直接可用。
- */
-const NICE_STEPS = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000]
-function niceAxis(lo: number, hi: number) {
-  const pLo = Math.floor(Math.min(0, lo) * 100)
-  const pHi = Math.ceil(Math.max(0, hi) * 100)
-  const span = Math.max(1, pHi - pLo)
-  const step = NICE_STEPS.find((s) => span / s <= 6) ?? Math.ceil(span / 6)
-  const t0 = Math.floor(pLo / step) * step
-  let t1 = Math.ceil(pHi / step) * step
-  if (t1 === t0) t1 = t0 + step                      // 数据恒为 0：给一段最小可视范围
-  const ticks: number[] = []
-  for (let v = t0; v <= t1; v += step) ticks.push(v / 100)
-  return { domain: [t0 / 100, t1 / 100] as [number, number], ticks }
-}
-
-/** 明细档显示名：分位组标「最强分位组 Q几」；固定 K 档标「固定 K=…」（默认档加注）。 */
-function itemLabel(it: TopKCurveItem, defaultK: number | null) {
-  if (it.kind === 'decile') return `最强分位组 Q${it.quantile}`
-  const isDefault = defaultK != null && it.k === defaultK
-  return `固定 K=${it.k}${isDefault ? '（默认 10% 档）' : ''}`
-}
-
-/** 无量纲比率显示（夏普/索提诺/卡玛）：2 位小数，缺失给 `-`。 */
-const fmtRatio = (v: number | null | undefined) =>
-  v == null || !Number.isFinite(v) ? '-' : v.toFixed(2)
 
 /**
  * 绩效指标卡（v1.18.48）：**逐日盯市**口径（期内按 h 调仓、持有期内逐日盯市）。
