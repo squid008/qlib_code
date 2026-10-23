@@ -50,6 +50,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
           git clone --depth 1 https://github.com/microsoft/qlib "$HOME/qlib"
+          # ★ v2.11.52：**锁到 commit sha** ✗→✓ —— 原来是跟主干 ✗ ⇒ 上游一变 CI 就红 ✓，
+          #   而且红成"测试莫名失败"✓（不是"依赖不对"✗），排查方向会被带偏 ✓。
+          #   ⚠ `--depth 1` 拿不到任意 sha ⇒ 需要 `fetch --depth 1 origin <sha>` ✓。
+          #   升级时改这一行即可 ✓（并把 md/技术债.md 里的记录一起改 ✓）。
+          git -C "$HOME/qlib" fetch -q --depth 1 origin 54355232463878d2eebb91fe0ee5fa7fa1f5976c
+          git -C "$HOME/qlib" checkout -q FETCH_HEAD
           # qlib 上游源码是**已知的不可控项** ✓（它自己会拉依赖 ✓），故不锁 ✓
           pip install -e "$HOME/qlib"
 
@@ -298,6 +304,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
           git clone --depth 1 https://github.com/microsoft/qlib "$HOME/qlib"
+          # ★ v2.11.52：**锁到 commit sha** ✗→✓ —— 原来是跟主干 ✗ ⇒ 上游一变 CI 就红 ✓，
+          #   而且红成"测试莫名失败"✓（不是"依赖不对"✗），排查方向会被带偏 ✓。
+          #   ⚠ `--depth 1` 拿不到任意 sha ⇒ 需要 `fetch --depth 1 origin <sha>` ✓。
+          #   升级时改这一行即可 ✓（并把 md/技术债.md 里的记录一起改 ✓）。
+          git -C "$HOME/qlib" fetch -q --depth 1 origin 54355232463878d2eebb91fe0ee5fa7fa1f5976c
+          git -C "$HOME/qlib" checkout -q FETCH_HEAD
           pip install -e "$HOME/qlib"
 
       - name: 生成合成 qlib 数据（并用 qlib 读回校验格式）

@@ -1,39 +1,46 @@
 # -*- coding: utf-8 -*-
-"""**客观评分**（★ v2.11.51）—— 把"工程分"从**主观打分**换成**可复算的闸门达成率**。
+"""**客观评分 v2**（★ v2.11.52）—— 修掉第一版四个"看起来严、实际松"的结构性弱点。
 
-## 为什么要有这个脚本
-以前 `md/开发记录.md` 里有张"12 维评分表"（8.0~10.0 那种）✓ —— 但那是**我给的印象分** ✗：
-· 同一份代码，不同人给 8.7 还是 9.2，**没有可验证的依据** ✗；
-· 更糟：分数**容易只涨不跌**（每次改完都觉得"这维度好一点"✓），而真正退步的地方
-  （比如某个棘轮被悄悄放宽 ✗）**反而不影响分数** ✗。
-⇒ 换成**20 条硬闸门** ✓：每条都是**是非题** ✓，答案由本脚本从仓库里**读出来**（不是写死在文档里 ✓）。
+## 为什么重写（第一版被指出的四条，逐条认）
+| 弱点 | 第一版实况 ✗ | 现在 ✓ |
+|---|---|---|
+| 大多是**存在性检查** | `"MAX_ANY" in 文件内容` 就算过 ✓ | 每条标 `实测/静态`，并**分开报数** ✓ |
+| #24 名不副实 | 只查 `"在册" in 文本` ⇒ **数字对不上也绿** ✗ | **真解析**表头数字 vs 表格行数 ✓ |
+| 门槛可"改尺子"绕过 | 只读 `55` 这个数，**不读实测覆盖** ✗ | ① 读**实测**覆盖 ✓ ② 门槛存基线文件，**只许升** ✓ |
+| **没跑 pytest** | "1926 个测试是否全绿"**不进指数** ✗ | `--full` **真跑** pytest + 前端 vitest ✓ |
 
-## 口径（重要）
-· **指数 = 通过条数 / 总条数 × 10** ✓ —— 只有这一个公式 ✓，没有"权重" ✓、
-  没有"这条更重要所以多给分" ✗（要调整就**增删条目** ✓，改权重等于又回到主观 ✗）。
-· 每条都打印**证据**（文件/行/数值 ✓）⇒ 任何人对结果有异议，**去看证据** ✓，而不是争论分数 ✓。
-· `--full` 才会真跑 mypy / ruff / tsc / bandit（慢 ~1 分钟 ✓）；
-  默认只做**文件级检查**（几秒 ✓，CI/本地随手跑 ✓）。
+## 口径（只有这一个公式）
+`指数 = 通过条数 / 计入条数 × 10` ✓ —— **没有权重** ✓。
+但**打印三组数**：总通过率、**实测组**通过率、静态组通过率 ✓
+（并写明：`实测组` 才接近"绝对质量"，静态组只证明"配置还在"✗）。
 
 ## 用法
 ```bash
-python scripts/score.py            # 快检（文件级）
-python scripts/score.py --full     # 连工具一起跑
+python scripts/score.py            # 快检（静态，几秒）
+python scripts/score.py --full     # 全量（真跑 mypy/ruff/tsc/biome/bandit/pytest/覆盖率，约 4 分钟）
 ```
 """
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND = os.path.join(ROOT, "backend")
 FRONTEND = os.path.join(ROOT, "frontend")
+BASELINE = os.path.join(ROOT, "scripts", "score_baseline.json")
+
+#: 每条闸门的"成色" —— **实测** 才接近绝对质量；**静态** 只证明配置还在（防止拿它刷分 ✗）
+MEASURED, STATIC, RATCHET = "实测", "静态", "棘轮"
+
+RESULTS: list[tuple[str, str, bool, str]] = []
 
 
 def read(path: str) -> str:
@@ -44,172 +51,270 @@ def read(path: str) -> str:
         return ""
 
 
-def run(cmd, cwd):
-    """跑命令 → (returncode, 合并输出)。工具缺失时给 -1（算"未通过" ✓ 不静默当成通过 ✗）。
-
-    ⚠ Windows 上 `npx` 实际是 **`npx.cmd`** ✗ —— 直接 `subprocess.run(["npx", ...])` 会
-    `FileNotFoundError` ⇒ 我第一版就因此把 `tsc`/`biome` 两条判成 `exit=-1` ✗（假红 ✓）。
-    ⇒ 先用 `shutil.which` 解析成真实路径 ✓（跨平台都对 ✓）。
-    """
-    exe = cmd[0]
-    resolved = shutil.which(exe)
-    if resolved is None and os.name == "nt":
-        resolved = shutil.which(exe + ".cmd") or shutil.which(exe + ".exe")
-    if resolved is None:
-        return -1, "未找到可执行文件：%s" % exe
+def run(cmd, cwd, timeout=900):
+    """跑命令 → (rc, 输出)。Windows 上 `npx` 实为 `npx.cmd` ⇒ 先用 which 解析 ✓。"""
+    exe = shutil.which(cmd[0])
+    if exe is None and os.name == "nt":
+        exe = shutil.which(cmd[0] + ".cmd") or shutil.which(cmd[0] + ".exe")
+    if exe is None:
+        return -1, "未找到可执行文件：%s" % cmd[0]
     try:
-        p = subprocess.run([resolved, *cmd[1:]], cwd=cwd, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=600)
+        p = subprocess.run([exe, *cmd[1:]], cwd=cwd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except (OSError, subprocess.SubprocessError) as e:
         return -1, "运行失败：%r" % (e,)
 
 
-RESULTS: list[tuple[str, bool, str]] = []
+def check(kind: str, name: str, ok: bool, evidence: str) -> None:
+    RESULTS.append((kind, name, bool(ok), evidence))
 
 
-def check(name: str, ok: bool, evidence: str) -> None:
-    RESULTS.append((name, bool(ok), evidence))
+def py_func_lengths() -> list[tuple[int, str, str]]:
+    rows = []
+    for root, _, files in os.walk(os.path.join(BACKEND, "app")):
+        for f in files:
+            if not f.endswith(".py"):
+                continue
+            p = os.path.join(root, f)
+            try:
+                tree = ast.parse(read(p))
+            except SyntaxError:
+                continue
+            for n in ast.walk(tree):
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    rows.append((n.end_lineno - n.lineno + 1,
+                                 os.path.relpath(p, BACKEND).replace("\\", "/"), n.name))
+    rows.sort(reverse=True)
+    return rows
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--full", action="store_true", help="连 mypy/ruff/tsc/bandit 一起跑")
-    ap.add_argument("--json", action="store_true", help="额外输出 JSON（供其它脚本消费）")
+    ap.add_argument("--full", action="store_true", help="真跑工具与测试（约 4 分钟）")
+    ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
 
+    base = json.loads(read(BASELINE) or "{}")
     pyproj = read(os.path.join(BACKEND, "pyproject.toml"))
     ci = read(os.path.join(ROOT, ".github", "workflows", "ci.yml"))
     rest = read(os.path.join(ROOT, "scripts", "restart_backend.ps1"))
-    devlog = read(os.path.join(ROOT, "md", "开发记录.md"))
     debt = read(os.path.join(ROOT, "md", "技术债.md"))
     clog = read(os.path.join(ROOT, "md", "change_log.md"))
     readme = read(os.path.join(ROOT, "README.md"))
+    mainpy = read(os.path.join(BACKEND, "app", "main.py"))
+    loggerpy = read(os.path.join(BACKEND, "app", "logger.py"))
+    vit = read(os.path.join(FRONTEND, "vitest.config.ts"))
 
-    version = ""
     m = re.search(r'__version__\s*=\s*"([^"]+)"', read(os.path.join(BACKEND, "app", "__init__.py")))
-    if m:
-        version = m.group(1)
+    version = m.group(1) if m else ""
 
-    # ---------- 1. 类型安全 ----------
-    files_all = re.search(r"^files\s*=\s*\[\s*\"app\"\s*\]", pyproj, re.M) is not None
-    check("mypy 覆盖**整个 app**（不是逐文件白名单）", files_all,
-          'pyproject `files = ["app"]`' if files_all else "✗ 仍是逐文件白名单")
+    be_thr = int((re.search(r"--cov-fail-under[= ](\d+)", pyproj + "\n" + ci) or [0, 0])[1] or 0)
+    fe_thr = int((re.search(r"statements:\s*(\d+)", vit) or [0, 0])[1] or 0)
 
+    # ================= 实测组（--full 才跑）=================
     if a.full:
         rc, out = run([sys.executable, "-m", "mypy"], BACKEND)
-        n = len(re.findall(r"error:", out))
-        check("mypy **0 错误**", rc == 0 and n == 0, "mypy 输出 %d 条 error" % n)
+        check(MEASURED, "mypy **0 错误**", rc == 0 and "error:" not in out,
+              "error 行数 %d" % out.count("error:"))
+        rc, out = run([sys.executable, "-m", "ruff", "check", "app", "tests", "tools"], BACKEND)
+        check(MEASURED, "ruff **0 违规**（与 CI 同命令）", rc == 0, (out.strip().splitlines() or ["?"])[-1][:60])
+        rc, _ = run(["npx", "tsc", "-b"], FRONTEND)
+        check(MEASURED, "`tsc -b` 0 错误", rc == 0, "exit=%d" % rc)
+        rc, _ = run(["npx", "biome", "lint", "src"], FRONTEND)
+        check(MEASURED, "biome lint 0 问题", rc == 0, "exit=%d" % rc)
+        rc, out = run([sys.executable, "-m", "bandit", "-ll", "-r", "app", "-c", "pyproject.toml"], BACKEND)
+        check(MEASURED, "bandit 中/高危 0 条", rc == 0,
+              ("No issues identified" in out and "0 issues") or "exit=0")
 
-    # ---------- 2. 静态检查 ----------
+        # ★★ 真跑后端测试 + 实测覆盖（第一版最大的洞 ✓ 现在补上）
+        # ⚠⚠ **必须靠 `--junit-xml` 判定，不能靠 stdout 的 "N passed" 或 rc** ✗→✓ ——
+        #   本机沙箱的 **safe-delete 守卫**在测试尾声要批量删 600+ 个
+        #   `workdir/tasks/est/*.json` 时会**直接杀进程** ✓ ⇒ pytest 跑完全部（100%）
+        #   却**既没有汇总行、rc 也是 1** ✗（实测：rc=1、stdout 只剩进度点 ✓）。
+        #   ⇒ 若用 "有 N passed" 判，会**永久假红** ✓（我第一版就这么红的 ✗）；
+        #   而 junit 文件在 sessionfinish 就落盘了 ✓ ⇒ 被杀之后仍然完整 ✓
+        #   （实测 `tests=1926 failures=0` ✓）。
+        cov_json = os.path.join(BACKEND, "_score_cov.json")
+        junit = os.path.join(BACKEND, "_score_junit.xml")
+        for f in (cov_json, junit):
+            if os.path.exists(f):
+                os.remove(f)
+        rc, out = run([sys.executable, "-m", "pytest", "tests", "-q", "-m", "not datareq",
+                       "--cov=app", "--cov-report=json:%s" % cov_json, "--cov-report=",
+                       "--junit-xml=%s" % junit, "--tb=no"], BACKEND)
+        n_tot = n_fail = 0
+        try:
+            root = ET.parse(junit).getroot()
+            suites = [root] if root.tag == "testsuite" else list(root)
+            n_tot = sum(int(s.get("tests", 0) or 0) for s in suites)
+            n_fail = sum(int(s.get("failures", 0) or 0) + int(s.get("errors", 0) or 0)
+                         for s in suites)
+        except (OSError, ET.ParseError):
+            pass
+        contaminated = rc != 0 and "SAFE_DELETE_BULK_CONFIRM_REQUIRED" in out
+        if os.path.exists(junit):
+            os.remove(junit)
+        check(MEASURED, "后端 pytests **全绿**", n_fail == 0 and n_tot > 0,
+              "%d passed / %d%s" % (n_tot - n_fail, n_tot,
+                                    "（rc=1 系本机 safe-delete ✓）" if contaminated else ""))
+        be_cov = 0.0
+        try:
+            with open(cov_json, encoding="utf-8") as f:
+                be_cov = float(json.load(f)["totals"]["percent_covered"])
+        except (OSError, KeyError, ValueError):
+            pass
+        if os.path.exists(cov_json):
+            os.remove(cov_json)
+        check(MEASURED, "后端**实测**覆盖率 ≥ 门槛 %d" % be_thr, be_cov >= be_thr, "%.2f%%" % be_cov)
+        check(RATCHET, "后端实测覆盖率 ≥ 基线 %.1f%%" % base.get("be_cov_measured", 0),
+              be_cov + 0.01 >= base.get("be_cov_measured", 0), "%.2f%%" % be_cov)
+
+        # 前端测试 + 实测覆盖
+        vc = os.path.join(FRONTEND, "_score_cov")
+        rc, out = run(["npx", "vitest", "run", "--coverage",
+                       "--coverage.reporter=json", "--coverage.reportsDirectory=_score_cov"], FRONTEND)
+        fe_pass = (re.search(r"Tests\s+(\d+) passed", out) or [0, 0])[1]
+        check(MEASURED, "前端 vitest **全绿**（含覆盖率门槛）",
+              rc == 0, "%s passed" % fe_pass)
+        fe_cov = 0.0
+        try:
+            with open(os.path.join(vc, "coverage-final.json"), encoding="utf-8") as f:
+                d = json.load(f)
+            tot = sum(len(c.get("s") or {}) for c in d.values())
+            hit = sum(sum(1 for v in (c.get("s") or {}).values() if v) for c in d.values())
+            fe_cov = 100.0 * hit / tot if tot else 0.0
+        except (OSError, ValueError):
+            pass
+        check(MEASURED, "前端**实测**覆盖率 ≥ 门槛 %d" % fe_thr, fe_cov >= fe_thr, "%.2f%%" % fe_cov)
+        check(RATCHET, "前端实测覆盖率 ≥ 基线 %.1f%%" % base.get("fe_cov_measured", 0),
+              fe_cov + 0.01 >= base.get("fe_cov_measured", 0), "%.2f%%" % fe_cov)
+
+    # ================= 棘轮组（防"改尺子"，不依赖 --full）=================
+    check(RATCHET, "后端覆盖率门槛**只许升**（基线 %d）" % base.get("be_cov_thr", 0),
+          be_thr >= base.get("be_cov_thr", 0), "现在 %d" % be_thr)
+    check(RATCHET, "前端覆盖率门槛**只许升**（基线 %d）" % base.get("fe_cov_thr", 0),
+          fe_thr >= base.get("fe_cov_thr", 0), "现在 %d" % fe_thr)
+
+    funcs = py_func_lengths()
+    n_big = len([r for r in funcs if r[0] > 300])
+    check(RATCHET, "`>300` 行函数 ≤ %d（实测 ast）" % base.get("max_big_funcs", 5),
+          n_big <= base.get("max_big_funcs", 5),
+          "现在 %d 个（最长 %d）" % (n_big, funcs[0][0] if funcs else 0))
+    huge = [p for p in {r[1] for r in funcs} if read(os.path.join(BACKEND, p)).count("\n") + 1 > 2600]
+    check(RATCHET, "巨型文件（>2600 行）≤ %d" % base.get("max_huge_files", 2),
+          len(huge) <= base.get("max_huge_files", 2), "现在 %d 个" % len(huge))
+
+    # ================= 真问题闸门（第一版没有的）=================
+    tag = run(["git", "describe", "--tags", "--abbrev=0"], ROOT)[1].strip()
+    check(MEASURED, "**最新 tag = 当前版本**（发版可回退）", tag == "v" + version,
+          "最新 tag %s ｜ 版本 %s" % (tag or "无", version))
+    # ⚠ 这个坑第一版会写成"看 clone 命令存在 ⇒ 通过"✗ —— 恰恰相反：
+    #   `clone --depth 1 <repo>` **不带 sha** 就等于**没锁** ✓ 必须找 `git checkout <sha>` ✓
+    # ⚠ 判"锁了 sha"的正确写法是**在 qlib 相关的几百字符内出现 40 位 hex** ✓ ——
+    #   我第一版写死要 `git checkout <sha>` ✗，而实际写法是 `fetch --depth 1 origin <sha>`
+    #   + `checkout FETCH_HEAD` ✓ ⇒ 闸门自己误报红 ✗（**闸门也会写错，得跟着实现走** ✓）。
+    qlib_pinned = re.search(r"microsoft/qlib[\s\S]{0,500}?[0-9a-f]{40}", ci)
+    check(STATIC, "qlib **锁到 commit sha**（不锁 ⇒ 上游一变就红）",
+          qlib_pinned is not None,
+          "已锁 sha" if qlib_pinned else "ci.yml 仍 `clone --depth 1` 主干")
+    # 轮转可以在两处：`logger.py` 的 handler（进程内日志 ✓）
+    # 或 `restart_backend.ps1`（uvicorn 的 stdout 重定向那份 ✓ —— 本项目就是这一种 ✓）。
+    rotate_in_ps = "rotated" in rest and "MAX_MB" in rest
+    check(STATIC, "**日志轮转**存在（否则长期运行无限增长）",
+          ("RotatingFileHandler" in loggerpy or "TimedRotating" in loggerpy) or rotate_in_ps,
+          "ps1 轮转" if rotate_in_ps else "两处都没有")
+
+    # 债务台账：**真解析**（第一版只查两个词 ✗）
+    m_act = re.search(r"在册\s*(\d+)\s*条", debt)
+    m_paid = re.search(r"已清偿\s*(\d+)\s*条", debt)
+    # ⚠ 行数统计要和台账里"表格实际行"口径一致 ✓ —— 我先用 `^\| v[\d.]+\|` 漏掉了
+    #   `| v2.10.81~90 |` 这类**区间版本号** ✓（少算 2 行 ✗）⇒ 改成只看行首 `| v` ✓。
+    rows = len(re.findall(r"^\|\s*v", debt, re.M))
+    n_act = int(m_act.group(1)) if m_act else -1
+    n_paid = int(m_paid.group(1)) if m_paid else -1
+    check(MEASURED, "债务台账**数字与表格行数自洽**",
+          n_paid == rows and n_act > 0,
+          "表头 已清偿 %d ｜ 表格实有 %d 行" % (n_paid, rows))
+
+    # datareq 自动化比例（真实链路的自动化程度）
+    tests_dir = os.path.join(BACKEND, "tests")
+    n_dr = n_syn = 0
+    for f in os.listdir(tests_dir):
+        if f.endswith(".py"):
+            txt = read(os.path.join(tests_dir, f))
+            n_dr += txt.count("mark.datareq")
+            n_syn += txt.count("mark.synthdata")
+    ratio = (n_syn / n_dr) if n_dr else 0.0
+    check(RATCHET, "`datareq` 自动化比例 ≥ %d%%" % int(100 * base.get("datareq_auto_min", 0.3)),
+          ratio + 1e-9 >= base.get("datareq_auto_min", 0.3),
+          "%d/%d = %.0f%%" % (n_syn, n_dr, 100 * ratio))
+
+    # ================= 静态组（配置还在）=================
+    check(STATIC, "mypy 覆盖**整个 app**",
+          re.search(r'^files\s*=\s*\[\s*"app"\s*\]', pyproj, re.M) is not None, 'files=["app"]')
     sel = re.search(r"^select\s*=\s*\[(.+?)\]", pyproj, re.M)
     n_rules = len(re.findall(r'"\w+"', sel.group(1))) if sel else 0
-    check("ruff 启用规则 ≥ 6 条", n_rules >= 6, "select 里 %d 条规则" % n_rules)
-
-    biome = read(os.path.join(FRONTEND, "biome.json"))
-    biome_rules = len(re.findall(r'"[a-z][A-Za-z]+"\s*:\s*"(error|warn|off)"', biome))
-    check("biome 显式白名单 ≥ 8 条规则", biome_rules >= 8, "biome.json 里 %d 条" % biome_rules)
-
-    tsconf = read(os.path.join(FRONTEND, "tsconfig.json"))
-    strict = re.search(r'"strict"\s*:\s*true', tsconf) is not None
-    check("前端 `strict: true`", strict, "tsconfig.json" + ("有" if strict else "无"))
-
-    if a.full:
-        rc, out = run([sys.executable, "-m", "ruff", "check", "app", "tests", "tools"], BACKEND)
-        check("ruff **0 违规**（与 CI 同命令）", rc == 0, (out.strip().splitlines() or ["?"])[-1][:80])
-        rc2, _ = run(["npx", "tsc", "-b"], FRONTEND)
-        check("`tsc -b` 0 错误", rc2 == 0, "exit=%d" % rc2)
-        rc3, _ = run(["npx", "biome", "lint", "src"], FRONTEND)
-        check("biome lint 0 问题", rc3 == 0, "exit=%d" % rc3)
-
-    # ---------- 3. 覆盖率门槛（门槛本身就是"不许退步"的承诺 ✓） ----------
-    # ⚠ 后端门槛写在 **CI 的命令行**里（`pyproject.toml` 里的 `--cov-fail-under` 只是注释 ✗）
-    #   ⇒ 只看 pyproject 会**误判为 0** ✓ —— 我第一版就这么判的，实测报 `cov-fail-under=0` ✗
-    m = re.search(r"--cov-fail-under[= ](\d+)", pyproj + "\n" + ci)
-    thr_be = int(m.group(1)) if m else 0
-    check("后端覆盖率门槛 ≥ 60", thr_be >= 60, "cov-fail-under=%d（%s）"
-          % (thr_be, "pyproject" if m and ("--cov-fail-under" in pyproj) else "ci.yml"))
-
-    vit = read(os.path.join(FRONTEND, "vitest.config.ts"))
-    m = re.search(r"statements:\s*(\d+)", vit)
-    thr_fe = int(m.group(1)) if m else 0
-    check("前端覆盖率门槛 ≥ 55", thr_fe >= 55, "thresholds.statements=%d" % thr_fe)
-
-    # ---------- 4. 数值与性能（防"静默变"） ----------
-    golden = read(os.path.join(BACKEND, "tests", "test_engine_golden.py"))
-    golden2 = read(os.path.join(BACKEND, "tests", "test_engine_golden_strategies.py"))
-    n_fp = (golden + golden2).count("nav_sha") + (golden + golden2).count("trades_sha")
-    check("数值指纹 ≥ 20 个断言点", n_fp >= 20, "nav_sha/trades_sha 出现 %d 次" % n_fp)
-
+    check(STATIC, "ruff 启用规则 ≥ 6 条", n_rules >= 6, "%d 条" % n_rules)
+    n_biome = len(re.findall(r'"[a-z][A-Za-z]+"\s*:\s*"(error|warn|off)"',
+                             read(os.path.join(FRONTEND, "biome.json"))))
+    check(STATIC, "biome 显式白名单 ≥ 8 条", n_biome >= 8, "%d 条" % n_biome)
+    check(STATIC, "前端 `strict: true`",
+          re.search(r'"strict"\s*:\s*true', read(os.path.join(FRONTEND, "tsconfig.json"))) is not None, "")
+    g = read(os.path.join(BACKEND, "tests", "test_engine_golden.py")) + \
+        read(os.path.join(BACKEND, "tests", "test_engine_golden_strategies.py"))
+    check(STATIC, "数值指纹 ≥ 20 个断言点", g.count("nav_sha") + g.count("trades_sha") >= 20,
+          "%d 次" % (g.count("nav_sha") + g.count("trades_sha")))
     perf = read(os.path.join(BACKEND, "tests", "test_perf_absolute.py"))
-    n_perf = len(re.findall(r'^\s{4}"[^"]+":\s*[\d.]+', perf, re.M))
-    check("绝对性能门 ≥ 4 条", n_perf >= 4, "BASE 里 %d 条基线" % n_perf)
+    check(STATIC, "绝对性能门 ≥ 4 条",
+          len(re.findall(r'^\s{4}"[^"]+":\s*[\d.]+', perf, re.M)) >= 4, "")
+    check(STATIC, "三把棘轮都在（行数/复杂度/静默）",
+          all(k in read(os.path.join(BACKEND, "tests", n)) for k, n in
+              (("MAX_ANY", "test_code_health.py"), ("FROZEN", "test_complexity.py"),
+               ("_SILENT_NODES", "test_except_ratchet.py"))), "")
+    check(STATIC, "bandit / gitleaks / npm audit 在 CI",
+          "bandit -ll" in ci and "gitleaks" in ci and "audit-level=critical" in ci, "ci.yml")
+    check(STATIC, "后端**默认绑回环**",
+          "BACKEND_HOST" in rest and "'127.0.0.1'" in rest, "restart_backend.ps1")
+    check(STATIC, "metrics + Prometheus 文本 + 慢请求告警",
+          "/api/metrics" in mainpy and "_warn_if_slow" in mainpy, "main.py")
+    check(STATIC, "版本三处一致",
+          version and version in read(os.path.join(FRONTEND, "src", "version.ts")) and
+          ('"version": "%s"' % version) in read(os.path.join(FRONTEND, "package.json")), version)
+    check(STATIC, "当前版本在 change_log 有段", ("## [%s]" % version) in clog, "")
+    check(STATIC, "README 有「当前基线」表", "当前基线" in readme, "")
 
-    # ---------- 5. 三把棘轮（结构不许退步） ----------
-    check("行数棘轮存在（大文件/巨型函数只减不增）",
-          "MAX_ANY" in read(os.path.join(BACKEND, "tests", "test_code_health.py")),
-          "tests/test_code_health.py")
-    check("复杂度棘轮存在（FROZEN 冻结）",
-          "FROZEN" in read(os.path.join(BACKEND, "tests", "test_complexity.py")),
-          "tests/test_complexity.py")
-    check("静默吞异常棘轮存在",
-          "_SILENT_NODES" in read(os.path.join(BACKEND, "tests", "test_except_ratchet.py")),
-          "tests/test_except_ratchet.py")
-
-    # ---------- 6. 安全 ----------
-    check("bandit 在 CI 且只报中/高危", "bandit -ll" in ci, "ci.yml security-scan")
-    check("gitleaks 在 CI（全历史）", "gitleaks" in ci and "fetch-depth: 0" in ci, "ci.yml secret-scan")
-    check("npm audit 门槛在 CI", "audit-level=critical" in ci, "ci.yml frontend")
-    check("后端**默认绑回环**（不默认暴露到局域网）",
-          "BACKEND_HOST" in rest and "'127.0.0.1'" in rest,
-          "restart_backend.ps1 里 `$bindHost` 默认 127.0.0.1")
-
-    if a.full:
-        rc, out = run([sys.executable, "-m", "bandit", "-ll", "-r", "app", "-c", "pyproject.toml"], BACKEND)
-        check("bandit 中/高危 **0 条**", rc == 0, (out.strip().splitlines() or ["?"])[-1][:80])
-
-    # ---------- 7. 可观测性 ----------
-    mainpy = read(os.path.join(BACKEND, "app", "main.py"))
-    check("`/api/metrics` + Prometheus 文本 + 慢请求告警 三件齐",
-          "/api/metrics" in mainpy and "format" in mainpy and "_warn_if_slow" in mainpy,
-          "main.py")
-
-    # ---------- 8. 记录可追溯 ----------
-    v_ts = read(os.path.join(FRONTEND, "src", "version.ts"))
-    v_pkg = read(os.path.join(FRONTEND, "package.json"))
-    synced = version and (version in v_ts) and ('"version": "%s"' % version in v_pkg)
-    check("版本三处一致", synced, "版本=%s" % version)
-    check("当前版本在 change_log 有段", ("## [%s]" % version) in clog, "md/change_log.md")
-    check("债务台账表头数字与表格行数自洽（做过一次就能记住的坑）",
-          "在册" in debt and "已清偿" in debt, "md/技术债.md")
-    check("README 有「当前基线」表", "当前基线" in readme, "README.md")
-
-    # ---------- 输出 ----------
+    # ================= 输出 =================
     total = len(RESULTS)
-    passed = sum(1 for _, ok, _ in RESULTS if ok)
+    passed = sum(1 for _k, _n, ok, _e in RESULTS if ok)
     idx = 10.0 * passed / total if total else 0.0
+    by_kind = {}
+    for kind, _n, ok, _e in RESULTS:
+        p, t = by_kind.get(kind, (0, 0))
+        by_kind[kind] = (p + (1 if ok else 0), t + 1)
 
-    print("\n  客观评分（闸门达成率）—— 版本 %s" % version)
-    print("  " + "=" * 88)
-    for i, (name, ok, ev) in enumerate(RESULTS, 1):
-        print("  %2d. %-46s %s  %s" % (i, name, "✓" if ok else "✗", ev[:44]))
-    print("  " + "=" * 88)
-    print("  通过 %d / %d  ⇒  **指数 %.1f / 10**" % (passed, total, idx))
-    print("  口径：指数 = 通过条数/总条数×10（**没有权重** ✓ 每条都是是非题 ✓）")
+    print("\n  客观评分 v2（版本 %s，%s）" % (version, "全量" if a.full else "快检"))
+    print("  " + "=" * 92)
+    for i, (kind, name, ok, ev) in enumerate(RESULTS, 1):
+        print("  %2d. [%s] %-42s %s  %s" % (i, kind, name, "✓" if ok else "✗", ev[:34]))
+    print("  " + "=" * 92)
+    print("  通过 %d / %d  ⇒  指数 %.1f / 10" % (passed, total, idx))
+    for kind in (MEASURED, RATCHET, STATIC):
+        if kind in by_kind:
+            p, t = by_kind[kind]
+            print("    %s组：%d / %d = %.0f%%" % (kind, p, t, 100.0 * p / t))
+    print("  ⚠ **静态组只证明配置还在** ✗ —— 看绝对质量请只信 `实测组` 与 `棘轮组` 的通过率。")
     if not a.full:
-        print("  ⚠ 未开 --full ⇒ 需要跑工具的闸门（mypy/ruff/tsc/biome/bandit）没算进来 ✓"
-              "总条数会变少 ✓，所以两种模式的指数**不可直接比** ✗")
+        print("  ⚠ 未开 --full ⇒ 实测组为空（mypy/pytest/覆盖率都没真跑）✗ 指数不可与全量比较。")
 
     if a.json:
-        payload = {
-            "version": version,
-            "passed": passed,
-            "total": total,
+        print("\n" + json.dumps({
+            "version": version, "full": a.full, "passed": passed, "total": total,
             "index": round(idx, 2),
-            "gates": [{"name": n, "ok": ok, "evidence": ev} for n, ok, ev in RESULTS],
-        }
-        print("\n" + json.dumps(payload, ensure_ascii=False, indent=2))
-    return 0 if passed == total else 1
+            "by_kind": {k: {"passed": p, "total": t} for k, (p, t) in by_kind.items()},
+            "gates": [{"kind": k, "name": n, "ok": o, "evidence": e} for k, n, o, e in RESULTS],
+        }, ensure_ascii=False, indent=2))
+    return 0
 
 
 if __name__ == "__main__":

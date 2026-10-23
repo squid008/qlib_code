@@ -30,6 +30,23 @@ $LOGDIR = Join-Path $ROOT 'backend\workdir'
 $logOut = Join-Path $LOGDIR 'backend.log'
 $logErr = Join-Path $LOGDIR 'backend_err.log'
 
+# ★ v2.11.52：**日志轮转** ✗→✓ —— 原来 uvicorn 的 stdout 直接追加到 backend.log ✓，
+#   长期运行会**无限增长** ✗（实测已 0 MB，但跑几个月就是几百 MB ✓，且没人会想起来清 ✓）。
+#   策略：启动前若 > 20 MB ⇒ 依次后移（.3 丢弃）✓ 只保留 3 份 ✓。
+#   ⚠ 为什么放在这里而不是 logging 里 ✗：这份日志是**uvicorn 的 stdout 重定向** ✓，
+#     不经过 `app/logger.py` 的 handler ✓ ⇒ 在那加 `RotatingFileHandler` 管不到它 ✗。
+$MAX_MB = 20
+$KEEP = 3
+foreach ($f in @($logOut, $logErr)) {
+    if ((Test-Path $f) -and ((Get-Item $f).Length -gt ($MAX_MB * 1MB))) {
+        for ($i = $KEEP - 1; $i -ge 1; $i--) {
+            $src = if ($i -eq 1) { $f } else { "$f.$($i - 1)" }
+            if (Test-Path $src) { Move-Item -Force $src "$f.$i" }
+        }
+        Write-Host "rotated $(Split-Path $f -Leaf) (> $MAX_MB MB)"
+    }
+}
+
 # ---------- 1. kill the port owner (with its process tree) ----------
 $conn = Get-NetTCPConnection -LocalPort 8001 -State Listen -ErrorAction SilentlyContinue
 if ($conn) {
