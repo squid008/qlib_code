@@ -140,11 +140,19 @@ def _apply_excludes(ev: "pd.DataFrame", panel: Dict, flags: Dict, warnings: List
     c = np.clip(col, 0, max(cols.size - 1, 0))
     C = cl.to_numpy(dtype=np.float64, copy=False)
     if flags.get("exclude_stock_gem") or flags.get("exclude_stock_kcb"):
-        pre = np.asarray([str(x)[:4] for x in codes], dtype=object)
+        # ★★ v2.11.64：**这里原来截 `[:4]` 去比 `"SH688"`** ✗ ⇒ 永远不等 ⇒
+        #   **科创板剔除从未生效** ✗✗（`"SH688001"[:4]` = `"SH68"` ✓；而创业板那侧
+        #   `"SZ300001"[:4]` = `"SZ30"` **恰好**对 ✓ ⇒ 只有科创板哑了 ✓）。
+        #   更糟的是它**静默**：后面 warning 照旧报"剔除触发样本 N → M 条" ✓，
+        #   用户以为科创板也被剔了 ✗（写 helper 测试时才撞出来 ✓）。
+        #   ⇒ 现在与全仓另外 5 处一致，统一用 `startswith` ✓
+        #   （`engine/limits.py` / `factors/event_study_stages.py` / `factors/single_test.py` /
+        #    `engine/board_exchange.py` 都这么写 ✓）。
+        s_codes = [str(x) for x in codes]
         if flags.get("exclude_stock_gem"):
-            keep &= (pre != "SZ30")
+            keep &= ~np.asarray([c.startswith("SZ30") for c in s_codes], dtype=bool)
         if flags.get("exclude_stock_kcb"):
-            keep &= (pre != "SH688")
+            keep &= ~np.asarray([c.startswith("SH688") for c in s_codes], dtype=bool)
     raw = panel.get("CLOSE_RAW")
     if flags.get("exclude_suspended") and raw is not None:
         R = _arr(raw)

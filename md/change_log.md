@@ -24,6 +24,41 @@
 
 ---
 
+## [2.11.64] - 2026-10-23
+
+### Fix + Test（**写测试揪出一个真 bug** ✓ —— 科创板剔除**从未生效**）
+
+#### ⭐ 真 bug：`exclude_stock_kcb` 一直是哑的
+
+```python
+pre = np.asarray([str(x)[:4] for x in codes], dtype=object)   # "SH688001" → "SH68"
+if flags.get("exclude_stock_gem"):  keep &= (pre != "SZ30")    # "SZ300001"[:4] = "SZ30" ✓ 恰好对
+if flags.get("exclude_stock_kcb"):  keep &= (pre != "SH688")   # "SH68" != "SH688" ⇒ 永远 True ✗✗
+```
+
+- **后果**：勾了「剔除科创板」**一条都没剔** ✓，而 warning 里照旧报"剔除触发样本 N → M 条" ✗
+  ⇒ **用户以为剔了** ✗（这种"静默不生效"比报错难查得多 ✓）。
+- **创业板那侧恰好对** ✓（`"SZ300001"[:4]` 正是 `"SZ30"`）⇒ 所以只有科创板哑了 ✓，
+  而且**只有把两只票放一起对照才看得出来** ✗（写测试时我才撞出来 ✓）。
+- **修法**：与全仓另外 **5 处**统一用 `startswith` ✓
+  （`engine/limits.py` / `factors/event_study_stages.py` / `factors/single_test.py` / `engine/board_exchange.py` 都是这么写的 ✓）。
+- ⚠ **这条 fix 会改变回灌结果** ✓：以前勾了科创板却不剔 ⇒ 现在真剔 ⇒ 同一份信号样本数会变少 ✓
+  （方向正确 ✓：科创板 20% 涨跌幅，样本特性与主板不同 ✓）。
+
+#### 新增 26 条测试（`signal_test` 21.3% → **34.47%** ✓ 定向实测）
+
+| 文件 | 条数 | 打在哪 |
+|---|---|---|
+| `tests/test_signal_test_helpers.py` | 18 | `_apply_excludes` 的**每条剔除判据**（创业板/科创板/成交日停牌/涨停/成交日 ST）＋ `_records`/`_official_series`/`_amount_match`/`options` |
+| `tests/test_signal_test_parse.py` | 8 | `/parse` 的**输入契约**：坏 base64 ⇒ 400、二进制内容 ⇒ `ok=False` + **可读原因**（v2.10.43 修过"500 而不是提示"✗）、纯文本乱格式**不抛**、`kind` 覆盖生效、TSV 也认 |
+
+- **为什么挑 `signal_test`**：它是后端覆盖率**最低**的模块（21.3%）✓，而 `/run` 主路径要真行情 ✗ ——
+  但**判据全在几个 helper 里** ✓ ⇒ 能用 5 天 × 3 只的构造面板测 ✓（不 init qlib ✓）。
+- ⭐ **有一条专钉"不许静默"** ✓：`exclude_st_t1` 命中 **0 条时也必须留一条 warning** ✓
+  （v2.1.78 的修复 —— 旧写法 `if hit.any(): 才 append` ✗ ⇒ "执行了但 0 命中"与"压根没执行"无法区分 ✗）。
+- **实测** ✓：新增 26 passed ✓ ｜ `ruff check app tests tools` 0 ✓ ｜ `mypy` 124 文件 0 错误 ✓ ｜
+  定向覆盖 `signal_test.py` **34.47%**（409 语句 / 缺 268）✓ ｜ CI ✓。
+
 ## [2.11.63] - 2026-10-23
 
 ### Test（**前端覆盖率 57.7% → 60.6%** ✓ —— 跨过 60 档，测试维 7.8 → **8.0**，绝对质量 8.77 → **8.79**）
