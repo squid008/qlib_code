@@ -24,6 +24,39 @@
 
 ---
 
+## [2.11.63] - 2026-10-23
+
+### Test（**前端覆盖率 57.7% → 60.6%** ✓ —— 跨过 60 档，测试维 7.8 → **8.0**，绝对质量 8.77 → **8.79**）
+
+- **怎么挑目标**：按「**未覆盖语句数**」排序（不凭感觉 ✓）。发现**未覆盖最多的全是依赖 `api` 的面板** ✗
+  （`SingleFactorTestPanel` 缺 1031、`SignalTestPanel` 缺 849 —— 要 mock 一堆接口 ✓ 成本高 ✗）；
+  而**只依赖 react** 的大文件里有两个现成的：`FormulaEditor`（缺 227）、`ZoomableLineChart`（缺 107）。
+- **结果**（实测）：
+  | 文件 | 前 | 后 | 说明 |
+  |---|---|---|---|
+  | `FormulaEditor.tsx` | 45.8% | **85.4%** | 227 → 61 未覆盖 ✓ |
+  | `captureChart.ts` | 14.6% | **打桩后覆盖两条降级分支** ✓ | 见下 |
+  | `ZoomableLineChart.tsx` | 72.8% | **74.6%** | ⚠ **只 +7 条** ✓（如实记，见下）|
+  | **总** | 57.74% | **60.61%** | 用例 310 → **347** ｜ 门槛 **55 → 58** |
+- **`FormulaEditor` 的 9 条打在真行为上** ✓：受控渲染 / **CRLF 归一**（历史上让行号槽错开一行 ✗）/
+  `onChange` / **句柄 `insertText` 插在光标处**（历史上"插完光标跳到末尾" ✗）/ `focus` / 查找栏开关与循环。
+- **`captureChart` 的 12 条打在导出链路上** ✓：`blobToBase64`（分块，大图不爆栈 ✓）/
+  `captureChartIn` 的三种返回（null / 无 svg / 有 svg）/ **图片加载失败必须抛**（不静默出白图 ✗）/
+  `captureSection` 的**两条路径**（html2canvas 成功 + **失败退回只截 SVG** ✓）与**滚动位置恢复** ✓。
+- ⚠⚠ **两条必须记的教训**（都是当场红的 ✗→✓）：
+  | 坑 | 现象 | 真因 |
+  |---|---|---|
+  | 用 `@testing-library/react` 写组件测试 | **9 条全红**：`ReferenceError: document is not defined` | 缺 `// @vitest-environment jsdom` ✓，且**本项目根本没装那个包** ✗ —— 项目范式是 `createRoot` + `act` ✓ |
+  | jsdom 没有 `scrollIntoView` | `captureSection` 静默走了 **fallback** 分支 ✓ 看着"通过" | 实际测的不是主路径 ✗ ⇒ 必须给它打桩 ✓ |
+  | mock 的 Blob 忘传 `type` | 断言 `blob.type === 'image/png'` 红（拿到 `''`）| **打桩也要打得像真的** ✓ |
+- ⚠ **`ZoomableLineChart` 只 +7 条，如实说明** ✓：Recharts 的 `ResponsiveContainer` 在 jsdom 里
+  **量不到尺寸** ⇒ 内部 SVG 不渲染 ✗ ⇒ 只能断言"图例/角标/重置入口 + 交互不崩"；
+  **轴刻度、曲线路径这些真值测不到** ✗。要真覆盖它得上 Playwright（真浏览器）✓ —— 已记，
+  但**不假装做到了** ✓。
+  > 这条也是"覆盖率 ≠ 质量"的例子 ✓：12 条 `expect(...).not.toThrow()` 能让数字涨，
+  > 但真正有价值的是 `captureChart` 那几条**降级分支**（真事故形态 ✓）。
+- **实测** ✓：前端 **347 passed** ｜ `tsc -b` 0 ｜ `biome` 100 文件 0 问题 ｜ 覆盖率 **60.61%**（门槛 58）｜ CI ✓。
+
 ## [2.11.62] - 2026-10-23
 
 ### Test（**把"架构债"从文档变成闸门** ✓ —— 架构 8.2 → **8.6**，绝对质量 8.74 → **8.77**）

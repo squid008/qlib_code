@@ -88,7 +88,14 @@ export default defineConfig({
   //   按"实测值向下取整、再留 ~2.5pp 余量"设 ✓（CI 与本机浮点/采样口径会有小差异 ✗）。
   //   这次是靠两个**纯逻辑**文件把覆盖率拉上来的（`sftLogic` 23.5%→96.2% ✓、
   //   `api` 2.8%→97.2% ✓）—— 比去啃 2000 行的组件划算得多 ✓。
-  thresholds: { statements: 55, lines: 55 },
+  // ★ v2.11.63：**55 → 58** ✓ —— 实测 60.61%（statements）/ 60.48%（lines），
+  //   仍按"实测向下取整、再留 ~2.5pp"设 ✓（CI 与本机浮点/采样口径有差异 ✗）。
+  //   这次靠三个**只依赖 react / 纯函数**的文件拉上来的 ✓：
+  //   `FormulaEditor` 45.8%→85.4%（227→61 未覆盖 ✓ 受控编辑器 + CRLF 归一 + 插入句柄 + 查找栏）、
+  //   `captureChart` 14.6%→（打桩 Image/canvas/html2canvas ✓ 导出链路的两条降级分支）、
+  //   `ZoomableLineChart` 72.8%→74.6%（⚠ 只 +7 条 ✓ —— Recharts 在 jsdom 里不渲染内部 ✗，
+  //   "不崩"类断言覆盖有限 ✓，如实记录）。
+  thresholds: { statements: 58, lines: 58 },
     },
   },
 })
