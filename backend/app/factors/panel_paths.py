@@ -17,30 +17,36 @@
   ⇒ 只看到"两边行数不一致"这种**看不出因果**的现象 ✗。
 """
 import os
-from typing import Dict
+from typing import Dict, Tuple
 
-#: `inst` → 解析出的目录（含**否定结果** ✓，避免每次 3 次 isdir ✗）
-INST_DIR_CACHE: Dict[str, str] = {}
+#: `(features_dir, inst)` → 解析出的目录（含**否定结果** ✓，避免每次 3 次 isdir ✗）
+#: ⚠ 键里**必须带 features_dir** ✗→✓ —— 只按 inst 做键时，
+#:   测试里"同一个 inst 名 + 不同临时目录"会**互相污染** ✓（实测 13 条既有用例因此变红 ✗）。
+INST_DIR_CACHE: Dict[Tuple[str, str], str] = {}
 
 
 def inst_dir(inst: str, features_dir: str) -> str:
     """→ `features/<inst>` 的**实际目录**，大小写归一 ✓。
 
-    依次试 **小写 → 原样 → 大写**（兼容不同 dump 工具的命名习惯 ✓）：
-    ⚠ **小写排第一是为了两平台行为一致** ✓ —— 若先试原样，Windows 会返回
-    `features/SH600000`、Linux 返回 `features/sh600000` ⇒ 同一函数两平台返回不同字符串 ✗，
-    回归测试也就没法只写一份 ✓。
+    依次试 **原样 → 小写 → 大写**（原样优先 ✓，兼容不同 dump 工具的命名习惯 ✓）。
 
-    都不存在时返回**小写**路径 ✓（调用方 `_dir_meta` 会照旧返回 None ✓ 语义不变 ✓）。
+    ⚠⚠ **必须"原样优先"** ✗→✓ —— 我先写成"小写优先"，结果 **20 条既有测试红了** ✗：
+    它们**故意**用"目录名与 inst 大小写不一致"来测「缺文件 ⇒ 跳过该股」✓，
+    小写优先会把它们**变成"找到了"** ⇒ 语义被改 ✗。
+    原样优先则：目录名与 inst 一致 ⇒ 行为与修复前**逐位相同** ✓；
+    只有"原样找不到"时才归一小写/大写 ⇒ 恰好补上 Linux 上那个 bug ✓。
+
+    都不存在时返回**原样**路径 ✓（调用方 `_dir_meta` 会照旧返回 None ✓ 语义不变 ✓）。
     """
-    hit = INST_DIR_CACHE.get(inst)
+    key = (features_dir, inst)
+    hit = INST_DIR_CACHE.get(key)
     if hit is not None:
         return hit
-    for cand in (inst.lower(), inst, inst.upper()):
+    for cand in (inst, inst.lower(), inst.upper()):
         d = os.path.join(features_dir, cand)
         if os.path.isdir(d):
-            INST_DIR_CACHE[inst] = d
+            INST_DIR_CACHE[key] = d
             return d
-    d = os.path.join(features_dir, inst.lower())
-    INST_DIR_CACHE[inst] = d          # 否定结果也缓存 ✓（目录后建时由 reset_caches 清 ✓）
+    d = os.path.join(features_dir, inst)
+    INST_DIR_CACHE[key] = d           # 否定结果也缓存 ✓（目录后建时由 reset_caches 清 ✓）
     return d
