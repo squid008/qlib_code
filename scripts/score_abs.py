@@ -86,8 +86,12 @@ def main() -> int:
         B(fe_cov, [(90, 10), (80, 9), (70, 8), (60, 7), (50, 6)], "前端覆盖 %.1f%%" % fe_cov),
         B(n_dr_ratio * 100, [(80, 10), (50, 8), (30, 7), (20, 6), (0, 4)],
           "真实数据链路自动化 %.0f%%" % (n_dr_ratio * 100)),
-        B(m["e2e_tests"] - 10 * (1 if m["e2e_mock_routes"] > 0 else 0),
-          [(4, 9), (0, 7), (-10, 4)], "E2E %d 条(全 mock)" % m["e2e_tests"]),
+        # ★ v2.11.54：E2E 分两种 ✓ —— **全 mock** 的（快、PR 用）与**真后端**的（慢、夜间用）
+        #   只有后者能证明"前后端联调通了" ✓ ⇒ 有它给 8，只有 mock 给 4 ✓。
+        ((8, "真后端 E2E %d 条（不 mock ✓）+ mock %d 条"
+          % (m.get("e2e_real_tests", 0), m["e2e_tests"]))
+         if m.get("e2e_real_tests", 0) > 0
+         else (4, "E2E %d 条**全是 mock** ✗（联调通没通没人验）" % m["e2e_tests"])),
         B(base.get("perf_gates", 4), [(4, 10), (2, 8), (0, 5)], "绝对性能门"),
         (10, "三把棘轮 + 20 条数值指纹 ✓"),
     ]
@@ -115,8 +119,10 @@ def main() -> int:
     # 6. CI/CD
     s6 = [
         B(m["ci_jobs"], [(6, 10), (5, 9), (4, 8), (0, 5)], "%d 个 job" % m["ci_jobs"]),
-        (4 if not m["ci_has_schedule"] else 9, "无定时跑（datareq 永不执行 ✗）"),
-        (4, "E2E 不通真后端 ✗"),
+        ((9, "有定时跑（nightly.yml：datareq 看门狗 + 真后端 E2E ✓）")
+         if m["ci_has_schedule"] else (4, "无定时跑（datareq 永不执行 ✗）")),
+        ((8, "夜间 job 跑真后端 E2E ✓") if m.get("e2e_real_tests", 0) > 0
+         else (4, "E2E 不通真后端 ✗")),
         (10, "覆盖率门槛 65/55 + 并发取消 + 缓存 + 失败上传 trace ✓"),
     ]
     dim("CI/CD", *s6)

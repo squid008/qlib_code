@@ -52,6 +52,25 @@ QLIB_PROVIDER_URI_FORCE=1 QLIB_PROVIDER_URI=$PWD/../data/_synth_ci pytest -m syn
   **不要**为了"让 CI 全绿"去改它们的断言 —— 那会把真问题藏起来。
 - 生成物 `data/_synth_ci` 已被 `.gitignore` 忽略，不要提交。
 
+
+## 2.6 真实链路的两个跑法（★ v2.11.54）
+
+```bash
+# ① datareq 看门狗（夜间 job 跑的就是它）
+python scripts/make_synth_qlib.py --out data/_synth_ci --verify
+QLIB_PROVIDER_URI_FORCE=1 QLIB_PROVIDER_URI=$PWD/data/_synth_ci \
+  python scripts/check_datareq_baseline.py --pytest-args "-m datareq"
+#   规则：出现**清单外**的失败 ⇒ 退出码 1（真回归）；失败比清单少 ⇒ 提示收窄清单 ✓
+#   修好一批后收窄：加 --rebaseline
+
+# ② 真后端 E2E（一条 page.route 都没有，真的打 /api/*）
+cd frontend && npm run test:e2e:real     # 会自动起 uvicorn（需 python 有 qlib）
+```
+
+- ⚠ 现有的 `npm run test:e2e` 是**全 mock** 的 ✓（快，PR CI 用）—— 两者**并存**，别混 ✗；
+- ⚠ `npm run test:e2e:real` 的本机后端**允许复用**（`reuseExistingServer: true`）✓，
+  安全性由 spec 的**身份断言**兜住（`/api/version` + `qlib_uptime_seconds` ✓）。
+
 ## 3. 硬规矩（都是踩过坑才立的）
 
 | 规矩 | 为什么 |

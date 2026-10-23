@@ -1,0 +1,88 @@
+# 夜间 job（★ v2.11.54）—— 专跑**真实链路**，不进 PR 的 CI（PR 要快 ✗）。
+#
+# 为什么单独一个 workflow 而不是加进 ci.yml：
+#   ci.yml 的 `on:` 是 push / pull_request ✓。若在里面加 `schedule`，
+#   那一整套 6 个 job（装 numpy/lightgbm/qlib/Chromium，约 3 分钟 × 6）都会每天重跑一遍 ✗。
+#   ⇒ 单独文件，只跑这两件事 ✓。
+#
+# 两件事（都是外部评审点名的"闸门管不到的地方"）：
+#   ① `datareq` 真实数据链路：合成数据上**16 条必然失败**（缺物化 chip_* / 真复权因子 / 真标的），
+#      ⇒ 用"**已知失败清单**"比对 ✓：出现清单外的失败才算红 ✓（真回归），
+#        失败比清单少则提示收窄 ✓。**不做** `pytest -m datareq` 直接跑 —— 那会永远红 ✗，
+#        几天后就没人看了 ✓（比不跑更糟 ✗）。
+#   ② **真后端 E2E**：`frontend/playwright.real.config.ts`（一条 `page.route` 都没有 ✓）——
+#      现有 7 条 E2E 把 `/api/**` 全 stub 掉 ✗ ⇒ "前后端联调通没通"从来没被自动化验过 ✗。
+name: 夜间（真实链路）
+
+on:
+  schedule:
+    # UTC 18:00 = 北京 02:00 ✓（凌晨跑，不占白天）
+    - cron: '0 18 * * *'
+  workflow_dispatch: {}
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  real-links:
+    name: datareq 看门狗 + 真后端 E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      # ⚠ 必须 FORCE：本机/CI 若有 `data/active_dataset.json`，它会**压过环境变量** ✗
+      QLIB_PROVIDER_URI_FORCE: '1'
+      QLIB_PROVIDER_URI: ${{ github.workspace }}/data/_synth_ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+
+      - name: 安装后端依赖 + qlib（与 ci.yml 同一套锁）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+          git clone --depth 1 https://github.com/microsoft/qlib "$HOME/qlib"
+          # ★ v2.11.52 起锁 commit sha ✓（不锁 ⇒ 上游一变就红，且红成"测试莫名失败"✗）
+          git -C "$HOME/qlib" fetch -q --depth 1 origin 54355232463878d2eebb91fe0ee5fa7fa1f5976c
+          git -C "$HOME/qlib" checkout -q FETCH_HEAD
+          pip install -e "$HOME/qlib"
+
+      - name: 生成合成 qlib 数据（用 qlib 自己的读取器校验格式）
+        working-directory: .
+        run: python scripts/make_synth_qlib.py --out data/_synth_ci --verify
+
+      - name: ① datareq 看门狗（允许已知失败，禁止悄悄多失败）
+        run: python scripts/check_datareq_baseline.py --pytest-args "-m datareq"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 前端依赖 + Chromium
+        working-directory: frontend
+        run: |
+          npm ci --legacy-peer-deps
+          npx playwright install --with-deps chromium
+
+      - name: ② 真后端 E2E（不 mock 任何 /api/*）
+        working-directory: frontend
+        env:
+          # playwright.real.config.ts 用它起 uvicorn ✓（ubuntu 上是 python3）
+          PYTHON: python3
+        run: npm run test:e2e:real
+
+      - name: 失败上传截图与 trace
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-e2e-artifacts
+          path: |
+            frontend/test-results
+            frontend/playwright-report
+          retention-days: 7

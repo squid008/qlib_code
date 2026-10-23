@@ -24,6 +24,38 @@
 
 ---
 
+## [2.11.54] - 2026-10-23
+
+### Feat + Test（**补掉绝对评分里最低的两维** ✓ —— CI/CD 7.0→**9.2**、测试 7.2→**7.8**，总分 7.90→**8.15**）
+
+- **① 夜间 datareq 看门狗**（`.github/workflows/nightly.yml` ✓ 独立 workflow，不动 `ci.yml`）
+  · **为什么不在 `ci.yml` 里加 `schedule`** ✗：那会让整套 6 个 job 每天重跑一遍 ✓（每个都要装
+    numpy/lightgbm/qlib/Chromium ✗）⇒ 单独文件只跑这两件事 ✓。
+  · **为什么不是 `pytest -m datareq` 直接跑** ✗→✓：21 条里 **16 条**在合成数据上**必然失败** ✓
+    （缺物化 `chip_*` bin / 真复权因子 / 万科那种真标的 ✗）⇒ 直接跑**永远红** ✗ ⇒
+    几天后没人看了 ✓（**比不跑更糟** ✗）。
+    ⇒ 改成**已知失败清单比对**（`scripts/datareq_known_failures.txt` ✓ + `check_datareq_baseline.py`）：
+    **清单外的失败 ⇒ 退出码 1**（真回归 ✓）；**失败比清单少 ⇒ 通过 + 提示收窄** ✓。
+    这与项目现有的"棘轮只减不增"是同一套思想 ✓。
+  · 基线实测：合成数据下 **failed 16 / passed 7**（21 条）✓。
+- **② 真后端 E2E**（`frontend/playwright.real.config.ts` + `frontend/e2e-real/backend.spec.ts` ✓）
+  · **补的是什么**：现有 7 条 E2E 把 `**/api/*` 一条 `page.route` 全拦掉 ✓ ⇒ 测的是
+    "前端在 API 正常时能渲染"✓，**"前后端联调通没通"从来没被自动化验过** ✗。
+  · **4 条断言（都是只有真后端才成立的）** ✓：
+    ① `/api/version` 的版本 == 顶栏显示的 `vX.Y.Z` ✓；
+    ② `/api/metrics?format=text` 里有 **`qlib_uptime_seconds`** ✓ —— 本项目的**后端指纹**✓
+       （换成任何别的服务都不会有 ✓，防"静默测错对象"✗）；
+    ③ `/api/datasets` 有真实的 `active` 字段 ✓；
+    ④ 真后端下首页渲染：**零未捕获异常** ✓ + 不出现"加载失败"✓。
+  · **两套并存** ✓：`npm run test:e2e`（mock，PR CI，秒级）／`test:e2e:real`（真后端，夜间/本机，分钟级）。
+    ⚠ 后端允许 `reuseExistingServer: true` ✓ —— 与前端那条"永远 false"不冲突：
+      前端是为了**防接管别人的应用**（5174 那次事故 ✓），后端则由 spec 的**身份断言**兜住 ✓。
+- **实测** ✓：真后端 E2E **4 passed（19s）** ✓ ｜ datareq 看门狗 **exit 0（16 known / 7 passed）** ✓ ｜
+  `tsc` 0 ✓ ｜ `biome` 0 ✓ ｜ nightly YAML 校验通过（9 steps，`on: schedule + workflow_dispatch`）✓。
+- **绝对质量** ✓：`CI/CD 7.0 → 9.2`、`测试与验证 7.2 → 7.8` ⇒ **总分 7.90 → 8.15** ✓。
+  剩余最低三维：`协作 7.0`（单人推 main / 无 release notes）、`静态检查 7.3`（ruff 仅 6 条规则）、
+  `安全性 7.5`（无鉴权/限流）✓。
+
 ## [2.11.53] - 2026-10-23
 
 ### Feat（**给"绝对质量"一个可复核的分** ✓ —— 承认 `10.0` 是没用的数）

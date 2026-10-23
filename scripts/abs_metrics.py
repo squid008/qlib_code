@@ -107,6 +107,18 @@ def main():
     out["e2e_tests"] = n_test
     out["e2e_mock_routes"] = spec_txt.count("page.route")
 
+    # ★ v2.11.54：**真后端 E2E**（不 mock 的那套 ✓）—— 单独数，因为它才是"联调通没通"的证据 ✓
+    real = os.path.join(FE, "e2e-real")
+    n_real = 0
+    if os.path.isdir(real):
+        for f in os.listdir(real):
+            if f.endswith(".spec.ts"):
+                n_real += len(re.findall(r"^\s*test\(", read(os.path.join(real, f)), re.M))
+    out["e2e_real_tests"] = n_real
+    out["e2e_real_mock_routes"] = sum(
+        read(os.path.join(real, f)).count("page.route")
+        for f in (os.listdir(real) if os.path.isdir(real) else []) if f.endswith(".spec.ts"))
+
     # ---------- 文档 ----------
     md = [os.path.join(r, f) for r, _d, fs in os.walk(os.path.join(ROOT, "md")) for f in fs if f.endswith(".md")]
     md += [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "CONTRIBUTING.md")]
@@ -124,7 +136,12 @@ def main():
 
     # ---------- 其它 ----------
     out["ci_jobs"] = len(re.findall(r"^  [a-z-]+:\s*$", read(os.path.join(ROOT, ".github", "workflows", "ci.yml")), re.M))
-    out["ci_has_schedule"] = "schedule:" in read(os.path.join(ROOT, ".github", "workflows", "ci.yml"))
+    # ★ v2.11.54：定时跑放在**独立 workflow** 里（`nightly.yml` ✓）——
+    #   所以这里要看**所有** workflow，只看 ci.yml 会误判"没有定时跑"✗。
+    wf_dir = os.path.join(ROOT, ".github", "workflows")
+    all_wf = "".join(read(os.path.join(wf_dir, f)) for f in os.listdir(wf_dir) if f.endswith(".yml"))
+    out["ci_has_schedule"] = "schedule:" in all_wf
+    out["has_nightly_workflow"] = os.path.isfile(os.path.join(wf_dir, "nightly.yml"))
     out["perf_gates"] = len(re.findall(r'^\s{4}"[^"]+":\s*[\d.]+',
                                        read(os.path.join(BE, "tests", "test_perf_absolute.py")), re.M))
     out["complexity_frozen"] = len(re.findall(r'^\s+"[^"]+::', read(os.path.join(BE, "tests", "test_complexity.py")), re.M))
