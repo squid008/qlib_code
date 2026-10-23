@@ -114,7 +114,6 @@ def test_parse_smoke(expr, expect_sub):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.datareq
-@pytest.mark.synthdata
 def test_panel_matches_qlib_cwh():
     """csi300 上完整 CWH 公式 + label/base 字段组：panel 与 qlib 逐位对齐。
 
@@ -367,7 +366,6 @@ def test_panel_parallel_matches_single():
 
 
 @pytest.mark.datareq
-@pytest.mark.synthdata
 def test_panel_matches_qlib_ema():
     """EMA / EMA_TDX（含裸 EMA 精确冷启动、SR+EMA、MACD 组合）panel vs qlib 逐位对齐。
 
@@ -420,7 +418,6 @@ def test_panel_matches_qlib_ema():
 
 
 @pytest.mark.datareq
-@pytest.mark.synthdata
 def test_panel_matches_qlib_sma():
     """SMA(X,N,M)（通达信递归均线）panel vs qlib 逐位对齐。
 
@@ -473,7 +470,6 @@ def test_panel_matches_qlib_sma():
 
 
 @pytest.mark.datareq
-@pytest.mark.synthdata
 def test_panel_matches_qlib_bars():
     """HHVBARS/LLVBARS（固定窗口 + DYN 变量窗口，杯柄形态公式核心）panel vs qlib 逐位对齐。
 
@@ -529,7 +525,6 @@ def test_panel_matches_qlib_bars():
 
 
 @pytest.mark.datareq
-@pytest.mark.synthdata
 def test_panel_matches_qlib_ema_nested():
     """嵌套固定窗口的 EMA（趋势顶底类）panel vs qlib 逐位对齐。
 

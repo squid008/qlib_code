@@ -40,10 +40,13 @@ FIELDS = ["open", "high", "low", "close", "volume", "amount", "factor",
 def build_frames(n_codes: int, years: int, seed: int):
     """→ `(frames: {code: DataFrame}, calendar)` ✓（同种子 ⇒ 逐位相同 ✓）。"""
     rng = np.random.default_rng(seed)
-    # ⚠ 区间要**盖住用例取数的年份** ✗→✓ —— 几个 datareq 用例写死 `start_time="2025-01-01"` ✓，
-    #   我第一版只造 2022~2023 ⇒ 那些用例 `IndexError: index 504 out of bounds` /
-    #   `股票池为空` ✗（不是格式问题 ✓，是区间没覆盖 ✓）。
-    cal = pd.bdate_range("2022-01-03", periods=int(252 * years), freq="B")
+    # ⚠⚠ 日历**必须一直造到今天** ✗→✓ —— 这条是 CI 教我的：
+    #   面板取数用 `end_time=今天`（或含今天），而合成日历只到 2025-12 ⇒
+    #   面板侧拿到 **0 行** ⇒ `AssertionError: (0, 6780)` ✗（qlib 侧有 6780 行 ✓）。
+    #   **本地测不出来** ✗ —— 因为本地还有 `data/cn_data` 的真日历兜着 ✓。
+    cal = pd.bdate_range("2022-01-03", pd.Timestamp.today().normalize(), freq="B")
+    if years:                                     # 传了 years 就仍按年数截（调试用 ✓）
+        cal = cal[: int(252 * years)]
     n = len(cal)
     frames = {}
     for k in range(n_codes):
@@ -136,8 +139,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join("data", "_synth_ci"))
     ap.add_argument("--n", type=int, default=30, help="标的数（默认 30 ✓）")
-    ap.add_argument("--years", type=int, default=4,
-                    help="年数（默认 4 ⇒ 2022-01 ~ 2025-12 ✓，要盖住用例写死的 2025 取数 ✓）")
+    ap.add_argument("--years", type=int, default=0,
+                    help="0 = 从 2022-01-03 一直造到**今天** ✓（默认，必须覆盖'到今天'的取数窗口）；"
+                         "传 N 则只造 N 年（调试用）")
     ap.add_argument("--seed", type=int, default=20261023)
     ap.add_argument("--verify", action="store_true", help="生成后用 qlib 读回校验 ✓")
     a = ap.parse_args()
