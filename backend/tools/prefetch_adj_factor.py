@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dump_tushare_finance import atomic_json_dump, to_ts_code, token, ts_call   # noqa: E402
+from dump_tushare_finance import atomic_json_dump, to_ts_code, token, ts_call  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 ADJ_DIR = ROOT / "data" / "tushare_cache" / "adj"

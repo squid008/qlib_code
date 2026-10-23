@@ -75,8 +75,15 @@
   ⚠ 集成测试**不能用 `caplog`** ✗ —— 本项目 logger 设了 `propagate = False`（`app/logger.py` ✓）
   ⇒ 记录传不到 root ⇒ 我第一版实测"实际 0 次" ✗ ⇒ 改成**打桩 `main.get_logger`** ✓。
 
-- **实测** ✓：`ruff` **0**（含新两条规则 ✓）｜ `mypy` **124 文件 0 错误** ✓ ｜
-  后端 **1926 passed** ✓ ｜ 前端 **264 passed** ✓ ｜ `tsc -b` **0** ✓ ｜ `biome` **0** ✓ ｜ CI ✓。
+- **⚠ 被 CI 抓了一次（值得记）** ✗→✓：我本地只跑了 `ruff check **app tests**` ✓，
+  而 **CI 跑的是 `ruff check app tests tools`** ✗ ⇒ `tools/` 里 **29 处** `I001` 一条没修
+  ⇒ CI 的 `ruff 静态检查` 当场红 ✓（而且是**已经 push 之后**才发现的 ✓）。
+  > 教训：**本地复检命令必须和 CI 逐字一致** ✗ —— 我引用了 README 里写的
+  > `python -m ruff check app tests`（README 本身也漏了 `tools` ✓）⇒ **文档写错 ⇒ 本地也就跑错** ✓。
+  > 已同步：README 的闸门命令改成 `app tests tools` ✓，本地复检也按 CI 逐字跑 ✓。
+- **实测** ✓：`ruff check **app tests tools**`（**与 CI 逐字一致** ✓）**0 问题** ✓ ｜
+  `mypy` **124 文件 0 错误** ✓ ｜ 后端 **1926 passed** ✓ ｜ 前端 **264 passed** ✓ ｜
+  `tsc -b` **0** ✓ ｜ `biome` **0** ✓ ｜ CI ✓。
 - **评分** ✓：文档 **9.4→9.5**、安全 **9.0→9.2**、可观测 **9.0→9.2**、代码健康 **9.0→9.1**
   ⇒ 12 维平均 **9.2 → 9.3** ✓。
 

@@ -26,8 +26,8 @@ from typing import Dict, List
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dump_finance import load_calendar, write_bin                      # noqa: E402
-from dump_tushare_finance import read_bin, to_qlib_code, ts_call, token  # noqa: E402
+from dump_finance import load_calendar, write_bin  # noqa: E402
+from dump_tushare_finance import read_bin, to_qlib_code, token, ts_call  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 FIELDS = ("limit_up", "limit_down", "is_st")

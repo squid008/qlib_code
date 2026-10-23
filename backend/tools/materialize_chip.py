@@ -44,7 +44,7 @@ def main() -> int:
     rest = [a for a in argv if not a.startswith("--")]
     batch = int(rest[0]) if rest else 400
 
-    from app.services.qlib_runtime import ensure_qlib_init   # ⚠ 必须走统一入口（带 custom_ops）
+    from app.services.qlib_runtime import ensure_qlib_init  # ⚠ 必须走统一入口（带 custom_ops）
 
     ensure_qlib_init()
     from app.config import QLIB_PROVIDER_URI

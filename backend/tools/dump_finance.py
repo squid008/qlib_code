@@ -90,8 +90,10 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # ★ 三档口径的**字段名**由 codegen 生成（`finance_field_name()` ✓）⇒ 公式侧与物化侧**天然不漂移** ✓
-from app.factors.parser.codegen import (                      # noqa: E402
-    FINANCE_TIER_SUFFIX, finance_field_name, finance_tiered_field_names,
+from app.factors.parser.codegen import (  # noqa: E402
+    FINANCE_TIER_SUFFIX,
+    finance_field_name,
+    finance_tiered_field_names,
 )
 
 # 输出字段：顺序 = FINANCE(q) 的 q（1..10），与公式手册、codegen 的表必须一致
@@ -675,7 +677,7 @@ def main():
     if n_bins > 0:
         try:
             sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-            from app.engine.feature_cache import bump_data_version      # noqa: PLC0415
+            from app.engine.feature_cache import bump_data_version  # noqa: PLC0415
             print("数据戳已落 ✓ %s" % bump_data_version(str(qlib_dir), "dump_finance"))
         except Exception as e:                                          # noqa: BLE001
             print("⚠⚠ 数据戳**没落上**（%r）⇒ 必须手工清 `backend/workdir/feature_cache/` ✗" % e)

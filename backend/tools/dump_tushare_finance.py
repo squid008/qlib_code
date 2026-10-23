@@ -49,9 +49,15 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dump_finance import (                                    # noqa: E402  口径唯一来源 ✓
-    ALL_FIELDS, FIN_FIELDS, FIN_META_NAME, FINANCE_SEMANTICS, TIERED_FIELDS,
-    load_calendar, tiered_report_values, write_bin,
+from dump_finance import (  # noqa: E402  口径唯一来源 ✓
+    ALL_FIELDS,
+    FIN_FIELDS,
+    FIN_META_NAME,
+    FINANCE_SEMANTICS,
+    TIERED_FIELDS,
+    load_calendar,
+    tiered_report_values,
+    write_bin,
 )
 
 ROOT = Path(__file__).resolve().parents[2]

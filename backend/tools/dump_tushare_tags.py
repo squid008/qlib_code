@@ -38,8 +38,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dump_finance import write_bin                                   # noqa: E402
-from dump_tushare_finance import read_bin, to_qlib_code, token, ts_call   # noqa: E402
+from dump_finance import write_bin  # noqa: E402
+from dump_tushare_finance import read_bin, to_qlib_code, token, ts_call  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CACHE = ROOT / "data" / "tushare_cache"

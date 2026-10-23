@@ -36,8 +36,8 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dump_finance import load_calendar, write_bin                       # noqa: E402
-from dump_tushare_finance import read_bin, to_qlib_code                 # noqa: E402
+from dump_finance import load_calendar, write_bin  # noqa: E402
+from dump_tushare_finance import read_bin, to_qlib_code  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CACHE = ROOT / "data" / "tushare_cache" / "daily"
@@ -118,7 +118,7 @@ def main():
     _, adj0 = read_day(anchor) if anchor in days else (None, None)
     if adj0 is None:
         # 锚定日不在缓存里（它是老日历末日 ✓）⇒ 用 tushare 现拉一次 adj_factor 反解 ✓
-        from dump_tushare_finance import ts_call, token
+        from dump_tushare_finance import token, ts_call
         r = ts_call("adj_factor", {"trade_date": anchor.replace("-", "")}, "ts_code,adj_factor",
                     token())
         adj0 = {to_qlib_code(x[0]): float(x[1]) for x in (r.get("data", {}).get("items") or [])}
@@ -133,7 +133,7 @@ def main():
     if anchor_path.exists():
         anchor_daily, _ = read_day(anchor)
     else:
-        from dump_tushare_finance import ts_call, token
+        from dump_tushare_finance import token, ts_call
         r = ts_call("daily", {"trade_date": anchor.replace("-", "")},
                     "ts_code,open,high,low,close,vol,amount", token())
         anchor_daily = {to_qlib_code(x[0]): dict(zip(r["data"]["fields"], x))

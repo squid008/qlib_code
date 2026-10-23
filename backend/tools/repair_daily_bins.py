@@ -35,11 +35,16 @@ from typing import Dict
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dump_finance import load_calendar, write_bin                       # noqa: E402
-from dump_tushare_daily import (                                        # noqa: E402
-    CACHE, EXTRA_FIELDS, PRICE_FIELDS, load_cache_days, read_day, to_qlib_code,
+from dump_finance import load_calendar, write_bin  # noqa: E402
+from dump_tushare_daily import (  # noqa: E402
+    CACHE,
+    EXTRA_FIELDS,
+    PRICE_FIELDS,
+    load_cache_days,
+    read_day,
+    to_qlib_code,
 )
-from dump_tushare_finance import read_bin                               # noqa: E402
+from dump_tushare_finance import read_bin  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 FIELDS = PRICE_FIELDS + EXTRA_FIELDS

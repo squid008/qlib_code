@@ -24,8 +24,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import dump_tushare_finance as M                                          # noqa: E402
-from dump_finance import load_calendar                                    # noqa: E402
+import dump_tushare_finance as M  # noqa: E402
+from dump_finance import load_calendar  # noqa: E402
 
 CACHE = ROOT / "data" / "tushare_cache" / "basic"
 FIELDS = "ts_code,trade_date,total_mv,circ_mv,total_share,float_share,free_share"

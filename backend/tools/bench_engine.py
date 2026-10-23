@@ -37,7 +37,7 @@ import pandas as pd
 #   这里把 `backend/` 顶到最前 ✓（实测：不加就是 `ModuleNotFoundError: No module named 'app'` ✓）。
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.signals.engine import run_backtest            # noqa: E402
+from app.signals.engine import run_backtest  # noqa: E402
 
 
 def build(codes: int, days: int, cadence: int):

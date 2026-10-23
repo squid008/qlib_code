@@ -30,10 +30,11 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dump_finance import write_bin                                    # noqa: E402
-from dump_tushare_finance import read_bin, token, ts_call             # noqa: E402
-from dump_tushare_mf import FIELDS as MF_FIELDS, derive, fetch_mf     # noqa: E402
-from dump_tushare_tags import cal_of, codes_of                        # noqa: E402
+from dump_finance import write_bin  # noqa: E402
+from dump_tushare_finance import read_bin, token, ts_call  # noqa: E402
+from dump_tushare_mf import FIELDS as MF_FIELDS  # noqa: E402
+from dump_tushare_mf import derive, fetch_mf
+from dump_tushare_tags import cal_of, codes_of  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 

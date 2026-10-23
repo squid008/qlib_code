@@ -29,8 +29,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dump_finance import load_calendar, write_bin                          # noqa: E402
-from dump_tushare_finance import _declared_convention, read_bin           # noqa: E402
+from dump_finance import load_calendar, write_bin  # noqa: E402
+from dump_tushare_finance import _declared_convention, read_bin  # noqa: E402
 
 BASIC = ROOT / "data" / "tushare_cache" / "basic"
 # 目标字段 → 缓存里的键 ✓

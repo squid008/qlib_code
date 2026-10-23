@@ -124,7 +124,7 @@ npm run dev            # → http://127.0.0.1:5173
 ```bash
 # 后端（cd backend）
 python -m mypy                                 # 整个 app，0 错误
-python -m ruff check app tests                 # 静态检查（含 import 排序 / 行尾空白）
+python -m ruff check app tests tools           # ⚠ 必须带 tools（CI 就是这么跑的 ✗ 少一个目录会漏 29 处）
 python -m pytest tests -m "not datareq" -q     # 纯逻辑用例（覆盖率门槛 65%）
 python -m pip_audit -r requirements.txt        # 依赖漏洞（阻断式）
 python -m bandit -ll -r app -c pyproject.toml  # 源码 SAST（只报中/高危）

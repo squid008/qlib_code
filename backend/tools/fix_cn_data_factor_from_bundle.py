@@ -40,8 +40,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dump_finance import load_calendar, write_bin                        # noqa: E402
-from dump_tushare_finance import read_bin                               # noqa: E402
+from dump_finance import load_calendar, write_bin  # noqa: E402
+from dump_tushare_finance import read_bin  # noqa: E402
 
 BUNDLE = Path(os.environ.get("BUNDLE_ROOT", r"E:\rq\bundle"))
 SUF = {"sh": "XSHG", "sz": "XSHE", "bj": "BJSE"}

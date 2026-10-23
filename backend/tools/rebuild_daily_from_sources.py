@@ -68,9 +68,9 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dump_finance import load_calendar, write_bin                        # noqa: E402
-from dump_tushare_daily import EXTRA_FIELDS, PRICE_FIELDS, read_day      # noqa: E402
-from dump_tushare_finance import to_ts_code                              # noqa: E402
+from dump_finance import load_calendar, write_bin  # noqa: E402
+from dump_tushare_daily import EXTRA_FIELDS, PRICE_FIELDS, read_day  # noqa: E402
+from dump_tushare_finance import to_ts_code  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 FIELDS = PRICE_FIELDS + EXTRA_FIELDS                                     # 10 个行情字段 ✓

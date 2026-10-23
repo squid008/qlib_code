@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dump_tushare_finance import read_bin, token, ts_call              # noqa: E402
+from dump_tushare_finance import read_bin, token, ts_call  # noqa: E402
 
 # qlib 代码 → tushare 代码（**后缀必须实测挑** ✓：`sh000985` 只认 `000985.CSI` ✓ 但那一个也无源 ✓）
 INDEX_SRC = {

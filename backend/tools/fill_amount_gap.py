@@ -36,7 +36,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dump_tushare_finance import token, ts_call              # noqa: E402
+from dump_tushare_finance import token, ts_call  # noqa: E402
 
 CACHE_AMT = ROOT / "data" / "tushare_cache" / "daily_amount"
 

@@ -33,8 +33,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dump_finance import load_calendar, write_bin                        # noqa: E402
-from dump_tushare_finance import guard_convention, read_bin, token, ts_call   # noqa: E402
+from dump_finance import load_calendar, write_bin  # noqa: E402
+from dump_tushare_finance import guard_convention, read_bin, token, ts_call  # noqa: E402
 
 IDX = {"sh000300": "000300.SH", "sh000905": "000905.SH", "sh000906": "000906.SH",
        "sh000852": "000852.SH", "sz399300": "399300.SZ"}

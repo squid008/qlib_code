@@ -45,8 +45,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dump_finance import load_calendar, write_bin                          # noqa: E402
-from dump_tushare_finance import _declared_convention, read_bin          # noqa: E402
+from dump_finance import load_calendar, write_bin  # noqa: E402
+from dump_tushare_finance import _declared_convention, read_bin  # noqa: E402
 
 MC_DIR = Path(os.environ.get("RQ_MARKET_CAP_DIR", r"E:\rq\others\market-cap"))
 NEW_FIELDS = ("circulating_market_cap", "capitalization", "circulating_cap")

@@ -36,8 +36,8 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dump_finance import load_calendar, write_bin                       # noqa: E402
-from dump_tushare_finance import read_bin                               # noqa: E402
+from dump_finance import load_calendar, write_bin  # noqa: E402
+from dump_tushare_finance import read_bin  # noqa: E402
 
 # 出问题的指数（2026-10-10 实测：first=1228 应为 1200 ✓）
 INDEX_CODES = ("sh000300", "sh000905", "sh000906", "sh000852", "sz399300")
