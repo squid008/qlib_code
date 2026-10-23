@@ -70,6 +70,10 @@
 | `services/custom_formulas.py` | 2 | factors | ⚠ 公式持久化 ↔ 公式编译 |
 | `engine/qlib_engine.py` | **1** | factors（L27）| ⚠ **引擎反向依赖因子层** ✓ |
 
+> ✅ **v2.11.62 起这 19 处已冻结成闸门** ✓（`backend/tests/test_layering.py`：
+> 基线按「文件 → 目标包」记次数 ✓，**新增或变多就红** ✓，修好了会提示收窄基线 ✓）。
+> 也就是说：**这份文档里的数字现在是可执行的** ✓ —— 不再靠人记得更新表格 ✓。
+
 **为什么没立刻修**：这 19 处不是"写错了" ✓，而是**职责边界当初没划清** ✓
 （例如"切数据集"天然要知道引擎和因子缓存的清法 ✓）。
 修法是把"清缓存/取默认"这类**契约**下沉到 `models` 或一个 `contracts` 层 ✓ ——
@@ -167,6 +171,9 @@ for pkg in PKGS:
                         if m.group(1) in PKGS and m.group(1)!=pkg: e[pkg][m.group(1)]+=1
 for pkg in PKGS: print(pkg, dict(e[pkg]))
 PY
+
+# 分层闸门（基线只减不增；有新增就红）
+cd backend && python -m pytest tests/test_layering.py -q
 
 # 规模（文件数 / 行数 / 巨型函数）
 python scripts/abs_metrics.py && cat scripts/abs_metrics.json

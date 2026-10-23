@@ -65,6 +65,11 @@ def main() -> int:
         B(10 - m["fe_comp_gt1300"], [(10, 10), (8, 9), (6, 8), (4, 7)],
           "前端 >1300 行组件 %d 个" % m["fe_comp_gt1300"]),
         (10, "分层：routers/services/engine/factors/signals/datasource ✓"),
+        # ★ v2.11.62：**光有分层不算数** ✗ —— 架构文档实测 19 处"下层 import 上层" ✓，
+        #   而当时**没有闸门** ⇒ 再多写 5 处也没人知道 ✗。现在冻结成棘轮 ✓（只减不增 ✓）。
+        ((10, "分层违规已冻结为棘轮 ✓（基线 %d 处，只减不增）" % m.get("layering_frozen", 0))
+         if m.get("has_layering_gate")
+         else (4, "分层违规无闸门 ✗（%d 处可任意增减）" % m.get("layering_frozen", 0))),
     ]
     dim("架构与模块化", *s1)
 

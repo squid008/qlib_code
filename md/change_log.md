@@ -24,6 +24,44 @@
 
 ---
 
+## [2.11.62] - 2026-10-23
+
+### Test（**把"架构债"从文档变成闸门** ✓ —— 架构 8.2 → **8.6**，绝对质量 8.74 → **8.77**）
+
+- **补的洞**：`md/architecture.md`（v2.11.61）**实测**查出 **19 处分层违规** ✓，
+  但**当时没有任何闸门** ✗ —— 也就是说：**修掉 3 处、新写 5 处，总数还涨了也没人知道** ✓。
+  文档里的数字**会过期** ✗（本项目反复踩这个 ✓）。
+- **做法**：新增 `backend/tests/test_layering.py` ✓ —— 三种棘轮口径：
+  | 条 | 断言 | 抓什么 |
+  |---|---|---|
+  | 1 | **不许新增键**（文件 → 目标包），**不许计数变大** | 新写"下层 import 上层"✗ |
+  | 2 | **总数只减不增** | 多条新违规"抵消"某条修复的账 ✗ |
+  | 3 | **守卫自检**：至少扫到 1 处 + 必须含已知的 `services/datasets.py -> routers` | 正则写错 ⇒ **空集恒绿** ✗ |
+- **基线（实测 19 处 / 8 个键，2026-10-23）** ✓ 与 `architecture.md` §3 的表**逐条对得上** ✓：
+  ```
+  engine/qlib_engine.py            -> factors   1   ⚠ 引擎反向依赖因子层
+  services/artifacts_service.py    -> engine    4
+  services/artifacts_service.py    -> factors   2
+  services/custom_formulas.py      -> factors   2
+  services/datasets.py             -> engine    4
+  services/datasets.py             -> factors   2
+  services/datasets.py             -> routers   1   ⚠ 唯一一条 services → routers
+  services/qlib_runtime.py         -> factors   3
+  ```
+- ⭐⭐ **写闸门时抓到一个真盲点** ✗→✓：我塞了一个**故意违规**的探针文件验闸门，
+  结果 **3 passed** ✗ —— 探针明明写着 `from ..routers import ...` ✓。
+  查下去：探针是 **UTF-8 带 BOM**（PowerShell 5.1 的 `Set-Content -Encoding utf8` 会写 BOM ✓），
+  而扫描器用 `utf-8` 读 ⇒ **`^` 后面立刻是 `\ufeff`** ⇒ `^\s*from` 匹配不上 ⇒ **该文件被静默跳过** ✗。
+  ⇒ 改用 **`utf-8-sig`** ✓（吃掉 BOM）⇒ 再验：**精确报出 `services/_layer_probe.py -> routers（1 次）`** ✓，
+  删掉探针立刻恢复绿 ✓。
+  > 这条比闸门本身更值钱 ✓：**"我验过了"和"它真的会响"是两件事** ✗ ——
+  > 我的自检（"至少扫到 1 处"）**没能发现**这个盲点 ✓，因为别的文件扫到了 ✓。
+  > 只有**主动注入违规**才能证明闸门是活的 ✓。
+- **绝对质量** ✓：`架构与模块化 8.2 → 8.6`（新增子项"分层违规已冻结为棘轮"）⇒ **8.74 → 8.77** ✓。
+  剩余最低四维：`安全 7.5`、`测试 7.8`、`协作 8.2`、`静态检查 8.3`。
+- **实测** ✓：`test_layering.py` **3 passed** ✓ ｜ 反证（注入违规 ⇒ 精确报出该文件）✓ ｜
+  `ruff check tests` **0** ✓ ｜ CI ✓。
+
 ## [2.11.61] - 2026-10-23
 
 ### Docs + Chore（**三件便宜事** ✓ —— 绝对质量 8.47 → **8.74**：文档 8.2→9.8、静态检查 8.0→8.3、可观测 7.8→9.2）

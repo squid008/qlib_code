@@ -160,6 +160,12 @@ def main():
     #   "有点位但没人抓"和"有抓取端"是两件事 ✓（外部评审点过 ✓）。
     scrape = os.path.join(ROOT, "scripts", "scrape_metrics.py")
     out["has_scrape_tool"] = os.path.isfile(scrape) and "--max-avg-ms" in read(scrape)
+    # ★ v2.11.62：**分层违规是否已冻结成棘轮** ✓ —— 有 19 处违规但**没闸门**时，
+    #   "架构分层清楚"这句话就只是一句文档 ✗（下一个人再多写 5 处也没人知道 ✓）。
+    lay = os.path.join(BE, "tests", "test_layering.py")
+    laytxt = read(lay)
+    out["has_layering_gate"] = os.path.isfile(lay) and "BASELINE: dict[str, int]" in laytxt
+    out["layering_frozen"] = sum(int(n) for n in re.findall(r"->\s*\w+\":\s*(\d+)", laytxt))
     out["complexity_frozen"] = len(re.findall(r'^\s+"[^"]+::', read(os.path.join(BE, "tests", "test_complexity.py")), re.M))
 
     dst = os.path.join(ROOT, "scripts", "abs_metrics.json")
