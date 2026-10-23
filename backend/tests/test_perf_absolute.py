@@ -1,6 +1,19 @@
 # -*- coding: utf-8 -*-
 """**绝对**性能护栏（★ v2.11.23）—— 补上"只有相对比值门"的缺口。
 
+## ⚠ v2.11.60：整文件打了 `perf` 标记 ⇒ CI **单独串行跑** ✓
+外部评审实测：全量跑时 `test_batch_even_speed_is_guarded` 量到 **7.52s**，
+而上限是 `3 × 2.464 + 0.2 = 7.59s` ✓ —— **只差 0.07s**，属于"随时会红" ✓。
+原因不是阈值不合理 ✓，而是**它和 1900 条用例交错跑** ⇒ 计时被别人的负载污染 ✗
+（`_best_of` 取最小值已经能避开**短时抖动** ✓，但避不开**持续负载** ✗）。
+⇒ 正解是**隔离**（`pytest -m perf` 单独一步 ✓），而**不是**把阈值放宽到 5× ✗ ——
+放宽等于削弱护栏 ✓（拖慢 2 倍就不红了 ✗）。
+⚠ 我改这段时**误加了一个三引号把本文档字符串提前闭合** ✗ ⇒ 后面的正文变成代码
+  ⇒ `SyntaxError: invalid character '：'` ✓（全角冒号在代码里 ✓）。
+  修的时候又犯一次：**在正文里写那三个引号本身也会闭合它** ✗
+  ⇒ `SyntaxError: invalid character '✗'`（这一行 ✓）。
+  教训：**在 docstring 正文里既不能带结束引号，也不能"引用"它** ✗ —— 要说得绕一点 ✓。
+
 ## 为什么需要它
 原来只有 `tests/test_perf_relative.py`：它比的是"两次实现谁快" ✓（**相对**）。
 但"**某次改动把一条路径拖慢 2 倍**"它**看不见** ✗ ——
@@ -41,6 +54,11 @@ sys.path.insert(0, BE)
 sys.path.insert(0, os.path.join(BE, "tools"))
 
 from bench_engine import build  # noqa: E402
+
+# ★ v2.11.60：**整文件打 `perf`** ✓ —— 这些用例量的是**绝对耗时** ✓，
+#   与 1900 条其它用例交错跑时会被负载污染 ✗（实测 `batch_even` 量到 7.52s，
+#   上限 7.59s ⇒ 只差 0.07s ✓）。CI 里改成 `pytest -m perf` **单独一步串行** ✓。
+pytestmark = pytest.mark.perf
 
 from app.factors import panel_expr as P  # noqa: E402
 from app.signals.engine import run_backtest, run_batch_backtest  # noqa: E402

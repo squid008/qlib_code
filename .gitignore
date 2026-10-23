@@ -118,3 +118,13 @@ backend/_score_junit.xml
 
 # 绝对评分的中间产物（v2.11.53，可复算 ⇒ 不入库）
 scripts/abs_metrics.json
+
+# 调试/评测残留（v2.11.60 起拦掉 —— 之前被 git add -A 带进过历史 ✗）
+/_sf*.txt
+/_fc.json
+/_fc.txt
+/_o.txt
+/_*.json
+backend/_*.json
+backend/_*.txt
+backend/_*.xml

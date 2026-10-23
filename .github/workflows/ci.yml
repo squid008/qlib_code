@@ -96,7 +96,13 @@ jobs:
         # ★ v2.10.98：**64 → 65** ✓（本地全量实测 **66.07%** / 1833 passed ✓；
         #   CI 历来比本地低 0.2~0.3pp ⇒ 预计 CI 约 65.8% ✓，余量 ~0.8pp ✓
         #   ⚠ 不敢直接上 66 ✗ —— 那需要 CI 实测 ≥66.0 ✓，而历史差值说明会擦线 ✗）
-        run: python -m pytest tests -m "not datareq" -q --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=65
+        # ★ v2.11.60：**排除 `perf`** ✓ —— 绝对耗时的用例与 1900 条交错跑会被负载污染 ✗
+        #   （外部评审实测 `batch_even` 量到 7.52s / 上限 7.59s ⇒ 只差 0.07s ✓）。
+        #   它们改在**下一步单独串行**跑 ✓（阈值一个字没放宽 ✓ —— 放宽等于削弱护栏 ✗）。
+        run: python -m pytest tests -m "not datareq and not perf" -q --cov=app --cov-report=term-missing:skip-covered --cov-fail-under=65
+
+      - name: 绝对性能门（perf，单独串行 —— 计时不许和 1900 条混跑）
+        run: python -m pytest tests -m perf -q
 
       - name: ruff 静态检查
         run: python -m ruff check app tests tools
