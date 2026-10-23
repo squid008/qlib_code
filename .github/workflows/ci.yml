@@ -310,3 +310,29 @@ jobs:
           QLIB_PROVIDER_URI_FORCE: "1"
           QLIB_PROVIDER_URI: ${{ github.workspace }}/data/_synth_ci
         run: python -m pytest tests -q -m synthdata
+
+      # ⚠⚠ **临时诊断（v2.11.44，定位完就删）** —— P2-#23 最后那 2 条为何取 0 行。
+      #   在 CI 上直接打印"面板侧到底解析到了什么" ✓（本地复现不了 ✓ 只能靠 CI）。
+      - name: 诊断（P2-#23）
+        env:
+          QLIB_PROVIDER_URI_FORCE: "1"
+          QLIB_PROVIDER_URI: ${{ github.workspace }}/data/_synth_ci
+        run: |
+          python -c "
+          import os, sys
+          sys.path.insert(0, '.')
+          from app import config
+          print('config.QLIB_PROVIDER_URI =', config.QLIB_PROVIDER_URI)
+          print('  目录存在 =', os.path.isdir(config.QLIB_PROVIDER_URI))
+          from app.factors import panel_expr as PE
+          print('_feature_dir() =', PE._feature_dir())
+          print('  features 存在 =', os.path.isdir(PE._feature_dir()))
+          from app.engine.qlib_engine import _ensure_qlib_init
+          from app.engine.utils import _default_qlib_uri
+          _ensure_qlib_init(_default_qlib_uri())
+          print('_calendar() 长度 =', len(PE._calendar()))
+          from qlib.data import D
+          print('D.calendar() 长度 =', len(D.calendar()))
+          print('csi300 数 =', len(D.list_instruments(D.instruments('csi300'), start_time='2024-12-01', as_list=True)))
+          "
+          python -m pytest tests/test_panel_expr.py -k "warmup_days or sr_continuous" -m "datareq" -q --tb=short
