@@ -56,6 +56,12 @@ jobs:
         run: python scripts/make_synth_qlib.py --out data/_synth_ci --verify
 
       - name: ① datareq 看门狗（允许已知失败，禁止悄悄多失败）
+        # ⚠⚠ `working-directory: .` **不能省** ✗→✓ —— job 级有
+        #   `defaults.run.working-directory: backend`（给安装/pytest 用的）✓，
+        #   这里若继承它 ⇒ 路径变成 `backend/scripts/check_datareq_baseline.py` ✗
+        #   ⇒ 实测第一次触发就红：`can't open file .../backend/scripts/check_datareq_baseline.py` ✓。
+        #   （脚本内部会自己把 cwd 切到 backend 跑 pytest ✓，所以这里只要站在仓库根 ✓。）
+        working-directory: .
         run: python scripts/check_datareq_baseline.py --pytest-args "-m datareq"
 
       - uses: actions/setup-node@v4
