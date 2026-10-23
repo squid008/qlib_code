@@ -32,6 +32,11 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
+        "synthdata: 同 datareq，但**只需合成数据**就能跑（`scripts/make_synth_qlib.py` 产）"
+        "⇒ CI 的 synth-data job 跑 `-m synthdata` ✓",
+    )
+    config.addinivalue_line(
+        "markers",
         "e2e: 真实回测主流程 golden（含滚动训练/回放，单条 ~3 分钟）；低频手动跑，日常全量默认排除",
     )
 
@@ -39,7 +44,9 @@ def pytest_configure(config):
 @pytest.fixture(autouse=True)
 def _datareq_guard(request):
     """对打上 datareq 标记的用例：cn_data 不可用时自动 skip（CI/新机器不报红）。"""
-    if request.node.get_closest_marker("datareq"):
+    # ★ v2.11.42：`synthdata` 也要这份守卫 ✓ —— 它同样依赖一个可用的 provider_uri
+    #   （只是那份可以由 `scripts/make_synth_qlib.py` 现造 ✓，不必是真 cn_data ✓）。
+    if request.node.get_closest_marker("datareq") or request.node.get_closest_marker("synthdata"):
         try:
             from app.config import QLIB_PROVIDER_URI
         except Exception:

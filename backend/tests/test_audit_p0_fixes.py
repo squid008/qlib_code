@@ -123,6 +123,7 @@ def test_px_col_prefers_adjusted_then_falls_back():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.datareq
+@pytest.mark.synthdata
 def test_purged_train_end_leaves_exactly_h_trading_days_gap():
     """★ 核心口径：段末退到 `pre[-(h+1)]` ⇒ **最后一条可用样本的标签止于测试起点前一个交易日** ✓
     （即：训练/验证样本**一个价格点都不碰测试期** ✓）。

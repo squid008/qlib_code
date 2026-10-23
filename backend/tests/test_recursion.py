@@ -194,6 +194,7 @@ def test_panel_recursion_runs_and_counts_bars():
 
 
 @pytest.mark.datareq
+@pytest.mark.synthdata
 def test_qlib_path_reports_clear_error():
     """qlib 逐股路径（模型特征）暂不支持递推 ⇒ 必须报**清楚的中文错** ✓（不是注册表天书 ✗）。"""
     from app.services.qlib_runtime import ensure_qlib_init

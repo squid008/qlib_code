@@ -37,6 +37,7 @@ def test_none_and_hfq_really_differ():
 
 
 @pytest.mark.datareq
+@pytest.mark.synthdata
 def test_qfq_raises_loudly():
     """★ 前复权没落地 ⇒ **报错** ✓（不许静默返回"看起来像前复权"的价 ✗）。"""
     ds = QlibDataSource()
@@ -46,6 +47,7 @@ def test_qfq_raises_loudly():
 
 
 @pytest.mark.datareq
+@pytest.mark.synthdata
 def test_unknown_adjust_rejected():
     """脏输入 ⇒ 明确拒绝 ✓（而不是当 none 静默跑 ✓）。"""
     ds = QlibDataSource()

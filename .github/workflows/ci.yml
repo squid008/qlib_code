@@ -268,3 +268,45 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 个人账号免费 ✓；组织账号需要 GITLEAKS_LICENSE ✗（本仓库是个人 public ✓）
           GITLEAKS_ENABLE_SUMMARY: true
+
+  # ★★ v2.11.42（2026-10-23 ✓）：**真实数据链路第一次进 CI** ✓
+  #   背景：`backend/tests/` 里 21 处 `@pytest.mark.datareq`（复权/筹码/面板取数/端到端回测 ✓）
+  #   在 CI 里**全部 skip** ✗ ⇒ 这条链**从来没有自动化** ✓（只能本机手工撞 ✓）；
+  #   而本机真数据 **34 GB / 141 万文件** ✗ 不可能进 CI ✓。
+  #   ⇒ 用 `scripts/make_synth_qlib.py` **现造**一份 30 只 × 4 年（约 2 MB）的合成 qlib bin ✓，
+  #     并先跑 `--verify` 让 **qlib 自己的读取器**读回校验（格式对不对由它判定 ✓，不是我说了算 ✓）。
+  #   ⚠ 只跑 `-m synthdata`（**11 条**实测能在合成数据上通过的 ✓）：
+  #     另外 11 条要**真实数据特有的性质**（物化 chip_* bin / 真复权因子 / 万科那种真标的 ✓）
+  #     ⇒ 仍留在 `datareq`，只能本机跑 ✓（原因写在各测试的 marker 旁 ✓，别硬凑 ✗）。
+  synth-data:
+    name: 真实数据链路（合成 qlib 数据）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: 安装依赖 + qlib（同 backend job）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+          git clone --depth 1 https://github.com/microsoft/qlib "$HOME/qlib"
+          pip install -e "$HOME/qlib"
+
+      - name: 生成合成 qlib 数据（并用 qlib 读回校验格式）
+        working-directory: .
+        run: python scripts/make_synth_qlib.py --out data/_synth_ci --verify
+
+      - name: pytest（真实数据链路，11 条）
+        env:
+          # ⚠ 本机可能有 `active_dataset.json` 占优先 ✓ ⇒ 必须 FORCE 才让环境变量生效 ✓
+          QLIB_PROVIDER_URI_FORCE: "1"
+          QLIB_PROVIDER_URI: ${{ github.workspace }}/data/_synth_ci
+        run: python -m pytest tests -q -m synthdata

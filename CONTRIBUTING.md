@@ -31,6 +31,27 @@ npm run lint                          # biome
 npx vitest run
 ```
 
+## 2.5 真实数据链路怎么跑（★ v2.11.42）
+
+有一部分用例要**真数据**（复权 / 筹码 / 面板取数 / 端到端回测），打了 `datareq` 标记，
+CI 里默认跳过。想跑它们有两条路：
+
+```bash
+# ① 本机有真数据（data/cn_data）时：直接跑
+cd backend && pytest -m datareq
+
+# ② 没有真数据：用合成数据（30 只 × 4 年 ≈ 1.9 MB，几秒生成）
+python scripts/make_synth_qlib.py --out data/_synth_ci --verify   # --verify 会用 qlib 读回校验
+cd backend
+QLIB_PROVIDER_URI_FORCE=1 QLIB_PROVIDER_URI=$PWD/../data/_synth_ci pytest -m synthdata
+```
+
+- ⚠ **`QLIB_PROVIDER_URI_FORCE=1` 不能省** —— 若本机有 `data/active_dataset.json`，它**优先于**环境变量。
+- `synthdata` = 「**只需合成数据就能跑**」的 11 条（CI 的 `synth-data` job 跑的就是它）；
+  `datareq` 里另外 11 条要真实数据**特有的性质**（物化 `chip_*` bin / 真复权因子 / 真标的），
+  **不要**为了"让 CI 全绿"去改它们的断言 —— 那会把真问题藏起来。
+- 生成物 `data/_synth_ci` 已被 `.gitignore` 忽略，不要提交。
+
 ## 3. 硬规矩（都是踩过坑才立的）
 
 | 规矩 | 为什么 |
