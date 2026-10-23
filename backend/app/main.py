@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from . import __version__, config
+from . import __version__, config, security
 from . import metrics as _metrics_mod
 from .logger import _log_swallowed, get_logger
 
@@ -75,6 +75,31 @@ def create_app() -> FastAPI:
         # ⚠ 不 expose 的话浏览器**读不到**自定义响应头 ✗（跨源下默认只放行少数几个 ✓）。
         expose_headers=["X-Export-Filename"],
     )
+
+    # ★ v2.11.67：**可选**的 token 鉴权 + 限流（默认全关 ✓，见 `app/security.py`）。
+    #   ⚠ 注册顺序有讲究 ✗→✓：Starlette 里**后注册的中间件在外层**（先执行 ✓），
+    #   所以这里先注册 guard、后面注册 metrics ⇒ **metrics 包在 guard 外面** ✓
+    #   ⇒ 401/429 也会被计入指标 ✓（否则"被拦了多少"这个数根本看不到 ✗）。
+    @app.middleware("http")
+    async def _guard_mw(request, call_next):
+        path = request.url.path
+        if path.startswith("/api") and not security.is_public(path):
+            if not security.token_ok(request.headers.get("authorization")):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "需要 API token：请求头加 `Authorization: Bearer <BACKEND_API_TOKEN>` ✓"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            allowed, wait = security.LIMITER.check(security.client_key(
+                request.client.host if request.client else None))
+            if not allowed:
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "请求过于频繁（上限 %d 次/分钟）⇒ 请等 %d 秒"
+                                       % (security.RATE_LIMIT_RPM, wait)},
+                    headers={"Retry-After": str(wait)},
+                )
+        return await call_next(request)
 
     # ★ v2.11.25（技术债 P2-#8 第一步 ✓）：**进程内指标** —— 只记总数 + 状态码 + 耗时 ✓。
     #   ⚠ 刻意**不按 URL 路径分桶** ✗（路径里有 task_id/日期等高基数片段 ⇒ 指标本身会变成内存泄漏 ✓）。

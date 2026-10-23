@@ -156,6 +156,13 @@ def main():
     #   这是"性能与资源"里唯一能进常规 CI 的硬指标 ✓（真压测要起服务 ✗）。
     mem_test = os.path.join(BE, "tests", "test_mem_baseline.py")
     out["has_mem_baseline"] = os.path.isfile(mem_test) and "tracemalloc" in read(mem_test)
+
+    # ★ v2.11.67：**可选鉴权 + 限流** ✓ —— 两个开关都要真的接在中间件上才算能力 ✓
+    #   （只写一个 `security.py` 但没挂到 app 上，等于没有 ✗）。
+    sec = read(os.path.join(BE, "app", "security.py"))
+    mainpy = read(os.path.join(BE, "app", "main.py"))
+    out["has_auth"] = "API_TOKEN" in sec and "token_ok" in sec and "_guard_mw" in mainpy
+    out["has_rate_limit"] = "RATE_LIMIT_RPM" in sec and "LIMITER.check" in mainpy
     # ★ v2.11.61：**指标抓取端**（拉 + 算人类关心的数 + 超阈值退出码 ✓）——
     #   "有点位但没人抓"和"有抓取端"是两件事 ✓（外部评审点过 ✓）。
     scrape = os.path.join(ROOT, "scripts", "scrape_metrics.py")

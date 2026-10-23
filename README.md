@@ -114,7 +114,7 @@ npm run dev            # → http://127.0.0.1:5173
 | 绝对性能门 | 4 条（合成数据，阈值 `3×基线+0.2s`） |
 | 技术债 | 在册 3（`P1-#2`/`P1-#3`/`P2-#22`）+ 已清偿 19 |
 | 闸门达成率 | 34 / 34（`python scripts/score.py --full`）⚠ **这个 10.0 只说明"34 条是非题全过"✗ 不是质量** |
-| **绝对质量** | **8.79 / 10**（`python scripts/score_abs.py` ✓ 12 维等权、阈值全公开、逐条可复核）|
+| **绝对质量** | **8.89 / 10**（`python scripts/score_abs.py` ✓ 12 维等权、阈值全公开、逐条可复核）|
 | 夜间任务 | `nightly.yml`：**datareq 看门狗**（允许已知失败、禁止悄悄多失败 ✓）+ **真后端 E2E**（不 mock ✓）|
 | 发版 tag | 与版本同步（`scripts/tag_release.ps1` 自动打；此前断档到 v2.9.18 ✗） |
 
@@ -126,6 +126,16 @@ npm run dev            # → http://127.0.0.1:5173
 —— **33 条**硬闸门逐条 `✓/✗` 并给证据，`指数 = 通过/计入 × 10`，**没有权重** ✓。
 ⚠ 分三组看：**实测 11**（真跑 mypy/pytest/实测覆盖率…）／**棘轮 7**（门槛只许升，跟
 `scripts/score_baseline.json` 比）／静态 15（**只证明配置没被删** ✗）。
+
+⚠ **要开给别人用（`BACKEND_HOST=0.0.0.0`）时，务必同时设两个环境变量**（★ v2.11.67）：
+
+```
+$env:BACKEND_API_TOKEN='一串随机字符'      # 开启后所有 /api/* 要 Authorization: Bearer <token>
+$env:BACKEND_RATE_LIMIT_RPM='120'         # 每客户端每分钟上限，超了 429 + Retry-After
+```
+
+`/api/version`（探活）与 `/api/metrics`（监控）**始终豁免** ✓ —— 否则"服务活着但没人知道"。
+两者**默认全关**（本机单用户零负担 ✓）。
 
 ⚠ **行数是硬的**：`tests/test_code_health.py` 卡「大文件 ≤ 上限、`>300` 行函数**只减不增**」，
 `tests/test_complexity.py` 卡圈复杂度（`FROZEN` 冻结 31 个函数，**变复杂也红**）。

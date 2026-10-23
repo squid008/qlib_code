@@ -83,6 +83,21 @@ python scripts/scrape_metrics.py --prometheus-config  # 打印 scrape_config + �
 - ⚠ **别指望它自己定时** ✗：本项目是单进程单用户 ✓，内置抓取线程只会多一个"没人看的状态"✗；
   要么挂 cron（一行 ✓），要么把生成的配置丢给 Prometheus ✓。
 
+
+## 2.8 开给别人用之前（★ v2.11.67）
+
+后端默认只绑 `127.0.0.1`（v2.11.50 ✓）。若要用 `BACKEND_HOST=0.0.0.0` 开给局域网，
+**必须先设这两个环境变量**，否则等于把回测/训练能力匿名送出去：
+
+| 变量 | 作用 | 默认 |
+|---|---|---|
+| `BACKEND_API_TOKEN` | 非空 ⇒ 所有 `/api/*` 需 `Authorization: Bearer <token>`（裸 token 也认）| 空 = 关 |
+| `BACKEND_RATE_LIMIT_RPM` | 每客户端 **每分钟**请求上限（**滑动窗口**，不是固定窗口）| 0 = 关 |
+
+- 豁免路径：`/api/version`、`/api/metrics` ✓（探活/监控不能被锁）；
+- 401 / 429 **都会进指标** ✓（`http.status.401/429` 计数，能在 `/api/metrics` 看到被扫次数）；
+- token 比较用 `hmac.compare_digest`（常量时间 ✓），错误信息里**不回显**期望值 ✓。
+
 ## 3. 硬规矩（都是踩过坑才立的）
 
 | 规矩 | 为什么 |
