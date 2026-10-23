@@ -152,6 +152,10 @@ def main():
     out["ruff_rules"] = len(re.findall(r'"\w+"', sel.group(1))) if sel else 0
     out["perf_gates"] = len(re.findall(r'^\s{4}"[^"]+":\s*[\d.]+',
                                        read(os.path.join(BE, "tests", "test_perf_absolute.py")), re.M))
+    # ★ v2.11.57：**内存基线**是否存在（tracemalloc 阈值 + 缓存逐出自检 ✓）——
+    #   这是"性能与资源"里唯一能进常规 CI 的硬指标 ✓（真压测要起服务 ✗）。
+    mem_test = os.path.join(BE, "tests", "test_mem_baseline.py")
+    out["has_mem_baseline"] = os.path.isfile(mem_test) and "tracemalloc" in read(mem_test)
     out["complexity_frozen"] = len(re.findall(r'^\s+"[^"]+::', read(os.path.join(BE, "tests", "test_complexity.py")), re.M))
 
     dst = os.path.join(ROOT, "scripts", "abs_metrics.json")

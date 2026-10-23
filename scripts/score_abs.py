@@ -168,7 +168,8 @@ def main() -> int:
     # 11. 性能与资源
     s11 = [
         B(m["perf_gates"], [(4, 10), (2, 8), (0, 5)], "%d 条绝对性能门" % m["perf_gates"]),
-        (4, "无内存基线 ✗"),
+        ((9, "内存基线 ✓（tracemalloc 峰值 + LRU 逐出 + 守卫自检）")
+         if m.get("has_mem_baseline") else (4, "无内存基线 ✗")),
         (9, "多层缓存 + 并发自适应 ✓"),
     ]
     dim("性能与资源", *s11)
