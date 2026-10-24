@@ -24,6 +24,32 @@
 
 ---
 
+## [2.11.73] - 2026-10-24
+
+### Test（后端覆盖 **68.01% → 68.40%**；`artifacts.py` 45.4% → **62.7%**）
+
+- **新增 `tests/test_artifacts_models.py`（22 条）** —— 这批测的不是"写盘对不对"，
+  而是"**该挡住的时候有没有挡住**" ✓：
+  | 条 | 钉什么 | 失效后果 |
+  |---|---|---|
+  | `_save_model_object` ⇄ `_load_model_object` 往返 | 复用模型的地基 ✓ | 复用即错 ✗ |
+  | 指定段号 ⇒ **优先** `segment_N/model.pkl` | 滚动训练每段一个模型 ✓ | 用错段的权重 ✗ |
+  | 坏 pkl ⇒ `None`（不抛）| 调用方据此"没有可复用权重"✓ | 「文件坏了」被当成「任务失败」✗ |
+  | ⭐ **训练口径不符 ⇒ 抛错**（消息含源口径 + 当前口径 + 下一步）| v1.20.46 的 `valid` 改成独立验证集 ✓ | 混口径 ⇒ **净值累乘被抬高** ✗（2026-09-22 真事故）|
+  | ⭐⭐ **没有口径戳也要挡** | "无法证明一致" ≠ "一致" ✓ | 老产物静默混进新回测 ✗ |
+  | ⭐ **源任务已删 ⇒ 不报口径错** | 差别在"任务没了" vs "口径变了" ✓ | 错误提示把人引向错误方向 ✗ |
+  | ⭐⭐ **特征顺序不同 ⇒ 抛错** | 复用前必须对齐 ✓ | **静默错位预测**（数字照出、对应错了列）✗ |
+  | 读不到训练特征名 ⇒ 跳过校验 | 老产物仍可复用 ✓ | 一刀切阻断 ✗ |
+- **`_save_model_artifacts` 的三个分支** ✓：mlflow 挂了**本地仍要写**（旁路记录两边都尽力 ✓）、
+  `model_file` 单独落 `model.txt`（不塞进 JSON ✗ 体积）、`model_info.segment="seg2"` ⇒
+  落到 **`segment_2/`**（不是 `segment_seg2` ✗ —— 段之间覆盖就没法逐段复用了）。
+- ⚠ `_find_artifact_base` 我第一版测错了 ✗：以为它用 `get_artifact_dir()`，
+  实际是 `config.WORK_DIR` + glob **`*_<task_id>`**（带日期前缀 ✓）⇒ 改成 monkeypatch `WORK_DIR` ✓。
+- **还剩 +308 行**到 70%（68.40%，CI 口径约 68.1%）⇒ 下一轮：`_extract_model_artifacts`(118) ＋
+  `_extract_feature_importance`(71)（需要 LightGBM 风格 stub ✓）＋ `routers/factors_single.py` 的
+  `_exit_list`/`_apply_exit_validation`/`_sft_render_view`（约 120）✓
+- **实测** ✓：新增 **22 passed** ｜ 全量 **2035 passed / 0 failed** ｜ `ruff` 0 ｜ `mypy` 125 文件 0 错误 ｜ CI ✓。
+
 ## [2.11.72] - 2026-10-24
 
 ### Test（后端覆盖 **67.74% → 68.01%**；新增 **38 条**测试 —— 但这轮**没跨档**，如实说明）
