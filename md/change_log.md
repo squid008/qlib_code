@@ -24,6 +24,34 @@
 
 ---
 
+## [2.11.77] - 2026-10-24
+
+### Test（后端覆盖 **69.18% → 69.58%**；`engine/artifacts.py` → **80.4%**）
+
+- **目标**：`_extract_model_artifacts`(57) ＋ `_extract_feature_importance`(71) —— 它们是
+  「**复现**同一份结果」的全部依据 ✓。用 `Dataset.handler` / 线性模型 / LightGBM-XGBoost booster
+  三组桩喂进去 ✓，**不需要 qlib、不需要数据** ✓。新增 **18 条**。
+- **钉住的五条**（都属"错得很安静" ✗）：
+  | 条 | 失效后果 |
+  |---|---|
+  | `feature_names` 顺序 | 复用模型时逐位比对 ⇒ 顺序错 = **静默错位预测** ✗ |
+  | ⭐ 线性 `feature_weights` 一一配对（且长度不符时**不硬配**）| 权重贴错特征 = 导出的"公式"是错的 ✗ |
+  | ⭐⭐ 树结构文本 `model_file` | 没有它就只能**重训**（"复用权重"功能失效 ✗）|
+  | ⭐ `params` **只留标量** | 混进 dict ⇒ JSON 导出难看甚至失败 ✗ |
+  | 特征重要性 `f<i>`/`Column_N`/纯数字 ⇒ 映射真实名 + **降序** + 4 位小数 | 用户按顺序读 ⇒ 乱序等于误导 ✗ |
+- ⚠⚠ **一条真陷阱（红了两条才看清）**：`_extract_feature_importance` 的优先级是
+  **`model.get_feature_importance()` → `booster.get_score()` → `booster.feature_importance()`** ✓，
+  而 `get_score()` **返回空 dict 也算"拿到了"** ✗ ⇒ 直接 `return None` ✓，不再看
+  `booster.feature_importance()` ✗。
+  我第一版给桩**同时**装了这两个方法 ⇒ 两条断言拿到 `None` 当场红 ✓
+  ⇒ 已把桩拆成 `_Booster`(LGB) / `_XgbBooster`(只有 get_score) 两类，并**单列一条**
+  `test_get_score_empty_short_circuits` 把这个行为钉住 ✓
+  （谁以后让某个 wrapper 同时暴露两者，特征重要性就会**静默变 None** ✗）。
+- ⚠ 又一次**内联 Python 引号事故**（`s.replace(...)` 里嵌了双引号 ⇒ `SyntaxError`）✗ ——
+  改用编辑工具做那三处替换 ✓。这是本会话第 N 次，**教训早已记下但我仍会犯** ✓。
+- **实测** ✓：新增 **18 passed** ｜ `ruff` 0 ｜ CI ✓。
+- **还剩 +80 行**（本地 69.58% / CI 约 69.3% → 70%）⇒ **下一轮就该跨 70%**（后端 7 → 8 分）。
+
 ## [2.11.76] - 2026-10-24
 
 ### Test（后端覆盖 **68.55% → 69.18%**；`engine/metrics.py` 65.1%）
