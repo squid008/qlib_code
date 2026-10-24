@@ -133,3 +133,11 @@ backend/_*.xml
 frontend/_cv*/
 frontend/_cv*.txt
 frontend/_cov*/
+
+# 真数据夹具（v2.11.70）—— 走 release asset，不进仓库
+data/_real_fixture/
+data/real_fixture.zip
+
+# 后台日志（v2.11.70 又一次：我用 `> _fx.txt` 存日志然后 `git add -A`）
+/_fx*.txt
+/_m[0-9]*.txt

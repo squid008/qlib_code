@@ -24,9 +24,18 @@ START, END = "2025-03-01", "2025-06-30"
 WINDOW = 60
 
 
-def _real_data() -> bool:
+def _real_fixture() -> bool:
+    """是不是**真数据**环境 ✓（★ v2.11.70）—— 见 `test_real_data_invariants` 里的同款说明。
+
+    ① `_real_fixture.json` 指纹存在 ⇒ 那是从**真 cn_data** 抽的夹具（183 只 ✓，夜间 CI 用 ✓）；
+    ② 本机 `features/` ≥ 500 只 ✓。
+    ⚠ 我第一版只改了本文件的**调用点**（`_real_data` → `_real_fixture`）✗，
+    函数体还是"≥500 只"⇒ 夹具只有 183 只 ⇒ **照样 skip** ✗（实测 6 条仍被跳 ✓）。
+    """
     d = PE._feature_dir()
     try:
+        if os.path.isfile(os.path.join(os.path.dirname(d), "_real_fixture.json")):
+            return True
         return os.path.isdir(d) and len(os.listdir(d)) >= 500
     except OSError:
         return False
@@ -34,13 +43,13 @@ def _real_data() -> bool:
 
 pytestmark = [
     pytest.mark.datareq,
-    pytest.mark.skipif(not _real_data(), reason="需要真实交易日历（含长假/停牌 ✓）"),
+    pytest.mark.skipif(not _real_fixture(), reason="需要真实交易日历（含长假/停牌 ✓）"),
 ]
 
 
 @pytest.fixture(scope="module", autouse=True)
 def _init_qlib():
-    if not _real_data():
+    if not _real_fixture():
         return
     from app.services.qlib_runtime import ensure_qlib_init
 

@@ -39,10 +39,19 @@ def _feature_dir() -> str:
     return PE._feature_dir()
 
 
-def _real_data() -> bool:
-    """合成数据集只有 30 只 ⇒ 用 500 只当"是不是真行情"的分界 ✓。"""
+def _real_fixture() -> bool:
+    """是不是**真数据**环境 ✓（★ v2.11.70）。
+
+    判据两条，任一成立即可：
+    ① `_real_fixture.json` 指纹存在 ✓ —— 那是 `scripts/make_real_fixture.py` 从**真 cn_data**
+       抽出来的夹具（183 只 × 668 天 ✓，CI 夜间下载 ✓），**内容是真数据** ✓；
+    ② 本机 `features/` ≥ 500 只 ✓（真 cn_data 的正常形态 ✓）。
+    ⚠ 原来只认第 ②条 ⇒ **夹具环境会被误判成"合成数据"而 skip** ✗（白白不跑 ✓）。
+    """
     d = _feature_dir()
     try:
+        if os.path.isfile(os.path.join(os.path.dirname(d), "_real_fixture.json")):
+            return True
         return os.path.isdir(d) and len(os.listdir(d)) >= 500
     except OSError:
         return False
@@ -51,7 +60,7 @@ def _real_data() -> bool:
 pytestmark = [
     pytest.mark.datareq,
     pytest.mark.skipif(
-        not _real_data(),
+        not _real_fixture(),
         reason="需要真实行情（合成数据只 30 只 ⇒ 这些不变量对它没意义 ✗）",
     ),
 ]
@@ -65,7 +74,7 @@ def _init_qlib():
     必须走**项目入口**而不是裸 `qlib.init` ✗：统一入口还会重新注册自定义算子
     （`BARSCOUNT` / `BARSSINCEN`…✓），裸调会清空它们 ✗（`test_chip_field.py` 同款注释 ✓）。
     """
-    if not _real_data():
+    if not _real_fixture():
         return
     from app.services.qlib_runtime import ensure_qlib_init
 
@@ -168,8 +177,15 @@ class TestExclusionOnRealData:
                  "LIMIT_UP": _wide(df, "lu"), "CHANGE": _wide(df, "chg")}
         cal = pd.DatetimeIndex(close.index)
         codes = list(close.columns)[:5]
-        ev = pd.DataFrame({"code": [c for c in codes for _ in cal],
-                           "date": [d for _c in codes for d in cal]})
+        # ⚠⚠ 必须只用**有真实价**的样本 ✗→✓ —— 在夹具（真数据 ✓）上实测这条**会失败**：
+        #   停牌日 `CLOSE_RAW` 是 NaN ⇒ `mark_limit_up` 把整段当"涨停" ⇒ 剔除比例虚高 ✗
+        #   （合成数据永远没有停牌 ⇒ 测不出来 ✓，正是"只有真数据才有形状"的又一例 ✓）。
+        craw = _wide(df, "craw")
+        keepmask = craw.notna() & close.notna()
+        ev = pd.DataFrame({
+            "code": [c for c in codes for d in cal if keepmask.at[d, c]],
+            "date": [d for c in codes for d in cal if keepmask.at[d, c]],
+        })
         w: list[str] = []
         out = _apply_excludes(ev, panel, {"exclude_limit_up_signal": True}, w)
         dropped = 1.0 - len(out) / max(len(ev), 1)
@@ -177,4 +193,8 @@ class TestExclusionOnRealData:
             "「剔除信号日涨停」剔掉了 **%.1f%%** 的样本 ✗（合理应远小于 10%%）✓\n"
             "  这正是 v2.1.58 的形态：拿后复权价比 limit_up ⇒ 大面积误剔 ✗\n  warnings=%s"
             % (dropped * 100, w))
-        assert any("剔除" in x for x in w), "剔了就必须报数 ✓（不许静默）: %s" % w
+        # ⚠ 只在**真剔掉了**才要求报数 ✗→✓ —— `_apply_excludes` 的汇总 warning 是
+        #   `if len(out) != n0` 才写 ✓；我第一版要求"0 剔除时也必须有 warning" ⇒ 红 ✓。
+        #   （"0 命中也要报"那条铁律是 **ST 剔除**的 ✓，不是涨停 ✓ —— 我张冠李戴了 ✗。）
+        if dropped > 0:
+            assert any("剔除" in x for x in w), "剔了就必须报数 ✓（不许静默）: %s" % w

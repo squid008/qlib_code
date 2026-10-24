@@ -81,9 +81,17 @@ def build_frames(n_codes: int, years: int, seed: int):
     return frames, cal
 
 
-def dump(frames, cal, out_dir: str) -> None:
-    """写出 qlib bin 目录（`calendars/` + `instruments/` + `features/` ✓）。"""
-    if os.path.isdir(out_dir):
+def dump(frames, cal, out_dir: str, fields=None, clean: bool = True) -> None:
+    """写出 qlib bin 目录（`calendars/` + `instruments/` + `features/` ✓）。
+
+    `fields` 默认为 `FIELDS` ✓；**真数据夹具**会额外带 `limit_up` 之类只在真数据里有的列 ✓
+    （合成数据没有涨跌停 ✓ —— 这正是它测不出量纲问题的原因 ✓）。
+    """
+    fields = list(FIELDS if fields is None else fields)
+    # ⚠ `clean=False` 是给"重生成大夹具"用的 ✓ —— 本机沙箱的 **safe-delete 守卫**会把
+    #   "一次删 500+ 文件"的 `rmtree` 直接掐掉进程 ✗（实测生成 183 只 × 16 字段 ≈ 2935 个 bin ✓
+    #   ⇒ 第二次重生成时被拦 ✓）。原地覆盖同名文件即可 ✓（旧的残留 bin 不影响读取 ✓）。
+    if clean and os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
     os.makedirs(os.path.join(out_dir, "calendars"), exist_ok=True)
     os.makedirs(os.path.join(out_dir, "instruments"), exist_ok=True)
@@ -104,7 +112,7 @@ def dump(frames, cal, out_dir: str) -> None:
     for code, df in frames.items():
         d = os.path.join(out_dir, "features", code.lower())
         os.makedirs(d, exist_ok=True)
-        for field in FIELDS:
+        for field in fields:
             vals = df[field].to_numpy(dtype=np.float32)
             buf = np.hstack([[0.0], vals]).astype(np.float32)   # [起始下标=0, 逐日值]
             buf.tofile(os.path.join(d, "%s.day.bin" % field))

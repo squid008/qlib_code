@@ -31,9 +31,18 @@ FIELDS = [("$open", "OPEN"), ("$high", "HIGH"), ("$low", "LOW"), ("$close", "CLO
           ("$change", "CHANGE"), ("$volume", "VOLUME")]
 
 
-def _real_data() -> bool:
+def _real_fixture() -> bool:
+    """是不是**真数据**环境 ✓（★ v2.11.70）—— 见 `test_real_data_invariants` 里的同款说明。
+
+    ① `_real_fixture.json` 指纹存在 ⇒ 那是从**真 cn_data** 抽的夹具（183 只 ✓，夜间 CI 用 ✓）；
+    ② 本机 `features/` ≥ 500 只 ✓。
+    ⚠ 我第一版只改了本文件的**调用点**（`_real_data` → `_real_fixture`）✗，
+    函数体还是"≥500 只"⇒ 夹具只有 183 只 ⇒ **照样 skip** ✗（实测 6 条仍被跳 ✓）。
+    """
     d = PE._feature_dir()
     try:
+        if os.path.isfile(os.path.join(os.path.dirname(d), "_real_fixture.json")):
+            return True
         return os.path.isdir(d) and len(os.listdir(d)) >= 500
     except OSError:
         return False
@@ -41,7 +50,7 @@ def _real_data() -> bool:
 
 pytestmark = [
     pytest.mark.datareq,
-    pytest.mark.skipif(not _real_data(),
+    pytest.mark.skipif(not _real_fixture(),
                        reason="需要真实行情（合成数据没有真涨跌停/停牌 ✗）"),
 ]
 

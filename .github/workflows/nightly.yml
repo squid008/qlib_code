@@ -55,6 +55,24 @@ jobs:
         working-directory: .
         run: python scripts/make_synth_qlib.py --out data/_synth_ci --verify
 
+      - name: ⓪ 下载真实数据夹具（让 datareq 真跑，而不是整片 skip）
+        # ★ v2.11.70：那 15 条 skip 的根因是"CI 里没有真数据"✗ ——
+        #   它们要的正是**真数据特有的性质**（真涨跌停 / 真停牌 / 真复权因子 / 长假 ✓）。
+        #   夹具 = 从真 `cn_data` 抽的 **183 只 × 668 天**（zip 5.2MB ✓ 走 **release asset** ✓
+        #   不塞仓库、不脏历史 ✓），生成方式见 `scripts/make_real_fixture.py` ✓。
+        #   实测（同一批用例）：合成数据 `6 passed / 16 skipped` → 夹具 **`26 passed / 2 skipped`** ✓。
+        # ⚠ 下载失败必须**明确报错** ✗ —— 否则会静默回到"全 skip"状态 ✓：看着绿，其实什么都没测 ✗。
+        working-directory: .
+        run: |
+          curl -sSfL -o /tmp/real_fixture.zip \
+            https://github.com/${{ github.repository }}/releases/download/data-fixture-v1/real_fixture.zip
+          mkdir -p data/_real_fixture
+          unzip -q -o /tmp/real_fixture.zip -d data/_real_fixture
+          test -f data/_real_fixture/_real_fixture.json || { echo "夹具缺指纹 ✗"; exit 1; }
+          echo "QLIB_PROVIDER_URI=$PWD/data/_real_fixture" >> "$GITHUB_ENV"
+          echo "QLIB_PROVIDER_URI_FORCE=1" >> "$GITHUB_ENV"
+          echo "夹具就绪：$(ls data/_real_fixture/features | wc -l) 只"
+
       - name: ① datareq 看门狗（允许已知失败，禁止悄悄多失败）
         # ⚠⚠ `working-directory: .` **不能省** ✗→✓ —— job 级有
         #   `defaults.run.working-directory: backend`（给安装/pytest 用的）✓，
