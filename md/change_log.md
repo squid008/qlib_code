@@ -24,6 +24,34 @@
 
 ---
 
+## [2.11.75] - 2026-10-24
+
+### Test（后端覆盖 **68.64% → 68.88%**；`exports/exit_curve.py` → **82.8%**）
+
+- **目标**：`build_exit_curve_workbook`（缺 49 行）—— 它**自包含**（给 `ExitCurveDoc` 就出 xlsx ✓），
+  比 `_extract_trades`（要 mlruns 文件）便宜得多 ✓。新增 **15 条**，用 `openpyxl` **读回来**断言 ✓。
+- **它坏掉的方式都很"体面"** ✗ 所以值得钉：
+  | 条 | 失效后果 |
+  |---|---|
+  | ⭐ **第 1 页必须是曲线截图** | 用户第一眼看到「离场A」（而这文件的第一页**必须**是截图 ✓）|
+  | ⭐ **没带截图时必须说明原因 + 指路** | 用户以为"图丢了"，其实是浏览器抓图失败 ✗ |
+  | ⭐⭐ **调仓表头完整且有序** | 少一列 ⇒ 后面数据**整体错位**（Excel 里看着只少了"原因"列 ✓）|
+  | 没成交 ⇒ **不出空表** | 一个只有表头的页 ✗ |
+  | 无参数 ⇒ **不留空分区**「二、参数与口径」 | 用户以为参数丢了 ✗ |
+  | 返回 **bytes** 而不是落临时文件 | 并发下互相踩 ✗ |
+  | 失败 ⇒ **向上抛** | 静默出"半本书"（能打开但缺页）✗ |
+- ⚠ **三条当场红，都是我测试写错**（不是实现错 ✓）：
+  1. `param_pairs` 是**3 元组**（`kv(per_row=1)` 要 label/value/说明 ✓）—— 我给了 2 元组 ⇒
+     `ValueError: not enough values to unpack (expected 3, got 2)` ✓；
+  2. 表头**不在第 1 行** ✗（上面先有标题/headline ✓）—— 我直接读 row 1 ⇒ 拿到的是标题 ✓
+     ⇒ 改成"扫描找首列为「日期」的那一行" ✓；
+  3. `pytest.raises(Exception)` 被**我自己加的 ruff `B017`** 抓到 ✗ ⇒ 收窄成 `TypeError` ✓
+     （`for run in None` 的具体异常 ✓）。
+- **实测** ✓：新增 **15 passed** ｜ 相关回归 **69 passed** ｜ `ruff` 0 ｜ CI ✓。
+- **还剩 +215 行**（68.88% → 70%）⇒ 下一轮目标：`artifacts._extract_model_artifacts`(57) ＋
+  `engine/metrics._extract_trades`(48) ＋ `routers/export_xlsx.export_event_study_xlsx`(49)
+  ＋ 两个中等函数 ⇒ 预计 1~2 轮。
+
 ## [2.11.74] - 2026-10-24
 
 ### Test（后端覆盖 **68.40% → 68.64%**；`factors_single_validate.py` 打到 **100%**）
