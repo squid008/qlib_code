@@ -4,11 +4,6 @@
 #       失败**比清单少** ⇒ 通过 + 提示更新（说明有人修好了 ✓）。
 # 更新：python scripts/check_datareq_baseline.py --rebaseline
 test_chip_field::test_chip_fields_on_real_data
-test_daily_bars_adjust::test_none_and_hfq_really_differ
-test_daily_bars_adjust::test_volume_not_scaled
 test_e2e_backtest.TestE2ERollingBacktest::test_single_split_run
 test_e2e_backtest.TestE2ERollingBacktest::test_two_segment_rolling_run
 test_golden_regression.TestDataGolden::test_sr_vanke_resumption
-test_panel_expr::test_panel_parallel_matches_single
-test_signal_pool_wide::test_close_wide_cache_hit_is_fast_and_equal
-test_signal_pool_wide::test_close_wide_matches_price_panel_bitwise

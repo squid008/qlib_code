@@ -1,18 +1,7 @@
-﻿# ⚠ **CI 专用**的已知失败清单（★ v2.11.70：改为**夹具数据**采集 ✓）
-# 夹具 = `data-fixture-v1` release asset（183 只 × 668 天 真行情 ✓）⇒ 数据**跨机器一致** ✓
-# 所以两边清单内容相同 ✓；保留分档是为将来数据源再分叉时不假绿 ✓。
+# ⚠ **CI 专用**的已知失败清单（★ v2.11.71：夹具升级为 1007 只 × 1395 天 ✓）
+# 夹具 = release asset data-fixture-v1（真行情 ✓）⇒ 数据跨机器一致 ✓ ⇒ 两边内容相同 ✓
 # 采集：python scripts/check_datareq_baseline.py --rebaseline（夹具环境下 ✓）
-# 夜间 job 的**已知失败清单**（★ v2.11.54）
-# 这些用例需要真实行情特有的性质 ⇒ 在合成数据环境里必然失败 ✓
-# 规则：出现**清单外**的失败 ⇒ 夜间 job 红（真回归 ✓）；
-#       失败**比清单少** ⇒ 通过 + 提示更新（说明有人修好了 ✓）。
-# 更新：python scripts/check_datareq_baseline.py --rebaseline
 test_chip_field::test_chip_fields_on_real_data
-test_daily_bars_adjust::test_none_and_hfq_really_differ
-test_daily_bars_adjust::test_volume_not_scaled
 test_e2e_backtest.TestE2ERollingBacktest::test_single_split_run
 test_e2e_backtest.TestE2ERollingBacktest::test_two_segment_rolling_run
 test_golden_regression.TestDataGolden::test_sr_vanke_resumption
-test_panel_expr::test_panel_parallel_matches_single
-test_signal_pool_wide::test_close_wide_cache_hit_is_fast_and_equal
-test_signal_pool_wide::test_close_wide_matches_price_panel_bitwise

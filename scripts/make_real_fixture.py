@@ -54,12 +54,23 @@ CORE_CODES = ["SH600000", "SH600519", "SZ000001", "SH601318", "SZ000002"]
 #: 科创板（`exclude_stock_kcb` 那条真数据校验要用 ✓）
 KCB_CODES = ["SH688111", "SH688981", "SH688036"]
 
-_START = "2024-01-01"
+#: ⭐ **用例里写死的标的**（★ v2.11.71）—— 不放进夹具 ⇒ 那些用例永远"没数据"✗：
+#: · `test_signal_pool_wide` 的 10 只（它比较"快路径 vs 慢路径"逐位相同 ✓）
+#: · `test_daily_bars_adjust` 的 `SH600000` ✓（已在 CORE_CODES 里 ✓）
+#: ⇒ 造夹具时必须**按用例需求**挑，而不是"随便挑 200 只"✗ —— 上一版就吃了这个亏：
+#:   两条 signal_pool_wide 因为返回 `None` 一直红 ✓（区间也不对：2021 ✗）。
+POOL_WIDE_CODES = ["SH600000", "SH600519", "SZ000001", "SZ300750", "SH601318",
+                   "SZ000651", "SH600036", "SZ002415", "SH688981", "SZ300059"]
+
+#: ⚠ 起点必须 **2021-01-01** ✗→✓ —— `test_signal_pool_wide` 与 `test_daily_bars_adjust`
+#: 都写死了 2021 年的区间 ✓，而第一版夹具从 2024 起 ⇒ 它们拿不到数据 ⇒ `None` ✗
+#: （表象是 `assert None is not None` / `IndexError: list index out of range` ✓）。
+_START = "2021-01-01"
 
 
 def _pick_codes(n: int, provider: str) -> list:
-    """挑代码：**核心 5 只 + 科创板 3 只**（必须）＋ 从真实池子补足到 n ✓。"""
-    picked = list(dict.fromkeys(CORE_CODES + KCB_CODES))
+    """挑代码：**核心 5 + 科创 3 + 用例写死的 10**（必须）＋ 从真实池子补足到 n ✓。"""
+    picked = list(dict.fromkeys(CORE_CODES + KCB_CODES + POOL_WIDE_CODES))
     pool = os.path.join(provider, "instruments", "csi300.txt")
     if os.path.isfile(pool):
         with open(pool, encoding="utf-8") as f:
@@ -77,10 +88,11 @@ def _pick_codes(n: int, provider: str) -> list:
                 picked.append(code)
             if len(picked) >= n:
                 break
-    return picked[: max(n, len(CORE_CODES + KCB_CODES))]
+    must = len(set(CORE_CODES + KCB_CODES + POOL_WIDE_CODES))
+    return picked[: max(n, must)]
 
 
-def _frames(codes: list, end: str) -> tuple:
+def _frames(codes: list, end: str, start: str = _START) -> tuple:
     """真数据 → `{code: DataFrame}` + calendar（走 qlib 读 ✓，与后端同一条链路 ✓）。"""
     import qlib
     from qlib.data import D
@@ -89,7 +101,7 @@ def _frames(codes: list, end: str) -> tuple:
     from app.services.qlib_runtime import ensure_qlib_init
 
     ensure_qlib_init()
-    cal = pd.DatetimeIndex(D.calendar(start_time=_START, end_time=end))
+    cal = pd.DatetimeIndex(D.calendar(start_time=start, end_time=end))
     if not len(cal):
         raise SystemExit("真日历为空 ⇒ 检查 QLIB_PROVIDER_URI（%s）" % QLIB_PROVIDER_URI)
 
@@ -99,7 +111,7 @@ def _frames(codes: list, end: str) -> tuple:
     #   必须有它才跑得起来 ✓（第一版没加 ⇒ 实测 skip「三列无交集」✗）。
     exprs = ["$open", "$high", "$low", "$close", "$volume", "$amount", "$factor",
              "$change", "$limit_up"]
-    df = D.features(codes, exprs, start_time=_START, end_time=end, freq="day")
+    df = D.features(codes, exprs, start_time=start, end_time=end, freq="day")
     if not len(df):
         raise SystemExit("真数据读回 0 行 ⇒ 代码/字段不匹配（检查 $factor / $amount 是否存在 ✓）")
     df.columns = ["open", "high", "low", "close", "volume", "amount", "factor", "change",
@@ -123,6 +135,7 @@ def _frames(codes: list, end: str) -> tuple:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=200, help="标的数（默认 200 ✓ 够触发各种性质 ✓）")
+    ap.add_argument("--start", default=_START, help="起点（默认 2021-01-01 ✓ 用例要）")
     ap.add_argument("--end", default=pd.Timestamp.today().strftime("%Y-%m-%d"))
     ap.add_argument("--out", default=os.path.join("data", "_real_fixture"))
     ap.add_argument("--zip", dest="zip_path", default="")
@@ -132,8 +145,8 @@ def main() -> int:
 
     codes = _pick_codes(a.n, QLIB_PROVIDER_URI)
     print("  标的 %d 只（含核心 %d + 科创 %d）｜ 区间 %s ~ %s"
-          % (len(codes), len(CORE_CODES), len(KCB_CODES), _START, a.end))
-    frames, cal = _frames(codes, a.end)
+          % (len(codes), len(CORE_CODES), len(KCB_CODES), a.start, a.end))
+    frames, cal = _frames(codes, a.end, a.start)
     print("  日历 %d 天 ｜ 实际读到 %d 只" % (len(cal), len(frames)))
 
     out = os.path.abspath(a.out)
@@ -142,7 +155,7 @@ def main() -> int:
     meta = {
         "_说明": "**真实行情**夹具（★ v2.11.70）—— 给 CI 跑 datareq 用；合成数据天然缺这些性质 ✗",
         "source": QLIB_PROVIDER_URI,
-        "start": _START, "end": a.end, "n_codes": len(frames),
+        "start": a.start, "end": a.end, "n_codes": len(frames),
         "core_codes": CORE_CODES, "kcb_codes": KCB_CODES,
         "fields": FIELDS + ["limit_up"],
         "生成命令": "python scripts/make_real_fixture.py --n %d" % a.n,
