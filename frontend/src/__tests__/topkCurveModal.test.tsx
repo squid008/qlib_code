@@ -74,6 +74,27 @@ function curve(n: number, base: number) {
   return Array.from({ length: n }, (_, i) => base * (1 + i * 0.01))
 }
 
+/** 分位「累计收益曲线」（`quantile_curves` ✓）—— 少给这一段，弹窗里几个 useMemo 整段不跑 ✗。 */
+function mkQuantileCurves(n: number, dates: string[]) {
+  return {
+    n_groups: 10,
+    n_periods: n,
+    dates,
+    baseline_mean: 0.002,
+    monotonicity: 0.82,
+    best_quantile: 10,
+    worst_quantile: 1,
+    groups: Array.from({ length: 10 }, (_, i) => ({
+      quantile: i + 1,
+      mean_ret: (i + 1) * 0.0004,
+      excess: (i + 1) * 0.0004 - 0.002,
+      cum: curve(n, (i + 1) * 0.001),
+      cum_compound: curve(n, (i + 1) * 0.001),
+    })),
+    long_short: { quantile: [10, 1] as [number, number], cum: curve(n, 0.01), cum_compound: curve(n, 0.01) },
+  }
+}
+
 function mkRow(over: Record<string, unknown> = {}) {
   const n = 8
   const dates = Array.from({ length: n }, (_, i) => `2024-0${(i % 9) + 1}-15`)
@@ -117,6 +138,26 @@ function mkRow(over: Record<string, unknown> = {}) {
     rank_icir: 0.42,
     n_obs: 600,
     error: null,
+    // ★ 这三块之前**完全没给** ⇒ 弹窗里对应的 useMemo/表格整段不跑 ✗（380 行缺口的大头 ✓）
+    quantile_curves: mkQuantileCurves(n, dates),
+    topk_sensitivity: {
+      rebalance_period: 20,
+      n_days: 668,
+      n_periods: n,
+      trading_days: 250,
+      default_k: 50,
+      ks: [50, 100],
+      rows: [
+        { k: 50, avg_turnover: 0.4, gross_per_period: 0.01, ann_cost: { '0.0040': 0.02, '0.0080': 0.04 }, cost_eaten: { '0.0040': 0.3, '0.0080': 0.6 } },
+        { k: 100, avg_turnover: 0.25, gross_per_period: 0.008, ann_cost: { '0.0040': 0.012, '0.0080': 0.024 }, cost_eaten: { '0.0040': null, '0.0080': 0.5 } },
+      ],
+      note: '买入端已剔除 T/T+1 涨停与 T+1 停牌；未模拟跌停卖不出',
+    },
+    trigger_split: {
+      hold_days: 20,
+      first: { count: 40, mean_ret: 0.049, median_ret: 0.04, win_rate: 0.6 },
+      refresh: { count: 106, mean_ret: 0.007, median_ret: 0.005, win_rate: 0.55 },
+    },
     topk_curves: {
       rebalance_period: 20,
       horizon: 20,
@@ -236,8 +277,36 @@ describe('TopkCurveModal', () => {
   })
 
   it('topk_curves_error：把后端原因显示出来（不能静默空图 ✗）', async () => {
-    const { host } = await mount(mkRow({ topk_curves: null, topk_curves_error: '数据不足：调仓期 > 样本' }))
+    // ⚠ 必须**连 `quantile_curves` 一起置空** ✗→✓ —— 只要还有分位曲线，弹窗就切到分位视图，
+    //   错误提示自然不出现 ✓（我第一版只置空 topk_curves ⇒ 红 ✓）。
+    const { host } = await mount(
+      mkRow({ topk_curves: null, quantile_curves: null, topk_curves_error: '数据不足：调仓期 > 样本' }),
+    )
     expect(host.textContent || '').toContain('数据不足')
+  })
+
+  it('⭐ 数据给全时：分位 / 敏感度 两块都要渲染出来', async () => {
+    const { host } = await mount(mkRow())
+    const t = host.textContent || ''
+    expect(t, '分位那块没渲染 ✗').toMatch(/分位|Q10/)
+    expect(t, '敏感度那块没渲染 ✗').toMatch(/换手|敏感|K/)
+  })
+
+  // ⚠ 「触发分组（首次 vs 续期）」**不在这个弹窗里** ✗ —— 我按 `trigger_split` 造了数据去断言它，
+  //   实际它渲染在**单因子结果表**（`SingleFactorTestPanel`）那边 ✓。
+  //   ⇒ 这条不写"点到为止"的空断言 ✓，改成在面板那侧测（下一轮）。
+
+  it('逐块点一遍分区按钮（分位/敏感/触发/等权/多空）不崩', async () => {
+    const { host } = await mount(mkRow())
+    for (const re of [/分位/, /敏感/, /触发/, /等权/, /多空/, /累计/]) {
+      const hit = btns(host).filter((b) => re.test((b.textContent || '').trim()))
+      if (hit.length) {
+        act(() => {
+          hit[0].click()
+        })
+      }
+    }
+    expect((host.textContent || '').length).toBeGreaterThan(100)
   })
 
   it('导出失败会把原因显示出来（不许静默 ✗）', async () => {
