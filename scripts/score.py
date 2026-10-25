@@ -261,9 +261,25 @@ def main() -> int:
           len(huge) <= base.get("max_huge_files", 2), "现在 %d 个" % len(huge))
 
     # ================= 真问题闸门（第一版没有的）=================
-    tag = run(["git", "describe", "--tags", "--abbrev=0"], ROOT)[1].strip()
-    check(MEASURED, "**最新 tag = 当前版本**（发版可回退）", tag == "v" + version,
-          "最新 tag %s ｜ 版本 %s" % (tag or "无", version))
+    # ★ v2.11.91：**远端优先** ✗→✓ —— 原来只看本地 `git describe` ⇒
+    #   "打了 tag 但没 push"也算过 ✗（评审正是在这一点上是对的 ✓）。
+    tag_local = run(["git", "describe", "--tags", "--abbrev=0"], ROOT)[1].strip()
+    _rt = run(["git", "ls-remote", "--tags", "origin"], ROOT, timeout=25)
+    tag_remote = ""
+    if _rt[0] == 0:
+        _names = sorted(
+            ln.split("refs/tags/", 1)[1].replace("^{}", "").strip()
+            for ln in (_rt[1] or "").splitlines() if "refs/tags/" in ln
+        )
+        # 远端"最大版本"要按**数值**排（字典序会把 v2.9.9 排在 v2.11.90 后面 ✗）
+        def _key(t: str):
+            m = __import__("re").match(r"v(\d+)\.(\d+)\.(\d+)$", t)
+            return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+        tag_remote = max(_names, key=_key) if _names else ""
+    tag = tag_remote or tag_local
+    check(MEASURED, "**最新 tag = 当前版本**（远端优先 ✓）", tag == "v" + version,
+          "远端 %s ｜ 本地 %s ｜ 版本 %s"
+          % (tag_remote or "不可达", tag_local or "无", version))
     # ⚠ 这个坑第一版会写成"看 clone 命令存在 ⇒ 通过"✗ —— 恰恰相反：
     #   `clone --depth 1 <repo>` **不带 sha** 就等于**没锁** ✓ 必须找 `git checkout <sha>` ✓
     # ⚠ 判"锁了 sha"的正确写法是**在 qlib 相关的几百字符内出现 40 位 hex** ✓ ——

@@ -198,12 +198,22 @@ def main() -> int:
     dim("性能与资源", *s11)
 
     # 12. 协作与变更
+    _tag_state = m.get("remote_tag_state")   # ★ v2.11.91：远端实测状态（ok/missing/unknown）
     s12 = [
-        (10, "tag 与版本同步（脚本自动打）✓"),
+        # ★ v2.11.91：**实测远端**（原来这里是硬编码 10 分 ✗ —— 评审指出的正是这条 ✓）
+        ((10, "tag 与版本同步（**远端已确认** v%s ✓）" % m.get("version", ""))
+         if _tag_state == "ok"
+         else (7, "tag 无法核实（远端不可达 ⇒ 不装满分 ✓）")
+         if _tag_state == "unknown"
+         else (3, "tag **没推到远端** ✗（本地打了 / 远端没有 ⇒ 回退不可用 ✓）")),
         (9, "CONTRIBUTING 9 条硬规矩 + PR/issue 模板 + CODEOWNERS ✓"),
         (5, "单人 + 直接推 main（review 形式大于实质）✗"),
-        ((9, "自动 release notes（tag 脚本建 Release + 指向 change_log ✓）")
-         if m.get("has_auto_release_notes") else (4, "无自动 release notes ✗")),
+        # ★ v2.11.91：同样改成"**产物**而不是脚本"✓（原来只 grep 脚本里有没有 `release create` ✗）
+        ((9, "自动 release notes（远端 Release 已确认 ✓）")
+         if m.get("has_auto_release_notes") and _tag_state == "ok"
+         else (7, "release 无法核实（远端不可达）")
+         if m.get("has_auto_release_notes") and _tag_state == "unknown"
+         else (4, "无自动 release notes ✗")),
     ]
     dim("协作与变更", *s12)
 

@@ -145,6 +145,15 @@ def main():
     # ★ v2.11.56：发版脚本是否**顺手建 GitHub Release**（notes 自动生成 ✓）——
     #   只看"有没有 release"会随时间漂 ✗，看"脚本里有没有这一步"才是能力 ✓。
     out["has_auto_release_notes"] = "release create" in read(os.path.join(ROOT, "scripts", "tag_release.ps1"))
+    # ★ v2.11.91：远端同步的**实测**（见文件末尾 _remote_tag_state ✓）
+    _ver = ""
+    try:
+        _m = re.search(r'__version__\s*=\s*"([^"]+)"', read(os.path.join(BE, "app", "__init__.py")))
+        _ver = _m.group(1) if _m else ""
+    except Exception:
+        _ver = ""
+    out["version"] = _ver
+    out["remote_tag_state"] = _remote_tag_state(_ver) if _ver else "unknown"
 
     # ★ v2.11.56：**实测** ruff 启用了多少条规则 —— 原来这个数写在 `score_baseline.json` 里 ✗，
     #   改了 `select` 却忘了改基线 ⇒ 分数不动 ✓（"数字靠人维护"必然漂 ✗）。现在从配置里数 ✓。
@@ -186,6 +195,56 @@ def main():
     with open(dst, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
     print("  已写入 %s（%d 个指标）" % (dst, len(out)))
+
+
+# ⚠ 入口调用**必须放到文件最末** ✗→✓ —— 我 v2.11.91 把 `_remote_tag_state` 等 helper
+# 追加在文件末尾，而 `main()` 在上面就执行了 ⇒ `NameError: _remote_tag_state is not defined` ✓
+# （模块是自顶向下执行的 ✓）。
+
+
+# ===== ★ v2.11.91：远端同步的**实测**（评审指出"只测能力存在"✗） =====
+
+
+def _git_ls_remote_tags(timeout: int = 20) -> "set[str] | None":
+    """远端 tag 集合；**不可达就返回 None**（不抛 ⇒ 由调用方决定降级 ✓）。
+
+    为什么要试三种姿势 ✗→✓：本机访问 GitHub 需要代理（我平时 push 都是
+    `git -c http.proxy=...` ✓），而评分脚本不能假设一定配了 ⇒
+    ① 直接跑；② 带上 `HTTP_PROXY/HTTPS_PROXY` 环境变量（如果有）；
+    ③ 都没有 ⇒ `None`（**判"未知"，不给满分也不冤枉** ✓）。
+    """
+    import os as _os
+    import subprocess as _sp
+
+    attempts = [[]]
+    for env_name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        proxy = _os.environ.get(env_name)
+        if proxy:
+            attempts.append(["-c", "http.proxy=%s" % proxy, "-c", "https.proxy=%s" % proxy])
+            break
+    for extra in attempts:
+        try:
+            r = _sp.run(["git", *extra, "ls-remote", "--tags", "origin"],
+                        cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+        except Exception:                                       # noqa: BLE001
+            continue
+        if r.returncode != 0:
+            continue
+        tags = set()
+        for ln in (r.stdout or "").splitlines():
+            if "refs/tags/" in ln:
+                tags.add(ln.split("refs/tags/", 1)[1].replace("^{}", "").strip())
+        if tags:
+            return tags
+    return None
+
+
+def _remote_tag_state(version: str) -> str:
+    """`"ok"` / `"missing"` / `"unknown"` —— 见文件头那张表 ✓。"""
+    tags = _git_ls_remote_tags()
+    if tags is None:
+        return "unknown"
+    return "ok" if ("v" + version) in tags else "missing"
 
 
 if __name__ == "__main__":
