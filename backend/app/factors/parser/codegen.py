@@ -82,6 +82,11 @@ _DATE_LITERAL_HELP = (
 # 需要"另一侧是日期值"才折的**比较**算子（算术不折也不报错 ✓）
 _CMP_OPS = ("GT", "GE", "LT", "LE", "EQ", "NE")
 
+#: ★ v2.11.79：**结果一定是布尔（0/1）** 的算子 ⇒ "含日期值"标记到此为止 ✓。
+#: 少了这一条，`KK:DATE<=20070901;` 被别的公式调用后再参与比较
+#: （`AAA:KK>0.5;` ⇒ `Gt(Le($date,13757),0.5)`）就会被误判成"与 DATE 比较"✗✗。
+_BOOL_OPS = _CMP_OPS + ("AND", "OR")
+
 
 def fold_date_literals(expr: Expr) -> Expr:
     """把"与 DATE 同处一个二元运算里的 8 位日期字面量"折成**日序号** ✓（2026-10-15）。
@@ -102,7 +107,13 @@ def fold_date_literals(expr: Expr) -> Expr:
         if isinstance(e, FuncCall):
             if is_date_name(e.name):
                 # `DATE(x)` **先在这里校验并折成字面量** ✓（报错只有一处 ⇒ 不会指错地方 ✓）
-                return Num(_date_call_value(e)), True
+                # ⚠⚠ 但它折出来是**日序号（普通数值）**，**不是**行情字段 DATE ✗→✓ ——
+                #   我原来标成 `True`（"含日期值"）✗ ⇒ `DATE(20070901)>0` 被当成
+                #   "与 DATE 字段比较" ⇒ 反过来要求右侧 `0` 必须是 8 位日期 ⇒ 报
+                #   「与 DATE 比较的这一侧算出来是 0，不是日期」✗✗（2026-10-25 定位 ✓）。
+                #   实测影响：真库里 11 条常用公式（含 `OLD:=DATE<=20070901` 的 CPX 被内联后）
+                #   全部卡在这条 ⇒ 永远重编译失败 ✓。
+                return Num(_date_call_value(e)), False
             args = []
             has = False
             for a in e.args:
@@ -116,11 +127,21 @@ def fold_date_literals(expr: Expr) -> Expr:
         if isinstance(e, BinOp):
             left, hl = walk(e.left)
             right, hr = walk(e.right)
+            # ⚠⚠ 比较/逻辑的**结果**是布尔（0/1），**不再是日期值** ✗→✓
+            #   原来把 `hl or hr` 一路往上抛 ⇒ `KK:DATE<=20070901;` 被调用后
+            #   `AAA:KK>0.5;` 变成 `Gt(Le($date,13757), 0.5)` ⇒ 外层比较又要求
+            #   右侧 `0.5` 是 8 位日期 ⇒ 报「与 DATE 比较的这一侧算出来是 0.5」✗✗
+            #   （2026-10-25 定位：真库 11 条常用公式就是卡在这条 ✓，因为它们把
+            #     `DATE<=…` 的**布尔结果**再参与比较 ✓）。
+            #   注意：**折叠本身必须照旧先做** ✓（`DATE<=20070901` 仍要折成 `Le($date,13757)` ✓），
+            #   只是"这个子树还算不算日期值"要就此截止 ✓。
             if hl and not hr:
                 right = _fold_one_side(right, e.op)
             elif hr and not hl:
                 left = _fold_one_side(left, e.op)
-            return BinOp(e.op, left, right), (hl or hr)
+            # 比较/逻辑的结果是**布尔** ⇒ 不再往上传"含日期值" ✓
+            # （否则 `Gt(Le($date,13757), 0.5)` 会让外层比较要求 `0.5` 是日期 ✗）
+            return BinOp(e.op, left, right), (hl or hr) and (e.op not in _BOOL_OPS)
         return e, False
 
     return walk(expr)[0]

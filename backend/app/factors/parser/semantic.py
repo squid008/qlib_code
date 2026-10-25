@@ -39,7 +39,26 @@ from .ast import (
 # ===========================================================================
 RECUR_PREV = "__RECUR_PREV"
 RECUR_OUT = "__RECUR_OUT"
+
+#: ★★ v2.11.79：**编译器内部算子**（用户不能手写 ✓）—— 语义校验必须放行它们 ✗→✓
+#:
+#: 为什么要放行（原本的 bug，2026-10-25 定位）：
+#: · `macros._callee_tree` 内联被调公式时返回的是**已经 lowering 过的树**
+#:   （`inline_variables(resolve_vars(f))` ✓ ⇒ 里面已含 `__RECUR_OUT` / `__RECUR_PREV` ✓）；
+#: · 而 caller 展开完 `expand_calls` 之后还要再跑一遍 `resolve_vars` 的 `check` ✗
+#:   ⇒ 它只认 `BUILTIN_FUNCS` ⇒ 把**自己刚生成的**内部算子判成"不支持的函数" ✗✗。
+#: 后果（当时实测）：只要「公式 A 调用公式 B，且 B 里有递推组」⇒ A **永远编译失败** ✓
+#: （12 条常用公式中招：步步高 / 复苏 / 缓升 / 快升 / B点 / S点 / 量王 / 倍量 / 天量 /
+#:   强势要素 / 大阳起势 / 蹦极新生 —— 它们都直接或间接调用含递推的 `CPX` ✓）。
+#: 现在启动日志里那 48 条 `重新编译失败，保留旧 expression：__RECUR_OUT` 就是它 ✓。
+#:
+#: ⚠ 放行只针对**已经展开进树里**的形态 ✓；用户手写的 `__RECUR_*` 在
+#:   `parser/__init__.translate_formula` 入口就被挡住了 ✓（见那里的 `__RECUR_` 检查 ✓）。
 RECUR_CUR = "__RECUR_CUR"        # 组内**同根**引用先定义的成员（= 本根已算出的值 ✓）
+
+#: ⚠ 必须放在**三个常量都已定义之后** ✗→✓ —— 我第一版把它插在 `RECUR_OUT` 后面 ⇒
+#: `NameError: name 'RECUR_CUR' is not defined` ✓（导入期就炸，整个 parser 挂 ✗）。
+_INTERNAL_OPS = frozenset({RECUR_OUT, RECUR_PREV, RECUR_CUR})
 
 
 def _expr_repr(e: Expr) -> str:
@@ -297,7 +316,9 @@ def resolve_vars(formula: Formula) -> Formula:
         elif isinstance(expr, UnaryOp):
             check(expr.operand, ctx)
         elif isinstance(expr, FuncCall):
-            if expr.name not in BUILTIN_FUNCS:
+            # ⚠ 内部算子也要放行 ✗→✓ —— 被调公式内联进来的树里带 `__RECUR_*` ✓
+            #   （见 `_INTERNAL_OPS` 上方那段：不放行就是"自己生成、自己不认"✗）。
+            if expr.name not in BUILTIN_FUNCS and expr.name not in _INTERNAL_OPS:
                 raise SemanticError(f"不支持的函数：{expr.name}（在 {ctx}）")
             for i, a in enumerate(expr.args):
                 # L2_PCT/L2_AMO/L2_VOL 的第 2+ 参数是买卖方向关键字（b/s），

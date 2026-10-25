@@ -130,6 +130,13 @@ def translate_formula(text: str, patchable: bool = False,
         `LexerError`/`ParseError` 的消息额外带「第 N 行第 M 列：该行内容」，省得用户瞎猜位置。
     """
     src = normalize_source(text)
+    # ★★ v2.11.79：`__RECUR_*` 是**编译器内部算子**（由 `REF(成员,k)` 自动生成 ✓）——
+    #   用户在原文里**手写必须明确拒绝** ✗，否则"内部算子已放行"（见 `semantic._INTERNAL_OPS`）
+    #   就变成了一条公开入口 ✓（写进去能过语义校验，但面板/内核那边没有对应定义 ✗）。
+    if "__RECUR_" in src.upper():
+        raise SemanticError(
+            "`__RECUR_*` 是递推组的**编译器内部算子**（由 `REF(成员,k)` 自动生成）✗ "
+            "不能直接写在公式里 ✓ —— 想写递推请用 `A:REF(A,1)+…;` 这种写法 ✓")
     try:
         # 公式间调用（v1.19.87）：先摘掉 `参数 K=1;` 声明行（它不是合法语句，必须在解析前剥离），
         # 再把"命中已保存公式名"的 Var/FuncCall 换成被调公式的输出树（见 parser/macros.py）。
