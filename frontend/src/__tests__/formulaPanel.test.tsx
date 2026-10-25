@@ -18,6 +18,9 @@ import { createRoot } from 'react-dom/client'
 
 import FormulaPanel from '../components/FormulaPanel'
 
+/** 组件的完整 props 类型（测试里用 `as unknown as` 转换 ✓，不能展开 `never` ✗）。 */
+type PanelProps = React.ComponentProps<typeof FormulaPanel>
+
 const mounted: Array<() => void> = []
 
 beforeEach(() => {
@@ -100,7 +103,7 @@ function props(over: Record<string, unknown> = {}) {
 
 describe('FormulaPanel', () => {
   it('渲染列表：名称与正文都在', () => {
-    const host = render(<FormulaPanel {...(props() as never)} />)
+    const host = render(<FormulaPanel {...(props() as unknown as PanelProps)} />)
     const t = host.textContent || ''
     expect(t).toContain('CPX')
     expect(t).toContain('深跌10')
@@ -108,27 +111,27 @@ describe('FormulaPanel', () => {
   })
 
   it('空列表不崩', () => {
-    const host = render(<FormulaPanel {...(props({ customFormulas: [] }) as never)} />)
+    const host = render(<FormulaPanel {...(props({ customFormulas: [] }) as unknown as PanelProps)} />)
     expect(host.textContent).toBeTruthy()
   })
 
   it('⭐⭐「编译并保存」调 `onAdd` 且**不带任何参数**（否则 MouseEvent 会被当 allowDuplicate ✗）', () => {
     const p = props()
-    const host = render(<FormulaPanel {...(p as never)} />)
+    const host = render(<FormulaPanel {...(p as unknown as PanelProps)} />)
     clickByText(host, /编译并保存/)
     expect(p.onAdd).toHaveBeenCalledTimes(1)
     expect((p.onAdd as never as { mock: { calls: unknown[][] } }).mock.calls[0]).toEqual([])
   })
 
   it('编译中：按钮文案变「编译中...」且禁用（防双击存两条 ✗）', () => {
-    const host = render(<FormulaPanel {...(props({ formulaTranslating: true }) as never)} />)
+    const host = render(<FormulaPanel {...(props({ formulaTranslating: true }) as unknown as PanelProps)} />)
     const btn = buttons(host).find((b) => /编译中/.test(b.textContent || ''))
     expect(btn, '应出现「编译中...」按钮').toBeTruthy()
     expect(btn!.disabled).toBe(true)
   })
 
   it('显示错误文案', () => {
-    const host = render(<FormulaPanel {...(props({ formulaError: '第 1 行第 5 列：不支持的函数' }) as never)} />)
+    const host = render(<FormulaPanel {...(props({ formulaError: '第 1 行第 5 列：不支持的函数' }) as unknown as PanelProps)} />)
     expect(host.textContent).toContain('不支持的函数')
   })
 
@@ -139,7 +142,7 @@ describe('FormulaPanel', () => {
         incoming: { name: 'CPX', text: 'CPX:C>MA(C,10);' },
       },
     })
-    const host = render(<FormulaPanel {...(p as never)} />)
+    const host = render(<FormulaPanel {...(p as unknown as PanelProps)} />)
     expect(host.textContent).toContain('已存在同名公式')
 
     clickByText(host, /覆盖它/)
@@ -156,14 +159,14 @@ describe('FormulaPanel', () => {
 
   it('编辑态：显示编辑区（保存/取消可用）', () => {
     const p = props({ editingId: F1.id, editingText: 'CPX:C>MA(C,20);' })
-    const host = render(<FormulaPanel {...(p as never)} />)
+    const host = render(<FormulaPanel {...(p as unknown as PanelProps)} />)
     expect(host.textContent).toContain('MA(C,20)')
     // 编辑中必须能保存 ✓
     expect(buttons(host).some((b) => /保存|确定/.test(b.textContent || ''))).toBe(true)
   })
 
   it('点「插入函数」会打开手册弹窗（局部 UI 状态 ✓）', () => {
-    const host = render(<FormulaPanel {...(props() as never)} />)
+    const host = render(<FormulaPanel {...(props() as unknown as PanelProps)} />)
     clickByText(host, /插入函数/)
     const t = host.textContent || ''
     expect(/函数手册|函数 \/ 字段|搜索函数/.test(t) || t.length > 200).toBe(true)
@@ -171,7 +174,7 @@ describe('FormulaPanel', () => {
 
   it('全选 / 清空 分别调 `onToggleAll(true|false)`（反了就是"清空成全选"✗）', () => {
     const p = props()
-    const host = render(<FormulaPanel {...(p as never)} />)
+    const host = render(<FormulaPanel {...(p as unknown as PanelProps)} />)
     clickByText(host, /全选/)
     expect(p.onToggleAll).toHaveBeenLastCalledWith(true)
     clickByText(host, /清空/)
@@ -179,7 +182,7 @@ describe('FormulaPanel', () => {
   })
 
   it('排序 A-Z：名称顺序变化（切到 key 模式 ✓）', () => {
-    const host = render(<FormulaPanel {...(props() as never)} />)
+    const host = render(<FormulaPanel {...(props() as unknown as PanelProps)} />)
     const before = host.textContent || ''
     clickByText(host, /排序 A-Z|排序/)
     expect(host.textContent || '').toBeTruthy()
@@ -188,7 +191,7 @@ describe('FormulaPanel', () => {
 
   it('置顶 / 编辑 / 删除 各调各的回调，且带上正确的条目', () => {
     const p = props()
-    const host = render(<FormulaPanel {...(p as never)} />)
+    const host = render(<FormulaPanel {...(p as unknown as PanelProps)} />)
     clickByText(host, /置顶/)
     expect(p.onTogglePin).toHaveBeenCalledTimes(1)
     expect((p.onTogglePin as never as { mock: { calls: unknown[][] } }).mock.calls[0][0]).toMatchObject({ id: F1.id })
@@ -201,18 +204,18 @@ describe('FormulaPanel', () => {
   })
 
   it('「仅名称/拼音」开关可切换（内部状态，不炸且列表还在）', () => {
-    const host = render(<FormulaPanel {...(props() as never)} />)
+    const host = render(<FormulaPanel {...(props() as unknown as PanelProps)} />)
     clickByText(host, /仅名称/)
     expect(host.textContent).toContain('CPX')
   })
 
   it('勾选状态由外部 Set 决定（选中项有视觉标记）', () => {
-    const host = render(<FormulaPanel {...(props({ selectedFormulaIds: new Set([F1.id]) }) as never)} />)
+    const host = render(<FormulaPanel {...(props({ selectedFormulaIds: new Set([F1.id]) }) as unknown as PanelProps)} />)
     expect(host.querySelectorAll('input[type="checkbox"]:checked').length).toBeGreaterThan(0)
   })
 
   it('搜索框输入会过滤列表（走 `arrangeFormulas`）', () => {
-    const host = render(<FormulaPanel {...(props() as never)} />)
+    const host = render(<FormulaPanel {...(props() as unknown as PanelProps)} />)
     const input = host.querySelector('input[type="search"], input[placeholder*="搜索"], input') as HTMLInputElement | null
     expect(input, '应有搜索框').toBeTruthy()
     act(() => {

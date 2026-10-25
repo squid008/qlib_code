@@ -24,6 +24,26 @@
 
 ---
 
+## [2.11.85] - 2026-10-25
+
+### Fix（**v2.11.84 的 CI 是红的** —— `tsc --noEmit` 挂在我新加的测试上）
+
+- 报错：`src/__tests__/formulaPanel.test.tsx(103,43): error TS2698:
+  Spread types may only be created from object types.`（共 **14 处**）
+- 根因：我写的是 `{...(props() as never)}` ✗ —— **`never` 不是对象类型，不能展开** ✓。
+  （同文件里 `modelArtifacts.test.tsx` 用的是 `as never` 传给**单个 prop** ✓ —— 那不是展开，
+  所以那边没踩 ✓；我把两种用法混了 ✓。）
+- 修：`as unknown as React.ComponentProps<typeof FormulaPanel>` ✓（`type PanelProps = ...`）。
+  修后 `tsc --noEmit` **exit 0** ✓、14 passed ✓、biome 0 ✓。
+
+#### ⚠⚠ 更该记的是：我**以为验过了**
+本地那次 `npx tsc -b` 的输出被工具的 watch 提示**吞掉了** ✓ —— 我只看到"命令返回"，
+没看到 `exit` 值，却当成通过 ✓ ⇒ **"没看到输出" ≠ "通过"** ✗（CI 当场打脸 ✓）。
+⇒ 以后类型检查一律**落文件再读**（这轮后来就是 `npx tsc --noEmit > file` 才拿到 14 条错 ✓）。
+
+> 这已经是同一类第三次：v2.11.50（ruff 漏 `tools/`）、v2.11.67（漏 `complexity`）、
+> 这次（命令输出被吞）。**共同点都是"本地复检没真看到结果"** ✓。
+
 ## [2.11.84] - 2026-10-25
 
 ### Test（前端覆盖 **61.87% → 62.54%**；`FormulaPanel` 69.9% → **93.8%**）
