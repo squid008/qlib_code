@@ -217,11 +217,13 @@ def main() -> int:
          if m.get("has_contrib_docs") else (5, "CONTRIBUTING/模板/CODEOWNERS **缺** ✗（实测）")),
         (5, "单人 + 直接推 main（review 形式大于实质）✗"),
         # ★ v2.11.91：同样改成"**产物**而不是脚本"✓（原来只 grep 脚本里有没有 `release create` ✗）
-        ((9, "自动 release notes（远端 Release 已确认 ✓）")
-         if m.get("has_auto_release_notes") and _tag_state == "ok"
-         else (7, "release 无法核实（远端不可达）")
-         if m.get("has_auto_release_notes") and _tag_state == "unknown"
-         else (4, "无自动 release notes ✗")),
+        # ★ v2.11.93：按 **Release 对象**三态打分（tag 存在 ≠ Release 存在 ✓）
+        #   实测证据：v2.11.92 推 tag 成功、`gh release create` TLS 超时失败 ⇒ "有 tag 没 Release" ✗
+        ((9, "自动 release notes（远端 **Release 已确认** ✓）")
+         if m.get("has_auto_release_notes") and m.get("remote_release_state") is True
+         else (7, "Release 无法核实（远端不可达 ⇒ 不装满分 ✓）")
+         if m.get("has_auto_release_notes") and m.get("remote_release_state") is None
+         else (4, "**没有 Release**（脚本能建 ≠ 建成过 ✗）")),
     ]
     dim("协作与变更", *s12)
 

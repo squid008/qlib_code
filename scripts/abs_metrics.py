@@ -154,6 +154,7 @@ def main():
         _ver = ""
     out["version"] = _ver
     out["remote_tag_state"] = _remote_tag_state(_ver) if _ver else "unknown"
+    out["remote_release_state"] = _gh_release_ok(_ver) if _ver else None
 
     # ★ v2.11.92：**审计出来的"纯文案常量"改成可测** ✓（评审："测的是能力存在、不是被执行"）
     _md = os.path.join(ROOT, "md")
@@ -270,6 +271,35 @@ def _remote_tag_state(version: str) -> str:
     if tags is None:
         return "unknown"
     return "ok" if ("v" + version) in tags else "missing"
+
+
+def _gh_release_ok(version: str, timeout: int = 20) -> "bool | None":
+    """远端**Release 对象**是否存在（`True`/`False`/`None`=不可查 ✓）。
+
+    ⚠ 为什么不能拿 `remote_tag_state` 代替 ✗→✓（v2.11.93 自查出来的虚报）：
+      tag 存在 ≠ Release 存在 ✓（v2.11.92 就真出过一次：tag 推上去了、
+      `gh release create` 因 TLS 超时失败 ⇒ **有 tag、没 Release** ✗）。
+    原来那条文案写"远端 Release 已确认"，其实只核了 tag ⇒ 属于同类虚报 ✓。
+    """
+    import os as _os
+    import subprocess as _sp
+
+    env = dict(_os.environ)
+    proxy = env.get("HTTPS_PROXY") or env.get("https_proxy") or env.get("HTTP_PROXY") or env.get("http_proxy")
+    if proxy:
+        env["HTTPS_PROXY"] = env["HTTP_PROXY"] = proxy
+    try:
+        r = _sp.run(["gh", "release", "view", "v" + version, "--json", "tagName"],
+                    cwd=ROOT, capture_output=True, text=True, timeout=timeout, env=env)
+    except Exception:                                            # noqa: BLE001
+        return None
+    if r.returncode == 0:
+        return True
+    # `gh` 可执行但 Release 不存在 ⇒ 明确的 False ✓；其它（网络/未登录）⇒ 未知 ✓
+    msg = (r.stderr or "").lower()
+    if "release not found" in msg or "not found" in msg:
+        return False
+    return None
 
 
 if __name__ == "__main__":
