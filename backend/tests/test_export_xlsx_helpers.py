@@ -193,6 +193,42 @@ class TestPickBenchmark:
         assert X._pick_benchmark(self.TC, "SH999999") is None
 
 
+class TestExitRunHeadline:
+    """离场页顶上的摘要行 ✓（与弹窗那张对比表同口径 ✓）。"""
+
+    def test_full(self):
+        st = {"perf": {"annual_return": 0.123, "max_drawdown": 0.087},
+              "final_nav": 1.2345,
+              "exit_sells": 12, "exit_deferrals": 3, "exit_overridden": 1, "exit_ignored": 4}
+        lines = X._exit_run_headline(st, "离场A 年化")
+        assert len(lines) == 2
+        assert "离场A 年化 12.3%" in lines[0], lines[0]
+        assert "最大回撤 8.7%" in lines[0]
+        assert "期末净值 1.2345" in lines[0]
+        assert "离场卖出 12" in lines[1] and "持币空转 4" in lines[1]
+
+    def test_zero_counts_still_shown(self):
+        """⭐⭐ `0` 必须**显示**出来 ✓ —— 用 `if st.get(k)` 判空会把 0 当"没有"✗，
+        而"离场卖出 0"和"没统计"对用户是两件完全不同的事 ✓。"""
+        st = {"exit_sells": 0, "exit_deferrals": 0}
+        lines = X._exit_run_headline(st, "年化")
+        assert len(lines) == 1
+        assert "离场卖出 0" in lines[0] and "顺延 0" in lines[0]
+
+    def test_empty_state_returns_empty_list(self):
+        assert X._exit_run_headline({}, "年化") == []
+        assert X._exit_run_headline(None, "年化") == []
+
+    def test_non_numeric_fields_skipped(self):
+        """字符串/None 的指标 ⇒ 跳过 ✓（不能抛 ✗ —— 它只是摘要文案 ✓）。"""
+        st = {"perf": {"annual_return": "n/a", "max_drawdown": None}, "final_nav": "x"}
+        assert X._exit_run_headline(st, "年化") == []
+
+    def test_prefix_only_used_for_annual(self):
+        st = {"perf": {"annual_return": 0.1}}
+        assert X._exit_run_headline(st, "对照")[0] == "对照 10.0%"
+
+
 class TestFindEventStudy:
     def test_standalone_result(self):
         state = {"result": {"curve": [1, 2], "factor": "f"}}

@@ -24,6 +24,50 @@
 
 ---
 
+## [2.11.83] - 2026-10-25
+
+### Test（后端覆盖 **69.60% → 70.02%** ⇒ 后端覆盖档位 **7 → 8**；测试维 **8.7 → 8.83**）
+
+只差 **+78 行**就到 70%（跨档 ✓）。按覆盖率 JSON 的**函数级缺行明细**挑目标（不凭感觉 ✓）：
+
+| 文件 | 函数 | 缺 | 结果 |
+|---|---|---|---|
+| `engine/metrics.py` | `_extract_end_position` | 32 | **65.1% → 84.7%** ✓ |
+| | `_find_report_fallback` | 21 | |
+| | `_get_segment_end_account` | 19 | |
+| `engine/artifacts.py` | `_dataset_feature_names` | 10 | 80.4% → **83.6%** ✓ |
+| | `_read_train_feature_names` | 7 | |
+| `routers/export_xlsx.py` | `_exit_run_headline` | 6 | 56.7%（+6）✓ |
+
+**`test_metrics_extract.py`（15 条）** —— 段末持仓跨段传递的三个提取器：
+- ⭐⭐ `_extract_end_position`：**`cash`/`now_account_value`/`now_weight` 不是股票** ✓
+  （塞进去当标的 ⇒ 下一段会"卖出 cash" ✗）；`price` 缺失 ⇒ **不带 price**（填 0 ⇒
+  下一段 0 元卖出 ⇒ 净值暴增 ✗）；`amount=0` 跳过 ✓；两个 key 都抛 ⇒ `None` ✓。
+  > 它坏掉的后果正是注释里写的"只买不卖/免费清仓"——**旧持仓凭空消失，净值反而更"干净"** ✗。
+- ⭐⭐ `_find_report_fallback`：按 **mtime 取最新** ✓（取错 = 拿上一次回测的报告当这一次 ✗）；
+  坏 pkl ⇒ `None` 不抛 ✓。
+- `_get_segment_end_account`：`account` 列**最后一个非 NaN** ✓（全 NaN ⇒ None ✓）。
+
+**`test_artifacts_feature_names.py`（13 条）** —— 复用模型时"逐位对齐"的两侧来源：
+`_dataset_feature_names`（当前 handler 的列）与 `_read_train_feature_names`（上次训练存的顺序）；
+`segment_N/` 优先、缺则回退基础文件 ✓；空 `feature_names` 视同 `None` ✓
+（**空列表拿去比对会永远不一致** ✗）；坏 JSON 只跳过不抛 ✓。
+
+**`TestExitRunHeadline`（5 条）** —— ⭐ `exit_sells=0` 必须**显示** ✓
+（用 `if st.get(k)` 判空会把 0 当"没有"，而"离场卖出 0"和"没统计"是两件事 ✗）。
+
+#### ⚠ 这轮踩的四个坑（都当场红）
+| 坑 | 现象 |
+|---|---|
+| 我在文件末尾塞了 **`assert ... or True`** 的"真空断言" ✗ | 永真 ⇒ 什么都没测（**比没测更糟**：让人以为有守卫）⇒ 已删/改写 ✓ |
+| 自检断言 `"tmp" in WORK_DIR.lower()` | Windows 临时目录叫 **`Temp`**（小写 `temp`，里面没有 `tmp`）✗ |
+| fixture 只 `setattr` 路径**没建目录** | `os.path.isdir` 为 False ⇒ 自检红 ✓ |
+| 测试与 fixture **都 `mkdir()`** | `FileExistsError: WinError 183` ⇒ 统一 `exist_ok=True` ✓ |
+| `del self.get_cols` 模拟"没有该方法" | 那是**类**方法 ⇒ `AttributeError` ✓（改用独立的空类 ✓）|
+
+- **实测** ✓：新增 **33 passed**（15 + 13 + 5）｜ `ruff` 0 ｜ 后端 **70.02%**（13508/19293）。
+- 距测试维 9.0 **还差 +1 分**：只剩**前端覆盖 61.8% → 70%**（+940 语句）✗ —— 唯一剩余路径。
+
 ## [2.11.82] - 2026-10-25
 
 ### Fix（`score.py` 的前端覆盖采集在本机会**必崩** —— 又是 safe-delete 守卫）
