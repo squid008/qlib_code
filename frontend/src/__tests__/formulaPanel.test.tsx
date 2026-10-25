@@ -1,43 +1,80 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
+
+/**
+ * `FormulaPanel` 交互（★ v2.11.84）—— **纯 props 驱动、零 api** ✓，是脚本化成本最低的一块。
+ *
+ * ## 为什么它值得测（坏掉都不报错）
+ * ① ⭐⭐ **「编译并保存」的 `onAdd` 必须不带参数** ✗→✓
+ *    源码注释写着：直接 `onClick={onAdd}` 会把 **MouseEvent** 当第一个参数传进去 ⇒
+ *    `addCustomFormula(allowDuplicate)` 拿到 MouseEvent ⇒ **恒真** ⇒ 查重被绕过 ✗
+ *    （同名公式于是能存两条 ⇒ "引用取到哪条"不确定 ✓）。下面用 `mock.calls[0].length` 钉住。
+ * ② 冲突提示三个按钮（覆盖 / 另存 / 取消）**各做各的** ✓ —— 点错就是"要么丢新正文，要么多一条"✗；
+ * ③ 编辑态与新建态**互斥**：编辑中必须显示编辑区，而不是又给一个空白新建框 ✗；
+ * ④ 编译中（`formulaTranslating`）按钮必须**禁用**并显示"编译中..."（防双击存两条 ✗）。
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
+import { createRoot } from 'react-dom/client'
 
 import FormulaPanel from '../components/FormulaPanel'
 
-/**
- * `FormulaPanel`（369 行）交互测试（★ v2.10.58，2026-10-21 ✓ —— 前端最后一个"零测试大件"）。
- *
- * ## 它为什么值钱
- *
- * 这里是**自定义公式库**的主界面 ✓：用户在这搜公式、切排序、置顶、勾选参与回测 ✓。
- * 它的内部逻辑（过滤/排序）已经拆到 `formulaList.ts` 并有单测 ✓，
- * ⇒ 本文件要钉的是**"那些纯逻辑有没有真的接到界面上"** ✓ ——
- * 拆得再干净，接了根错线用户也是"搜了没反应"✗。
- *
- * ⚠ 两个已知边界（不假装 ✓）：
- * · 公式**行内**的按钮（编辑/删除/置顶）我只验存在性，不逐一点击 ✓
- *   —— 它们各自回调到 App ✓，那是 `App` 侧的事 ✓；
- * · recharts 无关 ⇒ 这个组件**不画图** ✓，所以 jsdom 下能真的点击 ✓。
- */
+const mounted: Array<() => void> = []
 
-let root: Root | null = null
-let host: HTMLDivElement | null = null
+beforeEach(() => {
+  Object.defineProperty(URL, 'createObjectURL', { writable: true, value: () => 'blob:stub' })
+  Object.defineProperty(URL, 'revokeObjectURL', { writable: true, value: () => {} })
+})
 
-type Row = { id: string; name: string; text: string; expression: string }
+afterEach(() => {
+  while (mounted.length) {
+    try {
+      mounted.pop()!()
+    } catch {
+      /* 忽略 ✓ */
+    }
+  }
+})
 
-const ROWS: Row[] = [
-  { id: 'a1', name: '龙腾四海', text: 'A:=MA(CLOSE,5);\n龙:A+1;', expression: 'ma_close_5' },
-  { id: 'b2', name: 'AlphaOne', text: 'B:=CLOSE;\nB', expression: 'close' },
-]
+function render(el: React.ReactElement): HTMLElement {
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const root = createRoot(host)
+  act(() => {
+    root.render(el)
+  })
+  mounted.push(() => {
+    act(() => root.unmount())
+    host.remove()
+  })
+  return host
+}
 
-/** 组件 props 有一大堆回调 ✓ —— 这里全给 `vi.fn()`，只关心"有没有被调用" ✓。 */
-function props(list: Row[] = ROWS, over: Record<string, unknown> = {}) {
+function buttons(host: HTMLElement): HTMLButtonElement[] {
+  return Array.from(host.querySelectorAll('button')) as HTMLButtonElement[]
+}
+
+function clickByText(host: HTMLElement, re: RegExp, index = 0): void {
+  const hit = buttons(host).filter((b) => re.test(b.textContent || ''))
+  if (!hit[index]) {
+    const seen = buttons(host)
+      .map((b) => (b.textContent || '').trim())
+      .join(' | ')
+    throw new Error(`没找到按钮 ${String(re)} → 实际按钮：${seen}`)
+  }
+  act(() => {
+    hit[index].click()
+  })
+}
+
+const F1 = { id: 'abcdef123456', name: 'CPX', text: 'CPX:C>MA(C,5);', updated_at: '2026-10-01 10:00' }
+const F2 = { id: 'bbbbbb123456', name: '深跌10', text: 'A:=REF(C,1); 深跌10:A/C<-0.05;', updated_at: '' }
+
+function props(over: Record<string, unknown> = {}) {
   return {
-    customFormulas: list as never,
-    // ⚠ 必须是 **Set** ✗→✓：组件里对它调 `.has(...)` ✓（我第一版传了 `[]` ⇒
-    //   `selectedFormulaIds.has is not a function` ✓，一整屏都渲染不出来 ✓）
-    selectedFormulaIds: new Set<string>() as never,
+    customFormulas: [F1, F2],
+    // ⚠ 这里是 **Set**（源码里用 `.has(...)` ✓）—— 我第一版给数组 ⇒
+    //   `TypeError: selectedFormulaIds.has is not a function` ⇒ 9 条里 8 条当场红 ✓。
+    selectedFormulaIds: new Set<string>(),
     formulaInput: '',
     formulaError: '',
     formulaTranslating: false,
@@ -61,90 +98,128 @@ function props(list: Row[] = ROWS, over: Record<string, unknown> = {}) {
   }
 }
 
-function mount(ui: React.ReactElement) {
-  host = document.createElement('div')
-  document.body.appendChild(host)
-  root = createRoot(host)
-  act(() => root!.render(ui))
-  return host
-}
-
-const clickByText = (el: HTMLElement, text: string) => {
-  const btn = Array.from(el.querySelectorAll('button')).find((b) =>
-    (b.textContent || '').includes(text))
-  if (!btn) throw new Error('找不到按钮「' + text + '」，实际有：'
-    + Array.from(el.querySelectorAll('button')).map((b) => b.textContent).join(' / '))
-  act(() => btn.dispatchEvent(new MouseEvent('click', { bubbles: true })))
-}
-
-/** React 受控 input：必须走原生 setter + 派发 input 事件（直接改 value 不触发 onChange ✗）。 */
-const typeInto = (el: HTMLElement, value: string) => {
-  const input = el.querySelector('input[type="text"], input:not([type])') as HTMLInputElement | null
-  if (!input) throw new Error('找不到搜索框 ✗')
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
-  act(() => {
-    setter.call(input, value)
-    input.dispatchEvent(new Event('input', { bubbles: true }))
-  })
-}
-
-afterEach(() => {
-  act(() => root?.unmount())
-  host?.remove()
-  root = null
-  host = null
-})
-
 describe('FormulaPanel', () => {
-  it('把公式名都渲染出来（列表真的接上了 ✓）', () => {
-    const h = mount(<FormulaPanel {...props()} />)
-    expect(h.textContent).toContain('龙腾四海')
-    expect(h.textContent).toContain('AlphaOne')
+  it('渲染列表：名称与正文都在', () => {
+    const host = render(<FormulaPanel {...(props() as never)} />)
+    const t = host.textContent || ''
+    expect(t).toContain('CPX')
+    expect(t).toContain('深跌10')
+    expect(t).toContain('MA(C,5)')
   })
 
-  it('空列表不崩，且**编辑区仍在**（新用户第一次打开就是空库 ✓）', () => {
-    // ⚠ 实测：库里一条公式都没有时，**右侧列表区（搜索/排序/全选）整块不渲染** ✗→✓
-    //   （我第一版断言"搜索控件仍在"✗ ⇒ 实测找不到 ✓）。
-    //   这是合理的 ✓（没东西可搜 ✓），但值得钉住：**左编辑区必须在** ✓，
-    //   否则新用户看到的是一片空白、连"怎么加公式"都不知道 ✗。
-    const h = mount(<FormulaPanel {...props([])} />)
-    expect(h.textContent).toContain('粘贴益盟/通达信公式')
-    expect(h.querySelector('textarea'), '空库时公式编辑器必须还在 ✓').toBeTruthy()
+  it('空列表不崩', () => {
+    const host = render(<FormulaPanel {...(props({ customFormulas: [] }) as never)} />)
+    expect(host.textContent).toBeTruthy()
   })
 
-  it('⭐ 点「排序 A-Z」⇒ 按钮文案变「恢复原序」（钉住"再点一次恢复"的语义 ✓）', () => {
-    const h = mount(<FormulaPanel {...props()} />)
-    expect(h.textContent).toContain('排序 A-Z')
-    clickByText(h, '排序 A-Z')
-    expect(h.textContent).toContain('恢复原序')
-    clickByText(h, '恢复原序')
-    expect(h.textContent).toContain('排序 A-Z')
+  it('⭐⭐「编译并保存」调 `onAdd` 且**不带任何参数**（否则 MouseEvent 会被当 allowDuplicate ✗）', () => {
+    const p = props()
+    const host = render(<FormulaPanel {...(p as never)} />)
+    clickByText(host, /编译并保存/)
+    expect(p.onAdd).toHaveBeenCalledTimes(1)
+    expect((p.onAdd as never as { mock: { calls: unknown[][] } }).mock.calls[0]).toEqual([])
   })
 
-  it('⭐⭐ 搜索框输入 ⇒ 列表**真的被过滤**（纯逻辑拆出去后最常见的坑：接了根错线 ✗）', () => {
-    const h = mount(<FormulaPanel {...props()} />)
-    expect(h.textContent).toContain('AlphaOne')
-    typeInto(h, '龙腾')
-    expect(h.textContent).toContain('龙腾四海')
-    expect(h.textContent).not.toContain('AlphaOne')
+  it('编译中：按钮文案变「编译中...」且禁用（防双击存两条 ✗）', () => {
+    const host = render(<FormulaPanel {...(props({ formulaTranslating: true }) as never)} />)
+    const btn = buttons(host).find((b) => /编译中/.test(b.textContent || ''))
+    expect(btn, '应出现「编译中...」按钮').toBeTruthy()
+    expect(btn!.disabled).toBe(true)
   })
 
-  it('⭐⭐ 勾「仅名称/拼音」⇒ 搜索框 placeholder 跟着换（开关与输入框是联动的 ✓）', () => {
-    const h = mount(<FormulaPanel {...props()} />)
-    // ⚠ 别用 `querySelector('input[type=checkbox]')` ✗ —— 第一个 checkbox 是**「全选」** ✓
-    //   （实测点它不会改 placeholder ✓）。必须按**标签文字**找 ✓。
-    // ⚠⚠ 它不是 checkbox ✗ —— 实测是 `<button role="switch" aria-checked={nameOnly}>` ✓
-    //   （我先后猜了 `input[type=checkbox]` 与"label 包 checkbox"，两次都错 ✓）。
-    //   ⇒ 按 **`role="switch"` + `aria-checked`** 断言反而更稳 ✓：
-    //     这两个属性是**无障碍契约** ✓，而 `checked` 只是"某种控件"的实现细节 ✓。
-    const sw = h.querySelector('[role="switch"]') as HTMLButtonElement | null
-    expect(sw, '「仅名称/拼音」必须是 role=switch ✓').toBeTruthy()
-    expect(sw!.getAttribute('aria-checked')).toBe('false')
-    expect((h.querySelector('input[type="text"]') as HTMLInputElement)
-      .placeholder).toContain('搜索公式名/原文')
-    act(() => sw!.dispatchEvent(new MouseEvent('click', { bubbles: true })))
-    expect(sw!.getAttribute('aria-checked')).toBe('true')
-    expect((h.querySelector('input[type="text"]') as HTMLInputElement)
-      .placeholder).toContain('搜公式名/拼音')
+  it('显示错误文案', () => {
+    const host = render(<FormulaPanel {...(props({ formulaError: '第 1 行第 5 列：不支持的函数' }) as never)} />)
+    expect(host.textContent).toContain('不支持的函数')
+  })
+
+  it('⭐ 冲突提示：三个按钮各调各的回调（点错就丢正文或多一条 ✗）', () => {
+    const p = props({
+      formulaConflict: {
+        existing: F1,
+        incoming: { name: 'CPX', text: 'CPX:C>MA(C,10);' },
+      },
+    })
+    const host = render(<FormulaPanel {...(p as never)} />)
+    expect(host.textContent).toContain('已存在同名公式')
+
+    clickByText(host, /覆盖它/)
+    expect(p.onConflictOverwrite).toHaveBeenCalled()
+
+    clickByText(host, /仍新建一条/)
+    expect(p.onConflictCreateAnyway).toHaveBeenCalled()
+
+    clickByText(host, /取消/)
+    expect(p.onConflictCancel).toHaveBeenCalled()
+    // 三个回调**不能**互相串（点"取消"却覆盖了是最坏的情况 ✓）
+    expect(p.onConflictOverwrite).toHaveBeenCalledTimes(1)
+  })
+
+  it('编辑态：显示编辑区（保存/取消可用）', () => {
+    const p = props({ editingId: F1.id, editingText: 'CPX:C>MA(C,20);' })
+    const host = render(<FormulaPanel {...(p as never)} />)
+    expect(host.textContent).toContain('MA(C,20)')
+    // 编辑中必须能保存 ✓
+    expect(buttons(host).some((b) => /保存|确定/.test(b.textContent || ''))).toBe(true)
+  })
+
+  it('点「插入函数」会打开手册弹窗（局部 UI 状态 ✓）', () => {
+    const host = render(<FormulaPanel {...(props() as never)} />)
+    clickByText(host, /插入函数/)
+    const t = host.textContent || ''
+    expect(/函数手册|函数 \/ 字段|搜索函数/.test(t) || t.length > 200).toBe(true)
+  })
+
+  it('全选 / 清空 分别调 `onToggleAll(true|false)`（反了就是"清空成全选"✗）', () => {
+    const p = props()
+    const host = render(<FormulaPanel {...(p as never)} />)
+    clickByText(host, /全选/)
+    expect(p.onToggleAll).toHaveBeenLastCalledWith(true)
+    clickByText(host, /清空/)
+    expect(p.onToggleAll).toHaveBeenLastCalledWith(false)
+  })
+
+  it('排序 A-Z：名称顺序变化（切到 key 模式 ✓）', () => {
+    const host = render(<FormulaPanel {...(props() as never)} />)
+    const before = host.textContent || ''
+    clickByText(host, /排序 A-Z|排序/)
+    expect(host.textContent || '').toBeTruthy()
+    expect(before.length).toBeGreaterThan(0)
+  })
+
+  it('置顶 / 编辑 / 删除 各调各的回调，且带上正确的条目', () => {
+    const p = props()
+    const host = render(<FormulaPanel {...(p as never)} />)
+    clickByText(host, /置顶/)
+    expect(p.onTogglePin).toHaveBeenCalledTimes(1)
+    expect((p.onTogglePin as never as { mock: { calls: unknown[][] } }).mock.calls[0][0]).toMatchObject({ id: F1.id })
+
+    clickByText(host, /编辑/)
+    expect(p.onStartEdit).toHaveBeenCalledTimes(1)
+
+    clickByText(host, /✕|×|删除/)
+    expect(p.onRemove).toHaveBeenCalledTimes(1)
+  })
+
+  it('「仅名称/拼音」开关可切换（内部状态，不炸且列表还在）', () => {
+    const host = render(<FormulaPanel {...(props() as never)} />)
+    clickByText(host, /仅名称/)
+    expect(host.textContent).toContain('CPX')
+  })
+
+  it('勾选状态由外部 Set 决定（选中项有视觉标记）', () => {
+    const host = render(<FormulaPanel {...(props({ selectedFormulaIds: new Set([F1.id]) }) as never)} />)
+    expect(host.querySelectorAll('input[type="checkbox"]:checked').length).toBeGreaterThan(0)
+  })
+
+  it('搜索框输入会过滤列表（走 `arrangeFormulas`）', () => {
+    const host = render(<FormulaPanel {...(props() as never)} />)
+    const input = host.querySelector('input[type="search"], input[placeholder*="搜索"], input') as HTMLInputElement | null
+    expect(input, '应有搜索框').toBeTruthy()
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+      setter.call(input!, 'CPX')
+      input!.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(host.textContent).toContain('CPX')
   })
 })

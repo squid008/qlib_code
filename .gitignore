@@ -116,6 +116,8 @@ backend/coverage.json
 # `_score_cov_<pid>_<ns>/`（绕开 safe-delete 拦 vitest 的 clean ✓）
 # ⇒ 精确名 `frontend/_score_cov/` 匹配不到那些目录 ⇒ 会被 `git add -A` 带进提交 ✗
 frontend/_score_cov*/
+# ⚠ v2.11.84：我临时采覆盖用的目录（`_fc1`/`_fc2`…）—— 只忽略、不删（删要走守卫 ✓）
+frontend/_fc[0-9]*/
 backend/_score_cov.json
 backend/_score_junit.xml
 
