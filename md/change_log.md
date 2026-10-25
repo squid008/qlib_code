@@ -24,6 +24,31 @@
 
 ---
 
+## [2.11.82] - 2026-10-25
+
+### Fix（`score.py` 的前端覆盖采集在本机会**必崩** —— 又是 safe-delete 守卫）
+
+- **现象**：`score.py --full` 里前端三条闸门全红：
+  ```
+  9. [实测] 前端 vitest 全绿        ✗ rc=0（计数未解析）
+  10/11. 前端覆盖率 ≥ 门槛/基线      ✗ 0.00%
+  ```
+  而**单跑** `npx vitest run --coverage ...` 一直是绿的 ✓ ⇒ 典型的"只有评分脚本里才复现"✓。
+- **根因**：vitest 的 `V8CoverageProvider.clean` 会用 **trash** 去删**已存在**的
+  `reportsDirectory` ✓，而本机 **safe-delete 守卫**拦这个操作 ⇒
+  `Unhandled Error: [safe-delete] 操作失败 ... Error during a trash operation` ✗
+  ⇒ vitest rc=1、**没有 `coverage-final.json`** ⇒ 覆盖率读成 0.00% ✗。
+- **⚠ 我第一版"假修"** ✗：跑前加 `shutil.rmtree(vc, ignore_errors=True)` 清目录 ✓ ——
+  那个 rmtree **同样被守卫拦下**，而 `ignore_errors=True` 把失败**静默吞了** ✓
+  ⇒ 目录还在 ⇒ vitest 又崩 ✓ ⇒ 闸门**照样红**（而"我加了清理"看起来更稳妥 ✗）。
+- **正解**：`reportsDirectory` 用 **pid + 纳秒**拼成**每次唯一**的名字 ✓
+  ⇒ 永远不存在旧目录 ⇒ vitest 压根不需要 clean ✓；不删 ⇒ 不触发守卫 ✓
+  （目录很小，已加 `.gitignore` ✓）。实测：探针目录跑出 `coverage-final.json` ✓。
+- 另：`import time` 之前**没在** `score.py` 里 ✓（我第一版直接用 `time.time_ns()` ⇒ 会 NameError ✗，
+  语法检查抓不到这类 ✗）⇒ 已补 ✓。
+- **这条与 2.11.80 的 ①②、2.11.81 是同一类**：**工具链自己写错 ⇒ 假红 ⇒ 让人不再信评分** ✓
+  （评审那句话是对的 ✓）。这三轮修的都不是业务代码，但都会**每天都咬一口** ✓。
+
 ## [2.11.81] - 2026-10-25
 
 ### Fix（基线数字**不许四舍五入往上取整** —— 会造出"永远差 0.02"的假红）

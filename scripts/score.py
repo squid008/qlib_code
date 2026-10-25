@@ -30,6 +30,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -207,9 +208,21 @@ def main() -> int:
               be_cov + 0.01 >= base.get("be_cov_measured", 0), "%.2f%%" % be_cov)
 
         # 前端测试 + 实测覆盖
-        vc = os.path.join(FRONTEND, "_score_cov")
+        # ⚠⚠ **必须每次用全新的 reportsDirectory** ✗→✓（v2.11.81/82 实测两次）：
+        #   vitest 的 `V8CoverageProvider.clean` 会用 **trash** 删已存在的目录 ✓，
+        #   而本机 **safe-delete 守卫**拦这个操作 ⇒
+        #   `Unhandled Error: [safe-delete] 操作失败 ... Error during a trash operation` ✗
+        #   ⇒ vitest rc=1、**没有 coverage-final.json** ⇒ 前端三条闸门全 0.00% ✗✗。
+        #   ⚠ 我第一版"跑前用 shutil.rmtree(ignore_errors=True) 清掉"**没用** ✗ ——
+        #     那个 rmtree 同样被守卫拦下，而 `ignore_errors=True` 把失败**静默吞了** ✓
+        #     ⇒ 目录还在 ⇒ vitest 又崩 ✓（**"加了清理"看起来更稳妥，其实是假修** ✗）。
+        #   ⇒ 正解：目录名带 **pid + 纳秒**，永远不存在旧目录 ⇒ vitest 压根不需要 clean ✓。
+        #     （不删就不触发守卫 ✓；累积的目录很小，已在 .gitignore 里 ✓）
+        _tag = "%d_%d" % (os.getpid(), time.time_ns())
+        _rel = "_score_cov_%s" % _tag
+        vc = os.path.join(FRONTEND, _rel)
         rc, out = run(["npx", "vitest", "run", "--coverage",
-                       "--coverage.reporter=json", "--coverage.reportsDirectory=_score_cov"],
+                       "--coverage.reporter=json", "--coverage.reportsDirectory=%s" % _rel],
                       FRONTEND, timeout=300)
         # ⚠ vitest 的输出带 **ANSI 颜色码**（`Tests  \x1b[1m\x1b[32m310 passed`）✗
         #   ⇒ 不先剥掉就永远匹配不到 ⇒ 证据里出现 "0 passed 却 ✓" ✓（**证据不实比没证据更糟** ✗）。
