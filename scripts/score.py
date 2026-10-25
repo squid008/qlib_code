@@ -150,7 +150,13 @@ def main() -> int:
                 os.remove(f)
         # ⚠ 必须给**显式超时** ✗→✓ —— 实测某次 pytest 卡住不返回（进程在、无输出）✗，
         #   默认 900s 会让整个评分"静默挂死"✓ ⇒ 超时即判红并写明 ✓（卡住也是一种失败 ✓）。
-        rc, out = run([sys.executable, "-m", "pytest", "tests", "-q", "-m", "not datareq",
+        # ★★ v2.11.80：**必须与 CI 同款两步** ✗→✓ —— 原来这里只写 `not datareq`，
+        #   把 `perf`（绝对耗时的 4 条）**混进 1900+ 条里跑** ⇒ 被负载污染 ⇒
+        #   `test_batch_even_speed_is_guarded` **每次都假红** ✗（实测单独跑 4 passed ✓，
+        #   而 CI 从 v2.11.60 起早就拆成「主跑排除 perf + 单独 `-m perf`」两步了 ✓）。
+        #   ⇒ 评分脚本"与 CI 同命令"的承诺，就断在这一行 ✓。
+        rc, out = run([sys.executable, "-m", "pytest", "tests", "-q", "-m",
+                       "not datareq and not perf",
                        "--cov=app", "--cov-report=json:%s" % cov_json, "--cov-report=",
                        "--junit-xml=%s" % junit, "--tb=no"], BACKEND, timeout=420)
         n_tot = n_fail = 0
@@ -165,7 +171,27 @@ def main() -> int:
         contaminated = rc != 0 and "SAFE_DELETE_BULK_CONFIRM_REQUIRED" in out
         if os.path.exists(junit):
             os.remove(junit)
-        check(MEASURED, "后端 pytests **全绿**", n_fail == 0 and n_tot > 0,
+        # ★★ v2.11.80：**perf 单独串行跑** ✓（与 CI 的第二条命令一模一样 ✓）。
+        #   ⚠ 不新增闸门条数：把它的 counts **合并**进上面那条"后端 pytests 全绿" ✓
+        #   （多一条闸门会让 README/开发记录里"闸门 N/N"的数字全部要跟着改 ✗，而语义没变 ✓）。
+        junit_perf = os.path.join(BACKEND, "_score_junit_perf.xml")
+        if os.path.exists(junit_perf):
+            os.remove(junit_perf)
+        rc_perf, out_perf = run([sys.executable, "-m", "pytest", "tests", "-q", "-m", "perf",
+                                 "--junit-xml=%s" % junit_perf, "--tb=no"], BACKEND, timeout=240)
+        try:
+            _r2 = ET.parse(junit_perf).getroot()
+            _s2 = [_r2] if _r2.tag == "testsuite" else list(_r2)
+            n_tot += sum(int(s.get("tests", 0) or 0) for s in _s2)
+            n_fail += sum(int(s.get("failures", 0) or 0) + int(s.get("errors", 0) or 0)
+                          for s in _s2)
+        except (OSError, ET.ParseError):
+            # ⚠ 解析不到 junit 时**按 rc 判** ✓（不能让"文件没落盘"变成静默通过 ✗）
+            if rc_perf != 0:
+                n_fail += 1
+        if os.path.exists(junit_perf):
+            os.remove(junit_perf)
+        check(MEASURED, "后端 pytests **全绿**（含 perf 单独串行 ✓）", n_fail == 0 and n_tot > 0,
               "%d passed / %d%s" % (n_tot - n_fail, n_tot,
                                     "（rc=1 系本机 safe-delete ✓）" if contaminated else ""))
         be_cov = 0.0
@@ -289,7 +315,10 @@ def main() -> int:
               (("MAX_ANY", "test_code_health.py"), ("FROZEN", "test_complexity.py"),
                ("_SILENT_NODES", "test_except_ratchet.py"))), "")
     check(STATIC, "bandit / gitleaks / npm audit 在 CI",
-          "bandit -ll" in ci and "gitleaks" in ci and "audit-level=critical" in ci, "ci.yml")
+          # ★ v2.11.80：`critical` → **`high`** ✗→✓ —— v2.11.68 把 npm 的 `xlsx` 移除后
+          #   `npm audit --omit=dev` 归零 ⇒ CI 当场把阈值**收紧到 high** ✓（已核实 ci.yml:174 ✓）。
+          #   而这条闸门还在找 `audit-level=critical` ⇒ **CI 是对的、闸门假红** ✗。
+          "bandit -ll" in ci and "gitleaks" in ci and "audit-level=high" in ci, "ci.yml")
     check(STATIC, "后端**默认绑回环**",
           "BACKEND_HOST" in rest and "'127.0.0.1'" in rest, "restart_backend.ps1")
     # ★ v2.11.52c：`.ps1` 的**反引号续行后面不能有空行** ✗ —— PowerShell 会在那里断语句 ✓，
