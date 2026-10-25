@@ -106,7 +106,12 @@ def _prepare(signals: pd.DataFrame, panel: Dict[str, pd.DataFrame]) -> dict:
     codes = sorted(set(signals["code"]) & set(close.columns))
     missing = sorted(set(signals["code"]) - set(close.columns))
     if not codes:
-        return {"cal": cal, "codes": [], "missing": missing}
+        # ★★ v2.11.94：**必须把 `col_of` / `pos_of` 也带上**（空字典）✗→✓
+        #   原来只返回 `cal/codes/missing` ⇒ 而两个调用方（`run_backtest`、`run_batch_backtest`）
+        #   下一行就是 `col_of = prep["col_of"]` ⇒ **KeyError** ✗
+        #   ⇒ 那条"信号标的不在行情数据里 + missing 名单"的**友好报错从来没生效过** ✓
+        #   （用户把代码写错/池子里没这只票时，看到的是 500 KeyError，而不是"哪几只缺" ✓）。
+        return {"cal": cal, "codes": [], "col_of": {}, "pos_of": {}, "missing": missing}
     col_of = {c: i for i, c in enumerate(codes)}
 
     def _m(key, like):

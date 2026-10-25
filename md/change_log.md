@@ -24,6 +24,49 @@
 
 ---
 
+## [2.11.94] - 2026-10-25
+
+### Fix（**「标的不在行情数据里」这条友好报错从来没生效过** —— 用户只会看到 500 KeyError）
+
+#### 怎么发现的（本来是想去拆函数）
+计划拆"最长函数 614 行"，量完发现两件事：
+1. `qlib_engine.run_backtest` 只有 **181 行**；真正 614 行的是 **`signals/engine.py::run_backtest`**
+   （而且它的主体是**一个 504 行的 `for mode_spec in alloc_modes:` 循环**）✓ —— 我和评审都引用了错的对象；
+2. 该文件覆盖率已经 **91.8%**（只缺 54 行，全在**错误/顺延分支**）⇒ 拆它只为 `>300 行函数 5→4`
+   （+1 项 ≈ **总分 +0.01**）却要重写 504 行循环体 ⇒ **不做** ✓，改成补错误路径。
+
+#### ⭐⭐ 补测试时逮到的真 bug
+```python
+# signals/engine.py::_prepare
+if not codes:
+    return {"cal": cal, "codes": [], "missing": missing}      # ← 只有 3 个键 ✗
+# 两个调用方下一行就是：
+cal, codes, col_of = prep["cal"], prep["codes"], prep["col_of"]   # ← KeyError ✗
+```
+⇒ 那条「**信号标的不在行情数据里 + missing 名单**」的报错**永远走不到** ✓
+（用户把代码写错、或池子里没这只票时，拿到的是 **500 KeyError**，而不是"哪几只缺"✗）。
+
+**修**：早退时把 `col_of` / `pos_of` 也带上（空字典）✓ ⇒ 两个入口
+（`run_backtest` / `run_batch_backtest`）都恢复友好报错 ✓。
+
+#### 新增 `tests/test_signal_batch_errors.py`（7 条）
+| 断言 | 失效后果 |
+|---|---|
+| ⭐ 无信号 / panel 缺 `CLOSE` | 应给可读 error，不是抛栈/空净值 ✗ |
+| ⭐⭐ **标的不在行情 ⇒ 必须带 `missing` 名单** | 用户以为"信号凭空消失"✗（**本次修的正是这条**）|
+| ⭐ 顺延卖单当天**无价格** ⇒ 记 `no_price` 并继续顺延 | 静默跳过 ⇒ 持仓卡死而净值看不出来 ✗ |
+| 平盘（不涨不跌）能跑完且净值 ≤ 1 | 除零/空成交打崩的最常见情形 |
+| `t1_open` / `t1_close` 两种成交口径都能跑 | 口径开关不能只测一个 |
+
+#### 实测
+- `signals/engine.py` **91.8% → 92.2%**（缺 54 → 51）；后端总覆盖 **70.02% → 70.03%**；
+- ⚠ 覆盖率几乎没动 ✓（这次的目标不是覆盖率，是**错误路径**）。
+
+#### ⚠ 我的两个错（记下来）
+1. **引用错了对象**：说"`run_backtest` 614 行"时没核实它在**哪个文件**（`qlib_engine` 那个只有 181 行）；
+2. 我第一版测试里 `rej = A or B` 撞上 **DataFrame 的 truth value 报错** ✗
+   （`ValueError: The truth value of a DataFrame is ambiguous`）⇒ 改成 `is not None` 判断 ✓。
+
 ## [2.11.93] - 2026-10-25
 
 ### Fix（**又逮到自己一处虚报**：写着"远端 Release 已确认"，其实只核了 tag）
