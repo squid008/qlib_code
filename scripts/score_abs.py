@@ -135,7 +135,9 @@ def main() -> int:
          if m["ci_has_schedule"] else (4, "无定时跑（datareq 永不执行 ✗）")),
         ((8, "夜间 job 跑真后端 E2E ✓") if m.get("e2e_real_tests", 0) > 0
          else (4, "E2E 不通真后端 ✗")),
-        (10, "覆盖率门槛 65/55 + 并发取消 + 缓存 + 失败上传 trace ✓"),
+        # ★ v2.11.92：实测 ci.yml 里 concurrency + cache + upload-artifact ✓
+        ((10, "覆盖率门槛 65/55 + 并发取消 + 缓存 + 失败上传 trace ✓（**实测**）")
+         if m.get("ci_hardened") else (6, "CI 硬化**缺**（并发/缓存/trace 实测不全 ✗）")),
     ]
     dim("CI/CD", *s6)
 
@@ -147,7 +149,9 @@ def main() -> int:
         ((10, "架构文档 ✓（md/architecture.md：实测依赖矩阵 + 2 条调用链 + 全局状态表）")
          if m["has_arch_doc"] else (4, "无架构文档（依赖图/调用链 ✗）")),
         B(m["readme_lines"], [(300, 10), (200, 9), (100, 8)], "README %d 行" % m["readme_lines"]),
-        (10, "技术债/踩坑库/api_index/数据口径 齐 ✓"),
+        # ★ v2.11.92：**实测 4 个文件都在**（原来是无条件 10 分 ✗）
+        ((10, "技术债/踩坑库/api_index/数据口径 齐 ✓（**实测** 4 文件存在）")
+         if m.get("has_debt_docs") else (6, "四份文档**缺** ✗（实测）")),
     ]
     dim("文档", *s7)
 
@@ -193,7 +197,9 @@ def main() -> int:
         B(m["perf_gates"], [(4, 10), (2, 8), (0, 5)], "%d 条绝对性能门" % m["perf_gates"]),
         ((9, "内存基线 ✓（tracemalloc 峰值 + LRU 逐出 + 守卫自检）")
          if m.get("has_mem_baseline") else (4, "无内存基线 ✗")),
-        (9, "多层缓存 + 并发自适应 ✓"),
+        # ★ v2.11.92：实测代码里有缓存层痕迹（LRU/OrderedDict/maxsize）✓
+        ((9, "多层缓存 + 并发自适应 ✓（**实测**有 LRU/缓存层）")
+         if m.get("has_cache_layers") else (6, "缓存层**未实测到** ✗")),
     ]
     dim("性能与资源", *s11)
 
@@ -206,7 +212,9 @@ def main() -> int:
          else (7, "tag 无法核实（远端不可达 ⇒ 不装满分 ✓）")
          if _tag_state == "unknown"
          else (3, "tag **没推到远端** ✗（本地打了 / 远端没有 ⇒ 回退不可用 ✓）")),
-        (9, "CONTRIBUTING 9 条硬规矩 + PR/issue 模板 + CODEOWNERS ✓"),
+        # ★ v2.11.92：实测 CONTRIBUTING + 模板 + CODEOWNERS ✓
+        ((9, "CONTRIBUTING 9 条硬规矩 + PR/issue 模板 + CODEOWNERS ✓（**实测**存在）")
+         if m.get("has_contrib_docs") else (5, "CONTRIBUTING/模板/CODEOWNERS **缺** ✗（实测）")),
         (5, "单人 + 直接推 main（review 形式大于实质）✗"),
         # ★ v2.11.91：同样改成"**产物**而不是脚本"✓（原来只 grep 脚本里有没有 `release create` ✗）
         ((9, "自动 release notes（远端 Release 已确认 ✓）")

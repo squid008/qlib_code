@@ -155,6 +155,31 @@ def main():
     out["version"] = _ver
     out["remote_tag_state"] = _remote_tag_state(_ver) if _ver else "unknown"
 
+    # ★ v2.11.92：**审计出来的"纯文案常量"改成可测** ✓（评审："测的是能力存在、不是被执行"）
+    _md = os.path.join(ROOT, "md")
+    out["has_debt_docs"] = all(
+        os.path.exists(os.path.join(_md, f))
+        for f in ("技术债.md", "踩坑库.md", "api_index.md", "数据口径.md")
+    )
+    out["has_contrib_docs"] = (
+        os.path.exists(os.path.join(ROOT, "CONTRIBUTING.md"))
+        and os.path.isdir(os.path.join(ROOT, ".github", "PULL_REQUEST_TEMPLATE"))
+        or os.path.exists(os.path.join(ROOT, ".github", "pull_request_template.md"))
+    ) and os.path.exists(os.path.join(ROOT, ".github", "CODEOWNERS"))
+    _ci = read(os.path.join(ROOT, ".github", "workflows", "ci.yml"))
+    out["ci_hardened"] = (
+        "concurrency:" in _ci
+        and ("actions/cache" in _ci or "cache: npm" in _ci or "cache: pip" in _ci or "cache-dependency-path" in _ci)
+        and ("upload-artifact" in _ci or "actions/upload-artifact" in _ci)
+    )
+    _core = read(os.path.join(BE, "app", "engine", "qlib_engine.py")) + read(
+        os.path.join(BE, "app", "services", "cache.py")
+        if os.path.exists(os.path.join(BE, "app", "services", "cache.py"))
+        else os.path.join(BE, "app", "factors", "panel_expr.py")
+    )
+    out["has_cache_layers"] = ("LRU" in _core or "lru_cache" in _core or "OrderedDict" in _core
+                               or "maxsize" in _core)
+
     # ★ v2.11.56：**实测** ruff 启用了多少条规则 —— 原来这个数写在 `score_baseline.json` 里 ✗，
     #   改了 `select` 却忘了改基线 ⇒ 分数不动 ✓（"数字靠人维护"必然漂 ✗）。现在从配置里数 ✓。
     sel = re.search(r"^select\s*=\s*\[(.+?)\]", read(os.path.join(BE, "pyproject.toml")), re.M | re.S)
