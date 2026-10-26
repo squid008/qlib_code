@@ -19,26 +19,26 @@
 # 导出方式（下次同步时重跑 ✓）：
 #   python -m pip list --format=freeze | findstr /R "^fastapi== ^pandas=="    ← 只挑本清单涉及的 ✓
 
-Cython==3.2.9
-fastapi==0.141.1
+Cython==3.3.0
+fastapi==0.161.1
 h5py==3.16.0
 joblib==1.6.0
 lightgbm==4.7.0
-matplotlib==3.10.9
+matplotlib==3.11.2
 mypy==2.4.0
-numpy==2.2.6
+numpy==2.5.4
 openpyxl==3.1.5
 pandas==2.3.3
 pyarrow==25.0.1
-pydantic==2.13.4
-pydantic-settings==2.15.0
+pydantic==2.14.1
+pydantic-settings==2.16.1
 pytest==9.1.1
 pytest-cov==7.1.0
 PyYAML==6.0.3
-ruff==0.16.6
+ruff==0.17.2
 # ★ v2.11.27：SAST（bandit，技术债"无 SAST"清偿 ✓）
 bandit==1.9.4
-scipy==1.15.3
-tqdm==4.70.0
-uvicorn==0.52.4
+scipy==1.18.1
+tqdm==4.70.1
+uvicorn==0.54.0
 xlrd==2.0.2
