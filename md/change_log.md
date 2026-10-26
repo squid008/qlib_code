@@ -24,6 +24,45 @@
 
 ---
 
+## [2.11.98] - 2026-10-26
+
+### Chore（**75 封 dependabot 邮件**：一次周一触发的连锁反应）
+
+#### 现场（实测）
+```
+gh pr list --state open  ⇒ 3 个，全部由 dependabot 在 2026-10-26T04:38 创建
+  #24  scipy    1.15.3 → 1.18.1   (backend)
+  #25  postcss  8.5.26 → 8.5.31   (frontend)
+  #26  pydantic 2.13.4 → 2.14.1   (backend)
+```
+
+#### 为什么"一堆"（三件事叠加，缺一不可）
+| # | 原因 | 结果 |
+|---|---|---|
+| ① | `schedule: weekly + day: monday` | **周一集中触发**，三个 ecosystem 同时开 PR |
+| ② | `open-pull-requests-limit: 2` × 3 个 ecosystem | 最多 **6 个 PR** |
+| ③ | `.github/CODEOWNERS` 里 `*  @squid008` | **每个 PR 都自动请求 review**，而每个 PR 还会发「开PR / 请求review / 打标签×2 / 评论」等**好几条事件** ⇒ 3 个 PR 就是几十封 ✗ |
+
+#### 修（**安静优先**，都在 `.github/dependabot.yml`）
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 频率 | `weekly` + `day: monday` | **`monthly`** ✓ |
+| PR 数量 | 每个依赖一个 PR，上限 2 | **`groups`：minor+patch 合成 1 个 PR** + `limit: 1` ✓ |
+| rebase | 默认（bot 会反复 rebase ⇒ 更多"已更新"事件）| **`rebase-strategy: disabled`** ✓ |
+| major | 已忽略 ✓ | 保持忽略 ✓ |
+
+⇒ 同一批依赖从「3 个 PR / 几十封邮件」变成「**每 ecosystem 每月 1 个 PR**」✓。
+
+#### 顺手关掉那 3 个 PR（附理由）
+⚠ 本项目 `backend/constraints.txt` 是**全 `==` 锁定** ✓，而 dependabot **只改 `requirements.txt`** ✗
+⇒ 即使合了，本地/CI 装的还是旧版本（**"升了等于没升"**✗）。
+⇒ 已 `gh pr close` 三个并留说明：依赖升级**人工一起做**（改 `requirements.txt` + `constraints.txt` + 跑引擎指纹 ✓）。
+
+#### 还能更静音的两处（**需要你在 GitHub 设置里点**，我没法代替）
+1. **Settings → Notifications**：Watching 调成「**Participating and @mentions**」✓（否则仓库里任何事件都会发信）；
+2. 或**彻底关掉自动升级**：删掉 `dependabot.yml`（改为人工季度升级 ✓）——
+   本项目 `constraints.txt` 全锁定、依赖面窄，这么选也完全合理 ✓。
+
 ## [2.11.97] - 2026-10-26
 
 ### Docs（**收尾**：614 行函数「不拆」，并把它记成**有据可查的债**）

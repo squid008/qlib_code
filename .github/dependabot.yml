@@ -1,21 +1,31 @@
-# 自动依赖升级（★ v2.10.51 引入；★ v2.10.52 **收紧** ✗→✓）
+# 自动依赖升级（★ v2.10.51 引入；v2.10.52 收紧；★★ v2.11.98 **降噪**）
 #
 # ## v2.10.52 为什么收紧（真实教训 ✓）
+# 首次启用后 dependabot 一次开了 14 个 PR，大半是 major：
+#   recharts 2.15 → 3.10 ｜ typescript 5.9 → 7.0 ｜ vite 5.4 → 8.3 ｜ actions/checkout 4 → 7
+# ⇒ 这些 PR 的 CI 几乎全红 ⇒ 邮件一堆、红灯一片、还把"main 是绿的"这个信号污染掉 ✗。
 #
-# 首次启用后 dependabot **一次开了 14 个 PR** ✗ —— 因为"首次扫描"会把**所有**落后版本
-# 一次性提上来 ✓，其中大半是 **major 跳跃**：
-#   recharts 2.15 → **3.10** ｜ typescript 5.9 → **7.0** ｜ vite 5.4 → **8.3**
-#   numpy 2.2 → 2.5 ｜ actions/checkout 4 → **7**
-# ⇒ 这些 PR 的 CI **几乎全红** ✗（major 基本都要改代码才能适配 ✓），
-#   结果是：**邮件一堆、红灯一片、还挡住"main 是绿的"这个信号** ✗。
+# ## ★★ v2.11.98 为什么再降噪（2026-10-26 的教训 ✓）
+# 用户收到 **75 封 dependabot 邮件**。三条原因叠加：
+#   ① `schedule.interval: weekly` + `day: monday` ⇒ **周一集中触发**，三个 ecosystem 同时开 PR；
+#   ② `open-pull-requests-limit: 2` × 3 个 ecosystem ⇒ 最多 6 个 PR；
+#   ③ `.github/CODEOWNERS` 里 `*  @squid008` ⇒ **每个 PR 都自动请求 review**，
+#      而每个 PR 还会发「开PR / 请求review / 打标签×2 / 评论」等好几条事件 ✓
+#      ⇒ 3 个 PR 就能变成几十封邮件 ✓。
 #
-# ⇒ 现在的原则 ✓：
-#   · **只自动提 patch / minor** ✓（这类升级绝大多数是安全的 ✓）；
-#   · **major 一律人工评估** ✓（禁止自动开 PR ✗）——
-#     major 往往要连带改代码 + 改 `constraints.txt` + 跑引擎指纹 ✓，不该由一个 bot 触发 ✗；
-#   · 每个 ecosystem 的 PR **上限 2 个** ✓（不许多开 ✗）；
-#   · `cooldown`：patch 也等 3 天 ✓ —— 刚发布的版本经常几小时内被回滚 ✓，
-#     让上游先踩一遍 ✓（这是我们能白拿的稳定性 ✓）。
+# ⇒ 现在（**安静优先**）：
+#   · **`groups`**：把 minor+patch **合进同一个 PR** ✓（3 个 PR → **1 个 PR** ✓）；
+#   · `open-pull-requests-limit: 1` ✓（配合 groups，一个 ecosystem 同时只挂 1 个 ✓）；
+#   · `interval: monthly` ✓（不再每周一固定轰炸；要更勤可以人工触发 ✓）；
+#   · `rebase-strategy: disabled` ✓（避免 bot 反复 rebase 产生"已更新"事件 ✓）；
+#   · **major 一律不自动提** ✓（要连带改代码 + 改 `constraints.txt` + 跑引擎指纹 ✓）。
+#
+# ⚠ 若要**彻底静音**：GitHub → Settings → Notifications 里把 Watching 调成
+#   「Participating and @mentions」，或直接把本文件删掉（改为人工季度升级）✓。
+#
+# ⚠ 本项目的特殊性：`backend/constraints.txt` 是**全 `==` 锁定** ✓
+#   ⇒ dependabot 只会动 `requirements.txt` ✗ ⇒ **合 PR 前必须人工补 constraints** ✓，
+#   否则本地/CI 装的还是旧版本 ⇒ "升了等于没升" ✗。
 
 version: 2
 
@@ -24,16 +34,19 @@ updates:
   - package-ecosystem: pip
     directory: /backend
     schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 2
+      interval: monthly
+    open-pull-requests-limit: 1
+    rebase-strategy: disabled
     labels:
       - dependencies
       - backend
     commit-message:
       prefix: "chore(deps)"
-    # ⚠ 本项目用 `constraints.txt`（全 `==`）锁定精确版本 ✓
-    #   ⇒ dependabot 大概率**只动 `requirements.txt`** ✗ ⇒ 合之前人工补 `constraints.txt` ✓
+    # ★ 一个 PR 收全部 minor+patch ✓（原来是每个依赖一个 PR ✗）
+    groups:
+      backend-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
@@ -43,14 +56,18 @@ updates:
   - package-ecosystem: npm
     directory: /frontend
     schedule:
-      interval: weekly
-      day: monday
-    open-pull-requests-limit: 2
+      interval: monthly
+    open-pull-requests-limit: 1
+    rebase-strategy: disabled
     labels:
       - dependencies
       - frontend
     commit-message:
       prefix: "chore(deps)"
+    groups:
+      frontend-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     cooldown:
       default-days: 3
     ignore:
@@ -68,12 +85,17 @@ updates:
     directory: /
     schedule:
       interval: monthly
-    open-pull-requests-limit: 2
+    open-pull-requests-limit: 1
+    rebase-strategy: disabled
     labels:
       - dependencies
       - ci
     commit-message:
       prefix: "chore(ci)"
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     ignore:
       # action 的 major 往往是"v4 → v7"这种跨代 ✓（如 checkout 4→7）⇒ 人工评估 ✓
       - dependency-name: "*"
