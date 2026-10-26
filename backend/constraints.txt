@@ -38,7 +38,7 @@ PyYAML==6.0.3
 ruff==0.16.6
 # ★ v2.11.27：SAST（bandit，技术债"无 SAST"清偿 ✓）
 bandit==1.9.4
-scipy==1.15.3
+scipy==1.18.1
 tqdm==4.70.0
 uvicorn==0.52.4
 xlrd==2.0.2
