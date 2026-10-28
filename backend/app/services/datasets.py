@@ -70,6 +70,17 @@ _ORDER = ["cn_data2", "cn_data", "cn_data3"]               # 默认优先级：�
 MARKER_NAME = ".dataset.json"
 KNOWN_CONVENTIONS = {"tushare", "qlib", "ricequant"}
 
+#: ★★ v2.11.99：**结构 / 索引字段**，不参与"与基准字段比对" ✗→✓（2026-10-28 实测）
+#:
+#: 为什么要有这个：qlib 落盘时**每只票都会写 `date.day.bin`** ✓，而 `.dataset.json` 的
+#: `fields_baseline` 是"**因子字段**清单"、**从不登记 `date`** ✓
+#: ⇒ 不排除的话，**每个数据集都会固定报「多 1 个（如 date）」**✗✗
+#:   （实测 cn_data / cn_data2 / cn_data3 三个全中：baseline 111/121/10 个，**都没有 date** ✓）。
+#:
+#: 这类字段是"坐标/索引"，既不该算"多"、也不该算"缺" ✓ —— 用户看到的应该是
+#: 「字段与基准一致（121 个）」（`cn_data2` 实际 122 个 − date = 121 ✓）。
+_STRUCT_FIELDS = frozenset({"date"})
+
 
 def dataset_dir(name: str) -> Path:
     """数据集目录 ✓（注册表没登记的 `cn_dataN` 也支持 ✓ —— 同事挂自己的数据集用 ✓）。"""
@@ -250,19 +261,22 @@ def probe(name: str, use_cache: bool = True) -> dict:
     base = mk.get("fields_baseline")
     if isinstance(base, list) and base:
         base_set = {str(x) for x in base}
-        extra = sorted(union - base_set) if info["exists"] else []
-        miss = sorted(base_set - union) if info["exists"] else []
+        # ★★ v2.11.99：**先剔掉结构字段再比** ✗→✓（见 `_STRUCT_FIELDS` 上方那段）
+        union_cmp = union - _STRUCT_FIELDS
+        base_cmp = base_set - _STRUCT_FIELDS
+        extra = sorted(union_cmp - base_cmp) if info["exists"] else []
+        miss = sorted(base_cmp - union_cmp) if info["exists"] else []
         info["fields_extra"] = extra[:60]
         info["fields_extra_count"] = len(extra)
         info["fields_missing"] = miss[:60]
         info["fields_missing_count"] = len(miss)
-        info["baseline_count"] = len(base_set)
+        info["baseline_count"] = len(base_cmp)
         if extra or miss:
             info["field_note"] = ("与基准字段不一致（仅提示，不影响使用）：多 %d 个%s、缺 %d 个%s"
                                   % (len(extra), ("（如 " + "、".join(extra[:3]) + "）") if extra else "",
                                      len(miss), ("（如 " + "、".join(miss[:3]) + "）") if miss else ""))
         else:
-            info["field_note"] = "字段与基准一致（%d 个）" % len(base_set)
+            info["field_note"] = "字段与基准一致（%d 个）" % len(base_cmp)
     _PROBE_CACHE[name] = (time.time(), mt, dict(info))
     return info
 
