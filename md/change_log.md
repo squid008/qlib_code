@@ -24,6 +24,56 @@
 
 ---
 
+## [2.14.0] - 2026-11-01
+
+### Chore（再升一档：vite 8 ／ vitest 5 ／ plugin-react 6 —— **npm audit 全量归零**）
+
+用户说"继续"，把上一轮剩下的 **2 条 critical** 也清掉（它们要 `vitest 5.0.5` 才修得掉 ✓）。
+
+#### 升级与兼容链（先查 peer 再动手 ✓）
+```
+vitest 5.0.5      peers: vite ^6.4.0 || ^7 || ^8      ✓
+plugin-react 6.1.2 peers: vite ^8.0.0                 ✓（vite 8.3.5 ✓）
+coverage-v8 5.0.5 （必须与 vitest 同版本 ✓）
+```
+
+#### 结果：**告警 16 → 0**
+```
+npm audit --omit=dev --audit-level=high  ⇒ found 0 vulnerabilities
+npm audit（含 dev，全量）                ⇒ {critical:0, high:0, moderate:0, low:0, total:0}  ✓✓
+```
+→ 上轮 7 条（2 critical）**全部清零** ✓ —— 这条路走通了（不是"等索引"，是 npm 侧能升 ✓）。
+
+#### 测试：**vitest 5 上全量通过**
+```
+Test Files  51 passed (51)   ｜   Tests  394 passed | 1 skipped (395)
+tsc --noEmit  ⇒ 0 错误（⚠ 中途报过一次 TS2688 `estree`，是**安装中途的瞬时状态**，
+                       装完重跑就好 ✓ —— 别当成真错误 ✗）
+```
+
+#### ⚠⚠ 覆盖率口径**又变了，而且这次更宽松**（务必看数）
+| | vitest 3（上轮）| vitest 5（本轮）|
+|---|---|---|
+| 统计条数 | 10019 | **3604** |
+| 命中 | 6727 | 2464 |
+| 百分比 | 67.14% | **68.37%** |
+| 文件数 | 50 | 50 |
+
+分母从 **10019 掉到 3604**（−64%）⇒ `coverage-v8 5` **不再把"没有被任何测试 import 的文件"算进分母** ✗
+⇒ 这个 68.37% **与旧值不可比**，而且**偏宽松**（未 import 的大组件被排除在外 ✓ ⇒ 分数"看起来变好"但不是真的 ✗）。
+
+⇒ 基线 `fe_cov_measured` 按新口径设 **68.3**（向下取整 ✓）；
+前端档位仍是 **7 分**（68.3 < 70）⇒ **测试维仍 8.8** ✓（没有因为口径变宽松而虚高 ✓）。
+⚠ 要恢复"旧口径那种严格性"，得在 `vitest.config.ts` 里把**所有 `src/**` 文件**显式纳入（vitest 5 的对应开关待查 ✗）——
+**列为后续** ✓（本轮的取舍是：**先把 16 条告警清到 0** ✓，覆盖率口径单独一轮处理 ✓）。
+
+#### 坑（本机特有）
+1. `npm install` 撞 **`EBUSY: esbuild.exe`** ✗ —— 之前那个 **vite dev server 还占着**它 ⇒
+   先停 5173 的进程 + 杀掉 6 个残留 `vitest/vite` 进程再装 ✓；
+2. `npm install -D ...` 那次**只写了 node_modules、没写回 package.json** ✗ ⇒
+   显式改 `package.json` 的 devDependencies 再 `npm install` 才对 ✓；
+3. 端口/进程清理后 **dev server 需要手动重启**（本轮结束时已重开 ✓）。
+
 ## [2.13.4] - 2026-11-01
 
 ### Chore（第 3 步 Batch C：`ruff 0.16.6 → 0.17.3`，**零违规**）
