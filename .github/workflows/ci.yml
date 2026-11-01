@@ -133,14 +133,14 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: 安装依赖
-        # ★★ v2.9.19（2026-10-18 ✓）：`npm ci` → `npm install --legacy-peer-deps` ✗→✓
-        #   为什么必须改：CI 从 2.9.17 起**一直是红的** ✗ —— 报的是 npm 的**用法错误**
-        #   （`npm error Usage: npm ci` + 一大串 options ✓），真因是：
-        #     · 本仓库的 lockfile 是带 `--legacy-peer-deps` 生成的 ✓
-        #       （`@testing-library/react@16` 对 React 有 peer 声明 ✗，不加就 ERESOLVE ✓）；
-        #     · 而 `npm ci` 会**重新校验 peer** ✗ ⇒ 直接 `EUSAGE` 退出 ✓。
-        #   代价：不再"严格复现 lockfile"✗ —— 但换来确定性（与本地同一套 flag ✓）✓。
-        run: npm install --legacy-peer-deps --no-audit --no-fund
+        # ★★★ v2.13.0（2026-11-01 ✓）：`npm install --legacy-peer-deps` → **`npm ci`** ✗→✓
+        #   历史：v2.9.19 曾因 `@testing-library/react@16` 对 React 的 peer 声明而 ERESOLVE ✗，
+        #         只能退成 `npm install --legacy-peer-deps`（**放弃了 lockfile 的严格复现** ✗）。
+        #   现在：升到 `vite@6.4.5` + `vitest@3.2.7` + `@vitejs/plugin-react@5.2.0` 后
+        #         **peer 自洽** ✓ ⇒ 本地 `npm ci --dry-run` **exit 0** ✓ ⇒ 换回 `npm ci` ✓：
+        #         · **严格按 lockfile 装**（CI 与本地一致 ✓）；
+        #         · 不再需要 `--legacy-peer-deps`（评分里"依赖不自洽"那条也随之消失 ✓）。
+        run: npm ci --no-audit --no-fund
 
       - name: TypeScript 类型检查
         run: npx tsc --noEmit -p tsconfig.json
@@ -234,8 +234,8 @@ jobs:
 
       - name: 安装前端依赖
         working-directory: frontend
-        # 与 frontend job 同一套 flag ✓（否则 peer 依赖会让 lockfile 与安装结果不一致 ✗）
-        run: npm install --legacy-peer-deps --no-audit --no-fund
+        # 与 frontend job 同一套命令 ✓（★ v2.13.0：peer 自洽后统一用 `npm ci`，严格复现 lockfile ✓）
+        run: npm ci --no-audit --no-fund
 
       - name: 安装 Chromium（仅 chromium ✓，不下 firefox/webkit ✗）
         working-directory: frontend

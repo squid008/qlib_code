@@ -24,6 +24,66 @@
 
 ---
 
+## [2.13.0] - 2026-11-01
+
+### Chore（工具链大版本升级：vite 5→6 ／ vitest 2→3 ／ CI 改回 `npm ci`）
+
+用户要求"按顺序都做"，第 2 步是把 16 条 Dependabot 告警里能修的修掉。
+
+#### 升级内容
+| 包 | before | after |
+|---|---|---|
+| `vite` | 5.4.21 | **6.4.5**（告警要求 ≥6.4.4 ✓）|
+| `vitest` | 2.1.9 | **3.2.7**（≥3.2.6 ✓）|
+| `@vitest/coverage-v8` | 2.1.9 | **3.2.7**（必须与 vitest 同版本 ✓）|
+| `@vitejs/plugin-react` | 4.x | **5.2.0** |
+
+⚠ 坑：`@vitejs/plugin-react@latest`(6.1.2) 的 peer 是 **`vite ^8`** ✗ ⇒ 直接 ERESOLVE。
+必须用 **plugin-react@5**（配 vite 6）✓。
+
+#### 告警变化（16 → 7）
+| 级别 | before | after |
+|---|---|---|
+| critical | 3 | **2** |
+| high | 1 | **0** ✓ |
+| medium | 11 | **5** |
+| low | 1 | **0** ✓ |
+
+**剩下的 7 条只能靠 `vitest 5.0.5` 才修得掉**（`npm audit`：`fix={name:vitest, version:5.0.5,
+isSemVerMajor:true}`，受影响范围 `0.0.95 - 4.1.10` ✗）⇒ 那是一次 **vitest 5 + vite 8 + plugin-react 6**
+的连锁大升级，**本轮不做** ✓（已记进技术债 P2-#24）。
+
+#### ⭐ `npm ci` 回来了（去掉 `--legacy-peer-deps`）
+升到 vite6/vitest3/plugin-react5 后 **peer 自洽** ✓，本地 `npm ci --dry-run` **exit 0** ✓
+⇒ CI 两处安装命令从 `npm install --legacy-peer-deps` 改回 **`npm ci`**：
+- **严格按 lockfile 装** ✓（CI 与本地一致 ✓）；
+- 评分里"依赖不自洽（legacy-peer-deps）"那条随之消失 ✓。
+
+#### ⚠ 覆盖率口径变了（**不是测试变少**，有证据）
+| | 旧（vitest 2）| 新（vitest 3）|
+|---|---|---|
+| 统计条数 | 9797 | **10019** |
+| 命中 | 6927 | **6727** |
+| 百分比 | 70.71% | **67.14%** |
+| 用例 | 394 passed / 1 skipped | **394 passed / 1 skipped**（同一批 ✓）|
+| 文件数 | 50 | 50（**没有任何文件增减** ✓）|
+
+⇒ v8 覆盖率提供程序（v8-to-istanbul）随 vitest 3 升级，**语句映射变了** ✓。
+`scripts/score_baseline.json` 的 `fe_cov_measured` 因此从 **70.7 → 67.1**（向下取整 ✓）——
+**这是一次口径下调，不是"测试变少"** ✓（同批用例全过 ✓、文件数未变 ✓）。
+代价：前端覆盖档位 **8 → 7** ⇒ 测试维 **9.0 → 8.8**（要回到 70% 需在新口径下再补 **+280 语句** ✓，约 2 轮）。
+
+#### ⚠ 本地 `npm ci` 还有个坑（本机特有，CI 没有）
+本机 **safe-delete 守卫**拦 `npm ci`（要删 node_modules 里 **1148** 个文件 > 阈值 500）✗ ⇒
+`npm ci` 在本地**永远失败**，而且失败后 `node_modules/.bin` 被清 ⇒ `npx vitest` 报"不是内部或外部命令" ✗
+⇒ 立刻用 `npm install --no-audit --no-fund` 恢复 ✓（包没坏、只是 shim 被删 ✓）。
+**CI 没这个守卫** ✓，所以 `npm ci` 在 CI 上是好的 ✓（`npm ci --dry-run` 已验证 ✓）。
+
+#### 实测
+`tsc --noEmit` **0 错误** ｜ `vitest` **51 文件 / 394 passed / 1 skipped** ｜
+`npm audit --omit=dev` **0 vulnerabilities** ｜ `npm audit`（全量）**7 条**（原 16 ✓）｜
+覆盖采集在 vitest 3 下**正常产出 json** ✓（`_fc10`）
+
 ## [2.12.4] - 2026-11-01
 
 ### Docs + Test（第 1 步：`P2-#21 成交行序` —— **读代码后发现它早就修好了**，是我误判）
