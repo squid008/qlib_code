@@ -1,15 +1,21 @@
-# 代码所有权（★ v2.10.51）
+# 代码所有权（★ v2.10.51 引入；★★ v2.11.101 **删掉默认规则**）
 #
 # 目的：让"谁该看这个 PR"在 GitHub 上**自动出现** ✓ ——
 #   否则一张改到引擎口径的 PR 可能被当成"随便看看"就合了 ✗。
 #
-# ⚠ 单人仓库也值得有这文件 ✓：将来加协作者时，规则已经在位 ✓；
-#   而且 GitHub 会在 PR 页面自动请求对应 owner 的 review ✓。
+# ## v2.11.101 为什么删掉 `*  @squid008` 与几条依赖文件规则
+# 单人对仓库时，`*` 的实际效果是：**每个 PR 都自动请求 owner review** ✗ ——
+# 于是 dependabot 每月开 1 个依赖 PR，就额外产生一条"review requested"事件 ✓，
+# 叠加 `opened / label×2 / comment` ⇒ **1 个 PR 变成 5 封邮件** ✗（2026-11-01 实测）。
+#
+# ⇒ 现在只保留**真正需要过目**的路径（引擎/因子/信号/导出/闸门）✓：
+#   · 依赖文件（`requirements.txt` / `constraints.txt` / `pyproject.toml` /
+#     `vitest.config.ts`）**不再登记** ⇒ dependabot PR 不再请求 review ✓；
+#   · 这些文件依然靠 **CI + 数值指纹**把关 ✓（比"自动请求 review"更实在 ✓）。
+#
+# ⚠ 将来加协作者时：**再把 `*` 规则加回来** ✓（那时 review 才有实际意义 ✓）。
 #
 # 语法：`路径模式  @用户名`（后面的规则覆盖前面的 ✓）
-
-# 默认：全部归仓库所有者
-*                                   @squid008
 
 # 引擎与口径（改错会静默改坏净值 / 成本 / 回撤 ⇒ 必须 owner 过目）
 /backend/app/engine/                @squid008
@@ -22,7 +28,3 @@
 
 # 闸门本身（改这里等于改"谁能合代码"）
 /.github/workflows/                 @squid008
-/backend/pyproject.toml             @squid008
-/backend/constraints.txt            @squid008
-/backend/requirements.txt           @squid008
-/frontend/vitest.config.ts          @squid008

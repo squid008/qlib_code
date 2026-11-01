@@ -111,8 +111,16 @@ class TestReadTrainFeatureNames:
         (d / "model_artifacts.json").write_text(json.dumps({"feature_names": ["x"]}), encoding="utf-8")
         assert A._read_train_feature_names("t2") == ["x"]
 
-    def test_prefers_last_glob_match(self, tmp_path, monkeypatch):
-        """同一个 task_id 有多份 ⇒ 取 glob 的**最后**一个 ✓（与 `_find_artifact_base` 同口径 ✓）。"""
+    def test_prefers_latest_by_name(self, tmp_path, monkeypatch):
+        """同一个 task_id 有多份 ⇒ 取**名字排序后最后一个**（= 最新一份）✓。
+
+        ⚠⚠ 这条曾经让我以为是"实现错了"，其实是**实现真的不确定** ✗→✓（v2.11.101）：
+        · 原来写的是 `dirs[-1]`，而 `glob` **不保证顺序** ⇒ Windows 上恰好排好、
+          Linux 上不是 ⇒ **本地绿 / CI 红** ✓（2026-11-01 真发生 ✓）；
+        · 而且这**不只是测试问题**：同一 task 重跑会留旧目录 ⇒ 随机取一份 ⇒
+          复用模型时可能拿**旧的特征顺序**去比 ⇒ "明明一致却报不符"或反之放过 ✗。
+        ⇒ 已把两处 `dirs[-1]` 都改成 `sorted(dirs)[-1]` ✓（目录名带日期前缀 ⇒ 排序即时间序 ✓）。
+        """
         monkeypatch.setattr("app.config.WORK_DIR", str(tmp_path))
         _mk(tmp_path, payload={"feature_names": ["old"]})
         d2 = tmp_path / "artifacts" / "20260102_t1"

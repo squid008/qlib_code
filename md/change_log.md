@@ -24,6 +24,48 @@
 
 ---
 
+## [2.11.101] - 2026-11-01
+
+### Fix（**main 红了一天** —— v2.11.100 我没等 CI 就收尾 ✗，两条真因都不是"依赖升级"）
+
+#### ① 后端：`glob` 顺序不确定 ⇒ **本地绿、CI 红**（而且这是**真缺陷**，不只是测试问题）
+```
+FAILED tests/test_artifacts_feature_names.py::TestReadTrainFeatureNames::test_prefers_last_glob_match
+  assert A._read_train_feature_names("t1") == ["new"]   →  实得 ['old']
+```
+真因：`_read_train_feature_names` 用 `dirs[-1]` 取"最新一份"，而 **`glob` 不保证顺序** ✗
+⇒ Windows 上恰好排好（本地一直绿 ✓）、Linux 上不是（CI 红 ✓）。
+
+⚠ **这不只是测试问题**：同一 `task_id` 重跑/断点续跑会**留旧目录** ⇒ 随机取一份 ⇒
+**复用模型时会拿旧的特征顺序去比** ⇒ "明明一致却报顺序不符"✗，或反之**放过**✗。
+⇒ 两处（`_read_train_feature_names` 与另一处定位 artifacts 目录）都改成
+**`sorted(dirs)[-1]`** ✓（目录名带日期前缀 `20260102_t1` ⇒ 排序即时间序 ✓）。
+
+测试也同步改名 `test_prefers_latest_by_name` 并把这段教训写进 docstring ✓。
+
+#### ② 前端：`follow-redirects` **新公告**（不是我们的改动引起）
+```
+npm audit --omit=dev --audit-level=high
+  follow-redirects  1.16.0 - 1.16.1   Severity: high
+```
+它是 **axios 的传递依赖**（`axios@1.20.0` ⇒ `follow-redirects@1.16.1`）。
+⇒ `package.json` 加 **`overrides: { "follow-redirects": "^1.16.2" }`** ✓；
+实测装上 **1.16.2**、`npm audit` ⇒ **found 0 vulnerabilities** ✓（exit 0）。
+
+#### ③ 顺带：`CODEOWNERS` 删掉默认规则（用户要求，治邮件的第二条）
+- 删 `*  @squid008`，并删 dependabot 会碰的四条（`requirements.txt` / `constraints.txt` /
+  `pyproject.toml` / `vitest.config.ts`）✓ ⇒ **依赖 PR 不再请求 review** ✓；
+- 保留引擎/因子/信号/导出/工作流（这些改错会静默坏口径 ✓）；
+- 文件里写明"**将来加协作者时把 `*` 加回来**"✓。
+
+#### ⚠ 我该反省的
+**v2.11.100 发完没等 CI** ⇒ main 红了一整天 ✗（同类错误第 2 次：v2.11.84 也是）。
+⇒ 以后"发版"必须包含 **等 CI 绿** 这一步，不能只报 `push = True` ✓。
+
+#### 实测
+`audit exit 0 / 0 vulnerabilities` ｜ `tsc --noEmit exit 0` ｜ `biome 0` ｜
+`pytest tests/test_artifacts_*.py` **53 passed** ｜ `ruff 0`
+
 ## [2.11.100] - 2026-11-01
 
 ### Chore（又收到 5 封 dependabot 邮件 —— 但**降噪生效了**，这次只有 1 个 PR）

@@ -277,7 +277,14 @@ def _read_train_feature_names(task_id: str, seg_no=None) -> Optional[list]:
         dirs = glob.glob(os.path.join(artifacts_root, task_id))
     if not dirs:
         return None
-    base = dirs[-1]
+    # ★★ v2.11.101：**必须排序后取最后** ✗→✓（2026-11-01 CI 红了才发现）
+    #   目录名带日期前缀（`20260102_t1` ✓）⇒ 排序后最后一个 = **最新一份** ✓。
+    #   原来直接 `dirs[-1]` —— `glob` **不保证顺序** ✗ ⇒ 同一 task_id 有多份产物时
+    #   （重跑/断点续跑会留旧目录）**可能取到旧的那份** ✓：
+    #     · 复用校验会拿**旧的特征顺序**去比 ⇒ 明明一致却报"顺序不符"✗，或反之放过 ✗；
+    #     · 而且 Windows 与 Linux 返回顺序不同 ⇒ 测试**本地绿、CI 红** ✓
+    #       （`test_artifacts_feature_names.py::test_prefers_last_glob_match` 就是这么红的 ✓）。
+    base = sorted(dirs)[-1]
     candidates = []
     if seg_no is not None:
         candidates.append(os.path.join(base, "segment_%s" % seg_no, "model_artifacts.json"))
@@ -494,7 +501,9 @@ def _load_model_object(task_id: str, model_name: str, seg_no=None):
         dirs = glob.glob(os.path.join(artifacts_root, task_id))
     if not dirs:
         return None
-    base = dirs[-1]
+    # ★★ v2.11.101：**与 `_read_train_feature_names` 同口径** —— 排序取最后 = 最新一份 ✓
+    #   （`glob` 顺序不确定 ✗；多份产物时随机取一份 ⇒ Windows/Linux 行为不同 ✗）
+    base = sorted(dirs)[-1]
 
     # 若指定段号，优先加载段模型；否则加载主目录模型
     candidates = []
