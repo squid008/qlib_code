@@ -24,6 +24,38 @@
 
 ---
 
+## [2.12.3] - 2026-11-01
+
+### Docs（Dependabot alerts 开着后**立刻暴露 16 条** —— 全是 dev 依赖，且都要大版本才修）
+
+#### 现场（刚开时查是 0，是索引没建完 ✗ —— 这个坑记一下）
+```
+gh api repos/.../dependabot/alerts?state=open
+  critical 3 ｜ high 1 ｜ medium 11 ｜ low 1     全部 manifest = frontend/package-lock.json
+  vite(8) vitest(2) tinypool(2) @vitest/mocker(2) esbuild(1) minimatch(1)
+```
+
+#### 两个关键判断
+1. **全部是 devDependencies** ⇒ 只用于构建/测试，**不进生产包** ✓
+   ⇒ 这解释了为什么 `npm audit --omit=dev` 一直是 **0 vulnerabilities**（CI 那条闸门的口径 ✓），
+   而 GitHub alerts 看的是**全部**依赖 ✓ —— 两个数字都对，只是口径不同 ✓。
+2. **修复门槛都高于当前版本** ✗ ⇒ **patch-only 修不了**：
+   | 包 | 当前 | 需要 | 跨度 |
+   |---|---|---|---|
+   | `vite` | 5.4.21 | **≥6.4.4** | **major** |
+   | `vitest` | 2.1.9 | **≥3.2.6** | **major** |
+   | `tinypool` | 1.1.1 | ≥2.1.2 | 随 vitest ✓ |
+
+   ⇒ 这正是 `dependabot.yml` 里 **`vitest` 连 minor 都 ignore** 的原因（必须与
+   `@vitest/coverage-v8` 同版本 ✓，且 `vite`→6 要连带 `@vitejs/plugin-react` 与 `vitest.config.ts` ✓）。
+
+#### 记进台账（`md/技术债.md` 的 P2-#24 末尾新增一小节）
+含：告警快照、两条关键判断、"还法"（vite 6.4.4+ / vitest 3.2.6+ / coverage-v8 同版本 /
+plugin-react 同步 + 全量 394 条测试 + 覆盖采集）、成本（1~2 轮、中风险）与状态（未动，等确认）✓。
+
+> **经验**：**刚打开 Dependabot alerts 时 API 会先返回 0** ✗ —— GitHub 要先扫一遍依赖图，
+> 过几分钟才补齐 ✓。别把"刚开就是 0"当成"没有漏洞" ✓。
+
 ## [2.12.2] - 2026-11-01
 
 ### Docs（技术债台账**状态复核**：4 条状态行过期、1 条说得过头）
