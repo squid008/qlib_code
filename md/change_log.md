@@ -24,6 +24,41 @@
 
 ---
 
+## [2.13.2] - 2026-11-01
+
+### Fix（Batch A 红了 → **真因是 dependabot 报了 4 个"索引上不存在"的版本**）
+
+#### 现象
+`v2.13.1` 的 CI 三个 job 全挂在**装依赖**：
+```
+ERROR: Cannot install pydantic-settings>=2.0 because these package versions have conflicting dependencies
+ERROR: Cannot install matplotlib>=3.8 because …
+Additionally, some packages in these conflicts have no matching distributions available
+ERROR: ResolutionImpossible
+```
+
+#### 真因（逐个 `pip index versions` 核实）
+| 包 | dependabot 说的 | 索引上最高 | 结论 |
+|---|---|---|---|
+| `numpy` | 2.5.4 | **2.2.6** | **不存在** ✗ |
+| `scipy` | 1.18.1 | **1.15.3** | **不存在** ✗ |
+| `matplotlib` | 3.11.2 | **3.10.9** | **不存在** ✗ |
+| `pydantic-settings` | 2.16.2 | **2.15.0** | **不存在** ✗ |
+
+⭐ 也就是说：**`#28` 那次 `ResolutionImpossible` 的真因不是"12 个捆一起冲突"** ✗，而是
+**其中 4 个版本在本项目的索引上根本不存在** ✓ —— 我当时的归因错了，已在台账改正 ✓。
+
+#### 修
+- Batch A **只保留真实存在的 4 个**：`Cython 3.3.0` / `pydantic 2.14.1` /
+  `pytest 9.2.0` / `uvicorn 0.54.0` ✓；
+- `matplotlib` / `pydantic-settings` **回滚到当前**（3.10.9 / 2.15.0）✓；
+- 台账 `P2-#24` 新增一节"**升级前必须 `pip index versions` 核实**" + 那张对照表 ✓
+  （并写明**本项目索引落后于 PyPI** ✓）。
+
+#### 教训
+> pip 报 `ResolutionImpossible` + `no matching distributions` 时，**第一嫌疑是"版本不存在"** ✗，
+> 不是"依赖互相冲突" ✓。一句 `pip index versions <pkg>` 就能定性 ✓。
+
 ## [2.13.1] - 2026-11-01
 
 ### Chore（第 3 步：后端依赖 **Batch A** —— 6 个 minor，先挑"不会牵动数值"的）
