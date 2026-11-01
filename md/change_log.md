@@ -24,6 +24,63 @@
 
 ---
 
+## [2.11.100] - 2026-11-01
+
+### Chore（又收到 5 封 dependabot 邮件 —— 但**降噪生效了**，这次只有 1 个 PR）
+
+#### 现场（实测）
+```
+gh pr list --state open   ⇒ 只有 1 个：#28，创建于 2026-11-01T04:39
+    标题：chore(deps): bump the backend-minor-patch group … with 12 updates
+```
+⇒ **v2.11.98 的三项降噪都生效了** ✓：
+`interval: monthly`（每月 1 号跑 ⇒ 正好 11-01）、`groups`（12 个升级合成 **1 个 PR** ✓）、`limit: 1`。
+
+**那 5 封是怎么来的**：来自**同一个 PR 的多条事件** ——
+`opened` → `review requested`（`CODEOWNERS` 里 `*  @squid008` ✓）→ `label ×2`（`dependencies`/`backend`）
+→ dependabot 评论 ≈ 5 条 ✓。⇒ **不是又回到"一堆 PR"** ✓。
+
+#### ⚠ 但这个 PR 合不了（也不是我们代码的问题）
+CI 四个 job **14~19 秒全挂**，日志是：
+```
+ERROR: Cannot install pydantic-settings>=2.16.2 because these package versions have conflicting dependencies
+ERROR: Cannot install matplotlib>=3.11.2 because these package versions have conflicting dependencies
+ERROR: ResolutionImpossible      （另有若干版本 "no matching distributions available for your Python"）
+```
+真因：**分组把互相冲突的升级捆在一起** ✗ —— 12 个里含
+`numpy 2.2.6→2.5.4` / `scipy 1.15.3→1.18.1` / `fastapi 0.141.1→0.162.0` / `matplotlib 3.10.9→3.11.2`
+这类**跨多个 minor** 的，和 `pydantic-settings` 相互约束 ⇒ pip 解不出来 ✓；
+且部分版本**当前 Python 没有 wheel** ✓。
+
+#### 修
+`groups` 里 `update-types` 由 `["minor", "patch"]` 收紧为 **`["patch"]`** ✓（三个 ecosystem 都改）
+⇒ 组内只剩 patch（几乎不会互相冲突 ✓）；**minor 一律人工**（要连带核 `constraints.txt` 交叉约束
++ 跑引擎数值指纹 ✓）。已 `gh pr close 28` 并写明原因 ✓。
+
+#### 待人工升级清单（把 #28 的内容记下来，免得丢信息）
+| 包 | from → to | 备注 |
+|---|---|---|
+| cython | 3.2.9 → 3.3.0 | minor |
+| fastapi | 0.141.1 → 0.162.0 | 跨多个 minor |
+| matplotlib | 3.10.9 → 3.11.2 | 会与 pydantic-settings 约束冲突（本次主因之一）|
+| mypy | 2.4.0 → 2.4.1 | patch |
+| numpy | 2.2.6 → 2.5.4 | **跨 3 个 minor** ⇒ 要跑数值指纹 |
+| pydantic | 2.13.4 → 2.14.1 | minor |
+| pydantic-settings | 2.15.0 → 2.16.2 | 本次冲突主因之一 |
+| pytest | 9.1.1 → 9.2.0 | minor |
+| ruff | 0.16.6 → 0.17.3 | minor（注意新增规则会咬代码）|
+| scipy | 1.15.3 → 1.18.1 | **跨 3 个 minor** ⇒ 要跑数值指纹 |
+| tqdm | 4.70.0 → 4.70.1 | patch |
+| uvicorn | 0.52.4 → 0.54.0 | minor |
+
+> 建议做法：**分批**（每批 3~4 个 + 只动 patch 的先走），每批跑
+> `pytest tests -m "not datareq"` + 三条引擎指纹 + 全量 CI，绿了再下一批 ✓。
+
+#### 想把邮件彻底归零（**在 GitHub 设置里点**，我做不了）
+1. **Settings → Notifications** → Watching 改成「**Participating and @mentions**」✓（根本放大器）；
+2. 或把 `.github/CODEOWNERS` 的 `*  @squid008` 去掉（单人仓库的 review request 没有实际作用 ✓）；
+3. 或直接删 `dependabot.yml`（改人工季度升级 ✓）。
+
 ## [2.11.99] - 2026-10-28
 
 ### Fix（「与基准字段不一致：多 1 个（如 date）」—— **每个数据集都固定报**，是结构字段没排除）

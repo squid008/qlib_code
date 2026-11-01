@@ -17,6 +17,13 @@
 #   · **`groups`**：把 minor+patch **合进同一个 PR** ✓（3 个 PR → **1 个 PR** ✓）；
 #   · `open-pull-requests-limit: 1` ✓（配合 groups，一个 ecosystem 同时只挂 1 个 ✓）；
 #   · `interval: monthly` ✓（不再每周一固定轰炸；要更勤可以人工触发 ✓）；
+#   · ★★ v2.11.100：组内**只收 patch** ✓（2026-11-01 的教训）——
+#     #28 一次捆了 12 个 minor+patch（numpy 2.2→2.5 / scipy 1.15→1.18 /
+#     fastapi 0.141→0.162 / matplotlib 3.10→3.11 …）⇒ pip 直接
+#     `ResolutionImpossible`（pydantic-settings / matplotlib 互相冲突，
+#     且部分版本**没有对应 Python 的 wheel**）✗ 四个 CI job 14 秒全挂 ✓。
+#     ⇒ minor 交给**人工**（要连带看 constraints.txt 交叉约束 ✓）；
+#       组里只留 patch —— 这类几乎不会冲突 ✓。
 #   · `rebase-strategy: disabled` ✓（避免 bot 反复 rebase 产生"已更新"事件 ✓）；
 #   · **major 一律不自动提** ✓（要连带改代码 + 改 `constraints.txt` + 跑引擎指纹 ✓）。
 #
@@ -46,7 +53,7 @@ updates:
     groups:
       backend-minor-patch:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
+        update-types: ["patch"]        # ★ v2.11.100：minor 也人工（见文件头 #28 的教训）
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
@@ -67,7 +74,7 @@ updates:
     groups:
       frontend-minor-patch:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
+        update-types: ["patch"]        # ★ v2.11.100：minor 也人工（见文件头 #28 的教训）
     cooldown:
       default-days: 3
     ignore:
@@ -95,7 +102,7 @@ updates:
     groups:
       actions-minor-patch:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
+        update-types: ["patch"]        # ★ v2.11.100：minor 也人工（见文件头 #28 的教训）
     ignore:
       # action 的 major 往往是"v4 → v7"这种跨代 ✓（如 checkout 4→7）⇒ 人工评估 ✓
       - dependency-name: "*"
