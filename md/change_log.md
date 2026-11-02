@@ -24,6 +24,60 @@
 
 ---
 
+## [2.15.0] - 2026-11-02
+
+### Chore（第三方评审 ④「依赖可复现」—— 实测后：**一半已做、一处指标写错、一处真缺**）
+
+第三方评审把"环境不可复现"列为扣分最集中的第三件事 ✓。我按"先量再动"逐条核，结果分三种：
+
+#### ① 评审说"qlib 随上游 main" —— **已过期** ✓
+CI 早在 v2.11.52 就锁了 commit sha：
+```
+git fetch --depth 1 origin 54355232463878d2eebb91fe0ee5fa7fa1f5976c
+git checkout FETCH_HEAD
+```
+⇒ CI 侧 **qlib 是可复现的** ✓（本地开发环境用 `.pth` 指源码那是**本机便利**，不影响 CI ✓）。
+
+#### ② 他引用的 `be_deps_pinned = 0` —— **这个指标本身写错了** ✗→✓
+```python
+# 原来（scripts/abs_metrics.py）
+deps = [requirements.txt 里的行]
+out["be_deps_pinned"] = len([d for d in deps if "==" in d])   # ← 恒为 0 ✗
+```
+`requirements*.txt` **故意**只写区间（abstract 声明），锁在 `constraints.txt` ✓ ——
+数 abstract 文件里有没有 `==`，等于**量错了文件** ✗（而且这个指标**评分里根本没被用到** ✓）。
+
+⇒ 改成"**直接依赖的 pin 覆盖率**"：
+```
+be_deps = 24 ｜ be_deps_pinned = 24   （覆盖率 100% ✓）
+```
+
+#### ③ 真正缺的：`constraints.txt` **漏了 2 个包**
+`pip-audit` 与 `python-multipart` **没有 pin** ⇒ 同一 commit 在不同时间装出两套环境 ✗
+（正是 `constraints.txt` 头部那段教训）。已补：
+```
+pip-audit==2.10.1
+python-multipart==0.0.32
+```
+⇒ constraints 现在 **24 个 pin，覆盖 100% 直接依赖** ✓。
+
+#### 新增闸门 `tests/test_constraints_complete.py`（4 条）
+| 断言 | 挡什么 |
+|---|---|
+| ⭐⭐ 每个直接依赖都有 `==` | 漏一个 ⇒ 环境不可复现 |
+| ⭐ `constraints` 只许 `pkg==ver` | 有人写回 `>=` ⇒ 前功尽弃 |
+| ⭐ 反向：不许"僵尸 pin" | 锁了没人要的包 ⇒ 让人误判依赖面 |
+| ⭐ 版本号必须像版本号 | 手滑写成 `==latest` 之类 |
+
+#### ⚠ 如实记：**hash 锁没做成**
+`pip-compile --generate-hashes` 要拉每个包的**全部制品**算 hash，本次网络（代理
+`connection broken` 反复重试）跑不完 ⇒ **记为待办** ✓，没假装做了 ✗。
+为什么仍值得做：hash 锁防的是"索引投毒/同版本号内容被替换" ✓（版本锁只挡版本漂移）。
+
+#### 实测
+`tests/test_constraints_complete.py` **4 passed** ｜ `abs_metrics` 复算 `be_deps_pinned=24/24`
+｜ 新增 2 个 pin 后 CI 按 `-c constraints.txt` 装（就是这次 CI 在验证 ✓）
+
 ## [2.14.5] - 2026-11-02
 
 ### Fix（我自己新加的测试**污染了全局状态** ⇒ CI 红；改成子进程探测）

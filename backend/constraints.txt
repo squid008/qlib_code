@@ -16,6 +16,15 @@
 #   · 与 qlib 上游相关的那部分**不在**这里 ✓（qlib 仍按 CI 注释装上游源码 ✓ —— 那是已知的
 #     不可控项 ✓，见 md/开发记录.md 的说明 ✓）。
 #
+# ★★ v2.15.0（2026-11-02）：**完整性**现在由闸门保证 ✓ ——
+#   `backend/tests/test_constraints_complete.py` 会检查
+#   「`requirements.txt` + `requirements-dev.txt` 里**每一个包**都在这里有 `==`」✓
+#   （第三方评审指出 `requirements.txt` 里 `==` 个数为 0 —— 那是**故意的**：
+#     `requirements` 是抽象声明、`constraints` 才是锁 ✓；但**锁必须完整** ✓，
+#     当时漏了 `pip-audit` / `python-multipart` 两个 ✓，已补）。
+#   ⚠ 仍缺 **hash 锁**（`pip-compile --generate-hashes`）：hash 要拉每个包的全部制品，
+#     本次网络（代理重试/connection broken）跑不完 ⇒ **如实记为待办** ✓，不假装做了 ✗。
+#
 # 导出方式（下次同步时重跑 ✓）：
 #   python -m pip list --format=freeze | findstr /R "^fastapi== ^pandas=="    ← 只挑本清单涉及的 ✓
 
@@ -29,9 +38,11 @@ mypy==2.4.1
 numpy==2.2.6
 openpyxl==3.1.5
 pandas==2.3.3
+pip-audit==2.10.1
 pyarrow==25.0.1
 pydantic==2.14.1
 pydantic-settings==2.15.0
+python-multipart==0.0.32
 pytest==9.2.0
 pytest-cov==7.1.0
 PyYAML==6.0.3

@@ -76,7 +76,9 @@ def main():
 
     # ---------- 前端规模 ----------
     fe_files, fe_lines = [], 0
-    for r, d, fs in os.walk(os.path.join(FE, "src")):
+    # ⚠ v2.15.0：`d`（目录名列表）没用到 ⇒ 改 `_d` 消 B007 ✓
+    #   （这是**既存**问题，v2.15.0 把 `scripts/` 也纳入 ruff 扫描后才暴露 ✓）
+    for r, _d, fs in os.walk(os.path.join(FE, "src")):
         if "__tests__" in r:
             continue
         for f in fs:
@@ -129,10 +131,30 @@ def main():
     out["has_arch_doc"] = os.path.isfile(os.path.join(ROOT, "md", "architecture.md"))
 
     # ---------- 依赖 ----------
-    req = read(os.path.join(BE, "requirements.txt"))
-    deps = [ln.strip() for ln in req.splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    out["be_deps"] = len(deps)
-    out["be_deps_pinned"] = len([d for d in deps if "==" in d])
+    # ★★ v2.15.0：**指标写错了** ✗→✓（第三方评审引用 `be_deps_pinned=0`，而它永远是 0 ✗）
+    #   原来数的是 `requirements.txt` 里含 `==` 的行 —— 但那个文件**故意**只写区间 ✓
+    #   （abstract 声明），真正的锁在 `constraints.txt` ⇒ 这个数**恒为 0**，没有信息量 ✗。
+    #   ⇒ 改成"**直接依赖里有多少个在 constraints 里被 pin**" ✓（这才是"锁完整率"）。
+    def _pkgs(path):
+        names = []
+        for ln in read(os.path.join(BE, path)).splitlines():
+            ln = ln.split("#")[0].strip()
+            if not ln:
+                continue
+            m = re.match(r"^([A-Za-z0-9_.\-]+)", ln)
+            if m:
+                names.append(m.group(1).lower().replace("_", "-"))
+        return names
+
+    _pinned = {}
+    for ln in read(os.path.join(BE, "constraints.txt")).splitlines():
+        ln = ln.split("#")[0].strip()
+        m = re.match(r"^([A-Za-z0-9_.\-]+)==(\S+)$", ln)
+        if m:
+            _pinned[m.group(1).lower().replace("_", "-")] = m.group(2)
+    _direct = sorted(set(_pkgs("requirements.txt") + _pkgs("requirements-dev.txt")))
+    out["be_deps"] = len(_direct)
+    out["be_deps_pinned"] = len([p for p in _direct if p in _pinned])
 
     # ---------- 其它 ----------
     out["ci_jobs"] = len(re.findall(r"^  [a-z-]+:\s*$", read(os.path.join(ROOT, ".github", "workflows", "ci.yml")), re.M))
