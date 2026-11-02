@@ -158,9 +158,15 @@ def main():
 
     # ★ v2.11.92：**审计出来的"纯文案常量"改成可测** ✓（评审："测的是能力存在、不是被执行"）
     _md = os.path.join(ROOT, "md")
+    # ⚠ v2.14.3：台账搬到 `md/archive/` ✓ —— **仍然是"四份文档都在"才给分** ✓（没有放松 ✗）
     out["has_debt_docs"] = all(
-        os.path.exists(os.path.join(_md, f))
-        for f in ("技术债.md", "踩坑库.md", "api_index.md", "数据口径.md")
+        os.path.exists(p)
+        for p in (
+            os.path.join(_md, "archive", "技术债-已归档.md"),
+            os.path.join(_md, "踩坑库.md"),
+            os.path.join(_md, "api_index.md"),
+            os.path.join(_md, "数据口径.md"),
+        )
     )
     out["has_contrib_docs"] = (
         os.path.exists(os.path.join(ROOT, "CONTRIBUTING.md"))

@@ -108,7 +108,9 @@ def main() -> int:
     pyproj = read(os.path.join(BACKEND, "pyproject.toml"))
     ci = read(os.path.join(ROOT, ".github", "workflows", "ci.yml"))
     rest = read(os.path.join(ROOT, "scripts", "restart_backend.ps1"))
-    debt = read(os.path.join(ROOT, "md", "技术债.md"))
+    # ★ v2.14.3：台账搬去 `md/archive/`（用户要求从 md 根目录移走 ✓）
+    #   ⚠ **判据一个字没改** ✓ —— 仍然解析「在册 N 条 / 已清偿 N 条」并与表格行数比对 ✓
+    debt = read(os.path.join(ROOT, "md", "archive", "技术债-已归档.md"))
     clog = read(os.path.join(ROOT, "md", "change_log.md"))
     readme = read(os.path.join(ROOT, "README.md"))
     mainpy = read(os.path.join(BACKEND, "app", "main.py"))
