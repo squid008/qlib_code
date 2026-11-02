@@ -140,6 +140,31 @@ POST /api/factors/single-factor-test     routers/factors_single.py
 
 ---
 
+## 7.5 任务状态为什么是**四层**（别再"合并"）
+
+> 2026-11-02（v2.15.2）：第三方评审把这里列为"任务状态 4 套并存" ✗ —— 实测**是四层职责**，
+> 写进文档免得下次又被"看着像重复"合并掉。
+
+| 模块 | 职责 | 有内存态吗 |
+|---|---|---|
+| `services/task_store.py` | **落盘层**：`save/load_all/delete/prune/clear`，按 `(status, progress, ts)` **去重**、坏文件**自愈**、`task_id` 清洗、超大 payload 跳过 | ❌ |
+| `routers/factors_state.py` | **唯一内存源**：`_SFT_TASKS` / `_EST_TASKS` + 7 个锁 + 上限裁剪 + **锁外**落盘 | ✅ |
+| `routers/factors_single_state.py` | **纯结构工厂**（56 行）：`new_task_state()` 只返回 dict（前后端契约的显式化 ✓）| ❌ |
+| `engine/task_manager.py` | **并发闸门**：信号量 + loky 池回收 + `TaskCancelledError` | ❌ |
+
+**证据**：`factors_single._SFT_TASKS is factors_state._SFT_TASKS` ⇒ **True**（同一对象，不是副本）；
+全 `app/` 只有 **2 个**模块级任务 dict（都在 `factors_state.py`）；
+`task_store` 有 **8 条**测试（roundtrip / 不落 DataFrame / 同状态不重写 / 坏文件自愈 /
+running→failed / 超大跳过 / prune / task_id 清洗）。
+
+**为什么不能合并** ✗：
+- 合并 `task_store` 进 `factors_state` ⇒ 落盘与内存态耦在一起，**重启恢复 / 去重 / 自愈**三件事一起变难；
+- 合并 `factors_single_state` 进去 ⇒ 前后端契约不再显式（改键名两边都得看 325 行路由 ✗）；
+- 合并 `task_manager` 进去 ⇒ 并发控制与状态存储耦合，**取消/池回收**要跨模块持锁 ✗。
+
+**护栏**：`backend/tests/test_task_state_single_source.py`（6 条）钉住以上四条边界 ✓ ——
+新增内存态、给工厂接线、往 `task_manager` 塞 dict 都会当场红。
+
 ## 8. 已知架构债（与 `md/archive/技术债-已归档.md` 对应）
 
 | 债 | 现状 | 为什么难 |

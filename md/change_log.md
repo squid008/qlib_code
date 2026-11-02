@@ -24,6 +24,52 @@
 
 ---
 
+## [2.15.2] - 2026-11-02
+
+### Docs + Test（评审 ③「任务状态 4 套并存」—— 实测**不成立**，是四层职责；加护栏防误合并）
+
+#### 先看实测（不是辩，是数）
+| 模块 | 真实职责 | 有内存态吗 |
+|---|---|---|
+| `services/task_store.py` | **落盘层**（save/load_all/delete/prune/clear，按 `(status,progress,ts)` 去重、坏文件自愈、`task_id` 清洗、超大 payload 跳过）| ❌ |
+| `routers/factors_state.py` | **唯一内存源**（`_SFT_TASKS`/`_EST_TASKS` + 7 锁 + 上限裁剪 + **锁外**落盘）| ✅ |
+| `routers/factors_single_state.py` | **纯结构工厂**（56 行，只有 `new_task_state()` 返回 dict —— 前后端契约的显式化）| ❌ |
+| `engine/task_manager.py` | **并发闸门**（信号量 + loky 池回收 + `TaskCancelledError`）| ❌ |
+
+**决定性证据**：
+```
+factors_single._SFT_TASKS is factors_state._SFT_TASKS  ⇒  True   （同一对象，不是副本）
+factors_single._SFT_LOCK  is factors_state._SFT_LOCK   ⇒  True
+全 app/ 模块级任务 dict 只有 2 个（_SFT_TASKS / _EST_TASKS），都在 factors_state.py
+task_store 已有 8 条测试（roundtrip / 不落 DataFrame / 同状态不重写 / 坏文件自愈 /
+                        running→failed / 超大跳过 / prune / task_id 清洗）
+```
+⇒ 单因子任务的落盘**早就在跑**（`_sft_store` 最后一行 `task_store.save("sft", ...)` ✓）。
+
+#### 所以这轮**不改架构**（改了是破坏分层 ✗）
+- 合并 `task_store` 进 `factors_state` ⇒ 落盘与内存态耦合，**重启恢复/去重/自愈**一起变难；
+- 合并 `factors_single_state` 进去 ⇒ 契约不再显式（改键名要翻 325 行路由）；
+- 合并 `task_manager` 进去 ⇒ 并发控制与状态存储互相持锁（取消/池回收更脆）。
+
+#### 改成"钉住分层"：`tests/test_task_state_single_source.py`（**6 条**）
+| 断言 | 挡什么 |
+|---|---|
+| ⭐⭐ 两个路由模块引用**同一个** dict/锁对象 | 有人 `dict(...)` 拷一份 ⇒ 第二份内存态 |
+| ⭐⭐ `app/` 下模块级任务 dict **只许**在 `factors_state.py` | 悄悄长出第 5 套 |
+| ⭐ sft/est 写入都走 `task_store.save` + 启动 `load_all` + `prune` | 重启丢任务 / 磁盘无上限 |
+| ⭐⭐ 工厂模块不许接 `task_store`、不许文件 IO、不许加锁 | 它变成状态容器 |
+| ⭐ `task_manager` 里不许出现任务状态 dict | 职责边界（它是并发闸门）|
+| ⭐ `task_store` 五个 API 齐全 | 恢复/清理链路完整 |
+
+#### 文档
+`md/architecture.md` 新增 **7.5 节「任务状态为什么是四层（别再合并）」** ✓ ——
+带上面那张职责表 + 证据 + "为什么不能合并"的三条理由 ✓。
+写进架构文档的目的：**让下一个人不必重新数一遍**，也别"看着像重复"就合并 ✗。
+
+#### 我这轮的小错
+测试写完后我在 docstring 里写"（7 条）"，实际 **6 条** ✗ ⇒ 已改正
+（"数字自己编"这个毛病记过一次了，这次是当场自查出来的 ✓）。
+
 ## [2.15.1] - 2026-11-02
 
 ### Refactor（评审 ②「缓存键至少 4 份」—— 实测 **9 处**真实代码，收敛成 1 个模块，**字节级不变**）
