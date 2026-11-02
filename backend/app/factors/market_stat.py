@@ -42,6 +42,7 @@ import pandas as pd
 
 from ..config import QLIB_PROVIDER_URI
 from ..logger import _log_swallowed  # noqa: E402
+from ..utils.hashutil import content_hash, new_hasher
 from .panel_expr import PanelEvaluator, _calendar, _collect_field_names
 from .parser.codegen import (
     BLOCK_KEYS,
@@ -264,7 +265,7 @@ def formula_fingerprints(specs: Optional[Sequence[Spec]] = None) -> Dict[str, st
         except Exception as e:  # noqa: BLE001  公式没了 ⇒ 由别的检查报 ✓
             _log_swallowed("market_stat.py", e)
             continue
-        out[str(name)] = hashlib.md5(expr.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
+        out[str(name)] = content_hash(expr, n=12)
     return out
 
 
@@ -336,7 +337,7 @@ def materialize_impact(name: str) -> List[str]:
         _f = specs[0].formula
         if not _f:
             return []
-        now = hashlib.md5(formula_expression(_f).encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
+        now = content_hash(formula_expression(_f), n=12)
     except Exception as e:  # noqa: BLE001
         _log_swallowed("market_stat.py", e)
         return []

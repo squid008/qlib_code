@@ -6,11 +6,11 @@
 """
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 from typing import Any, Callable, Dict, List
 
+from ...utils.hashutil import content_hash, new_hasher
 from ..calc_date import is_date_literal, is_date_name, to_serial
 from .ast import BinOp, Expr, Field, FuncCall, Num, Str, UnaryOp, Var
 from .lexer import LexerError
@@ -467,7 +467,7 @@ def formula_key(formula_name: str) -> str:
     """被调公式名 → 可做文件名的短键（中文名也安全：保留 ASCII 部分 + 名字哈希）。"""
     name = (formula_name or "").strip()
     safe = re.sub(r"[^0-9a-zA-Z_]+", "", name).lower()[:24]
-    h = hashlib.md5(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+    h = content_hash(name, n=6)
     return (safe or "f") + "_" + h
 
 

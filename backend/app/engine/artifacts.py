@@ -16,6 +16,7 @@ from ..logger import (
     get_logger,
 )
 from ..models.backtest import BacktestRequest, BacktestResult
+from ..utils.hashutil import content_hash, new_hasher
 from .context import get_artifact_dir
 
 logger = get_logger(__name__)
@@ -752,7 +753,7 @@ def _save_train_signature(dir_path: str, req) -> None:
             "price_adjust=" + str(getattr(req, "price_adjust", "none") or "none"),
         ]
         raw = "||".join(parts)
-        return hashlib.md5(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
+        return content_hash(raw, n=16)
 
     try:
         sig = {
@@ -762,10 +763,9 @@ def _save_train_signature(dir_path: str, req) -> None:
             "deps": _dep_versions(),
             "price_adjust": getattr(req, "price_adjust", "none") or "none",
             "feature_fingerprint": _feature_fingerprint(),
-            "params_md5": hashlib.md5(
-                json.dumps(req.model_dump(), sort_keys=True, default=str).encode("utf-8"),
-                usedforsecurity=False,
-            ).hexdigest()[:16],
+            "params_md5": content_hash(
+                json.dumps(req.model_dump(), sort_keys=True, default=str), n=16
+            ),
         }
         with open(os.path.join(dir_path, "train_signature.json"), "w", encoding="utf-8") as f:
             json.dump(sig, f, ensure_ascii=False, indent=2, default=str)

@@ -17,12 +17,12 @@
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import pickle
 from typing import Optional
 
 from ..logger import _log_swallowed  # noqa: E402
+from ..utils.hashutil import content_hash, new_hasher
 
 # ⚠ 口径/算法变更必须 +1（见模块 docstring）
 CACHE_VERSION = "v1"
@@ -55,7 +55,7 @@ def _data_version() -> str:
 
 def fingerprint(params: dict) -> str:
     """参数指纹：**同参数必命中、任一参数变必失效**（含数据版本）。"""
-    h = hashlib.md5(usedforsecurity=False)
+    h = new_hasher()
     h.update(("cv=%s" % CACHE_VERSION).encode("utf-8"))
     for k in _FINGERPRINT_KEYS:
         h.update(("|%s=%r" % (k, params.get(k))).encode("utf-8"))

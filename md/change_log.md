@@ -24,6 +24,58 @@
 
 ---
 
+## [2.15.1] - 2026-11-02
+
+### Refactor（评审 ②「缓存键至少 4 份」—— 实测 **9 处**真实代码，收敛成 1 个模块，**字节级不变**）
+
+#### 先纠正评审的数字（他说少了，我先数多了）
+评审说"缓存键 md5 至少 4 份"。`grep` 全 `app/`：**11 行命中**，其中 **2 行是注释** ⇒
+**真实代码 9 处** ✓（我第一次也把注释算进去了 ✗，写了个 `assert total == 11` 当场失败 ✓）。
+
+按语义分三类（**不是同一份代码的复制**，但共享同一组硬要求）：
+
+| 语义 | 位置 | 截断 |
+|---|---|---|
+| 参数/内容指纹 | `artifacts._fingerprint` / `artifacts.params_md5` / `market_stat` ×2 | 16 / 16 / 12 / 12 |
+| 缓存键 | `feature_cache` / `event_study_cache` / `signals.event` / `signals.pricing` | 24 / 32 / 32 / 32 |
+| 符号短键 | `codegen.formula_key`（中文公式名 → 可做文件名的键）| 6 |
+
+#### 做法：`app/utils/hashutil.py`
+```python
+def new_hasher():            # ≡ hashlib.md5(usedforsecurity=False)
+def content_hash(*parts, n=16)   # ≡ md5("".join(parts)).hexdigest()[:n]
+```
+- **单行站点**（`md5(x.encode()).hexdigest()[:n]`）→ `content_hash(x, n=n)` ✓
+- **累积站点**（`h = md5(); h.update(a); h.update(b)`）→ `h = new_hasher()` ✓（字节序列不变）
+
+#### 铁律：**字节级不变**
+改哈希 = 让 **1.6 GB 特征缓存 + 620 MB 表达式缓存 + 事件研究缓存全部静默失效** ✗
+（技术债里记过这类事故）。所以这轮**只换入口、不换算法/编码/截断** ✓，
+并用测试钉死（`tests/test_hash_unified.py`，**7 条**）：
+
+| 断言 | 作用 |
+|---|---|
+| ⭐⭐ `app/` 下除 `hashutil.py` **零处** `hashlib.md5` | 不许再长回去 |
+| ⭐⭐ `content_hash("abc", n=32) == md5("abc")` 等已知值 | 逐位等价 |
+| ⭐ 单段/多段/空串/中文 都等于手写 md5 | 编码与拼接语义不变 |
+| ⭐ `new_hasher()` 累积 == `content_hash(*parts)` | 两种写法可互换 |
+| ⭐ 16/24/32/12/6 五种截断都支持 | 覆盖仓库实际用法 |
+| ⭐ 抽查 `engine/` `factors/` `signals/` 三目录零直接 md5 | 防新代码绕过 |
+
+#### 实测（关键：**功能零失败**）
+```
+全量 pytest：2264 条｜唯一红 = `test_changelog_has_section_for_current_version`
+             （因为这条 changelog 还没写 ✓ 补完即绿）
+ruff：All checks passed（自动修了 6 处 import 排序）
+mypy：127 文件 0 错误
+改动量：12 文件 +24/−22     ← 机械替换的证据 ✓
+```
+功能测试全绿 ⇒ **哈希值确实没变** ✓（否则 `test_engine_golden` 那类指纹立刻红）。
+
+#### 我这轮的错
+`assert total == 11` —— 把**注释里提到 md5 的 2 行**也当成代码 ⇒ 实际 9 处 ✓
+（当场失败，改成 9 后通过；这类"数字自己编"的错在 `md/评分体系审计.md` 里已记过一次 ✗）。
+
 ## [2.15.0] - 2026-11-02
 
 ### Chore（第三方评审 ④「依赖可复现」—— 实测后：**一半已做、一处指标写错、一处真缺**）

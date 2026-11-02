@@ -17,7 +17,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import pickle
 import re
@@ -27,6 +26,7 @@ import pandas as pd
 from qlib.data.dataset.loader import QlibDataLoader
 
 from ..logger import _log_swallowed  # noqa: E402
+from ..utils.hashutil import content_hash, new_hasher
 
 try:
     from ..config import WORK_DIR
@@ -233,7 +233,7 @@ def _cache_path(instruments, exprs, names, start_time, end_time, extra="") -> st
         str(extra or ""),
     ]
     raw = "|".join(parts)
-    return os.path.join(_CACHE_DIR, hashlib.md5(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[:24] + ".pkl")
+    return os.path.join(_CACHE_DIR, content_hash(raw, n=24) + ".pkl")
 
 
 # ---------------------------------------------------------------------------

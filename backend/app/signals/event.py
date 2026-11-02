@@ -14,7 +14,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import pickle
 from typing import Dict, List, Optional
@@ -23,6 +22,7 @@ import pandas as pd
 
 from ..factors.event_study import build_event_stats, compute_baseline_curves
 from ..logger import _log_swallowed  # noqa: E402
+from ..utils.hashutil import content_hash, new_hasher
 
 
 def _event_cache_dir() -> str:
@@ -46,7 +46,7 @@ def _event_fingerprint(cache_ns: str, events: pd.DataFrame, close_trig: pd.DataF
     （列集合决定"哪些股票在池里"）、以及 `feature_cache._data_version()`（数据更新后自动失效）。
     不含数值本身 —— 数值由"数据版本 + 列集合 + 事件"唯一决定（宽表是行情派生物）。
     """
-    h = hashlib.md5(usedforsecurity=False)
+    h = new_hasher()
     # ★ v2.1.52：**口径进指纹** ✗→✓ —— 开盘表与收盘表的形状/日期/列完全一样 ✗ ⇒ 不写进指纹
     #   就会把 t1_close 的旧结果当成 t1_open 的缓存命中返回 ✗✗（"口径漂移 + 看不见" ✓）。
     h.update(("|fill=%s" % str(fill or "")).encode("utf-8"))
