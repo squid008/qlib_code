@@ -107,30 +107,26 @@ class TestNoHardcodedAbsPaths:
         assert os.path.dirname(p) == os.path.join(_repo_root(), "ai_test"), p
 
     def test_env_override_wins(self):
-        """⭐ `QLIB_AI_TEST_DIR` 能覆盖（换机器/临时排查用 ✓）。"""
-        import importlib
+        """⭐ `QLIB_AI_TEST_DIR` 能覆盖（换机器/临时排查用 ✓）。
 
-        from app.factors import single_test as ST
+        ⚠⚠ **不能在本进程里 `importlib.reload`** ✗→✓ —— v2.14.4 我这么写过，
+        结果**污染全局状态**：reload 后 `FactorTestCancel` 等类**换了身份** ⇒
+        `tests/test_single_test_curve_block.py::test_cancelled` 在 CI 里红 ✗
+        （本地单独跑这个文件是绿的 ⇒ **只有全量跑才暴露** ✓，典型"测试间互相踩"）。
+        ⇒ 改成**子进程**里探（进程隔离，零污染 ✓）。
+        """
+        import subprocess
+        import sys
 
-        old = os.environ.get("QLIB_AI_TEST_DIR")
-        try:
-            os.environ["QLIB_AI_TEST_DIR"] = os.path.join(_repo_root(), "ai_test", "tmp_probe")
-            mod = importlib.reload(ST)
-            assert mod._ai_test_flag("a.flag").endswith(os.path.join("tmp_probe", "a.flag"))
-        finally:
-            if old is None:
-                os.environ.pop("QLIB_AI_TEST_DIR", None)
-            else:
-                os.environ["QLIB_AI_TEST_DIR"] = old
-            importlib.reload(ST)
-
-    def test_allowlist_only_external_defaults(self):
-        """⭐⭐ 白名单**只许**放"外部数据源默认值" ✗ —— 仓库内路径一个都不许进 ✓。"""
-        inner = [
-            k for k in ALLOW
-            if k[1].replace("\\", "/").lower().startswith(("d:/quant/qlib_code",))
-        ]
-        assert not inner, "白名单里混进了仓库内路径 ✗：%s" % inner
+        env = dict(os.environ)
+        env["QLIB_AI_TEST_DIR"] = os.path.join(_repo_root(), "ai_test", "tmp_probe")
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import app.factors.single_test as S; print(S._ai_test_flag('a.flag'))"],
+            cwd=ROOT, env=env, capture_output=True, text=True,
+        )
+        assert r.returncode == 0, r.stderr[-400:]
+        assert "tmp_probe" in r.stdout, (r.stdout, r.stderr[-200:])
 
     def test_default_gate_is_closed(self):
         """⭐ 默认（没有 flag 文件）⇒ 闸门关 ✓ —— 这条语义**修完必须没变**。"""

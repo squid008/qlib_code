@@ -24,6 +24,31 @@
 
 ---
 
+## [2.14.5] - 2026-11-02
+
+### Fix（我自己新加的测试**污染了全局状态** ⇒ CI 红；改成子进程探测）
+
+#### 现象（v2.14.4 的 CI）
+```
+FAILED tests/test_single_test_curve_block.py::test_cancelled
+E   app.factors.single_test.FactorTestCancel   ← 期望抛它，实际不是
+```
+**本地单独跑 `test_no_hardcoded_abs_paths.py` 是 5 passed** ✓ ⇒ 只有**全量跑**才暴露 ✗。
+
+#### 真因（我写的测试害的）
+`test_env_override_wins` 里用了 `importlib.reload(app.factors.single_test)` ✗ ——
+reload 会**重新执行模块**，`FactorTestCancel` 等类**换了身份** ⇒ 别处
+`except FactorTestCancel` 抓不到原来的类 ⇒ 红 ✓。
+
+⇒ **"测一个环境变量"不该 reload 整个模块** ✗。改成**子进程**里探（进程隔离，零污染 ✓）：
+```python
+subprocess.run([sys.executable, "-c", "import ...; print(S._ai_test_flag('a.flag'))"], env={...})
+```
+
+#### 教训（第三次同类）
+> **测试之间会互相踩**：单文件绿 ≠ 全量绿 ✓。
+> 凡是要改**模块级状态/环境变量**的测试，一律**子进程隔离**，不许 `reload`/`monkeypatch` 全局常驻 ✗。
+
 ## [2.14.4] - 2026-11-02
 
 ### Fix（第三方评审点出的**硬编码绝对路径** —— 实测 6 处，全改 + 加闸门防回归）
