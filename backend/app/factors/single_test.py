@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
@@ -37,6 +38,32 @@ from ..engine.perf_metrics import compute_perf
 from ..engine.stats import acf as _acf  # noqa: F401
 from ..engine.stats import hac_t as _hac_t
 from ..logger import _log_swallowed  # noqa: E402
+
+# ★★ v2.14.4：**消灭硬编码绝对路径** ✗→✓（第三方评审点出，我实测确认 3 处）
+#   原来这几处探针写死 `D:\quant\qlib_code\ai_test\...` ⇒ 换机器/换目录后
+#   **探针永久失效**（它们"文件存在才生效"、默认关 ⇒ 不影响算法 ✓，
+#   但写死绝对路径本身是坏味道，且会让后来人以为"这台机器上一定有效" ✗）。
+#   ⇒ 改成"**项目根下的 ai_test/**"，并允许 `QLIB_AI_TEST_DIR` 覆盖 ✓：
+#     · 语义**一点没变**（仍然是"文件存在才生效" ✓、仍然只读文件 ✓、绝不动算法 ✓）；
+#     · 换任何机器/目录都能用 ✓（`ai_test/` 本来就跟着仓库走 ✓）。
+_AI_TEST_DIR = os.environ.get(
+    "QLIB_AI_TEST_DIR",
+    os.path.join(
+        # ⚠ 层数别数错 ✗→✓：`single_test.py` → `factors` → `app` → `backend` → **仓库根**（四层 ✓），
+        #   因为 `ai_test/` 在**仓库根**下 ✓ —— 我第一版只数了三层 ⇒ 得到 `backend/ai_test` ✗，
+        #   当场被新加的闸门（`test_ai_test_flag_helper_is_relative_to_project`）抓到 ✓。
+        os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        ),
+        "ai_test",
+    ),
+)
+
+
+def _ai_test_flag(name: str) -> str:
+    """`ai_test/<name>` 的绝对路径 ✓ —— 探针闸门统一从这里取（别再写字面量 ✗）。"""
+    return os.path.join(_AI_TEST_DIR, name)
+
 from .event_study import build_event_stats, compute_baseline_curves
 
 # ★ v2.7.0：离场公式若含"入场价"（ENTRY_PRICE / ENTRY_FIRST ⇒ 回测状态量 ✓）⇒ 拆成
@@ -1912,8 +1939,8 @@ def _quantile_curve_block(*, _REBAL, _dec_p, _dts, _med, _qbest, _rkcol, _side, 
             #   探针必须放**函数入口**，否则早退时什么都不留 ✓）。标记文件可数次数 ✓。
             try:
                 if __import__("os").path.exists(
-                        r"D:\quant\qlib_code\ai_test\sft_perf_debug.flag"):
-                    with open(r"D:\quant\qlib_code\ai_test\marker_perf_entry.txt",
+                        _ai_test_flag("sft_perf_debug.flag")):
+                    with open(_ai_test_flag("marker_perf_entry.txt"),
                               "a", encoding="utf-8") as _mf:
                         _mf.write("%s enter kind=%s k=%s h=%s REBAL=%s nd=%s\n"
                                   % (__import__("time").strftime("%H:%M:%S"),
@@ -2030,7 +2057,7 @@ def _quantile_curve_block(*, _REBAL, _dec_p, _dts, _med, _qbest, _rkcol, _side, 
             #       **不是由本函数这段**算的 ✓ ⇒ 我此前一直在找错地方 ✗。
             #   ⚠ 只在哨兵文件存在时生效 ✓（默认关 ✓，绝不进生产 ✓）。
             if __import__("os").path.exists(
-                    r"D:\quant\qlib_code\ai_test\sft_perf_sentinel.flag"):
+                    _ai_test_flag("sft_perf_sentinel.flag")):
                 _seg_nav = np.ones(_nd)
             # ★★ v2.1.81：**诊断闸门**（用户 2026-10-13 待办 ④ 的"逐日 dump" ✓）
             #   离线复算（`ai_test/dump_daily_variants.py` ✓）用**同一批持仓**得到
@@ -2040,7 +2067,7 @@ def _quantile_curve_block(*, _REBAL, _dec_p, _dts, _med, _qbest, _rkcol, _side, 
             #   环境变量 ✓：重启脚本不方便传 env ✓，而文件开关"建/删即生效" ✓。
             #   ⚠ 默认关 ✓、只写文件 ✓、**绝不动算法** ✓（上两次"先改再验"都翻车了 ✗）。
             _gate = __import__("os").path.exists(
-                r"D:\quant\qlib_code\ai_test\sft_perf_debug.flag")
+                _ai_test_flag("sft_perf_debug.flag"))
             if _gate:
                 # ⚠ v2.1.81：本块**只引用到此为止已存在的变量** ✓（`_seg_nav`/`_cn`/`_ok`/
                 #   `_px_row`/`_px0_row`/`_dp_col` ✓），**段内日收益就地自算** ✓ ——
@@ -2084,7 +2111,7 @@ def _quantile_curve_block(*, _REBAL, _dec_p, _dts, _med, _qbest, _rkcol, _side, 
                         "px0_max": (float(np.nanmax(_px0_row[_ok]))
                                     if _ok.any() else None),
                     }
-                    with open(r"D:\quant\qlib_code\ai_test\perf_debug.json", "w",
+                    with open(_ai_test_flag("perf_debug.json"), "w",
                               encoding="utf-8") as _jf:
                         _json.dump(_out_dbg, _jf, ensure_ascii=False)
                 except Exception as _de:      # noqa: BLE001 —— 诊断绝不拖垮主流程
@@ -2092,7 +2119,7 @@ def _quantile_curve_block(*, _REBAL, _dec_p, _dts, _med, _qbest, _rkcol, _side, 
                     #   而后端是**隐藏窗口**启动的 ⇒ stdout 我看不到 ✗ ⇒ 白跑一轮 ✓。
                     import traceback as _tb
                     try:
-                        with open(r"D:\quant\qlib_code\ai_test\perf_debug_err.txt",
+                        with open(_ai_test_flag("perf_debug_err.txt"),
                                   "w", encoding="utf-8") as _ef:
                             _ef.write(repr(_de) + "\n" + _tb.format_exc())
                     except Exception as e:  # noqa: BLE001

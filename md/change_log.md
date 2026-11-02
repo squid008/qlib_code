@@ -24,6 +24,49 @@
 
 ---
 
+## [2.14.4] - 2026-11-02
+
+### Fix（第三方评审点出的**硬编码绝对路径** —— 实测 6 处，全改 + 加闸门防回归）
+
+#### 评审说的对，而且比它说的多
+评审点名 `backend/app/factors/single_test.py:1915/2043` 写死
+`D:\quant\qlib_code\ai_test\sft_perf_debug.flag` ✓。我拿闸门扫全 `app/`：**共 6 处**
+（`sft_perf_debug.flag` ×2、`marker_perf_entry.txt`、`sft_perf_sentinel.flag`、
+`perf_debug.json`、`perf_debug_err.txt`）。
+
+**危害不是崩溃，是"安静地失效"** ✗：这些探针都"文件存在才生效"⇒ 换机器/换目录后
+**永久静默失效** ✓，后来人以为"这台机器上一定有效"（正是 `md/踩坑库.md` 收的那一类）。
+
+#### 修法（语义一点没变）
+```python
+_AI_TEST_DIR = os.environ.get("QLIB_AI_TEST_DIR", <仓库根>/ai_test)
+
+def _ai_test_flag(name):          # 6 处字面量统一走它
+    return os.path.join(_AI_TEST_DIR, name)
+```
+- 仍是"**文件存在才生效**"✓、仍然**只读文件**✓、**绝不动算法**✓、**默认关**✓；
+- 换任何机器/目录都能用 ✓（`ai_test/` 本来就跟着仓库走）。
+
+#### 新增闸门 `tests/test_no_hardcoded_abs_paths.py`（5 条）
+| 断言 | 作用 |
+|---|---|
+| ⭐⭐ `app/` 下**零处**盘符开头的字符串常量 | AST 级扫描（**跳过 docstring** ✓，注释本来就不是常量）|
+| ⭐ helper 取自**仓库根**下的 `ai_test/` | 用"往上找带 `.git` 的目录"定位仓库根（**不写死层数** ✗）|
+| ⭐ `QLIB_AI_TEST_DIR` 能覆盖 | 换机器/临时排查 |
+| ⭐⭐ 白名单**只许**放外部数据源默认值 | 防止有人把仓库内路径塞进白名单 |
+| 白名单自查 | 出现 `d:/quant/qlib_code` 前缀即失败 |
+
+白名单只有 2 条（都**支持 env 覆盖**）：
+`app/config.py` 的 `E:\rq\bundle`（rqalpha bundle 默认值）、
+`app/datasource/tdx_gpcw.py` 的 `D:\new_tdx\vipdoc\cw`（通达信默认值）。
+
+#### 我这轮自己的两个错（都当场被新闸门抓到）
+1. **层数数错**：`dirname` 了三层 ⇒ 得到 `backend/ai_test` ✗（应为四层，`ai_test/` 在**仓库根**）；
+2. 断言里用 `p.replace(ROOT, "")`，但那个模块的 `ROOT` 是 **`backend/`**（扫 `app/` 用）⇒ 替换不掉盘符 ⇒ 红 ✓ 改成 `_repo_root()`。
+
+#### 实测
+`tests/test_no_hardcoded_abs_paths.py` **5 passed** ｜ `ruff` 0 ｜ `mypy` 125 文件 0 错误
+
 ## [2.14.3] - 2026-11-02
 
 ### Docs（用户要求"把技术债 md 删了" —— **从根目录移走 + 归档**，判据不放松）
