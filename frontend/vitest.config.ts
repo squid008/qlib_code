@@ -28,7 +28,15 @@ export default defineConfig({
     //   ⇒ 换成**进程池**（forks ✓）：每个测试文件一个子进程 ✓，不依赖 worker_threads ✓。
     //   代价：启动稍慢（本项目 11 条用例、~0.5s ✓ 可忽略 ✓）。
     pool: 'forks',
-    poolOptions: { forks: { singleFork: true } },
+    // ★★ v2.14.1：`poolOptions.forks.singleFork` → 顶层 **`maxWorkers: 1`** ✗→✓
+    //   **Vitest 4 起 `poolOptions` 被移除** ✓（官方迁移说明：旧 `poolOptions` 全部升为顶层选项 ✓），
+    //   留着它会在启动阶段直接报
+    //   `DEPRECATED test.poolOptions was removed in Vitest 4` + `Startup Error` ✗
+    //   （我们升到 vitest 5 后才暴露 ✓ —— 之前跑过几次"看起来正常"，是运气 ✓）。
+    //   语义不变：仍然**每个测试文件一个子进程、串行跑** ✓
+    //   （原因见上面那段：GitHub Linux runner 上默认线程池起不来 ✗）。
+    maxWorkers: 1,
+    minWorkers: 1,
 
     // ★ v2.10.28：补浏览器 API 桩（`ResizeObserver` / `matchMedia` ✓）——
     //   见 `vitest.setup.ts` 顶部的追因说明 ✓：当年"jsdom 会崩"真因是**缺这个 polyfill** ✗
